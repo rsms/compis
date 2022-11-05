@@ -1,0 +1,12 @@
+~*
+*.o
+*.d
+*.pch
+
+.DS_Store
+.clang_complete
+.c0
+
+/_*
+/deps
+/out
