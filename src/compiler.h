@@ -14,13 +14,15 @@ enum tok {
 
 #define FOREACH_NODE_KIND(_) \
   _( NBAD ) /* invalid node; parse error */ \
-  \
   _( NCOMMENT ) \
-  _( NINTLIT ) \
-  _( NID ) \
-  \
   _( NUNIT ) \
   _( NFUN ) \
+  _( NBLOCK ) \
+  _( NINTLIT ) \
+  _( NID ) \
+  _( NPREFIXOP ) \
+  _( NINFIXOP ) \
+  _( NSUFFIXOP ) \
 // end FOREACH_NODE_KIND
 
 typedef enum {
@@ -123,6 +125,9 @@ typedef struct {
 } parser_t;
 
 
+extern node_t last_resort_node;
+
+
 input_t* nullable input_create(memalloc_t ma, const char* filename);
 void input_free(input_t* input, memalloc_t ma);
 err_t input_open(input_t* input);
@@ -145,6 +150,10 @@ void parser_dispose(parser_t* p);
 node_t* parser_parse(parser_t* p, memalloc_t ast_ma, input_t*);
 
 void node_free(memalloc_t ast_ma, node_t* n);
+err_t node_repr(buf_t* buf, const node_t* n);
+inline static bool node_has_strval(const node_t* n) {
+  return n->kind == NID || n->kind == NCOMMENT;
+}
 
 const char* tok_name(tok_t); // e.g. (TEQ) => "TEQ"
 const char* tok_repr(tok_t); // e.g. (TEQ) => "="

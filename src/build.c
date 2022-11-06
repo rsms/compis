@@ -79,41 +79,30 @@ static err_t compile_co_to_c(compiler_t* c, input_t* input, const char* cfile) {
   dlog("[compile_co_to_c] cfile: %s", cfile);
   u32 errcount = c->errcount;
 
-  #if 1
-    // parse
-    dlog("——————————————— parse ———————————————");
-    parser_t parser;
-    parser_init(&parser, c);
-    memalloc_t ast_ma = c->ma;
-    node_t* unit = parser_parse(&parser, ast_ma, input);
-    // TODO: use unit
-    node_free(ast_ma, unit);
-    parser_dispose(&parser);
-    dlog("——————————————— end parse ———————————————");
-  #else
-    // scan
-    dlog("——————————————— scan ———————————————");
-    scanner_t scanner;
-    scanner_init(&scanner, c);
-    scanner_set_input(&scanner, input);
-    while (scanner.tok.t != TEOF) {
-      //dlog("scanned tok.t=%s", tokname(scanner.tok.t));
-      // if (!parse_toplevel(&parser)) {
-      //   if (scanner.tok.t == TSEMICOLON)
-      //     error(&scanner.tok.loc, "unexpected ';' at top-level");
-      //   error(&scanner.tok.loc, "expected declaration or function definition");
-      // }
-      scanner_scan(&scanner);
-    }
-    scanner_dispose(&scanner);
-    dlog("——————————————— end scan ———————————————");
-  #endif
+  // parse
+  dlog("——————————————— parse ———————————————");
+  parser_t parser;
+  parser_init(&parser, c);
+  memalloc_t ast_ma = c->ma;
+  node_t* unit = parser_parse(&parser, ast_ma, input);
+  dlog("——————————————— end parse ———————————————");
+
+  // format AST
+  buf_t buf = buf_make(c->ma);
+  err_t err = node_repr(&buf, unit);
+  if (!err)
+    log("AST:\n%.*s\n", (int)buf.len, buf.chars);
+
+  node_free(ast_ma, unit);
+  parser_dispose(&parser);
+
+  if (err)
+    return err;
 
   if (c->errcount > errcount)
     return ErrCanceled;
 
   return ErrCanceled; // XXX
-
   // // pretend we parsed the file and generated C code
   // dlog("genc %s -> %s", input->name, cfile);
   // fs_mkdirs(cfile, path_dirlen(cfile, strlen(cfile)), 0770);

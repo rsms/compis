@@ -446,7 +446,7 @@ static void scan0(scanner_t* s) {
       s->insertsemi = false;
       s->tok.t = TINDENT;
       s->tok.loc.line = s->lineno;
-      s->tok.loc.col = 1;
+      s->tok.loc.col = (u32)(uintptr)(s->inp - s->linestart) + 1;
       return;
       //}
     }

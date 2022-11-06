@@ -314,7 +314,7 @@ typedef double             f64;
       safecheckf(val__ != NULL, "unexpected NULL (%s)", #a);                 \
       val__; })
   #else
-    #define safecheck(cond) if UNLIKELY(!(cond)) safefail("safecheck")
+    #define safecheck(cond) ( (cond) ? ((void)0) : safefail("safecheck") )
     #define safecheckexpr(expr, expect) ({ \
       __typeof__(expr) val__ = (expr); safecheck(val__ == expect); val__; })
     #define safechecknotnull(a) ({                                           \

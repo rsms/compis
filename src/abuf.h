@@ -44,7 +44,8 @@ void abuf_reprhex(abuf_t* s, const void* p, usize len, bool spaced);
 void abuf_fmt(abuf_t* s, const char* fmt, ...) ATTR_FORMAT(printf, 2, 3);
 void abuf_fmtv(abuf_t* s, const char* fmt, va_list);
 inline static void abuf_str(abuf_t* s, const char* cstr) {
-  abuf_append(s, cstr, strlen(cstr)); }
+  abuf_append(s, cstr, strlen(cstr));
+}
 
 inline static usize abuf_terminate(abuf_t* s) { *s->p = 0; return s->len; }
 inline static usize abuf_avail(const abuf_t* s) {

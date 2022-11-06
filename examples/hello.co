@@ -1,5 +1,2 @@
 fun main() int
-  123 // foo
-    // lol
-    foo
-  cat
+  123 + 456 * 3

@@ -57,6 +57,8 @@ usize tok_descr(char* buf, usize bufcap, tok_t t, slice_t lit) {
     case TFLOATLIT: typ = "number";               break;
     case TBYTELIT:  typ = "byte";   quote = '\''; break;
     case TSTRLIT:   typ = "string"; quote = '"';  break;
+    case TINDENT:   typ = "indentation";          break;
+    case TDEDENT:   typ = "drop in indentation";  break;
     default:
       abuf_c(&s, '\'');
       abuf_str(&s, tok_repr(t));

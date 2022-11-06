@@ -39,7 +39,11 @@ inline static buf_t buf_makeext(memalloc_t ma, void* p, usize cap) {
 // b remains valid after this call, as if buf_init(b,b->ma) was called.
 void buf_dispose(buf_t* b);
 
+// buf_avail returns the number of available bytes to write without growing the buffer
 inline static usize buf_avail(const buf_t* b) { return b->cap - b->len; }
+
+// buf_clear empties the buffer
+inline static void buf_clear(buf_t* b) { b->len = 0; }
 
 // buf_grow increases the capacity of b by at least extracap bytes.
 // If grow fails, false is returned and b remains unchanged.
