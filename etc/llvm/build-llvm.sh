@@ -491,6 +491,7 @@ _mk_dlib_macos() {
   if [ "$HOST_ARCH" = "arm64" ]; then
     # use system linker since ld64.lld on arm64 in llvm 14 errors out with
     #   error: LC_DYLD_INFO_ONLY not found in deps/llvm/lib/libunwind.dylib
+    command -v xcrun >/dev/null || _err "xcrun not found in PATH"
     /usr/bin/ld -dylib \
       -o "$DLIB_FILE" \
       -install_name "@rpath/$(basename "$DLIB_FILE")" \
@@ -500,6 +501,8 @@ _mk_dlib_macos() {
       -arch $HOST_ARCH \
       -all_load \
       -lc++ -lc \
+      -F/System/Library/Frameworks \
+      -syslibroot $(xcrun --show-sdk-path) \
       -framework Foundation -framework CoreServices \
       \
       "${EXTRA_LDFLAGS[@]}" \
@@ -569,7 +572,6 @@ _mk_lib_bundles() {
   esac
 }
 
-# _mk_lib_bundles ; exit
 
 # fetch or update llvm sources
 SOURCE_CHANGED=false
