@@ -16,7 +16,8 @@
 // C0ROOT   Directory of co itself     dirname(argv[0])
 // C0CACHE  Directory for build cache  .c0cache
 const char* C0ROOT = "";
-const char* C0CACHE = ".c0cache";
+const char* C0CACHE = ".c0";
+const char* C0CACHE_OBJ = ".c0/obj";
 
 extern CoLLVMOS host_os; // defined in main.c
 
@@ -25,7 +26,7 @@ extern int clang_compile(int argc, const char** argv);
 
 
 static err_t fmt_ofile(input_t* input, buf_t* ofile) {
-  const char* objdir = ".c0";
+  const char* objdir = C0CACHE_OBJ;
   u8 sha256[32];
   usize needlen = strlen(objdir) + 1 + sizeof(sha256)*2 + 2; // objdir/sha256.o
   for (;;) {
@@ -199,6 +200,9 @@ static err_t build_exe(const char** srcfilev, usize filecount) {
     goto end;
   }
   const char** ofiles = ofilesmem.p;
+
+  // create object dir
+  fs_mkdirs(C0CACHE_OBJ, strlen(C0CACHE_OBJ), 0770);
 
   // compile object files
   for (usize i = 0; i < filecount; i++) {
