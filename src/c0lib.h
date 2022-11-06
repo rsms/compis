@@ -601,13 +601,14 @@ static bool mem_resize(memalloc_t, mem_t* m, usize newsize);
 // - calls panic() if m.p is invalid
 // - sets m->p=NULL and m->size=0
 static void mem_free(memalloc_t, mem_t* m);
+static void mem_freex(memalloc_t, mem_t m); // does not zero m
 
 // mem_freet frees an element of type T
 // void mem_freet(memalloc_t, T* ptr)
 #define mem_freet(ma, ptr)  mem_free2((ma), (ptr), sizeof(*(ptr)))
 
 // utilities
-char* nullable mem_strdup(memalloc_t, slice_t src);
+char* nullable mem_strdup(memalloc_t, slice_t src, usize extracap);
 
 // allocators
 static memalloc_t memalloc_ctx(); // current contextual allocator
@@ -669,6 +670,10 @@ static memalloc_t memalloc_null(); // an allocator that always fails
     memalloc_ctx_set(_prevma), _prevma->f = (void*)(uintptr)1, _prevma = NULL )
 
 
+inline static slice_t slice_cstr(const char* cstr) {
+  return (slice_t){ .chars = cstr, .len = strlen(cstr) };
+}
+
 // ——————————————————————————
 // memory api impl
 
@@ -714,6 +719,10 @@ WARN_UNUSED_RESULT inline static bool mem_resize(memalloc_t ma, mem_t* m, usize 
 
 inline static void mem_free(memalloc_t ma, mem_t* m) {
   ma->f(ma, m, 0, false);
+}
+
+inline static void mem_freex(memalloc_t ma, mem_t m) {
+  ma->f(ma, &m, 0, false);
 }
 
 inline static void mem_free2(memalloc_t ma, void* p, usize size) {

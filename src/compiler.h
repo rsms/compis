@@ -64,6 +64,8 @@ typedef struct diag {
 typedef struct compiler {
   memalloc_t     ma;          // memory allocator
   const char*    triple;      // target triple
+  char*          cachedir;    // defaults to ".c0"
+  char*          objdir;      // "${cachedir}/obj"
   diaghandler_t  diaghandler; // called when errors are encountered
   void* nullable userdata;    // passed to diaghandler
   u32            errcount;    // number of errors encountered
@@ -135,6 +137,7 @@ void input_close(input_t* input);
 
 void compiler_init(compiler_t* c, memalloc_t, diaghandler_t);
 void compiler_dispose(compiler_t* c);
+void compiler_set_cachedir(compiler_t* c, slice_t cachedir);
 
 void scanner_init(scanner_t* s, compiler_t* c);
 void scanner_dispose(scanner_t* s);

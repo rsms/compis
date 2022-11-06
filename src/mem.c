@@ -114,8 +114,8 @@ void _memalloc_scope_reset(memalloc_t* prevp) {
 // ——————————————————————————————————————————————————————————————————————————————————
 // utility functions
 
-char* nullable mem_strdup(memalloc_t ma, slice_t src) {
-  char* dst = mem_alloc(ma, src.len + 1).p;
+char* nullable mem_strdup(memalloc_t ma, slice_t src, usize extracap) {
+  char* dst = mem_alloc(ma, src.len + 1 + extracap).p;
   if UNLIKELY(dst == NULL)
     return NULL;
   memcpy(dst, src.p, src.len);

@@ -198,7 +198,7 @@ static bool expect(parser_t* p, tok_t expecttok, const char* errmsg) {
 
 
 static char* mkcstr(parser_t* p, slice_t src) {
-  char* s = mem_strdup(p->ast_ma, src);
+  char* s = mem_strdup(p->ast_ma, src, 0);
   if UNLIKELY(s == NULL) {
     // end scanner, making sure we don't keep going
     p->scanner.inp = p->scanner.inend;

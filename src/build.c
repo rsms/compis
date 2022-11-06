@@ -12,12 +12,7 @@
 #include "llvm/llvm.h"
 
 
-//          USE                        DEFAULT
-// C0ROOT   Directory of co itself     dirname(argv[0])
-// C0CACHE  Directory for build cache  .c0cache
-const char* C0ROOT = "";
-const char* C0CACHE = ".c0";
-const char* C0CACHE_OBJ = ".c0/obj";
+const char* C0ROOT = ""; // Directory of c0 itself; dirname(argv[0])
 
 extern CoLLVMOS host_os; // defined in main.c
 
@@ -25,16 +20,15 @@ extern int clang_main(int argc, const char** argv); // llvm/driver.cc
 extern int clang_compile(int argc, const char** argv);
 
 
-static err_t fmt_ofile(input_t* input, buf_t* ofile) {
-  const char* objdir = C0CACHE_OBJ;
+static err_t fmt_ofile(compiler_t* c, input_t* input, buf_t* ofile) {
   u8 sha256[32];
-  usize needlen = strlen(objdir) + 1 + sizeof(sha256)*2 + 2; // objdir/sha256.o
+  usize needlen = strlen(c->objdir) + 1 + sizeof(sha256)*2 + 2; // objdir/sha256.o
   for (;;) {
     ofile->len = 0;
     if (!buf_reserve(ofile, needlen))
       return ErrNoMem;
     abuf_t s = abuf_make(ofile->p, ofile->cap);
-    abuf_str(&s, objdir);
+    abuf_str(&s, c->objdir);
     abuf_c(&s, PATH_SEPARATOR);
     #if 1
       // compute SHA-256 checksum of input file
@@ -126,7 +120,7 @@ static err_t compile_source_file(compiler_t* c, const char* infile, buf_t* ofile
     goto end;
 
   // format output filename ofile
-  if UNLIKELY(err = fmt_ofile(input, ofile))
+  if UNLIKELY(err = fmt_ofile(c, input, ofile))
     goto end;
   dlog("ofile: %s", ofile->chars);
 
@@ -202,7 +196,7 @@ static err_t build_exe(const char** srcfilev, usize filecount) {
   const char** ofiles = ofilesmem.p;
 
   // create object dir
-  fs_mkdirs(C0CACHE_OBJ, strlen(C0CACHE_OBJ), 0770);
+  fs_mkdirs(c.objdir, strlen(c.objdir), 0770);
 
   // compile object files
   for (usize i = 0; i < filecount; i++) {
