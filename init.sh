@@ -2,7 +2,8 @@
 set -e
 cd "$(dirname "$0")"
 source etc/lib.sh
-eval $(grep '^OUTDIR=' build.sh | head -n1)
+eval $(grep '^OUTDIR_DEFAULT=' build.sh | head -n1)
+OUTDIR=$OUTDIR_DEFAULT
 
 if [[ " $@ " == *" -h "* ]] || [[ " $@ " == *" --help "* ]]; then
   cat <<END
@@ -59,16 +60,13 @@ export CC=clang
 export CXX=clang++
 
 
-echo "---------- nim ----------"
-
-_download_pushsrc \
-  https://github.com/nim-lang/Nim/archive/refs/tags/v1.6.8.tar.gz \
-  a12466ed07713818c5ed5d7a56c647d30075a3989e7ac2a6e7696b1e0796a281 \
-  nim-v1.6.8.tar.gz
-
-ls -l
-
-_popsrc
+# echo "---------- nim ----------"
+# _download_pushsrc \
+#   https://github.com/nim-lang/Nim/archive/refs/tags/v1.6.8.tar.gz \
+#   a12466ed07713818c5ed5d7a56c647d30075a3989e7ac2a6e7696b1e0796a281 \
+#   nim-v1.6.8.tar.gz
+# ls -l
+# _popsrc
 
 # ---------- test compiler ----------
 if ! [ -f $DEPS_DIR/cc-tested ]; then
