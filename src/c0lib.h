@@ -120,6 +120,29 @@ typedef double             f64;
 #endif
 
 //—————————————————————————————————————————————————————————————————————————————————————
+// nullability
+
+#if defined(__clang__) && __has_feature(nullability)
+  #ifndef nullable
+    #define nullable _Nullable
+  #endif
+  #define ASSUME_NONNULL_BEGIN                                                \
+    _Pragma("clang diagnostic push")                                              \
+    _Pragma("clang diagnostic ignored \"-Wnullability-completeness\"")            \
+    _Pragma("clang diagnostic ignored \"-Wnullability-inferred-on-nested-type\"") \
+    _Pragma("clang assume_nonnull begin")
+  #define ASSUME_NONNULL_END    \
+    _Pragma("clang diagnostic pop") \
+    _Pragma("clang assume_nonnull end")
+#else
+  #ifndef nullable
+    #define nullable
+  #endif
+  #define C0_ASSUME_NONNULL_BEGIN
+  #define C0_ASSUME_NONNULL_END
+#endif
+
+//—————————————————————————————————————————————————————————————————————————————————————
 // fundamental macros
 
 #ifndef countof
@@ -163,28 +186,73 @@ typedef double             f64;
 #define __VARG_CONCAT_X(a,b) a##b
 #define __VARG_CONCAT(a,b)   __VARG_CONCAT_X(a,b)
 
-//—————————————————————————————————————————————————————————————————————————————————————
-// nullability
+// int c0_clz(ANYUINT x) counts leading zeroes in x,
+// starting at the most significant bit position.
+// If x is 0, the result is undefined.
+#define c0_clz(x) ( \
+  _Generic((x), \
+    i8:   __builtin_clz,   u8:    __builtin_clz, \
+    i16:  __builtin_clz,   u16:   __builtin_clz, \
+    i32:  __builtin_clz,   u32:   __builtin_clz, \
+    long: __builtin_clzl,  unsigned long: __builtin_clzl, \
+    long long:  __builtin_clzll, unsigned long long:   __builtin_clzll \
+  )(x) - ( 32 - MIN_X(4, (int)sizeof(__typeof__(x)))*8 ) \
+)
 
-#if defined(__clang__) && __has_feature(nullability)
-  #ifndef nullable
-    #define nullable _Nullable
-  #endif
-  #define ASSUME_NONNULL_BEGIN                                                \
-    _Pragma("clang diagnostic push")                                              \
-    _Pragma("clang diagnostic ignored \"-Wnullability-completeness\"")            \
-    _Pragma("clang diagnostic ignored \"-Wnullability-inferred-on-nested-type\"") \
-    _Pragma("clang assume_nonnull begin")
-  #define ASSUME_NONNULL_END    \
-    _Pragma("clang diagnostic pop") \
-    _Pragma("clang assume_nonnull end")
-#else
-  #ifndef nullable
-    #define nullable
-  #endif
-  #define C0_ASSUME_NONNULL_BEGIN
-  #define C0_ASSUME_NONNULL_END
-#endif
+// int c0_fls(ANYINT n) finds the Find Last Set bit (last = most-significant)
+// (Note that this is not the same as c0_ffs(x)-1).
+// e.g. c0_fls(0b1111111111111111) = 15
+// e.g. c0_fls(0b1000000000000000) = 15
+// e.g. c0_fls(0b1000000000000000) = 15
+// e.g. c0_fls(0b1000) = 3
+#define c0_fls(x)  ( (x) ? (int)(sizeof(__typeof__(x)) * 8) - c0_clz(x) : 0 )
+
+// int ILOG2(ANYINT n) calculates the log of base 2, rounding down.
+// e.g. ILOG2(15) = 3, ILOG2(16) = 4.
+// Result is undefined if n is 0.
+#define ILOG2(n) (c0_fls(n) - 1)
+
+// ANYINT FLOOR_POW2(ANYINT x) rounds down x to nearest power of two.
+// Returns 1 if x is 0.
+#define FLOOR_POW2(x) ({ \
+  __typeof__(x) xtmp__ = (x); \
+  FLOOR_POW2_X(xtmp__); \
+})
+// FLOOR_POW2_X is a constant-expression implementation of FLOOR_POW2.
+// When used as a constant expression, compilation fails if x is 0.
+#define FLOOR_POW2_X(x) ( \
+  ((x) <= 1) ? (__typeof__(x))1 : \
+  ((__typeof__(x))1 << ILOG2(x)) \
+)
+
+// ANYINT CEIL_POW2(ANYINT x) rounds up x to nearest power of two.
+// Returns 1 when x is 0.
+// Returns 0 when x is larger than the max pow2 for x's type (e.g. >0x80000000 for u32)
+#define CEIL_POW2(x) ({ \
+  __typeof__(x) xtmp__ = (x); \
+  CEIL_POW2_X(xtmp__); \
+})
+// CEIL_POW2_X is a constant-expression implementation of CEIL_POW2
+#define CEIL_POW2_X(x) ( \
+  ((x) <= (__typeof__(x))1) ? (__typeof__(x))1 : \
+  ( ( ((__typeof__(x))1 << \
+          ILOG2( ((x) - ((x) == (__typeof__(x))1) ) - (__typeof__(x))1) \
+      ) - (__typeof__(x))1 ) << 1 ) \
+  + (__typeof__(x))2 \
+)
+
+// bool IS_POW2(T x) returns true if x is a power-of-two value
+#define IS_POW2(x)    ({ __typeof__(x) xtmp__ = (x); IS_POW2_X(xtmp__); })
+#define IS_POW2_X(x)  ( ((x) & ((x) - 1)) == 0 )
+
+// T ALIGN2<T>(T x, anyuint a) rounds up x to nearest a (a must be a power of two)
+#define ALIGN2(x,a) ({ \
+  __typeof__(x) atmp__ = (__typeof__(x))(a) - 1; \
+  ( (x) + atmp__ ) & ~atmp__; \
+})
+#define ALIGN2_X(x,a) ( \
+  ( (x) + ((__typeof__(x))(a) - 1) ) & ~((__typeof__(x))(a) - 1) \
+)
 
 //—————————————————————————————————————————————————————————————————————————————————————
 // debugging
@@ -244,32 +312,47 @@ typedef double             f64;
 
   // assert_no_add_overflow(T a, Y b)
   #if __has_builtin(__builtin_add_overflow_p)
+
     #define assert_no_add_overflow(a, b) \
-      assertf(!__builtin_add_overflow_p((a), (b), (__typeof__((a) + (b)))0), \
+      assertf(!__builtin_add_overflow_p((a), (b), (__typeof__((a)+(b)))0), \
         "0x%llx + 0x%llx overflows", (u64)(a), (u64)(b))
     #define assert_no_sub_overflow(a, b) \
-      assertf(!__builtin_sub_overflow_p((a), (b), (__typeof__((a) + (b)))0), \
+      assertf(!__builtin_sub_overflow_p((a), (b), (__typeof__((a)+(b)))0), \
         "0x%llx - 0x%llx overflows", (u64)(a), (u64)(b))
+    #define assert_no_mul_overflow(a, b) \
+      assertf(!__builtin_mul_overflow_p((a), (b), (__typeof__((a)+(b)))0), \
+        "0x%llx * 0x%llx overflows", (u64)(a), (u64)(b))
+
   #elif __has_builtin(__builtin_add_overflow)
+
     #define assert_no_add_overflow(a, b) ({ \
-      __typeof__((a) + (b)) tmp__; \
+      __typeof__((a)+(b)) tmp__; \
       assertf(!__builtin_add_overflow((a), (b), &tmp__), \
         "0x%llx + 0x%llx overflows", (u64)(a), (u64)(b)); \
     })
     #define assert_no_sub_overflow(a, b) ({ \
-      __typeof__((a) + (b)) tmp__; \
+      __typeof__((a)+(b)) tmp__; \
       assertf(!__builtin_sub_overflow((a), (b), &tmp__), \
         "0x%llx - 0x%llx overflows", (u64)(a), (u64)(b)); \
     })
+    #define assert_no_mul_overflow(a, b) ({ \
+      __typeof__((a)+(b)) tmp__; \
+      assertf(!__builtin_mul_overflow((a), (b), &tmp__), \
+        "0x%llx * 0x%llx overflows", (u64)(a), (u64)(b)); \
+    })
+
   #else
     // best effort; triggers ubsan
     #define assert_no_add_overflow(a, b) ({ \
-      __typeof__((a) + (b)) tmp__ = (i64)(a) + (i64)(b); \
+      __typeof__((a)+(b)) tmp__ = (i64)(a) + (i64)(b); \
       assertf((u64)tmp__ >= (u64)(a), "0x%llx + 0x%llx overflows", (u64)(a), (u64)(b));\
     })
     #define assert_no_sub_overflow(a, b) ({ \
-      __typeof__((a) + (b)) tmp__ = (i64)(a) - (i64)(b); \
+      __typeof__((a)+(b)) tmp__ = (i64)(a) - (i64)(b); \
       assertf((u64)tmp__ <= (u64)(a), "0x%llx - 0x%llx overflows", (u64)(a), (u64)(b));\
+    })
+    #define assert_no_mul_overflow(a, b) ({ \
+      UNUSED __typeof__((a)+(b)) tmp__ = (i64)(a) * (i64)(b); \
     })
   #endif
 
@@ -284,6 +367,7 @@ typedef double             f64;
   #define assertnotnull(a)             ({ a; }) /* note: (a) causes "unused" warnings */
   #define assert_no_add_overflow(a, b) ((void)0)
   #define assert_no_sub_overflow(a, b) ((void)0)
+  #define assert_no_mul_overflow(a, b) ((void)0)
 #endif /* !defined(NDEBUG) */
 
 // C0_SAFE -- checks enabled in "debug" and "safe" builds (but not in "fast" builds.)
@@ -405,68 +489,6 @@ static inline WARN_UNUSED_RESULT bool __must_check_unlikely(bool unlikely) {
 #endif
 
 //—————————————————————————————————————————————————————————————————————————————————————
-// numerical and bitwise macros
-
-// int c0_clz(ANYUINT x) counts leading zeroes in x,
-// starting at the most significant bit position.
-// If x is 0, the result is undefined.
-#define c0_clz(x) ( \
-  _Generic((x), \
-    i8:   __builtin_clz,   u8:    __builtin_clz, \
-    i16:  __builtin_clz,   u16:   __builtin_clz, \
-    i32:  __builtin_clz,   u32:   __builtin_clz, \
-    long: __builtin_clzl,  unsigned long: __builtin_clzl, \
-    long long:  __builtin_clzll, unsigned long long:   __builtin_clzll \
-  )(x) - ( 32 - MIN_X(4, (int)sizeof(__typeof__(x)))*8 ) \
-)
-
-// int c0_fls(ANYINT n) finds the Find Last Set bit (last = most-significant)
-// (Note that this is not the same as c0_ffs(x)-1).
-// e.g. c0_fls(0b1111111111111111) = 15
-// e.g. c0_fls(0b1000000000000000) = 15
-// e.g. c0_fls(0b1000000000000000) = 15
-// e.g. c0_fls(0b1000) = 3
-#define c0_fls(x)  ( (x) ? (int)(sizeof(__typeof__(x)) * 8) - c0_clz(x) : 0 )
-
-// int ILOG2(ANYINT n) calculates the log of base 2, rounding down.
-// e.g. ILOG2(15) = 3, ILOG2(16) = 4.
-// Result is undefined if n is 0.
-#define ILOG2(n) (c0_fls(n) - 1)
-
-// ANYINT FLOOR_POW2(ANYINT x) rounds down x to nearest power of two.
-// Returns 1 if x is 0.
-#define FLOOR_POW2(x) ({ \
-  __typeof__(x) xtmp__ = (x); \
-  FLOOR_POW2_X(xtmp__); \
-})
-// FLOOR_POW2_X is a constant-expression implementation of FLOOR_POW2.
-// When used as a constant expression, compilation fails if x is 0.
-#define FLOOR_POW2_X(x) ( \
-  ((x) <= 1) ? (__typeof__(x))1 : \
-  ((__typeof__(x))1 << ILOG2(x)) \
-)
-
-// ANYINT CEIL_POW2(ANYINT x) rounds up x to nearest power of two.
-// Returns 1 when x is 0.
-// Returns 0 when x is larger than the max pow2 for x's type (e.g. >0x80000000 for u32)
-#define CEIL_POW2(x) ({ \
-  __typeof__(x) xtmp__ = (x); \
-  CEIL_POW2_X(xtmp__); \
-})
-// CEIL_POW2_X is a constant-expression implementation of CEIL_POW2
-#define CEIL_POW2_X(x) ( \
-  ((x) <= (__typeof__(x))1) ? (__typeof__(x))1 : \
-  ( ( ((__typeof__(x))1 << \
-          ILOG2( ((x) - ((x) == (__typeof__(x))1) ) - (__typeof__(x))1) \
-      ) - (__typeof__(x))1 ) << 1 ) \
-  + (__typeof__(x))2 \
-)
-
-// bool IS_POW2(T x) returns true if x is a power-of-two value
-#define IS_POW2(x)    ({ __typeof__(x) xtmp__ = (x); IS_POW2_X(xtmp__); })
-#define IS_POW2_X(x)  ( ((x) & ((x) - 1)) == 0 )
-
-//—————————————————————————————————————————————————————————————————————————————————————
 // error codes
 
 typedef int err_t;
@@ -584,13 +606,20 @@ typedef struct memalloc* memalloc_t;
 // mem_alloc allocates a region of at least size bytes. Returns .p=NULL on failure.
 static mem_t mem_alloc(memalloc_t, usize size);
 
-// mem_alloc_zeroed allocates a region of at least size bytes, all initialized to zero.
+// mem_alloc_zeroed allocates a region of at least size bytes, initialized to zero.
 // Returns .p=NULL on failure.
 static mem_t mem_alloc_zeroed(memalloc_t, usize size);
 
-// mem_alloct allocates a zero-initialized element of type T.
+// mem_alloctv allocates a zero-initialized array of count elements of size elemsize
+void* nullable mem_allocv(memalloc_t, usize count, usize elemsize);
+
+// mem_alloct allocates a zero-initialized element of type T
 // T* nullable mem_alloct(memalloc_t, TYPE T)
-#define mem_alloct(ma, T)  ( (T*)mem_alloc_zeroed((ma), sizeof(T)).p )
+#define mem_alloct(ma, T)  ( (T* nullable)mem_alloc_zeroed((ma), sizeof(T)).p )
+
+// mem_alloctv allocates a zero-initialized array of count T elements
+// T* nullable mem_alloctv(memalloc_t, TYPE T, usize count)
+#define mem_alloctv(ma, T, count)  (T* nullable)mem_allocv((ma), (count), sizeof(T))
 
 // mem_resize grows or shrinks the size of an allocated memory region to newsize.
 // If resizing fails, false is returned and the region is unchanged; it is still valid.
@@ -603,18 +632,26 @@ static bool mem_resize(memalloc_t, mem_t* m, usize newsize);
 static void mem_free(memalloc_t, mem_t* m);
 static void mem_freex(memalloc_t, mem_t m); // does not zero m
 
+// mem_freev frees an array allocated with mem_allocv
+static void mem_freev(memalloc_t, void* array, usize count, usize elemsize);
+
 // mem_freet frees an element of type T
 // void mem_freet(memalloc_t, T* ptr)
 #define mem_freet(ma, ptr)  mem_free2((ma), (ptr), sizeof(*(ptr)))
+
+// mem_freetv frees an array allocated with mem_alloctv
+#define mem_freetv(ma, array, count)  mem_freev((ma), (array), (count), sizeof(*(array)))
 
 // utilities
 char* nullable mem_strdup(memalloc_t, slice_t src, usize extracap);
 
 // allocators
+#define MEMALLOC_STORAGE_ZEROED 1 // flag to memalloc_bump: storage is zeroed
 static memalloc_t memalloc_ctx(); // current contextual allocator
 static memalloc_t memalloc_ctx_set(memalloc_t); // returns previous allocator
 static memalloc_t memalloc_default(); // the default allocator
 static memalloc_t memalloc_null(); // an allocator that always fails
+memalloc_t memalloc_bump(void* storage, usize cap, int flags); // create bump allocator
 
 // memalloc_scope_set saves the current contextual allocator on the stack
 // and sets newma as the current contextual allocator.
@@ -678,7 +715,7 @@ inline static slice_t slice_cstr(const char* cstr) {
 // memory api impl
 
 struct memalloc {
-  bool (*f)(memalloc_t self, mem_t*, usize newsize, bool zeroed);
+  bool (*f)(void* self, mem_t*, usize newsize, bool zeroed);
 };
 
 extern struct memalloc _memalloc_default;
@@ -730,6 +767,11 @@ inline static void mem_free2(memalloc_t ma, void* p, usize size) {
   ma->f(ma, &m, 0, false);
 }
 
+inline static void mem_freev(memalloc_t ma, void* array, usize count, usize elemsize) {
+  assert_no_mul_overflow(count, elemsize);
+  mem_free2(ma, array, count * elemsize);
+}
+
 //—————————————————————————————————————————————————————————————————————————————————————
 // string functions
 
@@ -770,12 +812,25 @@ usize sfmtu64(char* buf, u64 v, u32 base);
 // str_t str_make(memalloc_t ma, slice_t src);
 
 //—————————————————————————————————————————————————————————————————————————————————————
-// misc
+// files
 
 err_t mmap_file(const char* filename, mem_t* data_out);
 err_t mmap_unmap(mem_t);
-err_t writefile(const char* filename, u32 mode, const void* data, usize size);
+err_t writefile(const char* filename, u32 mode, slice_t data);
 err_t fs_mkdirs(const char* path, usize pathlen, int perms);
 
+//—————————————————————————————————————————————————————————————————————————————————————
+// promise
+
+typedef struct promise {
+  pid_t pid;
+  err_t err;
+} promise_t;
+
+void promise_open(promise_t* p, pid_t pid);
+void promise_open_done(promise_t* p, err_t result_err);
+void promise_close(promise_t* p);
+err_t promise_await(promise_t* p);
+inline static bool promise_isresolved(const promise_t* p) { return p->pid == 0; }
 
 ASSUME_NONNULL_END

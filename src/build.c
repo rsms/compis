@@ -1,7 +1,5 @@
 #include "c0lib.h"
-#include "abuf.h"
 #include "path.h"
-#include "sha256.h"
 #include "compiler.h"
 
 #include <stdlib.h> // exit
@@ -16,149 +14,8 @@ const char* C0ROOT = ""; // Directory of c0 itself; dirname(argv[0])
 
 extern CoLLVMOS host_os; // defined in main.c
 
-extern int clang_main(int argc, const char** argv); // llvm/driver.cc
-extern int clang_compile(int argc, const char** argv);
-
-
-static err_t fmt_ofile(compiler_t* c, input_t* input, buf_t* ofile) {
-  u8 sha256[32];
-  usize needlen = strlen(c->objdir) + 1 + sizeof(sha256)*2 + 2; // objdir/sha256.o
-  for (;;) {
-    ofile->len = 0;
-    if (!buf_reserve(ofile, needlen))
-      return ErrNoMem;
-    abuf_t s = abuf_make(ofile->p, ofile->cap);
-    abuf_str(&s, c->objdir);
-    abuf_c(&s, PATH_SEPARATOR);
-    #if 1
-      // compute SHA-256 checksum of input file
-      sha256_data(sha256, input->data.p, input->data.size);
-      abuf_reprhex(&s, sha256, sizeof(sha256), /*spaced*/false);
-    #else
-      abuf_str(&s, input->name);
-    #endif
-    abuf_str(&s, ".o");
-    usize n = abuf_terminate(&s);
-    if (n < needlen) {
-      ofile->len = n + 1;
-      return 0;
-    }
-    needlen = n+1;
-  }
-}
-
-// ".c0/d957c9d36b0e5dc07b9284b9245a22c0d81cbbbeb2d037f638095adedf20174b.o"
-
-
-static err_t compile_c_to_o(compiler_t* c, const char* cfile, const char* ofile) {
-  dlog("cc %s -> %s", cfile, ofile);
-  const char* argv[] = {
-    "c0", "-target", c->triple,
-    "-std=c17",
-    "-O2",
-    "-g", "-feliminate-unused-debug-types",
-    "-Wall",
-    "-Wcovered-switch-default",
-    "-Werror=implicit-function-declaration",
-    "-Werror=incompatible-pointer-types",
-    "-Werror=format-insufficient-args",
-    "-c", cfile, "-o", ofile,
-  };
-  int status = clang_compile(countof(argv), argv);
-  return status == 0 ? 0 : ErrInvalid;
-}
-
-
-static err_t compile_co_to_c(compiler_t* c, input_t* input, const char* cfile) {
-  // format intermediate C filename cfile
-  dlog("[compile_co_to_c] cfile: %s", cfile);
-  u32 errcount = c->errcount;
-
-  // parse
-  dlog("——————————————— parse ———————————————");
-  parser_t parser;
-  parser_init(&parser, c);
-  memalloc_t ast_ma = c->ma;
-  node_t* unit = parser_parse(&parser, ast_ma, input);
-  dlog("——————————————— end parse ———————————————");
-
-  // format AST
-  buf_t buf = buf_make(c->ma);
-  err_t err = node_repr(&buf, unit);
-  if (!err)
-    log("AST:\n%.*s\n", (int)buf.len, buf.chars);
-
-  node_free(ast_ma, unit);
-  parser_dispose(&parser);
-
-  if (err)
-    return err;
-
-  if (c->errcount > errcount)
-    return ErrCanceled;
-
-  return ErrCanceled; // XXX
-  // // pretend we parsed the file and generated C code
-  // dlog("genc %s -> %s", input->name, cfile);
-  // fs_mkdirs(cfile, path_dirlen(cfile, strlen(cfile)), 0770);
-  // return writefile(cfile, 0660, input->data.p, input->data.size);
-}
-
-
-static err_t compile_source_file(compiler_t* c, const char* infile, buf_t* ofile) {
-  err_t err;
-  dlog("compile_source_file(%s)", infile);
-
-  if (*infile == 0)
-    return ErrInvalid;
-
-  input_t* input = input_create(c->ma, infile);
-  if (input == NULL)
-    return ErrNoMem;
-
-  if ((err = input_open(input)))
-    goto end;
-
-  // format output filename ofile
-  if UNLIKELY(err = fmt_ofile(c, input, ofile))
-    goto end;
-  dlog("ofile: %s", ofile->chars);
-
-  // C source file path
-  buf_t cfile = buf_make(c->ma);
-
-  // find input extension
-  const char* input_ext = "";
-  isize dotpos = slastindexof(input->name, '.');
-  if (dotpos > -1)
-    input_ext = &input->name[dotpos + 1];
-
-  // do different things depending on the filename extension of strfile
-  if (strcmp(input_ext, "c") == 0) {
-    // C (cfile == input->name)
-    if (!buf_append(&cfile, input->name, strlen(input->name) + 1))
-      err = ErrNoMem;
-  } else if (strcmp(input_ext, "co") == 0) {
-    // co (co => cfile)
-    if (!buf_append(&cfile, ofile->p, ofile->len)) {
-      err = ErrNoMem;
-    } else {
-      cfile.chars[cfile.len - 2] = 'c'; // /foo/bar.o\0 -> /foo/bar.c\0
-      err = compile_co_to_c(c, input, cfile.chars);
-    }
-  } else {
-    log("%s: unrecognized file type", input->name);
-    err = ErrNotSupported;
-  }
-
-  // compile C -> object
-  if (!err)
-    err = compile_c_to_o(c, cfile.chars, ofile->chars);
-
-end:
-  input_free(input, c->ma);
-  return err;
-}
+// cli options
+static const char* opt_outfile = "a.out";
 
 
 static void diaghandler(const diag_t* d, void* nullable userdata) {
@@ -166,6 +23,24 @@ static void diaghandler(const diag_t* d, void* nullable userdata) {
   if (*d->srclines)
     log("%s", d->srclines);
 }
+
+
+static input_t* open_input(memalloc_t ma, const char* filename) {
+  input_t* input = input_create(ma, filename);
+  if (input == NULL)
+    panic("out of memory");
+  err_t err;
+  if ((err = input_open(input)))
+    errx(1, "%s: %s", filename, err_str(err));
+  return input;
+}
+
+
+typedef struct {
+  input_t*  input;
+  buf_t     ofile;
+  promise_t promise;
+} buildfile_t;
 
 
 static err_t build_exe(const char** srcfilev, usize filecount) {
@@ -180,45 +55,59 @@ static err_t build_exe(const char** srcfilev, usize filecount) {
   //c.triple = "aarch64-linux-unknown";
   dlog("compiler.triple: %s", c.triple);
 
-  // allocate ofiles
-  mem_t ofilesmem = {0};
-  array_t ofilesarray = array_make(c.ma);
-  buf_t* ofilev = array_alloc(buf_t, &ofilesarray, filecount);
-  if (ofilev == NULL) {
-    err = ErrNoMem;
-    goto end;
+  // fv is an array of files we are building
+  buildfile_t* fv = mem_alloctv(c.ma, buildfile_t, filecount);
+  if (!fv) {
+    compiler_dispose(&c);
+    return ErrNoMem;
   }
-  ofilesmem = mem_alloc(c.ma, filecount * sizeof(void*));
-  if (ofilesmem.p == NULL) {
-    err = ErrNoMem;
-    goto end;
+  for (usize i = 0; i < filecount; i++) {
+    fv[i].input = open_input(c.ma, srcfilev[i]);
+    buf_init(&fv[i].ofile, c.ma);
   }
-  const char** ofiles = ofilesmem.p;
 
   // create object dir
-  fs_mkdirs(c.objdir, strlen(c.objdir), 0770);
+  if (( err = fs_mkdirs(c.objdir, strlen(c.objdir), 0770) ))
+    goto end;
 
   // compile object files
   for (usize i = 0; i < filecount; i++) {
-    buf_init(&ofilev[i], c.ma);
-    if (( err = compile_source_file(&c, srcfilev[i], &ofilev[i]) ))
-      goto end;
-    ofiles[i] = ofilev[i].chars;
+    if (( err = compiler_compile(&c, &fv[i].promise, fv[i].input, &fv[i].ofile) ))
+      break;
   }
+
+  // wait for all compiler processes
+  for (usize i = 0; i < filecount; i++) {
+    if (!promise_isresolved(&fv[i].promise)) {
+      err_t err1 = promise_await(&fv[i].promise);
+      if (err1 && !err) err = err1;
+    }
+  }
+
+  if (err)
+    goto end;
 
   // link executable
   CoLLVMLink link = {
     .target_triple = c.triple,
-    .outfile = "out/hello",
+    .outfile = opt_outfile,
     .infilec = filecount,
-    .infilev = ofiles,
   };
-  err = llvm_link(&link);
+  // (linker wants an array of cstring pointers)
+  link.infilev = mem_alloctv(c.ma, const char*, filecount);
+  if (!link.infilev) {
+    err = ErrNoMem;
+  } else {
+    for (usize i = 0; i < filecount; i++)
+      link.infilev[i] = fv[i].ofile.chars;
+    err = llvm_link(&link);
+    mem_freetv(c.ma, link.infilev, filecount);
+  }
 
 end:
-  if (ofilesmem.p != NULL)
-    mem_free(c.ma, &ofilesmem);
-  array_dispose(buf_t, &ofilesarray);
+  for (usize i = 0; i < filecount; i++)
+    input_free(fv[i].input, c.ma);
+  mem_freetv(c.ma, fv, filecount);
   compiler_dispose(&c);
   return err;
 }
@@ -228,9 +117,11 @@ static void usage(const char* prog) {
   printf(
     "usage: c0 %s [options] <source> ...\n"
     "options:\n"
-    "  -h  Print help on stdout and exit\n"
+    "  -o <file>  Write executable to <file> instead of %s\n"
+    "  -h         Print help on stdout and exit\n"
     "",
-    prog);
+    prog,
+    opt_outfile);
 }
 
 
@@ -238,9 +129,10 @@ static int parse_cli_options(int argc, const char** argv) {
   extern char* optarg; // global state in libc... coolcoolcool
   extern int optind, optopt;
   int nerrs = 0;
-  for (int c; (c = getopt(argc, (char*const*)argv, ":hp")) != -1; ) switch (c) {
+  for (int c; (c = getopt(argc, (char*const*)argv, "o:h")) != -1; ) switch (c) {
+    case 'o': opt_outfile = optarg; break;
     case 'h': usage(argv[0]); exit(0);
-    case ':': warnx("option -%c requires a value", optopt); nerrs++; break;
+    case ':': warnx("missing value for -%c", optopt); nerrs++; break;
     case '?': warnx("unrecognized option -%c", optopt); nerrs++; break;
   }
   return nerrs > 0 ? -1 : optind;
@@ -252,14 +144,13 @@ int build_main(int argc, const char** argv) {
   char* C0ROOT = LLVMGetMainExecutable(argv[0]);
   C0ROOT[path_dirlen(C0ROOT, strlen(C0ROOT))] = 0;
 
-  int argi = parse_cli_options(argc, argv);
-  if (argi < 0)
+  int numflags = parse_cli_options(argc, argv);
+  if (numflags < 0)
     return 1;
 
-  if (argi == argc)
+  if (numflags == argc)
     errx(1, "missing input source");
 
-  int numflags = argc - argi;
   argv += numflags;
   argc -= numflags;
 

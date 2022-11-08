@@ -167,14 +167,9 @@ void abuf_reprhex(abuf_t* s, const void* srcp, usize len, bool spaced) {
 
 
 void abuf_fmtv(abuf_t* s, const char* fmt, va_list ap) {
-  #if defined(RSM_NO_LIBC) && !defined(__wasm__)
-    dlog("abuf_fmtv not implemented");
-    int n = vsnprintf(tmpbuf, sizeof(tmpbuf), format, ap);
-  #else
-    int n = vsnprintf(s->p, abuf_avail(s), fmt, ap);
-    s->len += (usize)n;
-    s->p = MIN(s->p + n, s->lastp);
-  #endif
+  int n = vsnprintf(s->p, abuf_avail(s), fmt, ap);
+  s->len += (usize)n;
+  s->p = MIN(s->p + n, s->lastp);
 }
 
 

@@ -13,6 +13,9 @@ input_t* nullable input_create(memalloc_t ma, const char* filename) {
   memset(input, 0, sizeof(*input));
   memcpy(input->name, filename, filename_len);
   input->name[filename_len] = 0;
+
+  input->type = filetype_guess(input->name);
+
   return input;
 }
 
@@ -43,4 +46,20 @@ void input_close(input_t* input) {
     input->ismmap = false;
   }
   memset(&input->data, 0, sizeof(input->data));
+}
+
+
+filetype_t filetype_guess(const char* filename) {
+  isize dotpos = slastindexof(filename, '.');
+  if (dotpos > -1) {
+    const char* ext = &filename[dotpos + 1];
+    usize len = strlen(ext);
+    if (len == 1 && (*ext == 'o' || *ext == 'O'))
+      return FILE_O;
+    if (len == 1 && (*ext == 'c' || *ext == 'C'))
+      return FILE_C;
+    if (strcmp(ext, "co") == 0 || strcmp(ext, "CO") || strcmp(ext, "Co"))
+      return FILE_CO;
+  }
+  return FILE_OTHER;
 }

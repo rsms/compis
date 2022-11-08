@@ -6,6 +6,7 @@
 .DS_Store
 .clang_complete
 .c0
+a.out
 
 /_*
 /deps

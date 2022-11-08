@@ -2,24 +2,23 @@
 #include "array.h"
 
 
-void array_init(array_t* a, memalloc_t ma) {
+void array_init(array_t* a) {
   a->ptr = NULL;
   a->cap = 0;
   a->len = 0;
-  a->ma = ma;
 }
 
 
-void _array_dispose(array_t* a, usize elemsize) {
+void _array_dispose(array_t* a, memalloc_t ma, usize elemsize) {
   mem_t m = { .p = a->ptr, .size = a->cap * elemsize };
-  mem_free(a->ma, &m);
+  mem_free(ma, &m);
   a->ptr = NULL;
   a->cap = 0;
   a->len = 0;
 }
 
 
-bool _array_grow(array_t* a, usize elemsize, usize extracap) {
+bool _array_grow(array_t* a, memalloc_t ma, usize elemsize, usize extracap) {
   usize newcap;
   if (a->cap == 0) {
     newcap = MAX(extracap, 32u);
@@ -33,7 +32,7 @@ bool _array_grow(array_t* a, usize elemsize, usize extracap) {
     return false;
 
   mem_t m = { .p = a->ptr, .size = a->cap * elemsize };
-  if (!mem_resize(a->ma, &m, newsize))
+  if (!mem_resize(ma, &m, newsize))
     return false;
 
   a->ptr = m.p;
@@ -43,16 +42,16 @@ bool _array_grow(array_t* a, usize elemsize, usize extracap) {
 }
 
 
-bool _array_reserve(array_t* a, usize elemsize, usize minavail) {
+bool _array_reserve(array_t* a, memalloc_t ma, usize elemsize, usize minavail) {
   usize newlen;
   if (check_add_overflow(a->len, minavail, &newlen))
     return false;
-  return newlen <= a->cap || _array_grow(a, elemsize, newlen - a->cap);
+  return newlen <= a->cap || _array_grow(a, ma, elemsize, newlen - a->cap);
 }
 
 
-void* nullable _array_alloc(array_t* a, usize elemsize, usize len) {
-  if UNLIKELY(!_array_reserve(a, elemsize, len))
+void* nullable _array_alloc(array_t* a, memalloc_t ma, usize elemsize, usize len) {
+  if UNLIKELY(!_array_reserve(a, ma, elemsize, len))
     return NULL;
   void* p = a->ptr + a->len*elemsize;
   a->len += len;

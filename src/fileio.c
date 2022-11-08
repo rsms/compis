@@ -36,20 +36,22 @@ err_t mmap_unmap(mem_t m) {
 }
 
 
-err_t writefile(const char* filename, u32 mode, const void* data, usize size) {
-  assert(size <= ISIZE_MAX);
+// err_t writefile(const char* filename, u32 mode, const void* data, usize size) {
+err_t writefile(const char* filename, u32 mode, slice_t data) {
+  if (data.len > (usize)ISIZE_MAX)
+    return ErrOverflow;
   int fd = open(filename, O_WRONLY|O_CREAT|O_TRUNC, 0777);
   if (fd < 0)
     return err_errno();
   err_t err = 0;
-  while (size) {
-    isize n = write(fd, data, size);
-    if (n < (isize)size) {
+  while (data.len) {
+    isize n = write(fd, data.p, data.len);
+    if (n < (isize)data.len) {
       err = n < 0 ? err_errno() : ErrCanceled;
       break;
     }
-    data += n;
-    size -= (usize)n;
+    data.p += n;
+    data.len -= (usize)n;
   }
   close(fd);
   return err;

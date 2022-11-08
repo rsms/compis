@@ -3,8 +3,7 @@
 #include "abuf.h"
 
 
-#define DEBUG_SCANNING
-//#define PRODUCE_COMMENTS // produce TCOMMENT tokens instead of ignoring them
+// #define DEBUG_SCANNING
 
 
 static void scan0(scanner_t* s);
@@ -13,13 +12,12 @@ static void scan0(scanner_t* s);
 void scanner_init(scanner_t* s, compiler_t* c) {
   memset(s, 0, sizeof(*s));
   s->compiler = c;
-  indentarray_init(&s->indentstack, c->ma);
   buf_init(&s->litbuf, c->ma);
 }
 
 
 void scanner_dispose(scanner_t* s) {
-  indentarray_dispose(&s->indentstack);
+  indentarray_dispose(&s->indentstack, s->compiler->ma);
   buf_dispose(&s->litbuf);
 }
 
@@ -75,24 +73,20 @@ static void newline(scanner_t* s) {
 
 
 static void indent_increase(scanner_t* s) {
-  // dlog("[indent_increase] %u -> %u (%s)",
-  //   s->indent.len, s->indentdst.len, s->indentdst.isblock ? "block" : "decorative");
-  if (!indentarray_push(&s->indentstack, s->indent))
+  // dlog("[indent_increase] %u -> %u", s->indent.len, s->indentdst.len);
+  if (!indentarray_push(&s->indentstack, s->compiler->ma, s->indent))
     return error(s, "out of memory");
   s->indent = s->indentdst;
 }
 
 
-static bool indent_decrease(scanner_t* s) {
-  // dlog("[indent_decrease] %u -> %u (%s)",
-  //   s->indent.len, s->indentdst.len, s->indent.isblock ? "block" : "decorative");
-  bool isblock = s->indent.isblock;
+static void indent_decrease(scanner_t* s) {
+  // dlog("[indent_decrease] %u -> %u", s->indent.len, s->indentdst.len);
   if (s->indentstack.len == 0) {
     s->indent = s->indentdst;
-    return isblock;
+  } else {
+    s->indent = indentarray_pop(&s->indentstack);
   }
-  s->indent = indentarray_pop(&s->indentstack);
-  return isblock;
 }
 
 
@@ -277,9 +271,10 @@ static void eof(scanner_t* s) {
   s->tok.t = TEOF;
   s->indentdst.len = 0;
 
-  if (s->indent.len > 0 && indent_decrease(s)) {
+  if (s->indent.len > 0) {
     // decrease indentation to 0 if source ends at indentation
-    s->insertsemi = false;
+    indent_decrease(s);
+    s->insertsemi = true;
     s->tok.t = TDEDENT;
   } else if (s->insertsemi) {
     s->insertsemi = false;
@@ -408,7 +403,8 @@ static void scan0(scanner_t* s) {
   s->litlenoffs = 0;
 
   // should we unwind >1-level indent?
-  if (s->indent.len > s->indentdst.len && indent_decrease(s)) {
+  if (s->indent.len > s->indentdst.len) {
+    indent_decrease(s);
     s->tok.loc.col = (u32)(uintptr)(s->tokstart - s->linestart) + 1;
     s->tok.t = TDEDENT;
     return;
@@ -433,7 +429,6 @@ static void scan0(scanner_t* s) {
   // should we insert an implicit semicolon or did indentation change?
   if (is_linestart) {
     indent_t indentdst = {
-      .isblock = true,
       .len = (u32)(uintptr)(s->inp - s->linestart),
     };
     s->tokstart = s->linestart;
@@ -441,14 +436,12 @@ static void scan0(scanner_t* s) {
     if (indentdst.len > s->indent.len && !is_comment_start(s)) {
       s->indentdst = indentdst;
       indent_increase(s);
-      //if (indentdst.isblock) {
       indent_check_mixed(s);
       s->insertsemi = false;
       s->tok.t = TINDENT;
       s->tok.loc.line = s->lineno;
       s->tok.loc.col = (u32)(uintptr)(s->inp - s->linestart) + 1;
       return;
-      //}
     }
 
     if (s->insertsemi) {
@@ -462,13 +455,12 @@ static void scan0(scanner_t* s) {
     indent_check_mixed(s);
     if (indentdst.len < s->indent.len) {
       s->indentdst = indentdst;
-      if (indent_decrease(s)) {
-        s->insertsemi = false;
-        s->tok.t = TDEDENT;
-        s->tok.loc.line = s->lineno;
-        s->tok.loc.col = 1;
-        return;
-      }
+      indent_decrease(s);
+      s->insertsemi = true; // produce semicolon after block ends
+      s->tok.t = TDEDENT;
+      s->tok.loc.line = s->lineno;
+      s->tok.loc.col = 1;
+      return;
     }
   }
 
@@ -488,7 +480,7 @@ void scanner_next(scanner_t* s) {
     const char* srcfile = s->tok.loc.input->name;
     const char* name = tok_name(s->tok.t);
     slice_t lit = scanner_lit(s);
-    log("scan> %s:%u:%u\t%-12s \"%.*s\"\t%llu\t0x%llx",
+    log("scan>  %s:%u:%u\t%-12s \"%.*s\"\t%llu\t0x%llx",
       srcfile, line, col, name, (int)lit.len, lit.chars, s->litint, s->litint);
   #endif
 }

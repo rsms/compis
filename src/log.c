@@ -5,15 +5,19 @@
 #include <unistd.h> // isatty, close
 
 
+static bool log_iscolor() {
+  static int colors = 2;
+  if (colors == 2)
+    colors = !!isatty(2);
+  return colors;
+}
+
+
 void _dlog(const char* file, int line, const char* fmt, ...) {
   FILE* fp = stderr;
   flockfile(fp);
 
-  static int colors = 2;
-  if (colors == 2)
-    colors = !!isatty(2);
-
-  if (colors) {
+  if (log_iscolor()) {
     const char* str = "\e[1;30m▍\e[0m";
     fwrite(str, strlen(str), 1, fp);
   } else {
@@ -26,7 +30,7 @@ void _dlog(const char* file, int line, const char* fmt, ...) {
   vfprintf(fp, fmt, ap);
   va_end(ap);
 
-  if (colors) {
+  if (log_iscolor()) {
     fprintf(fp, " \e[2m%s:%d\e[0m\n", file, line);
   } else {
     fprintf(fp, " (%s:%d)\n", file, line);

@@ -21,7 +21,7 @@
 // ——————————————————————————————————————————————————————————————————————————————————
 // null allocator
 
-static bool memalloc_null_impl(memalloc_t _, mem_t* m, usize size, bool _1) {
+static bool memalloc_null_impl(void* self, mem_t* m, usize size, bool _1) {
   if (m->p != NULL) {
     if (size == 0) {
       safefail("attempt to free memory %p to memalloc_null", m->p);
@@ -38,10 +38,95 @@ struct memalloc _memalloc_null = {
 
 
 // ——————————————————————————————————————————————————————————————————————————————————
+// bump allocator
+
+typedef struct {
+  struct memalloc ma;
+  void* end; // end of backing memory
+  void* ptr; // next allocation
+  int   flags;
+} bump_allocator_t;
+
+
+static bool bump_alloc_fin(bump_allocator_t* a, mem_t* m, usize size, bool zeroed) {
+  m->p = a->ptr;
+  m->size = size;
+  a->ptr += size;
+  if (zeroed && !(a->flags & MEMALLOC_STORAGE_ZEROED))
+    memset(m->p, 0, size);
+  return true;
+}
+
+
+static bool bump_alloc(bump_allocator_t* a, mem_t* m, usize size, bool zeroed) {
+  size = ALIGN2(size, sizeof(void*));
+  if LIKELY(a->ptr + size < a->end)
+    return bump_alloc_fin(a, m, size, zeroed);
+  *m = (mem_t){0};
+  return false;
+}
+
+
+static bool bump_resize(bump_allocator_t* a, mem_t* m, usize size, bool zeroed) {
+  size = ALIGN2(size, sizeof(void*));
+  if (size <= m->size) {
+    m->size = size;
+    return true;
+  }
+  if (a->ptr == m->p + m->size) {
+    // grow tail
+    void* newptr = m->p + size;
+    if UNLIKELY(newptr >= a->end)
+      return false;
+    a->ptr = newptr;
+    if (zeroed && !(a->flags & MEMALLOC_STORAGE_ZEROED))
+      memset(m->p + m->size, 0, size - m->size);
+    m->size = size;
+    return true;
+  }
+  // new allocation
+  if UNLIKELY(a->ptr + size >= a->end)
+    return false;
+  return bump_alloc_fin(a, m, size, zeroed);
+}
+
+
+static bool bump_free(bump_allocator_t* a, mem_t* m, usize size, bool zeroed) {
+  // free tail only
+  if (a->ptr == m->p + m->size)
+    a->ptr -= m->size;
+  *m = (mem_t){0};
+  return true;
+}
+
+
+static bool _memalloc_bump_impl(void* self, mem_t* m, usize size, bool zeroed) {
+  bump_allocator_t* a = (bump_allocator_t*)self;
+  assertnotnull(m);
+  if (m->p == NULL)
+    return bump_alloc(a, m, size, zeroed);
+  if (size != 0)
+    return bump_resize(a, m, size, zeroed);
+  return bump_free(a, m, size, zeroed);
+}
+
+
+memalloc_t memalloc_bump(void* storage, usize cap, int flags) {
+  if (cap < sizeof(bump_allocator_t))
+    return &_memalloc_null;
+  bump_allocator_t* ma = storage;
+  ma->ma.f = _memalloc_bump_impl;
+  ma->end = storage + cap;
+  ma->ptr = storage + sizeof(bump_allocator_t);
+  ma->flags = flags;
+  return (memalloc_t)ma;
+}
+
+
+// ——————————————————————————————————————————————————————————————————————————————————
 // libc allocator
 
-
-static bool _memalloc_libc_impl(memalloc_t _, mem_t* m, usize size, bool zeroed) {
+static bool _memalloc_libc_impl(void* self, mem_t* m, usize size, bool zeroed) {
   assertnotnull(m);
 
   // allocate
@@ -121,4 +206,11 @@ char* nullable mem_strdup(memalloc_t ma, slice_t src, usize extracap) {
   memcpy(dst, src.p, src.len);
   dst[src.len] = 0;
   return dst;
+}
+
+
+void* nullable mem_allocv(memalloc_t ma, usize count, usize size) {
+  if (check_mul_overflow(count, size, &size))
+    return NULL;
+  return mem_alloc_zeroed(ma, size).p;
 }

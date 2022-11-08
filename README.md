@@ -7,12 +7,13 @@ First time setup:
 Build & test:
 
     ./build.sh -debug
-    build/debug/c0 build examples/hello.c
-    build/hello
+    out/debug/c0 build -o out/hello examples/hello.c examples/foo.co
+    out/hello
 
 Build & run in continuous mode:
 
-    ./build.sh -debug -w -run='build/debug/c0 build examples/hello.c && build/hello'
+    ./build.sh -wf=examples/hello.c \
+      -run='out/debug/c0 build examples/hello.c examples/foo.co && ./a.out'
 
 
 ## LLVM

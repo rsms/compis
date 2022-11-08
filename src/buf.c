@@ -84,3 +84,33 @@ bool buf_append(buf_t* b, const void* src, usize len) {
   return true;
 }
 
+
+bool buf_print(buf_t* b, const char* cstr) {
+  return buf_append(b, cstr, strlen(cstr));
+}
+
+
+bool buf_vprintf(buf_t* b, const char* fmt, va_list ap) {
+  usize needavail = strlen(fmt)*2;
+  if (needavail == 0)
+    return true;
+  for (;;) {
+    if (needavail > INT_MAX || !buf_reserve(b, needavail))
+      return false;
+    int n = vsnprintf(&b->p[b->len], buf_avail(b), fmt, ap);
+    if (n < (int)needavail) {
+      b->len += (usize)n;
+      return true;
+    }
+    needavail = (usize)n + 1;
+  }
+}
+
+
+bool buf_printf(buf_t* b, const char* fmt, ...) {
+  va_list ap;
+  va_start(ap, fmt);
+  bool ok = buf_vprintf(b, fmt, ap);
+  va_end(ap);
+  return ok;
+}

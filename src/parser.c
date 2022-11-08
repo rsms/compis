@@ -4,9 +4,11 @@
 
 #include <stdlib.h>
 
-#define LOG_PRATT(fmt, args...) dlog("[pratt] " fmt, ##args)
+#define LOG_PRATT(fmt, args...) log("parse> " fmt, ##args)
 #ifndef LOG_PRATT
   #define LOG_PRATT(args...) ((void)0)
+#else
+  #define LOG_PRATT_ENABLED
 #endif
 
 typedef enum {
@@ -32,18 +34,27 @@ typedef enum {
 //#define PPARAMS parser_t* p, precedence_t prec
 #define PARGS   p, prec
 
-typedef node_t*(*prefixparselet_t)(parser_t* p, precedence_t prec);
-typedef node_t*(*infixparselet_t)(parser_t* p, precedence_t prec, node_t* left);
+typedef node_t*(*prefix_expr_parselet_t)(parser_t* p, precedence_t prec);
+typedef node_t*(*infix_expr_parselet_t)(parser_t* p, precedence_t prec, node_t* left);
+
+typedef type_t*(*prefix_type_parselet_t)(parser_t* p, precedence_t prec);
+typedef type_t*(*infix_type_parselet_t)(parser_t* p, precedence_t prec, type_t* left);
 
 typedef struct {
-  prefixparselet_t nullable prefix;
-  infixparselet_t  nullable infix;
-  precedence_t              prec;
-} parselet_t;
+  prefix_expr_parselet_t nullable prefix;
+  infix_expr_parselet_t  nullable infix;
+  precedence_t                    prec;
+} expr_parselet_t;
 
+typedef struct {
+  prefix_type_parselet_t nullable prefix;
+  infix_type_parselet_t  nullable infix;
+  precedence_t                    prec;
+} type_parselet_t;
 
 // parselet table (defined towards end of file)
-static const parselet_t expr_parsetab[TOK_COUNT];
+static const expr_parselet_t expr_parsetab[TOK_COUNT];
+static const type_parselet_t type_parsetab[TOK_COUNT];
 
 // keyword table
 static const struct { const char* s; tok_t t; } keywordtab[] = {
@@ -55,7 +66,7 @@ static const struct { const char* s; tok_t t; } keywordtab[] = {
 };
 
 // last_resort_node is returned by mknode when memory allocation fails
-node_t last_resort_node = { .kind = NBAD };
+node_t* last_resort_node = &(node_t){ .kind = NODE_BAD };
 
 // last_resort_cstr is returned by mkcstr when memory allocation fails
 static char last_resort_cstr[1] = {0};
@@ -73,6 +84,44 @@ static u32 u64log10(u64 u) {
   }
   return w;
 }
+
+
+inline static tok_t currtok(parser_t* p) {
+  return p->scanner.tok.t;
+}
+
+
+#ifdef LOG_PRATT_ENABLED
+  static void log_pratt(parser_t* p, const char* msg) {
+    log("parse> %s:%u:%u\t%-12s %s",
+      p->scanner.tok.loc.input->name,
+      p->scanner.tok.loc.line,
+      p->scanner.tok.loc.col,
+      tok_name(currtok(p)),
+      msg);
+  }
+  static void log_pratt_infix(
+    parser_t* p, const char* class,
+    const void* nullable parselet_infix, precedence_t parselet_prec,
+    precedence_t ctx_prec)
+  {
+    char buf[128];
+    abuf_t a = abuf_make(buf, sizeof(buf));
+    abuf_fmt(&a, "infix %s ", class);
+    if (parselet_infix && parselet_prec >= ctx_prec) {
+      abuf_str(&a, "match");
+    } else if (parselet_infix) {
+      abuf_fmt(&a, "(skip; prec(%d) < ctx_prec(%d))", parselet_prec, ctx_prec);
+    } else {
+      abuf_str(&a, "(no match)");
+    }
+    abuf_terminate(&a);
+    return log_pratt(p, buf);
+  }
+#else
+  #define log_pratt_infix_skip(...) ((void)0)
+  #define log_pratt(...) ((void)0)
+#endif
 
 
 static void maybe_keyword(parser_t* p) {
@@ -96,11 +145,6 @@ static void maybe_keyword(parser_t* p) {
       low = mid + 1;
     }
   }
-}
-
-
-inline static tok_t currtok(parser_t* p) {
-  return p->scanner.tok.t;
 }
 
 
@@ -137,7 +181,7 @@ static void fastforward_semi(parser_t* p) {
 srcrange_t node_srcrange(node_t* n) {
   srcrange_t r = { .start = n->loc, .focus = n->loc };
   switch (n->kind) {
-    case NINTLIT:
+    case EXPR_INTLIT:
       r.end.line = r.focus.line;
       r.end.col = r.focus.col + u64log10(n->intval);
       break;
@@ -208,129 +252,135 @@ static char* mkcstr(parser_t* p, slice_t src) {
 }
 
 
+static void out_of_mem(parser_t* p) {
+  error(p, NULL, "out of memory");
+  // end scanner, making sure we don't keep going
+  p->scanner.inp = p->scanner.inend;
+}
+
+
 static node_t* mknode(parser_t* p, nodekind_t kind) {
   node_t* n = mem_alloct(p->ast_ma, node_t);
-  if UNLIKELY(n == NULL) {
-    error(p, NULL, "out of memory");
-    // end scanner, making sure we don't keep going
-    p->scanner.inp = p->scanner.inend;
-    return &last_resort_node;
-  }
+  if UNLIKELY(n == NULL)
+    return out_of_mem(p), last_resort_node;
   n->kind = kind;
   n->loc = p->scanner.tok.loc;
   return n;
 }
 
 
-static node_t* mkbad(parser_t* p) { return mknode(p, NBAD); }
-
-
-// returns child
-static node_t* addchild(node_t* restrict parent, node_t* restrict child) {
-  assert(parent != child);
-  if (parent->children.tail) {
-    parent->children.tail->next = child;
-  } else {
-    parent->children.head = child;
-  }
-  parent->children.tail = child;
-  assert(child->next == NULL);
-  return child;
+static type_t* mktype(parser_t* p, typekind_t kind) {
+  assertf(
+    kind != TYPE_VOID &&
+    kind != TYPE_BOOL &&
+    kind != TYPE_I8 &&
+    kind != TYPE_I16 &&
+    kind != TYPE_I32 &&
+    kind != TYPE_I64 &&
+    kind != TYPE_I8 &&
+    kind != TYPE_I16 &&
+    kind != TYPE_I32 &&
+    kind != TYPE_I64 &&
+    kind != TYPE_F32 &&
+    kind != TYPE_F64 ,
+    "use type_ constant instead"
+  );
+  type_t* t = mem_alloct(p->ast_ma, type_t);
+  if UNLIKELY(t == NULL)
+    return out_of_mem(p), type_void;
+  t->kind = kind;
+  t->loc = p->scanner.tok.loc;
+  return t;
 }
 
 
-// static node_t* setchildren1(node_t* restrict parent, node_t* restrict child) {
-//   assert(parent != child);
-//   parent->children.head = child;
-//   parent->children.tail = child;
-//   assert(child->next == NULL);
-//   return parent;
-// }
+static node_t* mkbad(parser_t* p) {
+  return mknode(p, NODE_BAD);
+}
 
 
-// static node_t* setchildren2(
-//   node_t* restrict parent,
-//   node_t* restrict child1,
-//   node_t* restrict nullable child2)
-// {
-//   assert(parent != child1);
-//   assert(parent != child2);
-//   parent->children.head = child1;
-//   parent->children.tail = child2 ? child2 : child1;
-//   child1->next = child2;
-//   assert(child2 == NULL || child2->next == NULL);
-//   return parent;
-// }
+static void push_child(parser_t* p, node_t* restrict parent, node_t* restrict child) {
+  assert(parent != child);
+  if UNLIKELY(!nodearray_push(&parent->children, p->ast_ma, child))
+    out_of_mem(p);
+}
 
 
 static node_t* expr(parser_t* p, precedence_t prec) {
   tok_t tok = currtok(p);
-  const parselet_t* parselet = &expr_parsetab[tok];
-
+  const expr_parselet_t* parselet = &expr_parsetab[tok];
+  log_pratt(p, "prefix expr");
   if UNLIKELY(!parselet->prefix) {
-    LOG_PRATT("PREFIX %s not found", tok_name(tok));
-    unexpected(p, "");
+    unexpected(p, "where an expression is expected");
     fastforward_semi(p);
     return mkbad(p);
   }
-
-  LOG_PRATT("PREFIX %s", tok_name(tok));
-
-  // save state for assertion after prefix() call
-  UNUSED const void* p1 = p->scanner.inp;
-  UNUSED bool insertsemi = p->scanner.insertsemi;
-
   node_t* n = parselet->prefix(PARGS);
-
-  assertf(
-    insertsemi != p->scanner.insertsemi ||
-    (uintptr)p1 < (uintptr)p->scanner.inp,
-    "parselet did not advance scanner");
-
-  // call any infix parselets
   for (;;) {
     tok = currtok(p);
     parselet = &expr_parsetab[tok];
-    if (parselet->infix == NULL || parselet->prec < prec) {
-      if (parselet->infix) {
-        LOG_PRATT("INFIX %s skip; expr_parsetab[%u].prec < caller_prec (%d < %d)",
-          tok_name(tok), tok, parselet->prec, prec);
-      } else if (tok != TSEMI) {
-        LOG_PRATT("INFIX %s not found", tok_name(tok));
-      }
+    log_pratt_infix(p, "expr", parselet->infix, parselet->prec, prec);
+    if (parselet->infix == NULL || parselet->prec < prec)
       return n;
-    }
-    LOG_PRATT("INFIX %s", tok_name(tok));
     n = parselet->infix(PARGS, n);
   }
-
-  return n;
 }
 
 
-static node_t* mkid(parser_t* p) {
-  node_t* n = mknode(p, NID);
-  n->strval = mkcstr(p, scanner_lit(&p->scanner));
-  return n;
+static type_t* type(parser_t* p, precedence_t prec) {
+  tok_t tok = currtok(p);
+  const type_parselet_t* parselet = &type_parsetab[tok];
+  log_pratt(p, "prefix type");
+  if UNLIKELY(!parselet->prefix) {
+    unexpected(p, "where a type is expected");
+    next(p);
+    return type_void;
+  }
+  type_t* t = parselet->prefix(PARGS);
+  for (;;) {
+    tok = currtok(p);
+    parselet = &type_parsetab[tok];
+    log_pratt_infix(p, "type", parselet->infix, parselet->prec, prec);
+    if (parselet->infix == NULL || parselet->prec < prec)
+      return t;
+    t = parselet->infix(PARGS, t);
+  }
 }
 
 
-static node_t* id(parser_t* p, const char* helpmsg) {
-  node_t* n = mkid(p);
-  expect(p, TID, helpmsg);
-  return n;
+static type_t* prefix_type_id(parser_t* p, precedence_t prec) {
+  type_t* t;
+  slice_t lit = scanner_lit(&p->scanner);
+  // TODO: proper scope lookup
+  if (strncmp("int", lit.chars, lit.len) == 0) {
+    t = mktype(p, TYPE_INT);
+  } else {
+    unexpected(p, "(expected type)");
+    t = type_void;
+  }
+  next(p);
+  return t;
 }
 
 
 static node_t* prefix_id(parser_t* p, precedence_t prec) {
-  node_t* n = mkid(p);
+  node_t* n = mknode(p, EXPR_ID);
+  slice_t lit = scanner_lit(&p->scanner);
+  n->strval = mkcstr(p, lit);
   next(p);
   return n;
 }
 
 
+static node_t* id(parser_t* p, const char* helpmsg) {
+  if UNLIKELY(currtok(p) != TID)
+    unexpected(p, helpmsg);
+  return prefix_id(p, PREC_LOWEST);
+}
+
+
 static node_t* prefix_intlit(parser_t* p, precedence_t prec) {
-  node_t* n = mknode(p, NINTLIT);
+  node_t* n = mknode(p, EXPR_INTLIT);
   n->intval = p->scanner.litint;
   next(p);
   return n;
@@ -338,73 +388,70 @@ static node_t* prefix_intlit(parser_t* p, precedence_t prec) {
 
 
 static node_t* prefix_op(parser_t* p, precedence_t prec) {
-  node_t* n = mknode(p, NPREFIXOP);
+  node_t* n = mknode(p, EXPR_PREFIXOP);
+  n->op1.op = currtok(p);
   next(p);
-  addchild(n, expr(p, prec));
+  n->op1.expr = expr(p, prec);
   return n;
 }
 
 
 static node_t* postfix_op(parser_t* p, precedence_t prec, node_t* left) {
-  node_t* n = mknode(p, NSUFFIXOP);
+  node_t* n = mknode(p, EXPR_POSTFIXOP);
+  n->op1.op = currtok(p);
   next(p);
-  addchild(n, left);
+  n->op1.expr = expr(p, prec);
   return n;
 }
 
 
 static node_t* infix_op(parser_t* p, precedence_t prec, node_t* left) {
-  node_t* n = mknode(p, NINFIXOP);
+  node_t* n = mknode(p, EXPR_INFIXOP);
+  n->op2.op = currtok(p);
   next(p);
-  addchild(n, left);
-  addchild(n, expr(p, prec));
+  n->op2.left = left;
+  n->op2.right = expr(p, prec);
   return n;
 }
 
 
 static node_t* postfix_paren(parser_t* p, precedence_t prec, node_t* left) {
-  node_t* n = mknode(p, NSUFFIXOP);
+  node_t* n = mknode(p, EXPR_POSTFIXOP);
   next(p);
-  dlog("TODO %s", __FUNCTION__);
+  panic("TODO");
   return n;
 }
 
 
 static node_t* postfix_brack(parser_t* p, precedence_t prec, node_t* left) {
-  node_t* n = mknode(p, NSUFFIXOP);
+  node_t* n = mknode(p, EXPR_POSTFIXOP);
   next(p);
-  dlog("TODO %s", __FUNCTION__);
+  panic("TODO");
   return n;
 }
 
 
 static node_t* postfix_member(parser_t* p, precedence_t prec, node_t* left) {
-  node_t* n = mknode(p, NSUFFIXOP);
+  node_t* n = mknode(p, EXPR_POSTFIXOP);
   next(p);
-  dlog("TODO %s", __FUNCTION__);
+  panic("TODO");
   return n;
 }
 
 
-static node_t* block(parser_t* p, tok_t endtok) {
-  node_t* n = mknode(p, NBLOCK);
+static node_t* prefix_block(parser_t* p, precedence_t prec) {
+  tok_t endtok = currtok(p) == TINDENT ? TDEDENT : TRBRACE;
+  node_t* n = mknode(p, EXPR_BLOCK);
   next(p);
   while (currtok(p) != endtok && currtok(p) != TEOF) {
-    addchild(n, expr(p, PREC_LOWEST));
-    // ends with ";" or endtok
-    if (currtok(p) != TSEMI && currtok(p) != endtok) {
-      expect_fail(p, TSEMI, "after expression");
+    push_child(p, n, expr(p, PREC_LOWEST));
+    if (currtok(p) != TSEMI)
       break;
-    }
-    next(p);
+    next(p); // consume ";"
   }
   expect(p, endtok, "to end block");
+  expect(p, TSEMI, "after block");
   return n;
-}
-
-
-static node_t* prefix_indent(parser_t* p, precedence_t prec) {
-  return block(p, TDEDENT);
 }
 
 
@@ -412,24 +459,23 @@ static node_t* prefix_indent(parser_t* p, precedence_t prec) {
 // result = params
 // body   = (stmt ";")*
 static node_t* prefix_fun(parser_t* p, precedence_t prec) {
-  node_t* n = mknode(p, NFUN);
+  node_t* n = mknode(p, EXPR_FUN);
   next(p);
-  node_t* name = addchild(n, id(p, "after fun"));
+  n->fun.name = id(p, "after fun");
   expect(p, TLPAREN, "for parameters");
   // TODO: parameters
   expect(p, TRPAREN, "to end parameters");
-  node_t* result = addchild(n, expr(p, PREC_LOWEST));
-  switch (currtok(p)) {
-  case TSEMI:   next(p); return n; // no body
-  case TINDENT: addchild(n, block(p, TDEDENT)); break;
-  case TLBRACE: addchild(n, block(p, TRBRACE)); break;
-  default:      unexpected(p, "where block is expected");
+  n->fun.result_type = type(p, prec);
+  if (currtok(p) == TSEMI) {
+    next(p);
+  } else {
+    n->fun.body = expr(p, PREC_LOWEST);
   }
   return n;
 }
 
 
-static const parselet_t expr_parsetab[TOK_COUNT] = {
+static const expr_parselet_t expr_parsetab[TOK_COUNT] = {
   // infix ops (in order of precedence from weakest to strongest)
   [TCOMMA]     = {NULL, infix_op, PREC_COMMA},
   [TASSIGN]    = {NULL, infix_op, PREC_ASSIGN}, // =
@@ -480,22 +526,28 @@ static const parselet_t expr_parsetab[TOK_COUNT] = {
   [TFUN]    = {prefix_fun, NULL, PREC_MEMBER},
   [TINTLIT] = {prefix_intlit, NULL, PREC_MEMBER},
 
-  // special
-  [TINDENT] = {prefix_indent, NULL, PREC_MEMBER},
+  // block
+  [TINDENT] = {prefix_block, NULL, PREC_MEMBER},
+  [TLBRACE] = {prefix_block, NULL, PREC_MEMBER},
+};
+
+
+static const type_parselet_t type_parsetab[TOK_COUNT] = {
+  [TID] = {prefix_type_id, NULL, PREC_MEMBER},
 };
 
 
 node_t* parser_parse(parser_t* p, memalloc_t ast_ma, input_t* input) {
   p->ast_ma = ast_ma;
   scanner_set_input(&p->scanner, input);
-  node_t* unit = mknode(p, NUNIT);
+  node_t* unit = mknode(p, NODE_UNIT);
   next(p);
 
   // parse unit-level declarations
   while (currtok(p) != TEOF) {
     switch (currtok(p)) {
     case TFUN:
-      addchild(unit, prefix_fun(p, PREC_LOWEST));
+      push_child(p, unit, prefix_fun(p, PREC_LOWEST));
       break;
     default:
       unexpected(p, "");
