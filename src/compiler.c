@@ -91,6 +91,7 @@ static err_t compile_co_to_c(compiler_t* c, input_t* input, const char* cfile) {
   // format intermediate C filename cfile
   dlog("[compile_co_to_c] cfile: %s", cfile);
   u32 errcount = c->errcount;
+  err_t err = 0;
 
   // bump allocator for AST
   mem_t ast_mem = mem_alloc_zeroed(c->ma, 1024*1024*100);
@@ -105,14 +106,17 @@ static err_t compile_co_to_c(compiler_t* c, input_t* input, const char* cfile) {
   parser_dispose(&parser);
 
   // print AST
-  buf_t buf = buf_make(c->ma);
-  err_t err = node_repr(&buf, unit);
-  if (err)
-    goto end;
-  log("AST:\n%.*s\n", (int)buf.len, buf.chars);
+  #if DEBUG
+  {
+    buf_t buf = buf_make(c->ma);
+    if (( err = node_repr(&buf, unit) ))
+      goto end;
+    dlog("AST:\n%.*s\n", (int)buf.len, buf.chars);
+  }
+  #endif
 
   // bail on parse error
-  if (c->errcount > errcount && !err) {
+  if (c->errcount > errcount) {
     err = ErrCanceled;
     goto end;
   }

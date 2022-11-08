@@ -5,7 +5,8 @@
 #include <stdlib.h>
 
 #define LOG_PRATT(fmt, args...) log("parse> " fmt, ##args)
-#ifndef LOG_PRATT
+#if !defined(LOG_PRATT) || !defined(DEBUG)
+  #undef LOG_PRATT
   #define LOG_PRATT(args...) ((void)0)
 #else
   #define LOG_PRATT_ENABLED
@@ -119,7 +120,7 @@ inline static tok_t currtok(parser_t* p) {
     return log_pratt(p, buf);
   }
 #else
-  #define log_pratt_infix_skip(...) ((void)0)
+  #define log_pratt_infix(...) ((void)0)
   #define log_pratt(...) ((void)0)
 #endif
 
