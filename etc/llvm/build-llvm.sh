@@ -500,11 +500,12 @@ _mk_dlib_macos() {
       -platform_version macos $MACOS_VERSION $MACOS_VERSION \
       -arch $HOST_ARCH \
       -all_load \
-      -lc++ -lc \
+      -lc \
       -F/System/Library/Frameworks \
       -syslibroot $(xcrun --show-sdk-path) \
       -framework Foundation -framework CoreServices \
       \
+      $LLVM_DESTDIR/lib/libc++.a \
       "${EXTRA_LDFLAGS[@]}" \
       "${LLVM_LIBFILES[@]}"
   else
@@ -520,9 +521,10 @@ _mk_dlib_macos() {
       -ObjC \
       -platform_version macos $MACOS_VERSION $MACOS_VERSION \
       -all_load \
-      -lc++ -lc \
+      -lc \
       -framework Foundation -framework CoreServices \
       \
+      $LLVM_DESTDIR/lib/libc++.a \
       "${EXTRA_LDFLAGS[@]}" \
       "${LLVM_LIBFILES[@]}"
   fi

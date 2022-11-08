@@ -57,7 +57,7 @@ while [[ $# -gt 0 ]]; do
   -g)      DEBUGGABLE=true; shift ;;
   -v)      VERBOSE=true; NINJA_ARGS+=(-v); shift ;;
   -D*)     [ ${#1} -gt 2 ] || _err "Missing NAME after -D";EXTRA_CFLAGS+=( "$1" );shift;;
-  -llvm=*)  WITH_LLVM=${1:6}; shift ;;
+  -llvm=*) WITH_LLVM=${1:6}; shift ;;
   -h|-help|--help) cat << _END
 usage: $0 [options] [--] [<target> ...]
 Build mode option: (select just one)
@@ -355,7 +355,6 @@ if [ -n "$WITH_LLVM" ]; then
   )
   if [ "$WITH_LLVM" = shared ]; then
     LDFLAGS_HOST+=(
-      "-L$DEPSDIR/llvm/lib" -lc++ \
       "-Wl,-rpath,$DEPSDIR/llvm/lib" \
       "$DEPSDIR/llvm/lib/libc0-llvm-bundle-d.dylib" \
     )
