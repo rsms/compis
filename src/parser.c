@@ -71,6 +71,7 @@ node_t* last_resort_node = &(node_t){ .kind = NODE_BAD };
 
 // last_resort_cstr is returned by mkcstr when memory allocation fails
 static char last_resort_cstr[1] = {0};
+static char underscore_cstr[2] = {"_"};
 
 
 static u32 u64log10(u64 u) {
@@ -89,6 +90,11 @@ static u32 u64log10(u64 u) {
 
 inline static tok_t currtok(parser_t* p) {
   return p->scanner.tok.t;
+}
+
+
+inline static srcloc_t currloc(parser_t* p) {
+  return p->scanner.tok.loc;
 }
 
 
@@ -173,8 +179,7 @@ end:
 }
 
 static void fastforward_semi(parser_t* p) {
-  const tok_t stoplist[] = { TSEMI, 0 };
-  fastforward(p, stoplist);
+  fastforward(p, (const tok_t[]){ TSEMI, 0 });
 }
 
 
@@ -197,9 +202,7 @@ srcrange_t node_srcrange(node_t* n) {
 
 ATTR_FORMAT(printf,3,4)
 static void error(parser_t* p, const node_t* nullable n, const char* fmt, ...) {
-  srcrange_t range = {
-    .focus = p->scanner.tok.loc,
-  };
+  srcrange_t range = { .focus = currloc(p), };
   if (n)
     dlog("TODO node_srcrange(n)");
   va_list ap;
@@ -242,21 +245,20 @@ static bool expect(parser_t* p, tok_t expecttok, const char* errmsg) {
 }
 
 
-static char* mkcstr(parser_t* p, slice_t src) {
-  char* s = mem_strdup(p->ast_ma, src, 0);
-  if UNLIKELY(s == NULL) {
-    // end scanner, making sure we don't keep going
-    p->scanner.inp = p->scanner.inend;
-    s = last_resort_cstr;
-  }
-  return s;
-}
-
-
 static void out_of_mem(parser_t* p) {
   error(p, NULL, "out of memory");
   // end scanner, making sure we don't keep going
   p->scanner.inp = p->scanner.inend;
+}
+
+
+static char* mkcstr(parser_t* p, slice_t src) {
+  char* s = mem_strdup(p->ast_ma, src, 0);
+  if UNLIKELY(s == NULL) {
+    out_of_mem(p);
+    s = last_resort_cstr;
+  }
+  return s;
 }
 
 
@@ -265,7 +267,7 @@ static node_t* mknode(parser_t* p, nodekind_t kind) {
   if UNLIKELY(n == NULL)
     return out_of_mem(p), last_resort_node;
   n->kind = kind;
-  n->loc = p->scanner.tok.loc;
+  n->loc = currloc(p);
   return n;
 }
 
@@ -290,7 +292,7 @@ static type_t* mktype(parser_t* p, typekind_t kind) {
   if UNLIKELY(t == NULL)
     return out_of_mem(p), type_void;
   t->kind = kind;
-  t->loc = p->scanner.tok.loc;
+  t->loc = currloc(p);
   return t;
 }
 
@@ -349,16 +351,19 @@ static type_t* type(parser_t* p, precedence_t prec) {
 }
 
 
-static type_t* prefix_type_id(parser_t* p, precedence_t prec) {
-  type_t* t;
-  slice_t lit = scanner_lit(&p->scanner);
+static type_t* named_type(parser_t* p, slice_t name, srcloc_t origin) {
   // TODO: proper scope lookup
-  if (strncmp("int", lit.chars, lit.len) == 0) {
-    t = mktype(p, TYPE_INT);
-  } else {
-    unexpected(p, "(expected type)");
-    t = type_void;
-  }
+  if (strncmp("int", name.chars, name.len) == 0)
+    return mktype(p, TYPE_INT);
+  report_error(p->scanner.compiler, (srcrange_t){ .focus = origin },
+    "unknown type \"%.*s\"", (int)name.len, name.chars);
+  return type_void;
+}
+
+
+static type_t* prefix_type_id(parser_t* p, precedence_t prec) {
+  slice_t lit = scanner_lit(&p->scanner);
+  type_t* t = named_type(p, lit, currloc(p));
   next(p);
   return t;
 }
@@ -456,6 +461,93 @@ static node_t* prefix_block(parser_t* p, precedence_t prec) {
 }
 
 
+static void params(parser_t* p, fieldarray_t* params) {
+  // params = "(" param (sep param)* sep? ")"
+  // param  = Id Type? | Type
+  // sep    = "," | ";"
+  //
+  // e.g.  (T)  (x T)  (x, y T)  (T1, T2, T3)
+
+  // true when at least one param has type; e.g. "x T"
+  bool isnametype = false;
+
+  // typeq: temporary storage for fields to support "typed groups" of parameters,
+  // e.g. "x, y int" -- "x" does not have a type until we parsed "y" and "int", so when
+  // we parse "x" we put it in typeq. Also, "x" might be just a type and not a name in
+  // the case all args are just types e.g. "T1, T2, T3".
+  array_t typeq = {0}; // field_t*[]
+
+  while (currtok(p) != TEOF) {
+    field_t* field = fieldarray_alloc(params, p->ast_ma, 1);
+    if UNLIKELY(field == NULL)
+      return out_of_mem(p);
+
+    if (currtok(p) == TID) {
+      // name, eg "x"; could be field name or type. Assume field name for now.
+      field->name = mkcstr(p, scanner_lit(&p->scanner));
+      field->loc = currloc(p);
+      next(p);
+      switch (currtok(p)) {
+      case TRPAREN:
+      case TCOMMA:
+      case TSEMI: // just a name, eg "x" in "(x, y)"
+        if (!array_push(field_t*, &typeq, p->ast_ma, field))
+          return out_of_mem(p);
+        break;
+      default: // type follows name, eg "int" in "x int"
+        field->type = type(p, PREC_LOWEST);
+        isnametype = true;
+        // cascade type to predecessors
+        for (usize i = 0; i < typeq.len; i++)
+          array_at(field_t*, &typeq, i)->type = field->type;
+        typeq.len = 0;
+      }
+    } else {
+      // definitely a type
+      field->name = underscore_cstr;
+      if (!field->name)
+        return out_of_mem(p);
+      field->type = type(p, PREC_LOWEST);
+    }
+    switch (currtok(p)) {
+      case TCOMMA:
+      case TSEMI:
+        next(p); // consume "," or ";"
+        if (currtok(p) == TRPAREN)
+          goto finish; // trailing "," or ";"
+        break; // continue reading more
+      case TRPAREN:
+        goto finish;
+      default:
+        unexpected(p, "expecting ',' ';' or ')'");
+        fastforward(p, (const tok_t[]){ TRPAREN, 0 });
+        goto finish;
+    }
+  }
+finish:
+  if (isnametype) {
+    // name-and-type form; e.g. "(x, y T, z Y)".
+    // Error if at least one param has type, but last one doesn't, e.g. "(x, y int, z)"
+    if (typeq.len > 0)
+      error(p, NULL, "expecting type");
+    // for (usize i = 0; i < params->len; i++) {
+    //   // TODO: defsym(p, params->v[i].name, param)
+    // }
+  } else {
+    // type-only form, e.g. "(T, T, Y)"
+    for (usize i = 0; i < params->len; i++) {
+      field_t* param = &params->v[i];
+      if (param->type)
+        continue;
+      // make type from id
+      param->type = named_type(p, slice_cstr(param->name), param->loc);
+      param->name = underscore_cstr;
+    }
+  }
+  array_dispose(field_t*, &typeq, p->ast_ma);
+}
+
+
 // fundef = "fun" name "(" params? ")" result ( ";" | "{" body "}")
 // result = params
 // body   = (stmt ";")*
@@ -464,7 +556,8 @@ static node_t* prefix_fun(parser_t* p, precedence_t prec) {
   next(p);
   n->fun.name = id(p, "after fun");
   expect(p, TLPAREN, "for parameters");
-  // TODO: parameters
+  if (currtok(p) != TRPAREN)
+    params(p, &n->fun.params);
   expect(p, TRPAREN, "to end parameters");
   n->fun.result_type = type(p, prec);
   if (currtok(p) == TSEMI) {

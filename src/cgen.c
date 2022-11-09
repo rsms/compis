@@ -90,7 +90,14 @@ static void fun(cgen_t* g, const node_t* n) {
   } else {
     OUT_PRINT(n->fun.name->strval);
   }
-  OUT_PRINT("()");
+  OUT_PUTC('(');
+  for (usize i = 0; i < n->fun.params.len; i++) {
+    if (i) OUT_PUTC(',');
+    type(g, n->fun.params.v[i].type);
+    OUT_PUTC(' ');
+    OUT_PRINT(n->fun.params.v[i].name);
+  }
+  OUT_PUTC(')');
   if (n->fun.body == NULL) {
     OUT_PRINT(";\n");
   } else if (n->fun.body->kind == EXPR_BLOCK) {

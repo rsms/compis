@@ -126,6 +126,26 @@ static void repr_type(abuf_t* s, const type_t* t, usize indent, reprflag_t fl) {
 }
 
 
+static void field(abuf_t* s, const field_t* field, usize indent, reprflag_t fl) {
+  REPR_BEGIN(field->name);
+  abuf_c(s, ' ');
+  repr_type(s, field->type, indent, fl | REPRFLAG_HEAD);
+  REPR_END();
+}
+
+
+static void fields(
+  abuf_t* s, const char* name, const fieldarray_t* fields, usize indent, reprflag_t fl)
+{
+  REPR_BEGIN(name);
+  for (usize i = 0; i < fields->len; i++) {
+    abuf_c(s, ' ');
+    field(s, &fields->v[i], indent, fl);
+  }
+  REPR_END();
+}
+
+
 static void repr(abuf_t* s, const node_t* n, usize indent, reprflag_t fl) {
   const char* kindname = STRTAB_GET(nodekind_strtab, n->kind);
   REPR_BEGIN(kindname);
@@ -143,6 +163,7 @@ static void repr(abuf_t* s, const node_t* n, usize indent, reprflag_t fl) {
   case EXPR_FUN:
     if (n->fun.name)
       abuf_c(s, ' '), abuf_str(s, n->fun.name->strval);
+    fields(s, "params", &n->fun.params, indent, fl);
     abuf_c(s, ' '), repr_type(s, n->fun.result_type, indent, fl);
     if (n->fun.body)
       abuf_c(s, ' '), repr(s, n->fun.body, indent, fl);

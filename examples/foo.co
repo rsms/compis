@@ -1,2 +1,19 @@
-fun foo() int
+fun bar(int) int
+
+fun foo(x, y int) int
   1 + 2 * 3
+
+// params = "(" param (sep param)* sep? ")"
+// param  = Id Type? | Type
+// sep    = "," | ";"
+//
+// examples:
+//
+// (T)
+// (x T)
+// (x, y, z T)
+// (... T)
+// (x  ... T)
+// (x, y, z  ... T)
+// (T1, T2, T3)
+// (T1, T2, ... T3)

@@ -148,10 +148,17 @@ typedef struct {
   srcloc_t   loc;
 } type_t;
 
+typedef struct {
+  char*    name;
+  type_t*  type;
+  srcloc_t loc;
+} field_t;
+
 typedef struct node node_t;
 
-// nodearray_t
+// nodearray_t, fieldarray_t
 DEF_ARRAY_TYPE(node_t*, nodearray)
+DEF_ARRAY_TYPE(field_t, fieldarray) // note: not pointer array
 
 struct node {
   nodekind_t       kind;
@@ -162,7 +169,7 @@ struct node {
     nodearray_t children;
     // NINTLIT
     u64 intval;
-    // NSTRLIT
+    // NID, NSTRLIT
     char* strval; // allocated in ast_ma
     // NPREFIXOP, NPOSTFIXOP
     struct { tok_t op; node_t* expr; } op1;
@@ -171,7 +178,7 @@ struct node {
     // NFUN
     struct {
       type_t*          result_type;
-      //paramarray_t     params; // TODO
+      fieldarray_t     params;
       node_t* nullable name; // NULL if anonymous
       node_t* nullable body; // NULL if function is a prototype
     } fun;
