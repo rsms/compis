@@ -247,8 +247,6 @@ void cgen_dispose(cgen_t* g);
 err_t cgen_generate(cgen_t* g, const node_t* unit);
 
 // AST
-void node_free(memalloc_t ast_ma, node_t* n);
-void type_free(memalloc_t ast_ma, type_t* t);
 const char* node_name(const node_t* n); // e.g. "NINTLIT"
 const char* type_name(const type_t* t); // e.g. "TYPE_BOOL"
 err_t node_repr(buf_t* buf, const node_t* n);
