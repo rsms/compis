@@ -152,13 +152,13 @@ typedef struct {
   char*    name;
   type_t*  type;
   srcloc_t loc;
-} field_t;
+} var_t;
 
 typedef struct node node_t;
 
-// nodearray_t, fieldarray_t
+// nodearray_t, vararray_t
 DEF_ARRAY_TYPE(node_t*, nodearray)
-DEF_ARRAY_TYPE(field_t, fieldarray) // note: not pointer array
+DEF_ARRAY_TYPE(var_t, vararray) // note: not pointer array
 
 struct node {
   nodekind_t       kind;
@@ -178,7 +178,7 @@ struct node {
     // NFUN
     struct {
       type_t*          result_type;
-      fieldarray_t     params;
+      vararray_t       params;
       node_t* nullable name; // NULL if anonymous
       node_t* nullable body; // NULL if function is a prototype
     } fun;

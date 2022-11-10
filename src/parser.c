@@ -461,7 +461,7 @@ static node_t* prefix_block(parser_t* p, precedence_t prec) {
 }
 
 
-static void params(parser_t* p, fieldarray_t* params) {
+static void params(parser_t* p, vararray_t* params) {
   // params = "(" param (sep param)* sep? ")"
   // param  = Id Type? | Type
   // sep    = "," | ";"
@@ -471,43 +471,43 @@ static void params(parser_t* p, fieldarray_t* params) {
   // true when at least one param has type; e.g. "x T"
   bool isnametype = false;
 
-  // typeq: temporary storage for fields to support "typed groups" of parameters,
+  // typeq: temporary storage for params to support "typed groups" of parameters,
   // e.g. "x, y int" -- "x" does not have a type until we parsed "y" and "int", so when
   // we parse "x" we put it in typeq. Also, "x" might be just a type and not a name in
   // the case all args are just types e.g. "T1, T2, T3".
-  array_t typeq = {0}; // field_t*[]
+  array_t typeq = {0}; // var_t*[]
 
   while (currtok(p) != TEOF) {
-    field_t* field = fieldarray_alloc(params, p->ast_ma, 1);
-    if UNLIKELY(field == NULL)
+    var_t* param = vararray_alloc(params, p->ast_ma, 1);
+    if UNLIKELY(param == NULL)
       return out_of_mem(p);
 
     if (currtok(p) == TID) {
-      // name, eg "x"; could be field name or type. Assume field name for now.
-      field->name = mkcstr(p, scanner_lit(&p->scanner));
-      field->loc = currloc(p);
+      // name, eg "x"; could be parameter name or type. Assume name for now.
+      param->name = mkcstr(p, scanner_lit(&p->scanner));
+      param->loc = currloc(p);
       next(p);
       switch (currtok(p)) {
       case TRPAREN:
       case TCOMMA:
       case TSEMI: // just a name, eg "x" in "(x, y)"
-        if (!array_push(field_t*, &typeq, p->ast_ma, field))
+        if (!array_push(var_t*, &typeq, p->ast_ma, param))
           return out_of_mem(p);
         break;
       default: // type follows name, eg "int" in "x int"
-        field->type = type(p, PREC_LOWEST);
+        param->type = type(p, PREC_LOWEST);
         isnametype = true;
         // cascade type to predecessors
         for (usize i = 0; i < typeq.len; i++)
-          array_at(field_t*, &typeq, i)->type = field->type;
+          array_at(var_t*, &typeq, i)->type = param->type;
         typeq.len = 0;
       }
     } else {
       // definitely a type
-      field->name = underscore_cstr;
-      if (!field->name)
+      param->name = underscore_cstr;
+      if (!param->name)
         return out_of_mem(p);
-      field->type = type(p, PREC_LOWEST);
+      param->type = type(p, PREC_LOWEST);
     }
     switch (currtok(p)) {
       case TCOMMA:
@@ -536,7 +536,7 @@ finish:
   } else {
     // type-only form, e.g. "(T, T, Y)"
     for (usize i = 0; i < params->len; i++) {
-      field_t* param = &params->v[i];
+      var_t* param = &params->v[i];
       if (param->type)
         continue;
       // make type from id
@@ -544,7 +544,7 @@ finish:
       param->name = underscore_cstr;
     }
   }
-  array_dispose(field_t*, &typeq, p->ast_ma);
+  array_dispose(var_t*, &typeq, p->ast_ma);
 }
 
 

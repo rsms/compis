@@ -126,21 +126,21 @@ static void repr_type(abuf_t* s, const type_t* t, usize indent, reprflag_t fl) {
 }
 
 
-static void field(abuf_t* s, const field_t* field, usize indent, reprflag_t fl) {
-  REPR_BEGIN(field->name);
+static void var(abuf_t* s, const var_t* var, usize indent, reprflag_t fl) {
+  REPR_BEGIN(var->name);
   abuf_c(s, ' ');
-  repr_type(s, field->type, indent, fl | REPRFLAG_HEAD);
+  repr_type(s, var->type, indent, fl | REPRFLAG_HEAD);
   REPR_END();
 }
 
 
-static void fields(
-  abuf_t* s, const char* name, const fieldarray_t* fields, usize indent, reprflag_t fl)
+static void vars(
+  abuf_t* s, const char* name, const vararray_t* vars, usize indent, reprflag_t fl)
 {
   REPR_BEGIN(name);
-  for (usize i = 0; i < fields->len; i++) {
+  for (usize i = 0; i < vars->len; i++) {
     abuf_c(s, ' ');
-    field(s, &fields->v[i], indent, fl);
+    var(s, &vars->v[i], indent, fl);
   }
   REPR_END();
 }
@@ -163,7 +163,7 @@ static void repr(abuf_t* s, const node_t* n, usize indent, reprflag_t fl) {
   case EXPR_FUN:
     if (n->fun.name)
       abuf_c(s, ' '), abuf_str(s, n->fun.name->strval);
-    fields(s, "params", &n->fun.params, indent, fl);
+    vars(s, "params", &n->fun.params, indent, fl);
     abuf_c(s, ' '), repr_type(s, n->fun.result_type, indent, fl);
     if (n->fun.body)
       abuf_c(s, ' '), repr(s, n->fun.body, indent, fl);
