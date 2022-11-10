@@ -96,7 +96,10 @@ const char* type_name(const type_t* t) {
 
 
 #define REPR_END() \
-  abuf_c(s, ')')
+  ( abuf_c(s, ')'), indent -= 2 )
+
+
+static void repr(abuf_t* s, const node_t* n, usize indent, reprflag_t fl);
 
 
 static void repr_type(abuf_t* s, const type_t* t, usize indent, reprflag_t fl) {
@@ -134,15 +137,20 @@ static void var(abuf_t* s, const var_t* var, usize indent, reprflag_t fl) {
 }
 
 
-static void vars(
-  abuf_t* s, const char* name, const vararray_t* vars, usize indent, reprflag_t fl)
-{
-  REPR_BEGIN(name);
-  for (usize i = 0; i < vars->len; i++) {
-    abuf_c(s, ' ');
-    var(s, &vars->v[i], indent, fl);
+static void fun(abuf_t* s, const node_t* n, usize indent, reprflag_t fl) {
+  if (n->fun.name)
+    abuf_c(s, ' '), abuf_str(s, n->fun.name->strval);
+  {
+    REPR_BEGIN("params");
+    for (u32 i = 0; i < n->fun.params.len; i++) {
+      abuf_c(s, ' ');
+      var(s, &n->fun.params.v[i], indent, fl);
+    }
+    REPR_END();
   }
-  REPR_END();
+  abuf_c(s, ' '), repr_type(s, n->fun.result_type, indent, fl);
+  if (n->fun.body)
+    abuf_c(s, ' '), repr(s, n->fun.body, indent, fl);
 }
 
 
@@ -161,13 +169,7 @@ static void repr(abuf_t* s, const node_t* n, usize indent, reprflag_t fl) {
     break;
 
   case EXPR_FUN:
-    if (n->fun.name)
-      abuf_c(s, ' '), abuf_str(s, n->fun.name->strval);
-    vars(s, "params", &n->fun.params, indent, fl);
-    abuf_c(s, ' '), repr_type(s, n->fun.result_type, indent, fl);
-    if (n->fun.body)
-      abuf_c(s, ' '), repr(s, n->fun.body, indent, fl);
-    break;
+    return fun(s, n, indent, fl);
 
   case EXPR_PREFIXOP:
   case EXPR_POSTFIXOP:
@@ -190,6 +192,7 @@ static void repr(abuf_t* s, const node_t* n, usize indent, reprflag_t fl) {
   }
   REPR_END();
 }
+
 
 err_t node_repr(buf_t* buf, const node_t* n) {
   usize needavail = 4096;
