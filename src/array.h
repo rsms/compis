@@ -14,7 +14,7 @@ ASSUME_NONNULL_BEGIN
 
 typedef struct {
   u8* nullable ptr;
-  usize cap, len; // count of T items (not bytes)
+  u32 cap, len; // count of T items (not bytes)
 } array_t;
 
 #if C0_API_DOC
@@ -23,15 +23,15 @@ typedef struct {
 static array_t array_make();
 void array_init(array_t*);
 void array_dispose(T, array_t*, memalloc_t);
-T array_at(T, array_t*, usize index);
-T array_at_safe(T, array_t*, usize index);
-T* array_ptr(T, array_t*, usize index);
-T* array_ptr_safe(T, array_t*, usize index);
-T* nullable array_alloc(T, array_t*, memalloc_t, usize len);
+T array_at(T, array_t*, u32 index);
+T array_at_safe(T, array_t*, u32 index);
+T* array_ptr(T, array_t*, u32 index);
+T* array_ptr_safe(T, array_t*, u32 index);
+T* nullable array_alloc(T, array_t*, memalloc_t, u32 len);
 bool array_push(T, array_t*, memalloc_t, T value);
 T array_pop(T, array_t*);
-bool array_reserve(T, array_t*, memalloc_t, usize minavail);
-void array_remove(T, array_t*, usize start, usize len);
+bool array_reserve(T, array_t*, memalloc_t, u32 minavail);
+void array_remove(T, array_t*, u32 start, u32 len);
 
 // array_move moves the chunk [start,end) to index dst. For example:
 //
@@ -43,7 +43,7 @@ void array_remove(T, array_t*, usize start, usize len);
 //                                  │←    │←—————→│
 //                                 dst  start    end
 //
-void array_move(T, array_t*, usize dst, usize start, usize end);
+void array_move(T, array_t*, u32 dst, u32 start, u32 end);
 
 #endif // ————————————————————————————————————————————————————————————————————————————
 // implementation
@@ -69,14 +69,14 @@ inline static array_t array_make() { return (array_t){ 0 }; }
 #define array_remove(T, a, start, len) \
   _array_remove((a), sizeof(T), (start), (len))
 #define array_move(T, a, dst, start, end) \
-  _ARRAY_MOVE(sizeof(T), (void*)(a)->ptr, (dst), (start), (end))
+  _ARRAY_MOVE(sizeof(T), (void*)(a)->ptr, (usize)(dst), (usize)(start), (usize)(end))
 
 
-bool _array_grow(array_t* a, memalloc_t ma, usize elemsize, usize extracap);
-void _array_dispose(array_t* a, memalloc_t ma, usize elemsize);
-void _array_remove(array_t* a, usize elemsize, usize start, usize len);
-void* nullable _array_alloc(array_t* a, memalloc_t ma, usize elemsize, usize len);
-bool _array_reserve(array_t* a, memalloc_t ma, usize elemsize, usize minavail);
+bool _array_grow(array_t* a, memalloc_t ma, u32 elemsize, u32 extracap);
+void _array_dispose(array_t* a, memalloc_t ma, u32 elemsize);
+void _array_remove(array_t* a, u32 elemsize, u32 start, u32 len);
+void* nullable _array_alloc(array_t* a, memalloc_t ma, u32 elemsize, u32 len);
+bool _array_reserve(array_t* a, memalloc_t ma, u32 elemsize, u32 minavail);
 
 // void _ARRAY_MOVE(usize elemsize, void* v, usize dst, usize start, usize end)
 #define _ARRAY_MOVE(elemsize, v, dst, start, end) (                               \
@@ -121,17 +121,17 @@ E.g.
     u32array_dispose(&a);
   }
 
-typedef struct { T* nullable v; usize cap, len; memalloc_t ma; } NAME##_t
+typedef struct { T* nullable v; u32 cap, len; memalloc_t ma; } NAME##_t
 static void        NAME_init(NAME_t* a, memalloc_t ma)
 static void        NAME_dispose(NAME_t* a)
-static T           NAME_at_safe(NAME_t* a, usize i)
-static T*          NAME_ptr_safe(NAME_t* a, usize i)
+static T           NAME_at_safe(NAME_t* a, u32 i)
+static T*          NAME_ptr_safe(NAME_t* a, u32 i)
 static bool        NAME_push(NAME_t* a, T val)
 static T           NAME_pop(NAME_t* a)
-static T* nullable NAME_alloc(NAME_t* a, usize len)
-static bool        NAME_reserve(NAME_t*, usize minavail)
-static void        NAME_remove(NAME_t*, usize start, usize len)
-static void        NAME_move(NAME_t*, usize dst, usize start, usize end)
+static T* nullable NAME_alloc(NAME_t* a, u32 len)
+static bool        NAME_reserve(NAME_t*, u32 minavail)
+static void        NAME_remove(NAME_t*, u32 start, u32 len)
+static void        NAME_move(NAME_t*, u32 dst, u32 start, u32 end)
 */
 #define DEF_ARRAY_TYPE(T, NAME) \
   typedef struct {              \
@@ -149,10 +149,10 @@ static void        NAME_move(NAME_t*, usize dst, usize start, usize end)
   UNUSED inline static void NAME##_dispose(NAME##_t* a, memalloc_t ma) { \
     array_dispose(T, (array_t*)(a), ma); \
   } \
-  UNUSED inline static T NAME##_at_safe(NAME##_t* a, usize i) { \
+  UNUSED inline static T NAME##_at_safe(NAME##_t* a, u32 i) { \
     return array_at_safe(T, (array_t*)(a), i); \
   } \
-  UNUSED inline static T* NAME##_ptr_safe(NAME##_t* a, usize i) { \
+  UNUSED inline static T* NAME##_ptr_safe(NAME##_t* a, u32 i) { \
     return array_ptr_safe(T, (array_t*)(a), i); \
   } \
   UNUSED inline static bool NAME##_push(NAME##_t* a, memalloc_t ma, T val) { \
@@ -161,16 +161,16 @@ static void        NAME_move(NAME_t*, usize dst, usize start, usize end)
   UNUSED inline static T NAME##_pop(NAME##_t* a) { \
     return a->v[--a->len]; \
   } \
-  UNUSED inline static T* nullable NAME##_alloc(NAME##_t* a, memalloc_t ma, usize len){\
+  UNUSED inline static T* nullable NAME##_alloc(NAME##_t* a, memalloc_t ma, u32 len){\
     return array_alloc(T, (array_t*)(a), ma, len); \
   } \
-  UNUSED inline static bool NAME##_reserve(NAME##_t* a, memalloc_t ma, usize minavail){\
+  UNUSED inline static bool NAME##_reserve(NAME##_t* a, memalloc_t ma, u32 minavail){\
     return array_reserve(T, (array_t*)(a), ma, minavail); \
   } \
-  UNUSED inline static void NAME##_remove(NAME##_t* a, usize start, usize len) { \
+  UNUSED inline static void NAME##_remove(NAME##_t* a, u32 start, u32 len) { \
     array_remove(T, (array_t*)(a), start, len); \
   } \
-  UNUSED inline static void NAME##_move(NAME##_t* a, usize dst, usize start, usize end){\
+  UNUSED inline static void NAME##_move(NAME##_t* a, u32 dst, u32 start, u32 end){\
     array_move(T, (array_t*)(a), dst, start, end); \
   }
 

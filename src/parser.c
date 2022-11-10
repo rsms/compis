@@ -498,7 +498,7 @@ static void params(parser_t* p, vararray_t* params) {
         param->type = type(p, PREC_LOWEST);
         isnametype = true;
         // cascade type to predecessors
-        for (usize i = 0; i < typeq.len; i++)
+        for (u32 i = 0; i < typeq.len; i++)
           array_at(var_t*, &typeq, i)->type = param->type;
         typeq.len = 0;
       }
@@ -530,12 +530,12 @@ finish:
     // Error if at least one param has type, but last one doesn't, e.g. "(x, y int, z)"
     if (typeq.len > 0)
       error(p, NULL, "expecting type");
-    // for (usize i = 0; i < params->len; i++) {
+    // for (u32 i = 0; i < params->len; i++) {
     //   // TODO: defsym(p, params->v[i].name, param)
     // }
   } else {
     // type-only form, e.g. "(T, T, Y)"
-    for (usize i = 0; i < params->len; i++) {
+    for (u32 i = 0; i < params->len; i++) {
       var_t* param = &params->v[i];
       if (param->type)
         continue;

@@ -9,7 +9,7 @@ void array_init(array_t* a) {
 }
 
 
-void _array_dispose(array_t* a, memalloc_t ma, usize elemsize) {
+void _array_dispose(array_t* a, memalloc_t ma, u32 elemsize) {
   mem_t m = { .p = a->ptr, .size = a->cap * elemsize };
   mem_free(ma, &m);
   a->ptr = NULL;
@@ -18,17 +18,17 @@ void _array_dispose(array_t* a, memalloc_t ma, usize elemsize) {
 }
 
 
-bool _array_grow(array_t* a, memalloc_t ma, usize elemsize, usize extracap) {
-  usize newcap;
+bool _array_grow(array_t* a, memalloc_t ma, u32 elemsize, u32 extracap) {
+  u32 newcap;
   if (a->cap == 0) {
     newcap = MAX(extracap, 32u);
   } else {
-    if (check_mul_overflow(a->cap, (usize)2, &newcap))
+    if (check_mul_overflow(a->cap, (u32)2, &newcap))
       return false;
   }
 
   usize newsize;
-  if (check_mul_overflow(newcap, elemsize, &newsize))
+  if (check_mul_overflow((usize)newcap, (usize)elemsize, &newsize))
     return false;
 
   mem_t m = { .p = a->ptr, .size = a->cap * elemsize };
@@ -42,15 +42,15 @@ bool _array_grow(array_t* a, memalloc_t ma, usize elemsize, usize extracap) {
 }
 
 
-bool _array_reserve(array_t* a, memalloc_t ma, usize elemsize, usize minavail) {
-  usize newlen;
+bool _array_reserve(array_t* a, memalloc_t ma, u32 elemsize, u32 minavail) {
+  u32 newlen;
   if (check_add_overflow(a->len, minavail, &newlen))
     return false;
   return newlen <= a->cap || _array_grow(a, ma, elemsize, newlen - a->cap);
 }
 
 
-void* nullable _array_alloc(array_t* a, memalloc_t ma, usize elemsize, usize len) {
+void* nullable _array_alloc(array_t* a, memalloc_t ma, u32 elemsize, u32 len) {
   if UNLIKELY(!_array_reserve(a, ma, elemsize, len))
     return NULL;
   void* p = a->ptr + a->len*elemsize;
@@ -59,10 +59,10 @@ void* nullable _array_alloc(array_t* a, memalloc_t ma, usize elemsize, usize len
 }
 
 
-void _rarray_remove(array_t* a, usize elemsize, usize start, usize len) {
+void _rarray_remove(array_t* a, u32 elemsize, u32 start, u32 len) {
   if (len == 0)
     return;
-  safecheckf(start+len <= a->len, "end=%zu > len=%zu", start+len, a->len);
+  safecheckf(start+len <= a->len, "end=%u > len=%u", start+len, a->len);
   if (start+len < a->len) {
     void* dst = a->ptr + elemsize*start;
     void* src = dst + elemsize*len;
