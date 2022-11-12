@@ -43,9 +43,9 @@ static void _error(cgen_t* g, srcrange_t srcrange, const char* fmt, ...) {
   buf_printf(&g->outbuf, (fmt), ##args) ?: seterr(g, ErrNoMem) )
 
 
-static void type(cgen_t* g, const type_t* t);
-static void stmt(cgen_t* g, const node_t* n);
-static void expr(cgen_t* g, const node_t* n);
+static void type(cgen_t* g, const type_t*);
+static void stmt(cgen_t* g, const stmt_t*);
+static void expr(cgen_t* g, const expr_t*);
 
 
 static void type(cgen_t* g, const type_t* t) {
@@ -60,7 +60,7 @@ static void type(cgen_t* g, const type_t* t) {
   case TYPE_F32:  OUT_PRINT("float"); break;
   case TYPE_F64:  OUT_PRINT("double"); break;
   default:
-    error(g, t, "unexpected type %s", type_name(t));
+    error(g, t, "unexpected type %s", nodekind_name(t->kind));
   }
 }
 
@@ -71,43 +71,46 @@ typedef enum {
 } blockflag_t;
 
 
-static void stmt_block(cgen_t* g, const node_t* n, blockflag_t fl) {
+static void stmt_block(cgen_t* g, const block_t* block, blockflag_t fl) {
   OUT_PRINT("{\n");
-  if (n->children.len) for (usize i = 0, end = n->children.len - 1; i <= end; i++) {
-    if (i == end && (fl & BLOCKFLAG_RET))
-      OUT_PRINT("return ");
-    stmt(g, n->children.v[i]);
+  if (block->children.len) {
+    for (usize i = 0, end = block->children.len - 1; i <= end; i++) {
+      if (i == end && (fl & BLOCKFLAG_RET))
+        OUT_PRINT("return ");
+      stmt(g, block->children.v[i]);
+    }
   }
   OUT_PRINT("}\n");
 }
 
 
-static void fun(cgen_t* g, const node_t* n) {
-  type(g, n->fun.result_type);
+static void fun(cgen_t* g, const fun_t* fun) {
+  type(g, fun->result_type);
   OUT_PUTC(' ');
-  if (n->fun.name == NULL) {
-    OUT_PRINTF("_anonfun_%u", g->anon_idgen++);
+  if (fun->name) {
+    OUT_PRINT(fun->name->sym);
   } else {
-    OUT_PRINT(n->fun.name->strval);
+    OUT_PRINTF("_anonfun_%u", g->anon_idgen++);
   }
   OUT_PUTC('(');
-  for (usize i = 0; i < n->fun.params.len; i++) {
+  for (usize i = 0; i < fun->params.len; i++) {
+    local_t* param = fun->params.v[i];
     if (i) OUT_PUTC(',');
-    type(g, n->fun.params.v[i].type);
+    type(g, param->type);
     OUT_PUTC(' ');
-    OUT_PRINT(n->fun.params.v[i].name);
+    OUT_PRINT(param->name);
   }
   OUT_PUTC(')');
-  if (n->fun.body == NULL) {
+  if (fun->body == NULL) {
     OUT_PRINT(";\n");
-  } else if (n->fun.body->kind == EXPR_BLOCK) {
+  } else if (fun->body->kind == EXPR_BLOCK) {
     blockflag_t fl = 0;
-    if (n->fun.result_type != type_void)
+    if (fun->result_type != type_void)
       fl |= BLOCKFLAG_RET; // return last expression
-    stmt_block(g, n->fun.body, fl);
+    stmt_block(g, (block_t*)fun->body, fl);
   } else {
     OUT_PRINT("{\n");
-    expr(g, n->fun.body);
+    expr(g, fun->body);
     OUT_PRINT("}\n");
   }
 }
@@ -159,51 +162,65 @@ static const char* operator(tok_t tok) {
 }
 
 
-static void infixop(cgen_t* g, const node_t* n) {
+static void infixop(cgen_t* g, const op2expr_t* n) {
   OUT_PUTC('(');
-  expr(g, n->op2.left);
-  OUT_PRINT(operator(n->op2.op));
-  expr(g, n->op2.right);
+  expr(g, n->left);
+  OUT_PRINT(operator(n->op));
+  expr(g, n->right);
   OUT_PUTC(')');
 }
 
 
-static void intlit(cgen_t* g, const node_t* n) {
+static void intlit(cgen_t* g, const intlitexpr_t* n) {
   OUT_PRINTF("%llu", n->intval);
 }
 
 
-static void expr(cgen_t* g, const node_t* n) {
+static void expr(cgen_t* g, const expr_t* n) {
   switch (n->kind) {
-  case EXPR_FUN:     return fun(g, n);
-  case EXPR_INFIXOP: return infixop(g, n);
-  case EXPR_INTLIT:  return intlit(g, n);
+  case EXPR_FUN:     return fun(g, (const fun_t*)n);
+  case EXPR_INFIXOP: return infixop(g, (const op2expr_t*)n);
+  case EXPR_INTLIT:  return intlit(g, (const intlitexpr_t*)n);
   //case EXPR_BLOCK:   return expr_block(g, n);
   default:
-    error(g, n, "unexpected node %s", node_name(n));
+    error(g, n, "unexpected node %s", nodekind_name(n->kind));
   }
 }
 
 
-static void stmt(cgen_t* g, const node_t* n) {
-  expr(g, n);
-  if (n->kind != EXPR_FUN)
+static void stmt(cgen_t* g, const stmt_t* n) {
+  bool semi = true;
+  switch (n->kind) {
+  case EXPR_FUN:
+    fun(g, (const fun_t*)n); semi = false; break;
+
+  case EXPR_BLOCK:
+  case EXPR_ID:
+  case EXPR_PREFIXOP:
+  case EXPR_POSTFIXOP:
+  case EXPR_INFIXOP:
+  case EXPR_INTLIT:
+    expr(g, (expr_t*)n); break;
+
+  default:
+    error(g, n, "unexpected stmt node %s", nodekind_name(n->kind));
+  }
+  if (semi)
     OUT_PRINT(";\n");
 }
 
 
-static void unit(cgen_t* g, const node_t* n) {
+static void unit(cgen_t* g, const unit_t* n) {
   for (usize i = 0; i < n->children.len; i++)
     stmt(g, n->children.v[i]);
 }
 
 
-err_t cgen_generate(cgen_t* g, const node_t* n) {
+err_t cgen_generate(cgen_t* g, const unit_t* n) {
   // reset generator state
   g->err = 0;
   buf_clear(&g->outbuf);
   g->anon_idgen = 0;
-
   if (n->kind != NODE_UNIT)
     return ErrInvalid;
   unit(g, n);

@@ -27,47 +27,26 @@ typedef enum reprflag {
 enum {
   #define _(NAME) NK_##NAME, NK__##NAME = NK_##NAME + strlen(#NAME),
   FOREACH_NODEKIND(_)
+  FOREACH_NODEKIND_TYPE(_)
   #undef _
   NK_UNKNOWN, NK__UNKNOWN = NK_UNKNOWN + strlen(NK_UNKNOWN_STR),
 };
 static const struct {
-  u8   offs[NODEKIND_COUNT + 1]; // index into strs
+  int  offs[NODEKIND_COUNT + 1]; // index into strs
   char strs[];
 } nodekind_strtab = {
   { // get offset from enum
     #define _(NAME) NK_##NAME,
     FOREACH_NODEKIND(_)
+    FOREACH_NODEKIND_TYPE(_)
     #undef _
     NK_UNKNOWN,
   }, {
     #define _(NAME) #NAME "\0"
     FOREACH_NODEKIND(_)
+    FOREACH_NODEKIND_TYPE(_)
     #undef _
     NK_UNKNOWN_STR
-  }
-};
-
-#define TK_UNKNOWN_STR "TYPE?"
-enum {
-  #define _(NAME) TK_##NAME, TK__##NAME = TK_##NAME + strlen(#NAME),
-  FOREACH_TYPEKIND(_)
-  #undef _
-  TK_UNKNOWN, TK__UNKNOWN = TK_UNKNOWN + strlen(TK_UNKNOWN_STR),
-};
-static const struct {
-  u8   offs[TYPEKIND_COUNT + 1];
-  char strs[];
-} typekind_strtab = {
-  {
-    #define _(NAME) TK_##NAME,
-    FOREACH_TYPEKIND(_)
-    #undef _
-    TK_UNKNOWN,
-  }, {
-    #define _(NAME) #NAME "\0"
-    FOREACH_TYPEKIND(_)
-    #undef _
-    TK_UNKNOWN_STR
   }
 };
 
@@ -76,12 +55,8 @@ static const struct {
   &(strtab).strs[ (strtab).offs[ MIN((kind), countof(strtab.offs)-1) ] ]
 
 
-const char* node_name(const node_t* n) {
-  return STRTAB_GET(nodekind_strtab, n->kind);
-}
-
-const char* type_name(const type_t* t) {
-  return STRTAB_GET(typekind_strtab, t->kind);
+const char* nodekind_name(nodekind_t kind) {
+  return STRTAB_GET(nodekind_strtab, kind);
 }
 
 
@@ -103,20 +78,8 @@ static void repr(abuf_t* s, const node_t* n, usize indent, reprflag_t fl);
 
 
 static void repr_type(abuf_t* s, const type_t* t, usize indent, reprflag_t fl) {
-  const char* kindname = STRTAB_GET(typekind_strtab, t->kind);
-  REPR_BEGIN(kindname);
-  switch ((enum typekind)t->kind) {
-    case TYPEKIND_COUNT:
-    case TYPE_VOID:
-    case TYPE_BOOL:
-    case TYPE_INT:
-    case TYPE_I8:
-    case TYPE_I16:
-    case TYPE_I32:
-    case TYPE_I64:
-    case TYPE_F32:
-    case TYPE_F64:
-      break;
+  REPR_BEGIN(nodekind_name(t->kind));
+  switch (t->kind) {
     case TYPE_ARRAY:
     case TYPE_ENUM:
     case TYPE_FUNC:
@@ -129,28 +92,40 @@ static void repr_type(abuf_t* s, const type_t* t, usize indent, reprflag_t fl) {
 }
 
 
-static void var(abuf_t* s, const var_t* var, usize indent, reprflag_t fl) {
-  REPR_BEGIN(var->name);
+static void repr_local(abuf_t* s, const local_t* n, usize indent, reprflag_t fl) {
+  assert(n->kind == NODE_LOCAL);
+  REPR_BEGIN(n->name);
   abuf_c(s, ' ');
-  repr_type(s, var->type, indent, fl | REPRFLAG_HEAD);
+  repr_type(s, n->type, indent, fl | REPRFLAG_HEAD);
   REPR_END();
 }
 
 
-static void fun(abuf_t* s, const node_t* n, usize indent, reprflag_t fl) {
-  if (n->fun.name)
-    abuf_c(s, ' '), abuf_str(s, n->fun.name->strval);
+static void repr_fun(abuf_t* s, const fun_t* n, usize indent, reprflag_t fl) {
+  if (n->name) {
+    abuf_c(s, ' '), abuf_str(s, n->name->sym);
+  }
   {
     REPR_BEGIN("params");
-    for (u32 i = 0; i < n->fun.params.len; i++) {
+    for (u32 i = 0; i < n->params.len; i++) {
       abuf_c(s, ' ');
-      var(s, &n->fun.params.v[i], indent, fl);
+      repr_local(s, (local_t*)n->params.v[i], indent, fl);
     }
     REPR_END();
   }
-  abuf_c(s, ' '), repr_type(s, n->fun.result_type, indent, fl);
-  if (n->fun.body)
-    abuf_c(s, ' '), repr(s, n->fun.body, indent, fl);
+  abuf_c(s, ' '), repr_type(s, n->result_type, indent, fl);
+  if (n->body)
+    abuf_c(s, ' '), repr(s, (node_t*)n->body, indent, fl);
+}
+
+
+static void repr_nodearray(
+  abuf_t* s, const ptrarray_t* nodes, usize indent, reprflag_t fl)
+{
+  for (usize i = 0; i < nodes->len; i++) {
+    abuf_c(s, ' ');
+    repr(s, nodes->v[i], indent, fl);
+  }
 }
 
 
@@ -160,34 +135,36 @@ static void repr(abuf_t* s, const node_t* n, usize indent, reprflag_t fl) {
 
   switch (n->kind) {
 
-  case EXPR_BLOCK:
   case NODE_UNIT:
-    for (usize i = 0; i < n->children.len; i++) {
-      abuf_c(s, ' ');
-      repr(s, n->children.v[i], indent, fl);
-    }
-    break;
+    repr_nodearray(s, &((unit_t*)n)->children, indent, fl); break;
+
+  case EXPR_BLOCK:
+    repr_nodearray(s, &((block_t*)n)->children, indent, fl); break;
 
   case EXPR_FUN:
-    return fun(s, n, indent, fl);
+    return repr_fun(s, (fun_t*)n, indent, fl);
 
   case EXPR_PREFIXOP:
-  case EXPR_POSTFIXOP:
-    abuf_c(s, ' '), abuf_str(s, tok_repr(n->op1.op));
-    abuf_c(s, ' '), repr(s, n->op1.expr, indent, fl);
+  case EXPR_POSTFIXOP: {
+    op1expr_t* op = (op1expr_t*)n;
+    abuf_c(s, ' '), abuf_str(s, tok_repr(op->op));
+    abuf_c(s, ' '), repr(s, (node_t*)op->expr, indent, fl);
     break;
+  }
 
-  case EXPR_INFIXOP:
-    abuf_c(s, ' '), abuf_str(s, tok_repr(n->op2.op));
-    abuf_c(s, ' '), repr(s, n->op2.left, indent, fl);
-    abuf_c(s, ' '), repr(s, n->op2.right, indent, fl);
+  case EXPR_INFIXOP: {
+    op2expr_t* op = (op2expr_t*)n;
+    abuf_c(s, ' '), abuf_str(s, tok_repr(op->op));
+    abuf_c(s, ' '), repr(s, (node_t*)op->left, indent, fl);
+    abuf_c(s, ' '), repr(s, (node_t*)op->right, indent, fl);
     break;
+  }
 
   case EXPR_INTLIT:
-    abuf_c(s, ' '), abuf_u64(s, n->intval, 10); break;
+    abuf_c(s, ' '), abuf_u64(s, ((intlitexpr_t*)n)->intval, 10); break;
 
   case EXPR_ID:
-    abuf_c(s, ' '), abuf_str(s, n->strval); break;
+    abuf_c(s, ' '), abuf_str(s, ((idexpr_t*)n)->sym); break;
 
   }
   REPR_END();

@@ -6,13 +6,31 @@
 // #define DEBUG_SCANNING
 
 
+static const struct { const char* s; tok_t t; } keywordtab[] = {
+  #define _(NAME, ...)
+  #define KEYWORD(str, NAME) {str, NAME},
+  #include "tokens.h"
+  #undef _
+  #undef KEYWORD
+};
+
+
 static void scan0(scanner_t* s);
 
 
-void scanner_init(scanner_t* s, compiler_t* c) {
+bool scanner_init(scanner_t* s, compiler_t* c) {
   memset(s, 0, sizeof(*s));
   s->compiler = c;
   buf_init(&s->litbuf, c->ma);
+
+  // keywordtab must be sorted
+  #if DEBUG
+    for (usize i = 1; i < countof(keywordtab); i++)
+      assertf(strcmp(keywordtab[i-1].s, keywordtab[i].s) < 0,
+        "keywordtab out of order (%s)", keywordtab[i].s);
+  #endif
+
+  return true;
 }
 
 
@@ -242,6 +260,12 @@ static bool utf8seq(scanner_t* s) {
 }
 
 
+static void intern_identifier(scanner_t* s) {
+  slice_t lit = scanner_lit(s);
+  s->sym = sym_intern(lit.chars, lit.len);
+}
+
+
 static void identifier_utf8(scanner_t* s) {
   while (s->inp < s->inend) {
     if ((u8)*s->inp >= UTF8_SELF) {
@@ -254,6 +278,31 @@ static void identifier_utf8(scanner_t* s) {
     }
   }
   s->tok.t = TID;
+  intern_identifier(s);
+}
+
+
+static void maybe_keyword(scanner_t* s) {
+  // binary search for matching keyword & convert currtok to keyword
+  usize low = 0, high = countof(keywordtab), mid;
+  int cmp;
+  slice_t lit = scanner_lit(s);
+
+  while (low < high) {
+    mid = (low + high) / 2;
+    cmp = strncmp(lit.chars, keywordtab[mid].s, lit.len);
+    //dlog("maybe_keyword %.*s <> %s = %d",
+    //  (int)lit.len, lit.chars, keywordtab[mid].s, cmp);
+    if (cmp == 0) {
+      s->tok.t = keywordtab[mid].t;
+      break;
+    }
+    if (cmp < 0) {
+      high = mid;
+    } else {
+      low = mid + 1;
+    }
+  }
 }
 
 
@@ -264,6 +313,8 @@ static void identifier(scanner_t* s) {
     return identifier_utf8(s);
   s->tok.t = TID;
   s->insertsemi = true;
+  intern_identifier(s);
+  maybe_keyword(s);
 }
 
 

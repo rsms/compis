@@ -47,6 +47,8 @@ typedef struct {
   int   flags;
 } bump_allocator_t;
 
+static_assert(sizeof(bump_allocator_t) == MEMALLOC_BUMP_OVERHEAD, "");
+
 
 static bool bump_alloc_fin(bump_allocator_t* a, mem_t* m, usize size, bool zeroed) {
   m->p = a->ptr;
@@ -60,7 +62,7 @@ static bool bump_alloc_fin(bump_allocator_t* a, mem_t* m, usize size, bool zeroe
 
 static bool bump_alloc(bump_allocator_t* a, mem_t* m, usize size, bool zeroed) {
   size = ALIGN2(size, sizeof(void*));
-  if LIKELY(a->ptr + size < a->end)
+  if LIKELY(a->ptr + size <= a->end)
     return bump_alloc_fin(a, m, size, zeroed);
   *m = (mem_t){0};
   return false;
@@ -76,7 +78,7 @@ static bool bump_resize(bump_allocator_t* a, mem_t* m, usize size, bool zeroed) 
   if (a->ptr == m->p + m->size) {
     // grow tail
     void* newptr = m->p + size;
-    if UNLIKELY(newptr >= a->end)
+    if UNLIKELY(newptr > a->end)
       return false;
     a->ptr = newptr;
     if (zeroed && !(a->flags & MEMALLOC_STORAGE_ZEROED))
@@ -85,7 +87,7 @@ static bool bump_resize(bump_allocator_t* a, mem_t* m, usize size, bool zeroed) 
     return true;
   }
   // new allocation
-  if UNLIKELY(a->ptr + size >= a->end)
+  if UNLIKELY(a->ptr + size > a->end)
     return false;
   return bump_alloc_fin(a, m, size, zeroed);
 }
@@ -114,12 +116,18 @@ static bool _memalloc_bump_impl(void* self, mem_t* m, usize size, bool zeroed) {
 memalloc_t memalloc_bump(void* storage, usize cap, int flags) {
   if (cap < sizeof(bump_allocator_t))
     return &_memalloc_null;
-  bump_allocator_t* ma = storage;
-  ma->ma.f = _memalloc_bump_impl;
-  ma->end = storage + cap;
-  ma->ptr = storage + sizeof(bump_allocator_t);
-  ma->flags = flags;
-  return (memalloc_t)ma;
+  bump_allocator_t* a = storage;
+  a->ma.f = _memalloc_bump_impl;
+  a->end = storage + cap;
+  a->ptr = storage + sizeof(bump_allocator_t);
+  a->flags = flags;
+  return (memalloc_t)a;
+}
+
+
+usize memalloc_bumpuse(memalloc_t ma) {
+  bump_allocator_t* a = (bump_allocator_t*)ma;
+  return (usize)(uintptr)(a->ptr - (void*)a);
 }
 
 
@@ -154,12 +162,11 @@ static bool _memalloc_libc_impl(void* self, mem_t* m, usize size, bool zeroed) {
 
   // resize
   if (size != 0) {
-    safecheckf(m->p != NULL, "attempt to resize NULL pointer of size %zu", m->size);
     void* newp = C0_MEM_REALLOC(m->p, size);
     if UNLIKELY(!newp)
       return false;
     if (zeroed && size > m->size)
-      memset(m->p + m->size, 0, size - m->size);
+      memset(newp + m->size, 0, size - m->size);
     m->p = newp;
     m->size = size;
     return true;
@@ -213,4 +220,16 @@ void* nullable mem_allocv(memalloc_t ma, usize count, usize size) {
   if (check_mul_overflow(count, size, &size))
     return NULL;
   return mem_alloc_zeroed(ma, size).p;
+}
+
+
+void* nullable mem_resizev(
+  memalloc_t ma, void* p, usize oldcount, usize newcount, usize size)
+{
+  assert_no_mul_overflow(oldcount, size);
+  mem_t m = MEM(p, oldcount * size);
+  if (check_mul_overflow(newcount, size, &size))
+    return NULL;
+  bool ok = ma->f(ma, &m, size, true);
+  return (void*)((uintptr)m.p * (uintptr)ok);
 }

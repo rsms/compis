@@ -174,4 +174,7 @@ static void        NAME_move(NAME_t*, u32 dst, u32 start, u32 end)
     array_move(T, (array_t*)(a), dst, start, end); \
   }
 
+
+DEF_ARRAY_TYPE(void*, ptrarray)
+
 ASSUME_NONNULL_END

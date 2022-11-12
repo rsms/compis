@@ -101,15 +101,18 @@ static err_t compile_co_to_c(compiler_t* c, input_t* input, const char* cfile) {
 
   // parse
   parser_t parser;
-  parser_init(&parser, c);
-  node_t* unit = parser_parse(&parser, ast_ma, input);
+  if (!parser_init(&parser, c)) {
+    err = ErrNoMem;
+    goto end;
+  }
+  unit_t* unit = parser_parse(&parser, ast_ma, input);
   parser_dispose(&parser);
 
   // print AST
   #if DEBUG
   {
     buf_t buf = buf_make(c->ma);
-    if (( err = node_repr(&buf, unit) ))
+    if (( err = node_repr(&buf, (node_t*)unit) ))
       goto end;
     dlog("AST:\n%.*s\n", (int)buf.len, buf.chars);
   }

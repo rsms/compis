@@ -154,6 +154,8 @@ int build_main(int argc, const char** argv) {
   argv += numflags;
   argc -= numflags;
 
+  sym_init(memalloc_ctx());
+
   err_t err = build_exe(argv, (usize)argc);
   if (err)
     log("failed to build: %s", err_str(err));

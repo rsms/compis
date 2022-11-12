@@ -120,6 +120,22 @@ typedef double             f64;
 #endif
 
 //—————————————————————————————————————————————————————————————————————————————————————
+// endianess
+
+// C0_LITTLE_ENDIAN=0|1
+#ifndef C0_LITTLE_ENDIAN
+  #if defined(__LITTLE_ENDIAN__) || \
+      (defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__)
+    #define C0_LITTLE_ENDIAN 1
+  #elif defined(__BIG_ENDIAN__) || defined(__ARMEB__) \
+        (defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__)
+    #define C0_LITTLE_ENDIAN 0
+  #else
+    #error "Can't determine endianness, please define C0_LITTLE_ENDIAN=0|1"
+  #endif
+#endif
+
+//—————————————————————————————————————————————————————————————————————————————————————
 // nullability
 
 #if defined(__clang__) && __has_feature(nullability)
@@ -253,6 +269,9 @@ typedef double             f64;
 #define ALIGN2_X(x,a) ( \
   ( (x) + ((__typeof__(x))(a) - 1) ) & ~((__typeof__(x))(a) - 1) \
 )
+
+// bool IS_ALIGN2(T x, anyuint a) returns true if x is aligned to a
+#define IS_ALIGN2(x, a)  ( !((x) & ((__typeof__(x))(a) - 1)) )
 
 //—————————————————————————————————————————————————————————————————————————————————————
 // debugging
@@ -625,6 +644,11 @@ void* nullable mem_allocv(memalloc_t, usize count, usize elemsize);
 // If resizing fails, false is returned and the region is unchanged; it is still valid.
 static bool mem_resize(memalloc_t, mem_t* m, usize newsize);
 
+// mem_resizev grows or shrinks the size of an array, returning a pointer to the resized
+// allocation. If resizing fails, NULL is returned and p remains valid.
+void* nullable mem_resizev(
+  memalloc_t, void* nullable p, usize oldcount, usize newcount, usize elemsize);
+
 // mem_free frees a region.
 // In safe mode:
 // - calls panic() if m.p is invalid
@@ -652,6 +676,8 @@ static memalloc_t memalloc_ctx_set(memalloc_t); // returns previous allocator
 static memalloc_t memalloc_default(); // the default allocator
 static memalloc_t memalloc_null(); // an allocator that always fails
 memalloc_t memalloc_bump(void* storage, usize cap, int flags); // create bump allocator
+usize memalloc_bumpuse(memalloc_t ma);
+#define MEMALLOC_BUMP_OVERHEAD  (sizeof(void*)*4)
 
 // memalloc_scope_set saves the current contextual allocator on the stack
 // and sets newma as the current contextual allocator.

@@ -1,12 +1,14 @@
 #pragma once
-#include "array.h"
 #include "buf.h"
+#include "array.h"
+#include "map.h"
 
 // nodekind_t
 #define FOREACH_NODEKIND(_) \
   _( NODE_BAD )/* invalid node; parse error */ \
   _( NODE_COMMENT )\
   _( NODE_UNIT )\
+  _( NODE_LOCAL )\
   _( EXPR_FUN )\
   _( EXPR_BLOCK )\
   _( EXPR_ID )\
@@ -15,9 +17,7 @@
   _( EXPR_INFIXOP )\
   _( EXPR_INTLIT )\
 // end FOREACH_NODEKIND
-
-// typekind_t
-#define FOREACH_TYPEKIND(_) \
+#define FOREACH_NODEKIND_TYPE(_) \
   _( TYPE_VOID )\
   _( TYPE_BOOL )\
   _( TYPE_INT )\
@@ -32,7 +32,7 @@
   _( TYPE_FUNC )\
   _( TYPE_PTR )\
   _( TYPE_STRUCT )\
-// end FOREACH_TYPEKIND
+// end FOREACH_NODEKIND_TYPE
 
 typedef u8 tok_t;
 enum tok {
@@ -82,6 +82,13 @@ typedef struct diag {
   srcrange_t  origin;   // origin of error (loc.line=0 if unknown)
 } diag_t;
 
+typedef struct {
+  u32          cap;  // capacity of ptr (in number of entries)
+  u32          len;  // current length of ptr (entries currently stored)
+  u32          base; // current scope's base index into ptr
+  const void** ptr;  // entries
+} scope_t;
+
 typedef struct compiler {
   memalloc_t     ma;          // memory allocator
   const char*    triple;      // target triple
@@ -103,6 +110,8 @@ typedef struct {
   u32 len;
 } indent_t;
 
+typedef const char* sym_t;
+
 DEF_ARRAY_TYPE(indent_t, indentarray)
 
 typedef struct {
@@ -120,74 +129,79 @@ typedef struct {
   indent_t      indent;      // current level
   indent_t      indentdst;   // unwind to level
   indentarray_t indentstack; // previous indentation levels
-  u64           litint;      // parsed TINTLIT
+  u64           litint;      // parsed INTLIT
   buf_t         litbuf;      // interpreted source literal (e.g. "foo\n")
+  sym_t         sym;         // identifier
 } scanner_t;
 
-typedef u8 typekind_t;
-enum typekind {
-  #define _(NAME) NAME,
-  FOREACH_TYPEKIND(_)
-  #undef _
-  TYPEKIND_COUNT,
-};
+// ———————— BEGIN AST ————————
 
 typedef u8 nodekind_t;
 enum nodekind {
   #define _(NAME) NAME,
   FOREACH_NODEKIND(_)
+  FOREACH_NODEKIND_TYPE(_)
   #undef _
   NODEKIND_COUNT,
 };
 
 typedef struct {
-  typekind_t kind;
-  int        size;
-  int        align;
-  bool       isunsigned;
+  nodekind_t kind;
   srcloc_t   loc;
+} node_t;
+
+typedef struct {
+  node_t;
+} stmt_t;
+
+typedef struct {
+  node_t;
+  ptrarray_t children;
+} unit_t;
+
+typedef struct {
+  node_t;
+  int  size;
+  int  align;
+  bool isunsigned;
 } type_t;
 
 typedef struct {
-  char*    name;
-  type_t*  type;
-  srcloc_t loc;
-} var_t;
+  node_t;
+  type_t* type;
+  sym_t   name;
+} local_t;
 
-typedef struct node node_t;
-
-// nodearray_t, vararray_t
-DEF_ARRAY_TYPE(node_t*, nodearray)
-DEF_ARRAY_TYPE(var_t, vararray) // note: not pointer array
-
-struct node {
-  nodekind_t       kind;
-  srcloc_t         loc;
+typedef struct {
+  stmt_t;
   type_t* nullable type;
-  union {
-    // NUNIT, NBLOCK
-    nodearray_t children;
-    // NINTLIT
-    u64 intval;
-    // NID, NSTRLIT
-    char* strval; // allocated in ast_ma
-    // NPREFIXOP, NPOSTFIXOP
-    struct { tok_t op; node_t* expr; } op1;
-    // NPOSTFIXOP
-    struct { tok_t op; node_t* left; node_t* right; } op2;
-    // NFUN
-    struct {
-      type_t*          result_type;
-      vararray_t       params;
-      node_t* nullable name; // NULL if anonymous
-      node_t* nullable body; // NULL if function is a prototype
-    } fun;
-  };
-};
+} expr_t;
+
+typedef struct { expr_t; u64 intval; } intlitexpr_t;
+typedef struct { expr_t; sym_t sym; } idexpr_t;
+typedef struct { expr_t; tok_t op; expr_t* expr; } op1expr_t;
+typedef struct { expr_t; tok_t op; expr_t* left; expr_t* right; } op2expr_t;
+
+typedef struct { // block is a declaration (stmt) or an expression depending on use
+  expr_t;
+  ptrarray_t children;
+} block_t;
+
+typedef struct { // fun is a declaration (stmt) or an expression depending on use
+  expr_t;
+  type_t*            result_type; // TODO: remove and just use "type" field
+  ptrarray_t         params;
+  idexpr_t* nullable name; // NULL if anonymous
+  expr_t* nullable   body; // NULL if function is a prototype
+} fun_t;
+
+// ———————— END AST ————————
 
 typedef struct {
   scanner_t  scanner;
   memalloc_t ast_ma; // AST allocator
+  scope_t    scope;
+  map_t      pkgdefs;
 } parser_t;
 
 typedef struct {
@@ -230,29 +244,25 @@ void compiler_set_cachedir(compiler_t* c, slice_t cachedir);
 err_t compiler_compile(compiler_t*, promise_t*, input_t*, buf_t* ofile);
 
 // scanner
-void scanner_init(scanner_t* s, compiler_t* c);
+bool scanner_init(scanner_t* s, compiler_t* c);
 void scanner_dispose(scanner_t* s);
 void scanner_set_input(scanner_t* s, input_t*);
 void scanner_next(scanner_t* s);
 slice_t scanner_lit(const scanner_t* s); // e.g. `"\n"` => slice_t{.chars="\n", .len=1}
 
 // parser
-void parser_init(parser_t* p, compiler_t* c);
+bool parser_init(parser_t* p, compiler_t* c);
 void parser_dispose(parser_t* p);
-node_t* parser_parse(parser_t* p, memalloc_t ast_ma, input_t*);
+unit_t* parser_parse(parser_t* p, memalloc_t ast_ma, input_t*);
 
 // C code generator
 void cgen_init(cgen_t* g, compiler_t* c, memalloc_t out_ma);
 void cgen_dispose(cgen_t* g);
-err_t cgen_generate(cgen_t* g, const node_t* unit);
+err_t cgen_generate(cgen_t* g, const unit_t* unit);
 
 // AST
-const char* node_name(const node_t* n); // e.g. "NINTLIT"
-const char* type_name(const type_t* t); // e.g. "TYPE_BOOL"
+const char* nodekind_name(nodekind_t); // e.g. "EXPR_INTLIT"
 err_t node_repr(buf_t* buf, const node_t* n);
-inline static bool node_has_strval(const node_t* n) {
-  return n->kind == EXPR_ID || n->kind == NODE_COMMENT;
-}
 
 // tokens
 const char* tok_name(tok_t); // e.g. (TEQ) => "TEQ"
@@ -269,5 +279,19 @@ inline static void report_error(compiler_t* c, srcrange_t origin, const char* fm
   report_errorv(c, origin, fmt, ap);
   va_end(ap);
 }
+
+// symbols
+void sym_init(memalloc_t);
+sym_t sym_intern(const void* key, usize keylen);
+extern sym_t sym__; // "_"
+
+// scope
+void scope_clear(scope_t* s);
+void scope_dispose(scope_t* s, memalloc_t ma);
+bool scope_push(scope_t* s, memalloc_t ma);
+void scope_pop(scope_t* s);
+bool scope_def(scope_t* s, memalloc_t ma, const void* key, const void* value);
+const void* nullable scope_lookup(scope_t* s, const void* key);
+inline static bool scope_istoplevel(const scope_t* s) { return s->base == 0; }
 
 ASSUME_NONNULL_END

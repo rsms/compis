@@ -32,14 +32,24 @@ typedef enum {
   PREC_LOWEST = PREC_COMMA,
 } precedence_t;
 
+
 //#define PPARAMS parser_t* p, precedence_t prec
 #define PARGS   p, prec
 
-typedef node_t*(*prefix_expr_parselet_t)(parser_t* p, precedence_t prec);
-typedef node_t*(*infix_expr_parselet_t)(parser_t* p, precedence_t prec, node_t* left);
+typedef stmt_t*(*prefix_stmt_parselet_t)(parser_t* p, precedence_t prec);
+typedef stmt_t*(*infix_stmt_parselet_t)(parser_t* p, precedence_t prec, stmt_t* left);
+
+typedef expr_t*(*prefix_expr_parselet_t)(parser_t* p, precedence_t prec);
+typedef expr_t*(*infix_expr_parselet_t)(parser_t* p, precedence_t prec, expr_t* left);
 
 typedef type_t*(*prefix_type_parselet_t)(parser_t* p, precedence_t prec);
 typedef type_t*(*infix_type_parselet_t)(parser_t* p, precedence_t prec, type_t* left);
+
+typedef struct {
+  prefix_stmt_parselet_t nullable prefix;
+  infix_stmt_parselet_t  nullable infix;
+  precedence_t                    prec;
+} stmt_parselet_t;
 
 typedef struct {
   prefix_expr_parselet_t nullable prefix;
@@ -54,24 +64,12 @@ typedef struct {
 } type_parselet_t;
 
 // parselet table (defined towards end of file)
+static const stmt_parselet_t stmt_parsetab[TOK_COUNT];
 static const expr_parselet_t expr_parsetab[TOK_COUNT];
 static const type_parselet_t type_parsetab[TOK_COUNT];
 
-// keyword table
-static const struct { const char* s; tok_t t; } keywordtab[] = {
-  #define _(NAME, ...)
-  #define KEYWORD(str, NAME) {str, NAME},
-  #include "tokens.h"
-  #undef _
-  #undef KEYWORD
-};
-
 // last_resort_node is returned by mknode when memory allocation fails
 node_t* last_resort_node = &(node_t){ .kind = NODE_BAD };
-
-// last_resort_cstr is returned by mkcstr when memory allocation fails
-static char last_resort_cstr[1] = {0};
-static char underscore_cstr[2] = {"_"};
 
 
 static u32 u64log10(u64 u) {
@@ -131,34 +129,8 @@ inline static srcloc_t currloc(parser_t* p) {
 #endif
 
 
-static void maybe_keyword(parser_t* p) {
-  // binary search for matching keyword & convert currtok to keyword
-  usize low = 0, high = countof(keywordtab), mid;
-  int cmp;
-  slice_t lit = scanner_lit(&p->scanner);
-
-  while (low < high) {
-    mid = (low + high) / 2;
-    cmp = strncmp(lit.chars, keywordtab[mid].s, lit.len);
-    //dlog("maybe_keyword %.*s <> %s = %d",
-    //  (int)lit.len, lit.chars, keywordtab[mid].s, cmp);
-    if (cmp == 0) {
-      p->scanner.tok.t = keywordtab[mid].t;
-      break;
-    }
-    if (cmp < 0) {
-      high = mid;
-    } else {
-      low = mid + 1;
-    }
-  }
-}
-
-
 static void next(parser_t* p) {
   scanner_next(&p->scanner);
-  if (currtok(p) == TID)
-    maybe_keyword(p);
 }
 
 
@@ -189,12 +161,11 @@ srcrange_t node_srcrange(node_t* n) {
   switch (n->kind) {
     case EXPR_INTLIT:
       r.end.line = r.focus.line;
-      r.end.col = r.focus.col + u64log10(n->intval);
+      r.end.col = r.focus.col + u64log10( ((intlitexpr_t*)n)->intval);
       break;
-    default: if (node_has_strval(n)) {
+    case EXPR_ID:
       r.end.line = r.focus.line;
-      r.end.col = r.focus.col + strlen(n->strval);
-    }
+      r.end.col = r.focus.col + strlen(((idexpr_t*)n)->sym);
   }
   return r;
 }
@@ -209,6 +180,13 @@ static void error(parser_t* p, const node_t* nullable n, const char* fmt, ...) {
   va_start(ap, fmt);
   report_errorv(p->scanner.compiler, range, fmt, ap);
   va_end(ap);
+}
+
+
+static void out_of_mem(parser_t* p) {
+  error(p, NULL, "out of memory");
+  // end scanner, making sure we don't keep going
+  p->scanner.inp = p->scanner.inend;
 }
 
 
@@ -245,34 +223,47 @@ static bool expect(parser_t* p, tok_t expecttok, const char* errmsg) {
 }
 
 
-static void out_of_mem(parser_t* p) {
-  error(p, NULL, "out of memory");
-  // end scanner, making sure we don't keep going
-  p->scanner.inp = p->scanner.inend;
-}
-
-
-static char* mkcstr(parser_t* p, slice_t src) {
-  char* s = mem_strdup(p->ast_ma, src, 0);
-  if UNLIKELY(s == NULL) {
+static void enter_scope(parser_t* p) {
+  if (!scope_push(&p->scope, p->scanner.compiler->ma))
     out_of_mem(p);
-    s = last_resort_cstr;
-  }
-  return s;
 }
 
 
-static node_t* mknode(parser_t* p, nodekind_t kind) {
-  node_t* n = mem_alloct(p->ast_ma, node_t);
-  if UNLIKELY(n == NULL)
+static void leave_scope(parser_t* p) {
+  scope_pop(&p->scope);
+}
+
+
+static const node_t* nullable lookup_definition(parser_t* p, const void* name) {
+  const node_t* n = scope_lookup(&p->scope, name);
+  if (n)
+    return n;
+  void** vp = map_lookup(&p->pkgdefs, name, strlen((const char*)name));
+  return vp ? *vp : NULL;
+}
+
+
+static void define(parser_t* p, sym_t name, const node_t* n) {
+  dlog("define %s => %s@%p", name, nodekind_name(n->kind), n);
+  if (!scope_def(&p->scope, p->scanner.compiler->ma, name, n))
+    out_of_mem(p);
+}
+
+
+#define mknode(p, TYPE, kind)  ( (TYPE*)_mknode((p), sizeof(TYPE), (kind)) )
+
+static node_t* _mknode(parser_t* p, usize size, nodekind_t kind) {
+  mem_t m = mem_alloc_zeroed(p->ast_ma, size);
+  if UNLIKELY(m.p == NULL)
     return out_of_mem(p), last_resort_node;
+  node_t* n = m.p;
   n->kind = kind;
   n->loc = currloc(p);
   return n;
 }
 
 
-static type_t* mktype(parser_t* p, typekind_t kind) {
+static type_t* mktype(parser_t* p, nodekind_t kind) {
   assertf(
     kind != TYPE_VOID &&
     kind != TYPE_BOOL &&
@@ -288,6 +279,7 @@ static type_t* mktype(parser_t* p, typekind_t kind) {
     kind != TYPE_F64 ,
     "use type_ constant instead"
   );
+  assertf(kind > TYPE_VOID, "%u is not a type kind", kind);
   type_t* t = mem_alloct(p->ast_ma, type_t);
   if UNLIKELY(t == NULL)
     return out_of_mem(p), type_void;
@@ -297,19 +289,39 @@ static type_t* mktype(parser_t* p, typekind_t kind) {
 }
 
 
-static node_t* mkbad(parser_t* p) {
-  return mknode(p, NODE_BAD);
+static void* mkbad(parser_t* p) {
+  return mknode(p, node_t, NODE_BAD);
 }
 
 
-static void push_child(parser_t* p, node_t* restrict parent, node_t* restrict child) {
-  assert(parent != child);
-  if UNLIKELY(!nodearray_push(&parent->children, p->ast_ma, child))
+static void push_child(parser_t* p, ptrarray_t* children, void* child) {
+  if UNLIKELY(!ptrarray_push(children, p->ast_ma, child))
     out_of_mem(p);
 }
 
 
-static node_t* expr(parser_t* p, precedence_t prec) {
+static stmt_t* stmt(parser_t* p, precedence_t prec) {
+  tok_t tok = currtok(p);
+  const stmt_parselet_t* parselet = &stmt_parsetab[tok];
+  log_pratt(p, "prefix stmt");
+  if UNLIKELY(!parselet->prefix) {
+    unexpected(p, "where an stmtession is expected");
+    fastforward_semi(p);
+    return mkbad(p);
+  }
+  stmt_t* n = parselet->prefix(PARGS);
+  for (;;) {
+    tok = currtok(p);
+    parselet = &stmt_parsetab[tok];
+    log_pratt_infix(p, "stmt", parselet->infix, parselet->prec, prec);
+    if (parselet->infix == NULL || parselet->prec < prec)
+      return n;
+    n = parselet->infix(PARGS, n);
+  }
+}
+
+
+static expr_t* expr(parser_t* p, precedence_t prec) {
   tok_t tok = currtok(p);
   const expr_parselet_t* parselet = &expr_parsetab[tok];
   log_pratt(p, "prefix expr");
@@ -318,7 +330,7 @@ static node_t* expr(parser_t* p, precedence_t prec) {
     fastforward_semi(p);
     return mkbad(p);
   }
-  node_t* n = parselet->prefix(PARGS);
+  expr_t* n = parselet->prefix(PARGS);
   for (;;) {
     tok = currtok(p);
     parselet = &expr_parsetab[tok];
@@ -351,117 +363,115 @@ static type_t* type(parser_t* p, precedence_t prec) {
 }
 
 
-static type_t* named_type(parser_t* p, slice_t name, srcloc_t origin) {
+static type_t* named_type(parser_t* p, sym_t name, srcloc_t origin) {
   // TODO: proper scope lookup
-  if (strncmp("int", name.chars, name.len) == 0)
+  if (strncmp("int", name, strlen(name)) == 0)
     return mktype(p, TYPE_INT);
   report_error(p->scanner.compiler, (srcrange_t){ .focus = origin },
-    "unknown type \"%.*s\"", (int)name.len, name.chars);
+    "unknown type \"%s\"", name);
   return type_void;
 }
 
 
 static type_t* prefix_type_id(parser_t* p, precedence_t prec) {
-  slice_t lit = scanner_lit(&p->scanner);
-  type_t* t = named_type(p, lit, currloc(p));
+  type_t* t = named_type(p, p->scanner.sym, currloc(p));
   next(p);
   return t;
 }
 
 
-static node_t* prefix_id(parser_t* p, precedence_t prec) {
-  node_t* n = mknode(p, EXPR_ID);
-  slice_t lit = scanner_lit(&p->scanner);
-  n->strval = mkcstr(p, lit);
+static expr_t* prefix_id(parser_t* p, precedence_t prec) {
+  idexpr_t* n = mknode(p, idexpr_t, EXPR_ID);
+  n->sym = p->scanner.sym;
   next(p);
-  return n;
+  return (expr_t*)n;
 }
 
 
-static node_t* id(parser_t* p, const char* helpmsg) {
+static idexpr_t* id(parser_t* p, const char* helpmsg) {
   if UNLIKELY(currtok(p) != TID)
     unexpected(p, helpmsg);
-  return prefix_id(p, PREC_LOWEST);
+  return (idexpr_t*)prefix_id(p, PREC_LOWEST);
 }
 
 
-static node_t* prefix_intlit(parser_t* p, precedence_t prec) {
-  node_t* n = mknode(p, EXPR_INTLIT);
+static expr_t* prefix_intlit(parser_t* p, precedence_t prec) {
+  intlitexpr_t* n = mknode(p, intlitexpr_t, EXPR_INTLIT);
   n->intval = p->scanner.litint;
   next(p);
-  return n;
+  return (expr_t*)n;
 }
 
 
-static node_t* prefix_op(parser_t* p, precedence_t prec) {
-  node_t* n = mknode(p, EXPR_PREFIXOP);
-  n->op1.op = currtok(p);
+static expr_t* prefix_op(parser_t* p, precedence_t prec) {
+  op1expr_t* n = mknode(p, op1expr_t, EXPR_PREFIXOP);
+  n->op = currtok(p);
   next(p);
-  n->op1.expr = expr(p, prec);
-  return n;
+  n->expr = expr(p, prec);
+  return (expr_t*)n;
 }
 
 
-static node_t* postfix_op(parser_t* p, precedence_t prec, node_t* left) {
-  node_t* n = mknode(p, EXPR_POSTFIXOP);
-  n->op1.op = currtok(p);
+static expr_t* postfix_op(parser_t* p, precedence_t prec, expr_t* left) {
+  op1expr_t* n = mknode(p, op1expr_t, EXPR_POSTFIXOP);
+  n->op = currtok(p);
   next(p);
-  n->op1.expr = expr(p, prec);
-  return n;
+  n->expr = expr(p, prec);
+  return (expr_t*)n;
 }
 
 
-static node_t* infix_op(parser_t* p, precedence_t prec, node_t* left) {
-  node_t* n = mknode(p, EXPR_INFIXOP);
-  n->op2.op = currtok(p);
+static expr_t* infix_op(parser_t* p, precedence_t prec, expr_t* left) {
+  op2expr_t* n = mknode(p, op2expr_t, EXPR_INFIXOP);
+  n->op = currtok(p);
   next(p);
-  n->op2.left = left;
-  n->op2.right = expr(p, prec);
-  return n;
+  n->left = left;
+  n->right = expr(p, prec);
+  return (expr_t*)n;
 }
 
 
-static node_t* postfix_paren(parser_t* p, precedence_t prec, node_t* left) {
-  node_t* n = mknode(p, EXPR_POSTFIXOP);
-  next(p);
-  panic("TODO");
-  return n;
-}
-
-
-static node_t* postfix_brack(parser_t* p, precedence_t prec, node_t* left) {
-  node_t* n = mknode(p, EXPR_POSTFIXOP);
+static expr_t* postfix_paren(parser_t* p, precedence_t prec, expr_t* left) {
+  op1expr_t* n = mknode(p, op1expr_t, EXPR_POSTFIXOP);
   next(p);
   panic("TODO");
-  return n;
+  return (expr_t*)n;
 }
 
 
-static node_t* postfix_member(parser_t* p, precedence_t prec, node_t* left) {
-  node_t* n = mknode(p, EXPR_POSTFIXOP);
+static expr_t* postfix_brack(parser_t* p, precedence_t prec, expr_t* left) {
+  op1expr_t* n = mknode(p, op1expr_t, EXPR_POSTFIXOP);
   next(p);
   panic("TODO");
-  return n;
+  return (expr_t*)n;
 }
 
 
-static node_t* prefix_block(parser_t* p, precedence_t prec) {
+static expr_t* postfix_member(parser_t* p, precedence_t prec, expr_t* left) {
+  op1expr_t* n = mknode(p, op1expr_t, EXPR_POSTFIXOP);
+  next(p);
+  panic("TODO");
+  return (expr_t*)n;
+}
+
+
+static expr_t* prefix_block(parser_t* p, precedence_t prec) {
   tok_t endtok = currtok(p) == TINDENT ? TDEDENT : TRBRACE;
-  node_t* n = mknode(p, EXPR_BLOCK);
+  block_t* n = mknode(p, block_t, EXPR_BLOCK);
   next(p);
   while (currtok(p) != endtok && currtok(p) != TEOF) {
-    push_child(p, n, expr(p, PREC_LOWEST));
+    push_child(p, &n->children, (node_t*)expr(p, PREC_LOWEST));
     if (currtok(p) != TSEMI)
       break;
     next(p); // consume ";"
   }
   expect(p, endtok, "to end block");
   expect(p, TSEMI, "after block");
-  return n;
+  return (expr_t*)n;
 }
 
 
-static void params(parser_t* p, vararray_t* params) {
+static void params(parser_t* p, ptrarray_t* params) {
   // params = "(" param (sep param)* sep? ")"
   // param  = Id Type? | Type
   // sep    = "," | ";"
@@ -475,36 +485,41 @@ static void params(parser_t* p, vararray_t* params) {
   // e.g. "x, y int" -- "x" does not have a type until we parsed "y" and "int", so when
   // we parse "x" we put it in typeq. Also, "x" might be just a type and not a name in
   // the case all args are just types e.g. "T1, T2, T3".
-  array_t typeq = {0}; // var_t*[]
+  ptrarray_t typeq = {0}; // local_t*[]
 
   while (currtok(p) != TEOF) {
-    var_t* param = vararray_alloc(params, p->ast_ma, 1);
+    local_t* param = mknode(p, local_t, NODE_LOCAL);
     if UNLIKELY(param == NULL)
+      return out_of_mem(p);
+
+    if (!ptrarray_push(params, p->ast_ma, param))
       return out_of_mem(p);
 
     if (currtok(p) == TID) {
       // name, eg "x"; could be parameter name or type. Assume name for now.
-      param->name = mkcstr(p, scanner_lit(&p->scanner));
+      param->name = p->scanner.sym;
       param->loc = currloc(p);
       next(p);
       switch (currtok(p)) {
       case TRPAREN:
       case TCOMMA:
       case TSEMI: // just a name, eg "x" in "(x, y)"
-        if (!array_push(var_t*, &typeq, p->ast_ma, param))
+        if (!ptrarray_push(&typeq, p->ast_ma, param))
           return out_of_mem(p);
         break;
       default: // type follows name, eg "int" in "x int"
         param->type = type(p, PREC_LOWEST);
         isnametype = true;
         // cascade type to predecessors
-        for (u32 i = 0; i < typeq.len; i++)
-          array_at(var_t*, &typeq, i)->type = param->type;
+        for (u32 i = 0; i < typeq.len; i++) {
+          local_t* prev_param = typeq.v[i];
+          prev_param->type = param->type;
+        }
         typeq.len = 0;
       }
     } else {
       // definitely a type
-      param->name = underscore_cstr;
+      param->name = sym__;
       if (!param->name)
         return out_of_mem(p);
       param->type = type(p, PREC_LOWEST);
@@ -530,42 +545,53 @@ finish:
     // Error if at least one param has type, but last one doesn't, e.g. "(x, y int, z)"
     if (typeq.len > 0)
       error(p, NULL, "expecting type");
-    // for (u32 i = 0; i < params->len; i++) {
-    //   // TODO: defsym(p, params->v[i].name, param)
-    // }
+    for (u32 i = 0; i < params->len; i++)
+      define(p, ((local_t*)params->v[i])->name, params->v[i]);
   } else {
     // type-only form, e.g. "(T, T, Y)"
     for (u32 i = 0; i < params->len; i++) {
-      var_t* param = &params->v[i];
+      local_t* param = (local_t*)params->v[i];
       if (param->type)
         continue;
       // make type from id
-      param->type = named_type(p, slice_cstr(param->name), param->loc);
-      param->name = underscore_cstr;
+      param->type = named_type(p, param->name, param->loc);
+      param->name = sym__;
     }
   }
-  array_dispose(var_t*, &typeq, p->ast_ma);
+  ptrarray_dispose(&typeq, p->ast_ma);
 }
 
 
 // fundef = "fun" name "(" params? ")" result ( ";" | "{" body "}")
 // result = params
 // body   = (stmt ";")*
-static node_t* prefix_fun(parser_t* p, precedence_t prec) {
-  node_t* n = mknode(p, EXPR_FUN);
+static expr_t* prefix_fun(parser_t* p, precedence_t prec) {
+  fun_t* n = mknode(p, fun_t, EXPR_FUN);
   next(p);
-  n->fun.name = id(p, "after fun");
+  n->name = id(p, "after fun");
+  enter_scope(p);
   expect(p, TLPAREN, "for parameters");
-  if (currtok(p) != TRPAREN)
-    params(p, &n->fun.params);
+  if (currtok(p) != TRPAREN) {
+    dlog("n->params: %p (.ptr=%p)", &n->params, n->params.ptr);
+    params(p, &n->params);
+  }
   expect(p, TRPAREN, "to end parameters");
-  n->fun.result_type = type(p, prec);
+  n->result_type = type(p, prec);
   if (currtok(p) == TSEMI) {
     next(p);
   } else {
-    n->fun.body = expr(p, PREC_LOWEST);
+    n->body = expr(p, PREC_LOWEST);
   }
-  return n;
+  leave_scope(p);
+  return (expr_t*)n;
+}
+
+
+static stmt_t* funstmt(parser_t* p, precedence_t prec) {
+  fun_t* n = (fun_t*)prefix_fun(p, prec);
+  if (n->kind == EXPR_FUN && !n->name)
+    error(p, (node_t*)n, "anonymous function at top level");
+  return (stmt_t*)n;
 }
 
 
@@ -631,22 +657,21 @@ static const type_parselet_t type_parsetab[TOK_COUNT] = {
 };
 
 
-node_t* parser_parse(parser_t* p, memalloc_t ast_ma, input_t* input) {
+static const stmt_parselet_t stmt_parsetab[TOK_COUNT] = {
+  [TFUN] = {funstmt, NULL, PREC_MEMBER},
+};
+
+
+unit_t* parser_parse(parser_t* p, memalloc_t ast_ma, input_t* input) {
   p->ast_ma = ast_ma;
+  scope_clear(&p->scope);
   scanner_set_input(&p->scanner, input);
-  node_t* unit = mknode(p, NODE_UNIT);
+  unit_t* unit = mknode(p, unit_t, NODE_UNIT);
   next(p);
 
-  // parse unit-level declarations
   while (currtok(p) != TEOF) {
-    switch (currtok(p)) {
-    case TFUN:
-      push_child(p, unit, prefix_fun(p, PREC_LOWEST));
-      break;
-    default:
-      unexpected(p, "");
-      fastforward_semi(p);
-    }
+    stmt_t* n = stmt(p, PREC_LOWEST);
+    push_child(p, &unit->children, n);
     if (currtok(p) == TSEMI) {
       unexpected(p, "at top-level");
       next(p);
@@ -658,18 +683,55 @@ node_t* parser_parse(parser_t* p, memalloc_t ast_ma, input_t* input) {
 }
 
 
-void parser_init(parser_t* p, compiler_t* c) {
+static const map_t* universe() {
+  static map_t m = {0};
+  _Atomic(usize) init = 0;
+  if (init++)
+    return &m;
+  const struct {
+    const char* key;
+    const void* node;
+  } entries[] = {
+    {"void", type_void},
+    {"bool", type_bool},
+    {"int", type_int},
+    {"uint", type_uint},
+    {"i8", type_i8},
+    {"i16", type_i16},
+    {"i32", type_i32},
+    {"i64", type_i64},
+    {"u8", type_u8},
+    {"u16", type_u16},
+    {"u32", type_u32},
+    {"u64", type_u64},
+    {"f32", type_f32},
+    {"f64", type_f64},
+  };
+  static void* storage[
+    (MEMALLOC_BUMP_OVERHEAD + MAP_STORAGE_X(countof(entries))) / sizeof(void*)] = {0};
+  memalloc_t ma = memalloc_bump(storage, sizeof(storage), MEMALLOC_STORAGE_ZEROED);
+  safecheckx(map_init(&m, ma, countof(entries)));
+  for (usize i = 1; i < countof(entries); i++) {
+    void** valp = map_assign(&m, ma, entries[i].key, strlen(entries[i].key));
+    assertnotnull(valp);
+    *valp = (void*)entries[i].node;
+  }
+  return &m;
+}
+
+
+bool parser_init(parser_t* p, compiler_t* c) {
   memset(p, 0, sizeof(*p));
-  scanner_init(&p->scanner, c);
-  // keywordtab must be sorted
-  #if DEBUG
-    for (usize i = 1; i < countof(keywordtab); i++)
-      assertf(strcmp(keywordtab[i-1].s, keywordtab[i].s) < 0,
-        "keywordtab out of order (%s)", keywordtab[i].s);
-  #endif
+  if (!scanner_init(&p->scanner, c))
+    return false;
+  if (!map_init(&p->pkgdefs, c->ma, 32))
+    return false;
+  p->pkgdefs.parent = universe();
+  return true;
 }
 
 
 void parser_dispose(parser_t* p) {
+  map_dispose(&p->pkgdefs, p->scanner.compiler->ma);
   scanner_dispose(&p->scanner);
 }
