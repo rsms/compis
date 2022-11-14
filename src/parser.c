@@ -69,7 +69,8 @@ static const expr_parselet_t expr_parsetab[TOK_COUNT];
 static const type_parselet_t type_parsetab[TOK_COUNT];
 
 // last_resort_node is returned by mknode when memory allocation fails
-node_t* last_resort_node = &(node_t){ .kind = NODE_BAD };
+static struct { node_t; u8 opaque[64]; } _last_resort_node = { .kind=NODE_BAD };
+node_t* last_resort_node = (node_t*)&_last_resort_node;
 
 
 static u32 u64log10(u64 u) {
@@ -156,16 +157,16 @@ static void fastforward_semi(parser_t* p) {
 
 
 // node_srcrange computes the source range for an AST
-srcrange_t node_srcrange(node_t* n) {
+srcrange_t node_srcrange(const node_t* n) {
   srcrange_t r = { .start = n->loc, .focus = n->loc };
   switch (n->kind) {
     case EXPR_INTLIT:
       r.end.line = r.focus.line;
-      r.end.col = r.focus.col + u64log10( ((intlitexpr_t*)n)->intval);
+      r.end.col = r.focus.col + u64log10( ((intlit_t*)n)->intval);
       break;
     case EXPR_ID:
       r.end.line = r.focus.line;
-      r.end.col = r.focus.col + strlen(((idexpr_t*)n)->sym);
+      r.end.col = r.focus.col + strlen(((idexpr_t*)n)->name);
   }
   return r;
 }
@@ -173,9 +174,7 @@ srcrange_t node_srcrange(node_t* n) {
 
 ATTR_FORMAT(printf,3,4)
 static void error(parser_t* p, const node_t* nullable n, const char* fmt, ...) {
-  srcrange_t range = { .focus = currloc(p), };
-  if (n)
-    dlog("TODO node_srcrange(n)");
+  srcrange_t range = n ? node_srcrange(n) : (srcrange_t){ .focus = currloc(p), };
   va_list ap;
   va_start(ap, fmt);
   report_errorv(p->scanner.compiler, range, fmt, ap);
@@ -190,19 +189,33 @@ static void out_of_mem(parser_t* p) {
 }
 
 
+static const char* fmttok(parser_t* p, usize bufindex, tok_t tok, slice_t lit) {
+  buf_t* buf = &p->tmpbuf[bufindex];
+  buf_clear(buf);
+  buf_reserve(buf, 64);
+  tok_descr(buf->p, buf->cap, tok, lit);
+  return buf->chars;
+}
+
+
+static const char* fmtnode(parser_t* p, u32 bufindex, const node_t* n, u32 depth) {
+  buf_t* buf = &p->tmpbuf[bufindex];
+  buf_clear(buf);
+  node_fmt(buf, n, depth);
+  return buf->chars;
+}
+
+
 static void unexpected(parser_t* p, const char* errmsg) {
-  char descr[64];
-  tok_t tok = currtok(p);
-  tok_descrs(descr, sizeof(descr), tok, scanner_lit(&p->scanner));
+  const char* tokstr = fmttok(p, 0, currtok(p), scanner_lit(&p->scanner));
   int msglen = (int)strlen(errmsg) + (*errmsg != 0);
-  error(p, NULL, "unexpected %s%*s", descr, msglen, errmsg);
+  error(p, NULL, "unexpected %s%*s", tokstr, msglen, errmsg);
 }
 
 
 static void expect_fail(parser_t* p, tok_t expecttok, const char* errmsg) {
-  char want[64], got[64];
-  tok_descrs(want, sizeof(want), expecttok, (slice_t){0});
-  tok_descrs(got, sizeof(got), currtok(p), scanner_lit(&p->scanner));
+  const char* want = fmttok(p, 0, expecttok, (slice_t){0});
+  const char* got = fmttok(p, 1, currtok(p), scanner_lit(&p->scanner));
   int msglen = (int)strlen(errmsg) + (*errmsg != 0);
   error(p, NULL, "expected %s%*s, got %s", want, msglen, errmsg, got);
 }
@@ -234,11 +247,11 @@ static void leave_scope(parser_t* p) {
 }
 
 
-static const node_t* nullable lookup_definition(parser_t* p, const void* name) {
+static const node_t* nullable lookup_definition(parser_t* p, sym_t name) {
   const node_t* n = scope_lookup(&p->scope, name);
   if (n)
     return n;
-  void** vp = map_lookup(&p->pkgdefs, name, strlen((const char*)name));
+  void** vp = map_lookup(&p->pkgdefs, name, strlen(name));
   return vp ? *vp : NULL;
 }
 
@@ -263,7 +276,7 @@ static node_t* _mknode(parser_t* p, usize size, nodekind_t kind) {
 }
 
 
-static type_t* mktype(parser_t* p, nodekind_t kind) {
+/*static type_t* mktype(parser_t* p, nodekind_t kind) {
   assertf(
     kind != TYPE_VOID &&
     kind != TYPE_BOOL &&
@@ -286,7 +299,7 @@ static type_t* mktype(parser_t* p, nodekind_t kind) {
   t->kind = kind;
   t->loc = currloc(p);
   return t;
-}
+}*/
 
 
 static void* mkbad(parser_t* p) {
@@ -305,7 +318,7 @@ static stmt_t* stmt(parser_t* p, precedence_t prec) {
   const stmt_parselet_t* parselet = &stmt_parsetab[tok];
   log_pratt(p, "prefix stmt");
   if UNLIKELY(!parselet->prefix) {
-    unexpected(p, "where an stmtession is expected");
+    unexpected(p, "where a statement is expected");
     fastforward_semi(p);
     return mkbad(p);
   }
@@ -363,18 +376,21 @@ static type_t* type(parser_t* p, precedence_t prec) {
 }
 
 
-static type_t* named_type(parser_t* p, sym_t name, srcloc_t origin) {
-  // TODO: proper scope lookup
-  if (strncmp("int", name, strlen(name)) == 0)
-    return mktype(p, TYPE_INT);
-  report_error(p->scanner.compiler, (srcrange_t){ .focus = origin },
-    "unknown type \"%s\"", name);
+static type_t* named_type(parser_t* p, sym_t name, const node_t* nullable origin) {
+  const node_t* ref = lookup_definition(p, name);
+  if UNLIKELY(!ref) {
+    error(p, origin, "unknown type \"%s\"", name);
+  } else if UNLIKELY(!node_istype(ref)) {
+    error(p, origin, "%s is not a type", name);
+  } else {
+    return (type_t*)ref;
+  }
   return type_void;
 }
 
 
 static type_t* prefix_type_id(parser_t* p, precedence_t prec) {
-  type_t* t = named_type(p, p->scanner.sym, currloc(p));
+  type_t* t = named_type(p, p->scanner.sym, NULL);
   next(p);
   return t;
 }
@@ -382,57 +398,114 @@ static type_t* prefix_type_id(parser_t* p, precedence_t prec) {
 
 static expr_t* prefix_id(parser_t* p, precedence_t prec) {
   idexpr_t* n = mknode(p, idexpr_t, EXPR_ID);
-  n->sym = p->scanner.sym;
+  n->name = p->scanner.sym;
+  n->ref = lookup_definition(p, n->name);
+  if UNLIKELY(!n->ref) {
+    error(p, (node_t*)n, "undefined identifier \"%s\"", n->name);
+  } else if (n->ref->kind == NODE_LOCAL) {
+    n->type = ((local_t*)n->ref)->type;
+  } else if (node_isexpr(n->ref)) {
+    n->type = ((expr_t*)n->ref)->type;
+  } else {
+    error(p, (node_t*)n, "%s is a %s", n->name, nodekind_fmt(n->ref->kind));
+  }
   next(p);
   return (expr_t*)n;
 }
 
 
-static idexpr_t* id(parser_t* p, const char* helpmsg) {
-  if UNLIKELY(currtok(p) != TID)
-    unexpected(p, helpmsg);
-  return (idexpr_t*)prefix_id(p, PREC_LOWEST);
+static expr_t* prefix_let(parser_t* p, precedence_t prec) {
+  letdef_t* n = mknode(p, letdef_t, EXPR_LET);
+  next(p);
+  if (currtok(p) != TID) {
+    unexpected(p, "expecting identifier");
+  } else {
+    n->name = p->scanner.sym;
+    next(p);
+  }
+  expect(p, TASSIGN, "after name");
+  n->init = expr(p, prec);
+  n->type = n->init->type;
+  expect(p, TSEMI, "after let definition");
+  return (expr_t*)n;
 }
 
 
 static expr_t* prefix_intlit(parser_t* p, precedence_t prec) {
-  intlitexpr_t* n = mknode(p, intlitexpr_t, EXPR_INTLIT);
+  intlit_t* n = mknode(p, intlit_t, EXPR_INTLIT);
   n->intval = p->scanner.litint;
+  n->type = type_int;
+  next(p);
+  return (expr_t*)n;
+}
+
+
+static expr_t* prefix_floatlit(parser_t* p, precedence_t prec) {
+  floatlit_t* n = mknode(p, floatlit_t, EXPR_FLOATLIT);
+  n->type = type_f64;
+  // n->type = type_f32; // TODO: type context
+
+  char* endptr = NULL;
+  if (n->type == type_f64) {
+    n->f64val = strtod(p->scanner.litbuf.chars, &endptr);
+    if (endptr != p->scanner.litbuf.chars + p->scanner.litbuf.len) {
+      error(p, (node_t*)n, "invalid floating-point constant");
+    } else if (n->f64val == HUGE_VAL) {
+      // e.g. 1.e999
+      error(p, (node_t*)n, "64-bit floating-point constant too large");
+    }
+  } else if (n->type == type_f32) {
+    n->f32val = strtof(p->scanner.litbuf.chars, &endptr);
+    if (endptr != p->scanner.litbuf.chars + p->scanner.litbuf.len) {
+      error(p, (node_t*)n, "invalid floating-point constant");
+    } else if (n->f32val == HUGE_VALF) {
+      error(p, (node_t*)n, "32-bit floating-point constant too large");
+    }
+  }
+
   next(p);
   return (expr_t*)n;
 }
 
 
 static expr_t* prefix_op(parser_t* p, precedence_t prec) {
-  op1expr_t* n = mknode(p, op1expr_t, EXPR_PREFIXOP);
+  unaryop_t* n = mknode(p, unaryop_t, EXPR_PREFIXOP);
   n->op = currtok(p);
   next(p);
   n->expr = expr(p, prec);
+  n->type = n->expr->type;
   return (expr_t*)n;
 }
 
 
 static expr_t* postfix_op(parser_t* p, precedence_t prec, expr_t* left) {
-  op1expr_t* n = mknode(p, op1expr_t, EXPR_POSTFIXOP);
+  unaryop_t* n = mknode(p, unaryop_t, EXPR_POSTFIXOP);
   n->op = currtok(p);
   next(p);
   n->expr = expr(p, prec);
+  n->type = n->expr->type;
   return (expr_t*)n;
 }
 
 
 static expr_t* infix_op(parser_t* p, precedence_t prec, expr_t* left) {
-  op2expr_t* n = mknode(p, op2expr_t, EXPR_INFIXOP);
+  binop_t* n = mknode(p, binop_t, EXPR_BINOP);
   n->op = currtok(p);
+  n->type = left->type;
   next(p);
   n->left = left;
   n->right = expr(p, prec);
+  if (n->left->type != n->right->type && !!n->right->type * !!n->left->type) {
+    const char* x = fmtnode(p, 0, (const node_t*)n->left->type, 1);
+    const char* y = fmtnode(p, 1, (const node_t*)n->right->type, 1);
+    error(p, (node_t*)n, "mixed operand types, %s and %s", x, y);
+  }
   return (expr_t*)n;
 }
 
 
 static expr_t* postfix_paren(parser_t* p, precedence_t prec, expr_t* left) {
-  op1expr_t* n = mknode(p, op1expr_t, EXPR_POSTFIXOP);
+  unaryop_t* n = mknode(p, unaryop_t, EXPR_POSTFIXOP);
   next(p);
   panic("TODO");
   return (expr_t*)n;
@@ -440,7 +513,7 @@ static expr_t* postfix_paren(parser_t* p, precedence_t prec, expr_t* left) {
 
 
 static expr_t* postfix_brack(parser_t* p, precedence_t prec, expr_t* left) {
-  op1expr_t* n = mknode(p, op1expr_t, EXPR_POSTFIXOP);
+  unaryop_t* n = mknode(p, unaryop_t, EXPR_POSTFIXOP);
   next(p);
   panic("TODO");
   return (expr_t*)n;
@@ -448,7 +521,7 @@ static expr_t* postfix_brack(parser_t* p, precedence_t prec, expr_t* left) {
 
 
 static expr_t* postfix_member(parser_t* p, precedence_t prec, expr_t* left) {
-  op1expr_t* n = mknode(p, op1expr_t, EXPR_POSTFIXOP);
+  unaryop_t* n = mknode(p, unaryop_t, EXPR_POSTFIXOP);
   next(p);
   panic("TODO");
   return (expr_t*)n;
@@ -463,10 +536,17 @@ static expr_t* prefix_block(parser_t* p, precedence_t prec) {
     push_child(p, &n->children, (node_t*)expr(p, PREC_LOWEST));
     if (currtok(p) != TSEMI)
       break;
-    next(p); // consume ";"
+    next(p);
   }
   expect(p, endtok, "to end block");
   expect(p, TSEMI, "after block");
+  if (n->children.len == 0) {
+    n->type = type_void;
+  } else {
+    expr_t* last_expr = n->children.v[n->children.len-1];
+    assert(nodekind_isexpr(last_expr->kind));
+    n->type = last_expr->type;
+  }
   return (expr_t*)n;
 }
 
@@ -554,7 +634,7 @@ finish:
       if (param->type)
         continue;
       // make type from id
-      param->type = named_type(p, param->name, param->loc);
+      param->type = named_type(p, param->name, (node_t*)param);
       param->name = sym__;
     }
   }
@@ -568,13 +648,14 @@ finish:
 static expr_t* prefix_fun(parser_t* p, precedence_t prec) {
   fun_t* n = mknode(p, fun_t, EXPR_FUN);
   next(p);
-  n->name = id(p, "after fun");
+  if (currtok(p) == TID) {
+    n->name = p->scanner.sym;
+    next(p);
+  }
   enter_scope(p);
   expect(p, TLPAREN, "for parameters");
-  if (currtok(p) != TRPAREN) {
-    dlog("n->params: %p (.ptr=%p)", &n->params, n->params.ptr);
+  if (currtok(p) != TRPAREN)
     params(p, &n->params);
-  }
   expect(p, TRPAREN, "to end parameters");
   n->result_type = type(p, prec);
   if (currtok(p) == TSEMI) {
@@ -642,9 +723,13 @@ static const expr_parselet_t expr_parsetab[TOK_COUNT] = {
   [TDOT] = {NULL, postfix_member, PREC_MEMBER}, // .
 
   // keywords & identifiers
-  [TID]     = {prefix_id, NULL, PREC_MEMBER},
-  [TFUN]    = {prefix_fun, NULL, PREC_MEMBER},
-  [TINTLIT] = {prefix_intlit, NULL, PREC_MEMBER},
+  [TID]  = {prefix_id, NULL, PREC_MEMBER},
+  [TFUN] = {prefix_fun, NULL, PREC_MEMBER},
+  [TLET] = {prefix_let, NULL, PREC_MEMBER},
+
+  // constant literals
+  [TINTLIT]   = {prefix_intlit, NULL, PREC_MEMBER},
+  [TFLOATLIT] = {prefix_floatlit, NULL, PREC_MEMBER},
 
   // block
   [TINDENT] = {prefix_block, NULL, PREC_MEMBER},
@@ -678,7 +763,6 @@ unit_t* parser_parse(parser_t* p, memalloc_t ast_ma, input_t* input) {
     }
   }
 
-  // double strtod(const char *restrict s, char **restrict p)
   return unit;
 }
 
@@ -727,11 +811,15 @@ bool parser_init(parser_t* p, compiler_t* c) {
   if (!map_init(&p->pkgdefs, c->ma, 32))
     return false;
   p->pkgdefs.parent = universe();
+  for (usize i = 0; i < countof(p->tmpbuf); i++)
+    buf_init(&p->tmpbuf[i], c->ma);
   return true;
 }
 
 
 void parser_dispose(parser_t* p) {
+  for (usize i = 0; i < countof(p->tmpbuf); i++)
+    buf_dispose(&p->tmpbuf[i]);
   map_dispose(&p->pkgdefs, p->scanner.compiler->ma);
   scanner_dispose(&p->scanner);
 }

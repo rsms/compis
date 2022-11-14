@@ -24,6 +24,7 @@ typedef double             f64;
 //—————————————————————————————————————————————————————————————————————————————————————
 // limits
 #include <limits.h>
+#include <math.h> // HUGE_VAL
 
 #define I8_MAX    0x7f
 #define I16_MAX   0x7fff
@@ -172,6 +173,8 @@ typedef double             f64;
   #define offsetof(st, m) ((usize)&(((st*)0)->m))
 #endif
 
+#define c0_same_type(a, b) __builtin_types_compatible_p(__typeof__(a), __typeof__(b))
+
 // container_of returns a pointer to the parent struct of one of its members (ptr).
 #define container_of(ptr, struct_type, struct_member) ({ \
   const __typeof__( ((struct_type*)0)->struct_member )* ptrx__ = (ptr); \
@@ -180,11 +183,15 @@ typedef double             f64;
 
 #define MAX(a,b) ( \
   __builtin_constant_p(a) && __builtin_constant_p(b) ? ((a) > (b) ? (a) : (b)) : \
-  ({__typeof__ (a) _a = (a), _b = (b); _a > _b ? _a : _b; }) \
+  ({__typeof__ (a) _a = (a); \
+    __typeof__ (b) _b = (b); \
+    _a > _b ? _a : _b; }) \
 )
 #define MIN(a,b) ( \
   __builtin_constant_p(a) && __builtin_constant_p(b) ? ((a) < (b) ? (a) : (b)) : \
-  ({__typeof__ (a) _a = (a), _b = (b); _a < _b ? _a : _b; }) \
+  ({__typeof__ (a) _a = (a); \
+    __typeof__ (b) _b = (b); \
+    _a < _b ? _a : _b; }) \
 )
 
 #define MAX_X(a,b)  ( (a) > (b) ? (a) : (b) )
@@ -192,8 +199,6 @@ typedef double             f64;
 
 #define CONCAT_(x,y)  x##y
 #define CONCAT(x,y)   CONCAT_(x,y)
-
-#define c0_same_type(a, b) __builtin_types_compatible_p(__typeof__(a), __typeof__(b))
 
 // __VARG_DISP allows writing functions with compile-time variable-count arguments
 #define __VARG_DISP(a,...)   __VARG_CONCAT(a,__VARG_NARGS(__VA_ARGS__))(__VA_ARGS__)
@@ -444,6 +449,7 @@ typedef double             f64;
 #endif
 
 // void log(const char* fmt, ...)
+#undef log // math.h
 #define log(fmt, args...) fprintf(stderr, fmt "\n", ##args)
 
 // no more includes beyond this point; enable default non-nullable pointers

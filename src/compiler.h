@@ -12,13 +12,15 @@
   _( EXPR_FUN )\
   _( EXPR_BLOCK )\
   _( EXPR_ID )\
+  _( EXPR_LET )\
   _( EXPR_PREFIXOP )\
   _( EXPR_POSTFIXOP )\
-  _( EXPR_INFIXOP )\
+  _( EXPR_BINOP )\
   _( EXPR_INTLIT )\
+  _( EXPR_FLOATLIT )\
 // end FOREACH_NODEKIND
 #define FOREACH_NODEKIND_TYPE(_) \
-  _( TYPE_VOID )\
+  _( TYPE_VOID ) /* must be first type kind */\
   _( TYPE_BOOL )\
   _( TYPE_INT )\
   _( TYPE_I8  )\
@@ -161,15 +163,20 @@ typedef struct {
 
 typedef struct {
   node_t;
-  int  size;
-  int  align;
-  bool isunsigned;
+  usize size;
+  u8    align;
+  bool  isunsigned;
 } type_t;
 
 typedef struct {
+  type_t;
+  type_t* elem;
+} arraytype_t;
+
+typedef struct {
   node_t;
-  type_t* type;
   sym_t   name;
+  type_t* type;
 } local_t;
 
 typedef struct {
@@ -177,10 +184,12 @@ typedef struct {
   type_t* nullable type;
 } expr_t;
 
-typedef struct { expr_t; u64 intval; } intlitexpr_t;
-typedef struct { expr_t; sym_t sym; } idexpr_t;
-typedef struct { expr_t; tok_t op; expr_t* expr; } op1expr_t;
-typedef struct { expr_t; tok_t op; expr_t* left; expr_t* right; } op2expr_t;
+typedef struct { expr_t; u64 intval; } intlit_t;
+typedef struct { expr_t; union { double f64val; float f32val; }; } floatlit_t;
+typedef struct { expr_t; sym_t name; const node_t* nullable ref; } idexpr_t;
+typedef struct { expr_t; tok_t op; expr_t* expr; } unaryop_t;
+typedef struct { expr_t; tok_t op; expr_t* left; expr_t* right; } binop_t;
+typedef struct { expr_t; sym_t name; expr_t* init; } letdef_t;
 
 typedef struct { // block is a declaration (stmt) or an expression depending on use
   expr_t;
@@ -189,11 +198,17 @@ typedef struct { // block is a declaration (stmt) or an expression depending on 
 
 typedef struct { // fun is a declaration (stmt) or an expression depending on use
   expr_t;
-  type_t*            result_type; // TODO: remove and just use "type" field
-  ptrarray_t         params;
-  idexpr_t* nullable name; // NULL if anonymous
-  expr_t* nullable   body; // NULL if function is a prototype
+  type_t*          result_type; // TODO: remove and just use "type" field
+  ptrarray_t       params;
+  sym_t nullable   name; // NULL if anonymous
+  expr_t* nullable body; // NULL if function is a prototype
 } fun_t;
+
+// typedef struct {
+//   node_t;
+//   sym_t         name;
+//   const node_t* target;
+// } idref_t;
 
 // ———————— END AST ————————
 
@@ -202,6 +217,7 @@ typedef struct {
   memalloc_t ast_ma; // AST allocator
   scope_t    scope;
   map_t      pkgdefs;
+  buf_t      tmpbuf[2];
 } parser_t;
 
 typedef struct {
@@ -262,13 +278,19 @@ err_t cgen_generate(cgen_t* g, const unit_t* unit);
 
 // AST
 const char* nodekind_name(nodekind_t); // e.g. "EXPR_INTLIT"
-err_t node_repr(buf_t* buf, const node_t* n);
+const char* nodekind_fmt(nodekind_t);
+err_t node_fmt(buf_t* buf, const node_t* nullable n, u32 depth); // e.g. i32, x, "foo"
+err_t node_repr(buf_t* buf, const node_t* n); // S-expr AST tree
+inline static bool nodekind_istype(nodekind_t kind) { return kind >= TYPE_VOID; }
+inline static bool nodekind_isexpr(nodekind_t kind) {
+  return EXPR_FUN <= kind && kind <= EXPR_INTLIT; }
+inline static bool node_istype(const node_t* n) { return nodekind_istype(n->kind); }
+inline static bool node_isexpr(const node_t* n) { return nodekind_isexpr(n->kind); }
 
 // tokens
 const char* tok_name(tok_t); // e.g. (TEQ) => "TEQ"
 const char* tok_repr(tok_t); // e.g. (TEQ) => "="
 usize tok_descr(char* buf, usize bufcap, tok_t, slice_t lit); // e.g. "number 3"
-char* tok_descrs(char* buf, usize cap, tok_t, slice_t lit); // e.g. "number 3"
 
 // diagnostics
 void report_errorv(compiler_t*, srcrange_t origin, const char* fmt, va_list);

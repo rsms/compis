@@ -134,36 +134,30 @@ void abuf_reprhex(abuf_t* s, const void* srcp, usize len, bool spaced) {
 }
 
 
-// void abuf_f64(abuf_t* s, f64 v, int ndec) {
-//   #ifdef RSM_NO_LIBC
-//     #warning TODO implement abuf_f64 for non-libc
-//     assert(!"not implemented");
-//     // TODO: consider using fmt_fp (stdio/vfprintf.c) in musl
-//   #else
-//     usize cap = abuf_avail(s);
-//     int n;
-//     if (ndec > -1) {
-//       n = snprintf(s->p, cap+1, "%.*f", ndec, v);
-//     } else {
-//       n = snprintf(s->p, cap+1, "%f", v);
-//     }
-//     if (UNLIKELY( n <= 0 ))
-//       return;
-//     if (ndec < 0) {
-//       // trim trailing zeros
-//       char* p = &s->p[MIN((usize)n, cap) - 1];
-//       while (*p == '0') {
-//         p--;
-//       }
-//       if (*p == '.')
-//         p++; // avoid "1.00" becoming "1." (instead, let it be "1.0")
-//       n = (int)(uintptr)(p - s->p) + 1;
-//       s->p[MIN((usize)n, cap)] = 0;
-//     }
-//     s->p += MIN((usize)n, cap);
-//     s->len += n;
-//   #endif
-// }
+void abuf_f64(abuf_t* s, f64 v, int ndec) {
+  usize cap = abuf_avail(s);
+  int n;
+  if (ndec > -1) {
+    n = snprintf(s->p, cap+1, "%.*f", ndec, v);
+  } else {
+    n = snprintf(s->p, cap+1, "%f", v);
+  }
+  if (UNLIKELY( n <= 0 ))
+    return;
+  if (ndec < 0) {
+    // trim trailing zeros
+    char* p = &s->p[MIN((usize)n, cap) - 1];
+    while (*p == '0') {
+      p--;
+    }
+    if (*p == '.')
+      p++; // avoid "1.00" becoming "1." (instead, let it be "1.0")
+    n = (int)(uintptr)(p - s->p) + 1;
+    s->p[MIN((usize)n, cap)] = 0;
+  }
+  s->p += MIN((usize)n, cap);
+  s->len += n;
+}
 
 
 void abuf_fmtv(abuf_t* s, const char* fmt, va_list ap) {

@@ -23,6 +23,15 @@ static void seterr(cgen_t* g, err_t err) {
 #define error(g, node_or_type, fmt, args...) \
   _error((g), (srcrange_t){ .focus = (node_or_type)->loc }, "[cgen] " fmt, ##args)
 
+#if DEBUG
+  #define debugdie(g, node_or_type, fmt, args...) ( \
+    _error((g), (srcrange_t){ .focus = (node_or_type)->loc }, "[cgen] " fmt, ##args), \
+    panic("code generator got unexpected AST") \
+  )
+#else
+  #define debugdie(...) ((void)0)
+#endif
+
 ATTR_FORMAT(printf,3,4)
 static void _error(cgen_t* g, srcrange_t srcrange, const char* fmt, ...) {
   va_list ap;
@@ -88,7 +97,7 @@ static void fun(cgen_t* g, const fun_t* fun) {
   type(g, fun->result_type);
   OUT_PUTC(' ');
   if (fun->name) {
-    OUT_PRINT(fun->name->sym);
+    OUT_PRINT(fun->name);
   } else {
     OUT_PRINTF("_anonfun_%u", g->anon_idgen++);
   }
@@ -162,7 +171,7 @@ static const char* operator(tok_t tok) {
 }
 
 
-static void infixop(cgen_t* g, const op2expr_t* n) {
+static void binop(cgen_t* g, const binop_t* n) {
   OUT_PUTC('(');
   expr(g, n->left);
   OUT_PRINT(operator(n->op));
@@ -171,19 +180,25 @@ static void infixop(cgen_t* g, const op2expr_t* n) {
 }
 
 
-static void intlit(cgen_t* g, const intlitexpr_t* n) {
+static void intlit(cgen_t* g, const intlit_t* n) {
   OUT_PRINTF("%llu", n->intval);
+}
+
+
+static void idexpr(cgen_t* g, const idexpr_t* n) {
+  OUT_PRINTF("%s", n->name);
 }
 
 
 static void expr(cgen_t* g, const expr_t* n) {
   switch (n->kind) {
-  case EXPR_FUN:     return fun(g, (const fun_t*)n);
-  case EXPR_INFIXOP: return infixop(g, (const op2expr_t*)n);
-  case EXPR_INTLIT:  return intlit(g, (const intlitexpr_t*)n);
+  case EXPR_FUN:    return fun(g, (const fun_t*)n);
+  case EXPR_BINOP:  return binop(g, (const binop_t*)n);
+  case EXPR_INTLIT: return intlit(g, (const intlit_t*)n);
+  case EXPR_ID:     return idexpr(g, (const idexpr_t*)n);
   //case EXPR_BLOCK:   return expr_block(g, n);
   default:
-    error(g, n, "unexpected node %s", nodekind_name(n->kind));
+    debugdie(g, n, "unexpected node %s", nodekind_name(n->kind));
   }
 }
 
@@ -198,12 +213,12 @@ static void stmt(cgen_t* g, const stmt_t* n) {
   case EXPR_ID:
   case EXPR_PREFIXOP:
   case EXPR_POSTFIXOP:
-  case EXPR_INFIXOP:
+  case EXPR_BINOP:
   case EXPR_INTLIT:
     expr(g, (expr_t*)n); break;
 
   default:
-    error(g, n, "unexpected stmt node %s", nodekind_name(n->kind));
+    debugdie(g, n, "unexpected stmt node %s", nodekind_name(n->kind));
   }
   if (semi)
     OUT_PRINT(";\n");
@@ -221,8 +236,12 @@ err_t cgen_generate(cgen_t* g, const unit_t* n) {
   g->err = 0;
   buf_clear(&g->outbuf);
   g->anon_idgen = 0;
+
+  OUT_PRINT("#include <stdint.h>\n");
+
   if (n->kind != NODE_UNIT)
     return ErrInvalid;
   unit(g, n);
+
   return g->err;
 }

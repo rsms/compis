@@ -70,8 +70,11 @@ bool buf_reserve(buf_t* b, usize minavail);
 // Returns a pointer to the beginning of the allocated range, or NULL if buf_grow failed.
 u8* nullable buf_alloc(buf_t* b, usize len) WARN_UNUSED_RESULT;
 
-// buf_push appends a byte to the end of the buffer
+// buf_push appends a byte
 bool buf_push(buf_t* b, u8 byte) WARN_UNUSED_RESULT;
+
+// buf_nullterm appends a 0 byte without increasing len
+bool buf_nullterm(buf_t* b) WARN_UNUSED_RESULT;
 
 // buf_append appends len bytes to the end of the buffer by copying src
 bool buf_append(buf_t* b, const void* src, usize len) WARN_UNUSED_RESULT;

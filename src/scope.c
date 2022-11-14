@@ -18,10 +18,16 @@
 #include "compiler.h"
 
 
-#define TRACE_SCOPESTACK
+//#define TRACE_SCOPESTACK
 
 #ifdef TRACE_SCOPESTACK
   #define trace(s, fmt, args...) dlog("[scope %u] " fmt, level(s), args)
+  static u32 level(const scope_t* nullable s) {
+    u32 n = 0;
+    if (s) for (u32 base = s->base; base > 0; n++)
+      base = (u32)(uintptr)s->ptr[base - 1];
+    return n;
+  }
 #else
   #define trace(s, fmt, args...) ((void)0)
 #endif
@@ -35,14 +41,6 @@ void scope_clear(scope_t* s) {
 
 void scope_dispose(scope_t* s, memalloc_t ma) {
   mem_freetv(ma, s->ptr, s->cap);
-}
-
-
-static u32 level(const scope_t* nullable s) {
-  u32 n = 0;
-  if (s) for (u32 base = s->base; base > 0; n++)
-    base = (u32)(uintptr)s->ptr[base - 1];
-  return n;
 }
 
 

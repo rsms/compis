@@ -144,6 +144,12 @@ static bool indent_check_mixed(scanner_t* s) {
 static void floatnumber(scanner_t* s, int base) {
   s->tok.t = TFLOATLIT;
   bool allowsign = false;
+  buf_clear(&s->litbuf);
+  if UNLIKELY(!buf_reserve(&s->litbuf, 128))
+    return error(s, "out of memory");
+  int ok = 1;
+  if (base == 16)
+    ok = buf_print(&s->litbuf, "0x");
 
   for (; s->inp != s->inend; ++s->inp) {
     switch (*s->inp) {
@@ -154,24 +160,31 @@ static void floatnumber(scanner_t* s, int base) {
     case 'P':
     case 'p':
       if (base < 16)
-        return;
+        goto end;
       allowsign = true;
       break;
     case '+':
     case '-':
       if (!allowsign)
-        return;
+        goto end;
       break;
     case '_':
+      continue;
     case '.':
       allowsign = false;
       break;
     default:
       if (!isalnum(*s->inp))
-        return;
+        goto end;
       allowsign = false;
     }
+    ok &= buf_push(&s->litbuf, *s->inp);
   }
+
+end:
+  ok &= buf_nullterm(&s->litbuf);
+  if UNLIKELY(!ok)
+    return error(s, "out of memory");
 }
 
 
@@ -179,6 +192,7 @@ static void number(scanner_t* s, int base) {
   s->tok.t = TINTLIT;
   s->insertsemi = true;
   s->litint = 0;
+  const u8* start_inp = s->inp;
 
   u64 cutoff = 0xFFFFFFFFFFFFFFFFllu; // u64
   u64 acc = 0;
@@ -194,8 +208,10 @@ static void number(scanner_t* s, int base) {
       case 'a' ... 'z': c -= 'a' - 10; break;
       case '_': continue; // ignore
       case '.':
-        if (base == 10 || base == 16)
+        if (base == 10 || base == 16) {
+          s->inp = start_inp; // rewind
           return floatnumber(s, base);
+        }
         c = base; // trigger error branch below
         break;
       default:
@@ -389,7 +405,6 @@ static void scan1(scanner_t* s) {
   case '}': s->insertsemi = true; s->tok.t = TRBRACE; return;
   case '[': s->tok.t = TLBRACK; return;
   case ']': s->insertsemi = true; s->tok.t = TRBRACK; return;
-
   case ';': s->tok.t = TSEMI; return;
   case ',': s->tok.t = TCOMMA; return;
   case '+': s->tok.t = TPLUS; return;
@@ -399,10 +414,13 @@ static void scan1(scanner_t* s) {
   case '|': s->tok.t = TOR; return;
   case '^': s->tok.t = TXOR; return;
   case '~': s->tok.t = TTILDE; return;
-
   case '#': s->tok.t = THASH; return;
   case '<': s->tok.t = TLT; return;
   case '>': s->tok.t = TGT; return;
+  case '=': s->tok.t = TASSIGN;
+    if (s->inp < s->inend && *s->inp == '=')
+      s->inp++, s->tok.t = TEQ;
+    return;
 
   case '0': return zeronumber(s);
 

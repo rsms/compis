@@ -49,6 +49,7 @@ usize tok_descr(char* buf, usize bufcap, tok_t t, slice_t lit) {
 
   const char* typ;
   char quote = 0;
+  usize len;
 
   switch (t) {
     case TEOF:      typ = "end of input";         break;
@@ -63,7 +64,7 @@ usize tok_descr(char* buf, usize bufcap, tok_t t, slice_t lit) {
       abuf_c(&s, '\'');
       abuf_str(&s, tok_repr(t));
       abuf_c(&s, '\'');
-      return abuf_terminate(&s);
+      goto end;
   }
 
   abuf_str(&s, typ);
@@ -79,15 +80,11 @@ usize tok_descr(char* buf, usize bufcap, tok_t t, slice_t lit) {
     }
   }
 
-  return abuf_terminate(&s);
-}
-
-
-char* tok_descrs(char* buf, usize cap, tok_t t, slice_t lit) {
-  usize len = tok_descr(buf, cap, t, lit);
-  if (len >= cap && cap > 4)
-    memset(&buf[cap - 4], '.', 3);
-  return buf;
+end:
+  len = abuf_terminate(&s);
+  if (len >= bufcap && bufcap > 4)
+    memset(&buf[bufcap - 4], '.', 3);
+  return len;
 }
 
 

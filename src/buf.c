@@ -30,7 +30,8 @@ void buf_initext(buf_t* b, memalloc_t ma, void* p, usize cap) {
 
 
 void buf_dispose(buf_t* b) {
-  mem_free(b->ma, (mem_t*)b);
+  if (!b->external)
+    mem_free(b->ma, (mem_t*)b);
   b->len = 0;
 }
 
@@ -43,6 +44,16 @@ bool buf_grow(buf_t* b, usize extracap) {
     if (check_mul_overflow(b->cap, (usize)2, &newcap))
       if (check_add_overflow(b->cap, extracap, &newcap))
         return false;
+  }
+  if (b->external) {
+    mem_t m = mem_alloc(b->ma, newcap);
+    if (!m.p)
+      return false;
+    memcpy(m.p, b->p, b->len);
+    b->p = m.p;
+    b->cap = newcap;
+    b->external = false;
+    return true;
   }
   return mem_resize(b->ma, (mem_t*)b, newcap);
 }
@@ -60,6 +71,14 @@ bool buf_push(buf_t* b, u8 byte) {
   if (UNLIKELY(b->len >= b->cap) && UNLIKELY(!buf_grow(b, 1)))
     return false;
   b->bytes[b->len++] = byte;
+  return true;
+}
+
+
+bool buf_nullterm(buf_t* b) {
+  if (UNLIKELY(b->len >= b->cap) && UNLIKELY(!buf_grow(b, 1)))
+    return false;
+  b->bytes[b->len] = 0;
   return true;
 }
 

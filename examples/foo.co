@@ -2,8 +2,9 @@
 // fun foo() int
 //   1 + 2 * 3
 
-fun foo(x, y int) int
-  1 + 2 * 3
-
 // fun foo(x, y int) int
-//   x + y * 2
+//   1 + 2 * 3
+
+fun foo(x, y int) int
+  x + y * 2
+

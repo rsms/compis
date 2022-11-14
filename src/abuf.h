@@ -38,6 +38,7 @@ extern char abuf_zeroc;
 void abuf_append(abuf_t* s, const char* p, usize len);
 void abuf_c(abuf_t* s, char c);
 void abuf_u64(abuf_t* s, u64 v, u32 base);
+void abuf_f64(abuf_t* s, f64 v, int ndec);
 void abuf_fill(abuf_t* s, char c, usize len); // like memset
 void abuf_repr(abuf_t* s, const void* p, usize len);
 void abuf_reprhex(abuf_t* s, const void* p, usize len, bool spaced);
