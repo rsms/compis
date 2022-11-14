@@ -1,10 +1,11 @@
 // fun bar(int) int
-// fun foo() int
-//   1 + 2 * 3
 
-// fun foo(x, y int) int
-//   1 + 2 * 3
+fun foo(x, y int) int {
+  var a = x / y
+  var b int
+  let z = x + y * 2
+  z * 3
+}
 
-fun foo(x, y int) int
-  x + y * 2
-
+fun bar() void {
+}

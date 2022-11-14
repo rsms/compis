@@ -93,7 +93,6 @@ static void repr_type(abuf_t* s, const type_t* t, usize indent, reprflag_t fl) {
 
 
 static void repr_local(abuf_t* s, const local_t* n, usize indent, reprflag_t fl) {
-  assert(n->kind == NODE_LOCAL);
   REPR_BEGIN('(', n->name);
   abuf_c(s, ' ');
   repr_type(s, n->type, indent, fl | REPRFLAG_HEAD);

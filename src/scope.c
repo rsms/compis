@@ -18,14 +18,14 @@
 #include "compiler.h"
 
 
-//#define TRACE_SCOPESTACK
+// #define TRACE_SCOPESTACK
 
 #ifdef TRACE_SCOPESTACK
   #define trace(s, fmt, args...) dlog("[scope %u] " fmt, level(s), args)
   static u32 level(const scope_t* nullable s) {
     u32 n = 0;
     if (s) for (u32 base = s->base; base > 0; n++)
-      base = (u32)(uintptr)s->ptr[base - 1];
+      base = (u32)(uintptr)s->ptr[base];
     return n;
   }
 #else
@@ -61,8 +61,9 @@ bool scope_push(scope_t* s, memalloc_t ma) {
   if UNLIKELY(s->len >= s->cap && !scope_grow(s, ma))
     return false;
   trace(s, "push: base %u -> %u", s->base, s->len);
-  s->ptr[s->len++] = (void*)(uintptr)s->base;
+  s->ptr[s->len] = (void*)(uintptr)s->base;
   s->base = s->len;
+  s->len++;
   return true;
 }
 
@@ -75,29 +76,29 @@ void scope_pop(scope_t* s) {
     // scope_dlog(p);
   #endif
   // rewind and restore base of parent scope
-  s->len = s->base - 1;
+  s->len = s->base;
   s->base = (u32)(uintptr)s->ptr[s->len];
 }
 
 
-bool scope_def(scope_t* s, memalloc_t ma, const void* key, const void* value) {
+bool scope_def(scope_t* s, memalloc_t ma, const void* key, void* value) {
   if UNLIKELY(s->cap - s->len < 2 && !scope_grow(s, ma))
     return false;
   trace(s, "def %p => %p", key, value);
   // note that key and value are entered in "reverse" order, which simplifies lookup
   s->ptr[s->len] = value;
-  s->ptr[s->len + 1] = key;
+  s->ptr[s->len + 1] = (void*)key;
   s->len += 2;
   return true;
 }
 
 
-const void* nullable scope_lookup(scope_t* s, const void* key) {
+void* nullable scope_lookup(scope_t* s, const void* key) {
   u32 i = s->len;
-  u32 base = s->base - 1;
-  while (--i) {
+  u32 base = s->base;
+  while (i-- > 1) {
     if (i == base) {
-      base = (u32)(uintptr)s->ptr[i] - 1;
+      base = (u32)(uintptr)s->ptr[i];
     } else if (s->ptr[i--] == key) {
       trace(s, "lookup %p => %p", key, s->ptr[i]);
       return s->ptr[i];

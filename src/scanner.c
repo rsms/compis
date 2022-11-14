@@ -35,7 +35,6 @@ bool scanner_init(scanner_t* s, compiler_t* c) {
 
 
 void scanner_dispose(scanner_t* s) {
-  indentarray_dispose(&s->indentstack, s->compiler->ma);
   buf_dispose(&s->litbuf);
 }
 
@@ -49,7 +48,6 @@ void scanner_set_input(scanner_t* s, input_t* input) {
   s->tok.loc.col = 1;
   s->tok.loc.input = input;
   s->lineno = 1;
-  s->indentstack.len = 0;
 }
 
 
@@ -72,12 +70,10 @@ slice_t scanner_lit(const scanner_t* s) {
 
 ATTR_FORMAT(printf,2,3)
 static void error(scanner_t* s, const char* fmt, ...) {
-  srcrange_t range = {
-    .focus = s->tok.loc,
-  };
+  srcrange_t srcrange = { .focus = s->tok.loc };
   va_list ap;
   va_start(ap, fmt);
-  report_errorv(s->compiler, range, fmt, ap);
+  report_diagv(s->compiler, srcrange, DIAG_ERR, fmt, ap);
   va_end(ap);
   stop_scanning(s);
 }
@@ -87,57 +83,6 @@ static void newline(scanner_t* s) {
   assert(*s->inp == '\n');
   s->lineno++;
   s->linestart = s->inp + 1;
-}
-
-
-static void indent_increase(scanner_t* s) {
-  // dlog("[indent_increase] %u -> %u", s->indent.len, s->indentdst.len);
-  if (!indentarray_push(&s->indentstack, s->compiler->ma, s->indent))
-    return error(s, "out of memory");
-  s->indent = s->indentdst;
-}
-
-
-static void indent_decrease(scanner_t* s) {
-  // dlog("[indent_decrease] %u -> %u", s->indent.len, s->indentdst.len);
-  if (s->indentstack.len == 0) {
-    s->indent = s->indentdst;
-  } else {
-    s->indent = indentarray_pop(&s->indentstack);
-  }
-}
-
-
-static void indent_error_mixed(scanner_t* s, const u8* p) {
-  char want[4], got[4];
-
-  abuf_t a = abuf_make(want, sizeof(want));
-  abuf_repr(&a, s->linestart, 1);
-  abuf_terminate(&a);
-
-  a = abuf_make(got, sizeof(got));
-  abuf_repr(&a, p, 1);
-  abuf_terminate(&a);
-
-  s->tokstart = s->inp;
-  s->tok.loc.line = s->lineno;
-  s->tok.loc.col = (u32)(uintptr)(s->tokstart - s->linestart) + 1;
-
-  error(s, "mixed indentation: expected '%s', got '%s'", want, got);
-}
-
-
-static bool indent_check_mixed(scanner_t* s) {
-  const u8* p = &s->linestart[1];
-  u8 c = *s->linestart;
-  while (p < s->inp) {
-    if UNLIKELY(c != *p) {
-      indent_error_mixed(s, p);
-      return false;
-    }
-    p++;
-  }
-  return true;
 }
 
 
@@ -334,33 +279,6 @@ static void identifier(scanner_t* s) {
 }
 
 
-static void eof(scanner_t* s) {
-  s->tok.t = TEOF;
-  s->indentdst.len = 0;
-
-  if (s->indent.len > 0) {
-    // decrease indentation to 0 if source ends at indentation
-    indent_decrease(s);
-    s->insertsemi = true;
-    s->tok.t = TDEDENT;
-  } else if (s->insertsemi) {
-    s->insertsemi = false;
-    s->tok.t = TSEMI;
-  } else {
-    s->tokstart = s->inend;
-    s->tok.loc.line = s->lineno;
-    s->tok.loc.col = (u32)(uintptr)(s->tokstart - s->linestart) + 1;
-  }
-}
-
-
-inline static bool is_comment_start(scanner_t* s) {
-  return
-    s->inp+1 < s->inend &&
-    (*s->inp == '/') & ((s->inp[1] == '/') | (s->inp[1] == '*'));
-}
-
-
 static void skip_comment(scanner_t* s) {
   assert(s->inp+1 < s->inend);
   u8 c = s->inp[1];
@@ -471,70 +389,39 @@ static void scan1(scanner_t* s) {
 static void scan0(scanner_t* s) {
   s->litlenoffs = 0;
 
-  // should we unwind >1-level indent?
-  if (s->indent.len > s->indentdst.len) {
-    indent_decrease(s);
-    s->tok.loc.col = (u32)(uintptr)(s->tokstart - s->linestart) + 1;
-    s->tok.t = TDEDENT;
-    return;
-  }
-
-  // are we at the start of a new line?
-  bool is_linestart = s->inp == s->linestart;
-
   // save for TSEMI
-  u32 prev_line = s->lineno;
+  u32 prev_lineno = s->lineno;
   const u8* prev_linestart = s->linestart;
 
   // skip whitespace
   while (s->inp < s->inend && isspace(*s->inp)) {
-    if (*s->inp == '\n') {
+    if (*s->inp == '\n')
       newline(s);
-      is_linestart = true;
-    }
     s->inp++;
   }
 
-  // should we insert an implicit semicolon or did indentation change?
-  if (is_linestart) {
-    indent_t indentdst = {
-      .len = (u32)(uintptr)(s->inp - s->linestart),
-    };
-    s->tokstart = s->linestart;
-
-    if (indentdst.len > s->indent.len && !is_comment_start(s)) {
-      s->indentdst = indentdst;
-      indent_increase(s);
-      indent_check_mixed(s);
-      s->insertsemi = false;
-      s->tok.t = TINDENT;
-      s->tok.loc.line = s->lineno;
-      s->tok.loc.col = (u32)(uintptr)(s->inp - s->linestart) + 1;
-      return;
-    }
-
-    if (s->insertsemi) {
-      s->insertsemi = false;
-      s->tok.t = TSEMI;
-      s->tok.loc.line = prev_line;
-      s->tok.loc.col = (usize)(uintptr)(s->tokend - prev_linestart) + 1;
-      return;
-    }
-
-    indent_check_mixed(s);
-    if (indentdst.len < s->indent.len) {
-      s->indentdst = indentdst;
-      indent_decrease(s);
-      s->insertsemi = true; // produce semicolon after block ends
-      s->tok.t = TDEDENT;
-      s->tok.loc.line = s->lineno;
-      s->tok.loc.col = 1;
-      return;
-    }
+  // should we insert an implicit semicolon?
+  if (prev_linestart != s->linestart && s->insertsemi) {
+    s->insertsemi = false;
+    s->tokstart = prev_linestart;
+    s->tok.t = TSEMI;
+    s->tok.loc.line = prev_lineno;
+    s->tok.loc.col = (usize)(uintptr)(s->tokend - prev_linestart) + 1;
+    return;
   }
 
-  if UNLIKELY(s->inp >= s->inend)
-    MUSTTAIL return eof(s);
+  // EOF?
+  if UNLIKELY(s->inp >= s->inend) {
+    s->tokstart = s->inend;
+    s->tok.t = TEOF;
+    s->tok.loc.line = s->lineno;
+    s->tok.loc.col = (u32)(uintptr)(s->tokstart - s->linestart) + 1;
+    if (s->insertsemi) {
+      s->tok.t = TSEMI;
+      s->insertsemi = false;
+    }
+    return;
+  }
 
   MUSTTAIL return scan1(s);
 }

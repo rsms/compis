@@ -58,8 +58,6 @@ usize tok_descr(char* buf, usize bufcap, tok_t t, slice_t lit) {
     case TFLOATLIT: typ = "number";               break;
     case TBYTELIT:  typ = "byte";   quote = '\''; break;
     case TSTRLIT:   typ = "string"; quote = '"';  break;
-    case TINDENT:   typ = "indentation";          break;
-    case TDEDENT:   typ = "drop in indentation";  break;
     default:
       abuf_c(&s, '\'');
       abuf_str(&s, tok_repr(t));
@@ -174,7 +172,9 @@ static void add_srclines(compiler_t* c, srcrange_t origin, abuf_t* s) {
 }
 
 
-void report_errorv(compiler_t* c, srcrange_t origin, const char* fmt, va_list ap) {
+void report_diagv(
+  compiler_t* c, srcrange_t origin, diagkind_t kind, const char* fmt, va_list ap)
+{
   va_list ap2;
   buf_reserve(&c->diagbuf, 512);
 
@@ -188,7 +188,7 @@ void report_errorv(compiler_t* c, srcrange_t origin, const char* fmt, va_list ap
     } else if (origin.focus.input->name[0] != 0) {
       abuf_fmt(&s, "%s: ", origin.focus.input->name);
     }
-    abuf_str(&s, "error: ");
+    abuf_str(&s, kind == DIAG_ERR ? "error: " : "warning: ");
 
     // short message starts after origin and status info
     c->diag.msgshort = s.p;
@@ -217,7 +217,8 @@ void report_errorv(compiler_t* c, srcrange_t origin, const char* fmt, va_list ap
     }
   }
 
-  c->errcount++;
+  c->errcount += (kind == DIAG_ERR);
+  c->diag.kind = kind;
   c->diag.origin = origin;
   c->diaghandler(&c->diag, c->userdata);
 }

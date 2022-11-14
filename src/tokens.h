@@ -1,8 +1,5 @@
 _( TEOF, "eof" )
-
-_( TSEMI,   ";" )
-_( TINDENT, "indentation" )
-_( TDEDENT, "indentation drop" )
+_( TSEMI, ";" )
 
 _( TLPAREN, "(" ) _( TRPAREN, ")" )
 _( TLBRACE, "{" ) _( TRBRACE, "}" )
@@ -67,3 +64,4 @@ _( TSTRLIT, "string literal" )
 KEYWORD( "fun",      TFUN )
 KEYWORD( "let",      TLET )
 KEYWORD( "return",   TRETURN )
+KEYWORD( "var",      TVAR )

@@ -5,7 +5,11 @@
 
 const char* nodekind_fmt(nodekind_t kind) {
   switch (kind) {
-    case NODE_LOCAL:
+    case EXPR_PARAM:
+      return "parameter";
+    case EXPR_LET:
+      return "binding";
+    case EXPR_VAR:
       return "variable";
     case EXPR_FUN:
       return "function";
@@ -59,10 +63,18 @@ static void fmt(abuf_t* s, const node_t* nullable n, u32 indent, u32 maxdepth) {
     break;
   }
 
-  case NODE_LOCAL:
+  case EXPR_VAR:
+  case EXPR_LET:
+    abuf_str(s, n->kind == EXPR_VAR ? "var " : "let ");
+    FALLTHROUGH;
+  case EXPR_PARAM:
     abuf_str(s, ((local_t*)n)->name);
     abuf_c(s, ' ');
     fmt(s, (node_t*)((local_t*)n)->type, indent, maxdepth);
+    if (((local_t*)n)->init) {
+      abuf_str(s, " = ");
+      fmt(s, (node_t*)((local_t*)n)->init, indent, maxdepth);
+    }
     break;
 
   case EXPR_FUN: {

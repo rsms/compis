@@ -23,7 +23,7 @@ void sym_init(memalloc_t ma) {
   sym_ma = ma;
   if (!map_init(&symbols, sym_ma, 4096/sizeof(mapent_t)/2))
     panic("out of memory");
-  defsym("_");
+  sym__ = defsym("_");
 }
 
 

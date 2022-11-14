@@ -110,13 +110,16 @@ bool buf_print(buf_t* b, const char* cstr) {
 
 
 bool buf_vprintf(buf_t* b, const char* fmt, va_list ap) {
+  va_list ap2;
   usize needavail = strlen(fmt)*2;
   if (needavail == 0)
     return true;
   for (;;) {
     if (needavail > INT_MAX || !buf_reserve(b, needavail))
       return false;
-    int n = vsnprintf(&b->p[b->len], buf_avail(b), fmt, ap);
+    va_copy(ap2, ap); // copy va_list since we might read it twice
+    int n = vsnprintf(&b->p[b->len], buf_avail(b), fmt, ap2);
+    va_end(ap2);
     if (n < (int)needavail) {
       b->len += (usize)n;
       return true;
