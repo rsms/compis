@@ -71,20 +71,21 @@ bool buf_reserve(buf_t* b, usize minavail);
 u8* nullable buf_alloc(buf_t* b, usize len) WARN_UNUSED_RESULT;
 
 // buf_push appends a byte
-bool buf_push(buf_t* b, u8 byte) WARN_UNUSED_RESULT;
+bool buf_push(buf_t* b, u8 byte);
 
 // buf_nullterm appends a 0 byte without increasing len
-bool buf_nullterm(buf_t* b) WARN_UNUSED_RESULT;
+bool buf_nullterm(buf_t* b);
 
 // buf_append appends len bytes to the end of the buffer by copying src
-bool buf_append(buf_t* b, const void* src, usize len) WARN_UNUSED_RESULT;
+bool buf_append(buf_t* b, const void* src, usize len);
 
 // buf_print appends a null-terminated string
 bool buf_print(buf_t* b, const char* cstr);
 
 // buf_printf appends a formatted string
-bool buf_printf(buf_t* b, const char* fmt, ...)
-  ATTR_FORMAT(printf, 2, 3) WARN_UNUSED_RESULT;
-bool buf_vprintf(buf_t* b, const char* fmt, va_list) WARN_UNUSED_RESULT;
+bool buf_printf(buf_t* b, const char* fmt, ...) ATTR_FORMAT(printf, 2, 3);
+bool buf_vprintf(buf_t* b, const char* fmt, va_list);
+
+bool buf_print_leb128_u32(buf_t* b, u32 n);
 
 ASSUME_NONNULL_END

@@ -265,22 +265,19 @@ static void leave_scope(parser_t* p) {
 
 
 static node_t* nullable lookup_definition(parser_t* p, sym_t name) {
-  node_t* n = scope_lookup(&p->scope, name);
+  node_t* n = scope_lookup(&p->scope, name, U32_MAX);
   if (!n) {
-    // look in package scope
-    dlog("%s not found in scope", name);
+    // look in package scope and its parent universe scope
     void** vp = map_lookup(&p->pkgdefs, name, strlen(name));
-    if (!vp) {
-      dlog("%s not found in pkgdefs", name);
+    if (!vp)
       return NULL;
-    }
     n = *vp;
   }
   // increase reference count
   if (node_isexpr(n)) {
     ((expr_t*)n)->nrefs++;
-  } else {
-    dlog("TODO %s", nodekind_name(n->kind));
+  } else if (node_isusertype(n)) {
+    ((usertype_t*)n)->nrefs++;
   }
   return n;
 }
@@ -288,8 +285,25 @@ static node_t* nullable lookup_definition(parser_t* p, sym_t name) {
 
 static void define(parser_t* p, sym_t name, node_t* n) {
   //dlog("define %s => %s@%p", name, nodekind_name(n->kind), n);
+  node_t* existing = scope_lookup(&p->scope, name, 0);
+  if (existing)
+    goto err_duplicate;
+
   if (!scope_def(&p->scope, p->scanner.compiler->ma, name, n))
     out_of_mem(p);
+
+  // top-level definitions also goes into package scope
+  if (scope_istoplevel(&p->scope)) {
+    void** vp = map_assign(&p->pkgdefs, p->scanner.compiler->ma, name, strlen(name));
+    if (!vp)
+      return out_of_mem(p);
+    if (*vp)
+      goto err_duplicate;
+    *vp = n;
+  }
+  return;
+err_duplicate:
+  error(p, n, "redefinition of \"%s\"", name);
 }
 
 
@@ -306,34 +320,8 @@ static node_t* _mknode(parser_t* p, usize size, nodekind_t kind) {
 }
 
 
-/*static type_t* mktype(parser_t* p, nodekind_t kind) {
-  assertf(
-    kind != TYPE_VOID &&
-    kind != TYPE_BOOL &&
-    kind != TYPE_I8 &&
-    kind != TYPE_I16 &&
-    kind != TYPE_I32 &&
-    kind != TYPE_I64 &&
-    kind != TYPE_I8 &&
-    kind != TYPE_I16 &&
-    kind != TYPE_I32 &&
-    kind != TYPE_I64 &&
-    kind != TYPE_F32 &&
-    kind != TYPE_F64 ,
-    "use type_ constant instead"
-  );
-  assertf(kind > TYPE_VOID, "%u is not a type kind", kind);
-  type_t* t = mem_alloct(p->ast_ma, type_t);
-  if UNLIKELY(t == NULL)
-    return out_of_mem(p), type_void;
-  t->kind = kind;
-  t->loc = currloc(p);
-  return t;
-}*/
-
-
 static void* mkbad(parser_t* p) {
-  return mknode(p, node_t, NODE_BAD);
+  return mknode(p, __typeof__(_last_resort_node), NODE_BAD);
 }
 
 
@@ -343,13 +331,18 @@ static void push_child(parser_t* p, ptrarray_t* children, void* child) {
 }
 
 
+static bool types_iscompat(const type_t* nullable x, const type_t* nullable y) {
+  return x == y;
+}
+
+
 static void check_types_compat(
   parser_t* p,
   const type_t* nullable x,
   const type_t* nullable y,
   const node_t* nullable origin)
 {
-  if UNLIKELY(x != y && !!x * !!y) { // "!!x * !!y": ignore NULL
+  if UNLIKELY(!!x * !!y && !types_iscompat(x, y)) { // "!!x * !!y": ignore NULL
     const char* xs = fmtnode(p, 0, (const node_t*)x, 1);
     const char* ys = fmtnode(p, 1, (const node_t*)y, 1);
     error(p, origin, "incompatible types, %s and %s", xs, ys);
@@ -445,7 +438,7 @@ static expr_t* prefix_id(parser_t* p, precedence_t prec) {
   n->name = p->scanner.sym;
   n->ref = lookup_definition(p, n->name);
   if UNLIKELY(!n->ref) {
-    error(p, (node_t*)n, "undefined identifier \"%s\"", n->name);
+    error(p, (node_t*)n, "undeclared identifier \"%s\"", n->name);
   } else if (node_isexpr(n->ref)) {
     n->type = ((expr_t*)n->ref)->type;
   } else {
@@ -558,25 +551,19 @@ static expr_t* infix_assign(parser_t* p, precedence_t prec, expr_t* left) {
   binop_t* n = (binop_t*)infix_op(p, prec, left);
   if (n->left->kind != EXPR_ID) {
     error(p, (node_t*)n, "cannot assign to %s", nodekind_fmt(n->left->kind));
-  } else {
-    idexpr_t* id = (idexpr_t*)n->left;
-    node_t* target = id->ref;
-    switch (target->kind) {
-    case EXPR_PARAM:
-    case EXPR_VAR:
-      break;
-    default:
-      error(p, (node_t*)n, "cannot assign to %s \"%s\"",
-        nodekind_fmt(target->kind), id->name);
-    }
+    return (expr_t*)n;
+  }
+  idexpr_t* id = (idexpr_t*)n->left;
+  node_t* target = id->ref; // target is NULL if left is an undefined variable
+  if (target) switch (target->kind) {
+  case EXPR_PARAM:
+  case EXPR_VAR:
+    break;
+  default:
+    error(p, (node_t*)n, "cannot assign to %s \"%s\"",
+      nodekind_fmt(target->kind), id->name);
   }
   return (expr_t*)n;
-}
-
-
-static expr_t* infix_opassign(parser_t* p, precedence_t prec, expr_t* left) {
-  dlog("TODO %s", __FUNCTION__);
-  return infix_op(p, prec, left);
 }
 
 
@@ -626,7 +613,7 @@ static expr_t* prefix_block(parser_t* p, precedence_t prec) {
 }
 
 
-static void params(parser_t* p, ptrarray_t* params) {
+static bool params(parser_t* p, ptrarray_t* params) {
   // params = "(" param (sep param)* sep? ")"
   // param  = Id Type? | Type
   // sep    = "," | ";"
@@ -645,10 +632,10 @@ static void params(parser_t* p, ptrarray_t* params) {
   while (currtok(p) != TEOF) {
     local_t* param = mknode(p, local_t, EXPR_PARAM);
     if UNLIKELY(param == NULL)
-      return out_of_mem(p);
+      goto oom;
 
     if (!ptrarray_push(params, p->ast_ma, param))
-      return out_of_mem(p);
+      goto oom;
 
     if (currtok(p) == TID) {
       // name, eg "x"; could be parameter name or type. Assume name for now.
@@ -660,7 +647,7 @@ static void params(parser_t* p, ptrarray_t* params) {
       case TCOMMA:
       case TSEMI: // just a name, eg "x" in "(x, y)"
         if (!ptrarray_push(&typeq, p->ast_ma, param))
-          return out_of_mem(p);
+          goto oom;
         break;
       default: // type follows name, eg "int" in "x int"
         param->type = type(p, PREC_LOWEST);
@@ -676,7 +663,7 @@ static void params(parser_t* p, ptrarray_t* params) {
       // definitely a type
       param->name = sym__;
       if (!param->name)
-        return out_of_mem(p);
+        goto oom;
       param->type = type(p, PREC_LOWEST);
     }
     switch (currtok(p)) {
@@ -700,8 +687,6 @@ finish:
     // Error if at least one param has type, but last one doesn't, e.g. "(x, y int, z)"
     if (typeq.len > 0)
       error(p, NULL, "expecting type");
-    for (u32 i = 0; i < params->len; i++)
-      define(p, ((local_t*)params->v[i])->name, params->v[i]);
   } else {
     // type-only form, e.g. "(T, T, Y)"
     for (u32 i = 0; i < params->len; i++) {
@@ -714,6 +699,75 @@ finish:
     }
   }
   ptrarray_dispose(&typeq, p->ast_ma);
+  return isnametype;
+oom:
+  out_of_mem(p);
+  return false;
+}
+
+
+static bool typeid_append(buf_t* buf, const type_t* t) {
+  if (nodekind_isusertype(t->kind)) {
+    return buf_print(buf, t->tid);
+  }
+  assertf(nodekind_istype(t->kind), "%s", nodekind_name(t->kind));
+  return buf_push(buf, (u8)t->tid[0]);
+}
+
+
+static sym_t mk_fun_typeid(parser_t* p, const ptrarray_t* params, type_t* result) {
+  buf_t* buf = &p->tmpbuf[0];
+  buf_clear(buf);
+  buf_push(buf, TYPEID_PREFIX(TYPE_FUN));
+  if UNLIKELY(!buf_print_leb128_u32(buf, params->len))
+    goto fail;
+  for (u32 i = 0; i < params->len; i++) {
+    local_t* param = params->v[i];
+    assert(param->kind == EXPR_PARAM);
+    if UNLIKELY(!typeid_append(buf, param->type))
+      goto fail;
+  }
+  if UNLIKELY(!typeid_append(buf, result))
+    goto fail;
+  return sym_intern(buf->p, buf->len);
+fail:
+  out_of_mem(p);
+  return sym__;
+}
+
+
+static funtype_t* funtype(parser_t* p, const ptrarray_t* params, type_t* result) {
+  // build typeid
+  sym_t tid = mk_fun_typeid(p, params, result);
+
+  // find existing function type
+  compiler_t* compiler = p->scanner.compiler;
+  void** vp = map_assign_ptr(&compiler->typeidmap, compiler->ma, tid);
+  if (vp && *vp)
+    return *vp;
+
+  // build function type
+  funtype_t* ft = mknode(p, funtype_t, TYPE_FUN);
+  ft->size = sizeof(void*);
+  ft->align = sizeof(void*);
+  ft->isunsigned = true;
+  ft->result = result;
+  if UNLIKELY(!ptrarray_reserve(&ft->params, p->ast_ma, params->len)) {
+    out_of_mem(p);
+  } else {
+    ft->params.len = params->len;
+    for (u32 i = 0; i < params->len; i++) {
+      local_t* param = params->v[i];
+      assert(param->kind == EXPR_PARAM);
+      ft->params.v[i] = param->type;
+    }
+  }
+  if UNLIKELY(vp == NULL) {
+    out_of_mem(p);
+  } else {
+    *vp = ft;
+  }
+  return ft;
 }
 
 
@@ -726,20 +780,47 @@ static expr_t* prefix_fun(parser_t* p, precedence_t prec) {
   if (currtok(p) == TID) {
     n->name = p->scanner.sym;
     next(p);
-    define(p, n->name, (node_t*)n);
   }
-  enter_scope(p);
+
+  // parameters
   expect(p, TLPAREN, "for parameters");
+  bool has_named_params = false;
   if (currtok(p) != TRPAREN)
-    params(p, &n->params);
+    has_named_params = params(p, &n->params);
   expect(p, TRPAREN, "to end parameters");
-  n->result_type = type(p, prec);
-  if (currtok(p) == TSEMI) {
-    next(p);
-  } else {
-    n->body = expr(p, PREC_LOWEST);
+
+  // result type
+  type_t* result = type(p, prec);
+  n->type = (type_t*)funtype(p, &n->params, result);
+
+  // define named function (must have type at this point)
+  if (n->name)
+    define(p, n->name, (node_t*)n);
+
+  // enter parameter scope and define parameters
+  if (has_named_params) {
+    enter_scope(p);
+    for (u32 i = 0; i < n->params.len; i++)
+      define(p, ((local_t*)n->params.v[i])->name, n->params.v[i]);
   }
-  leave_scope(p);
+
+  // body
+  if (currtok(p) != TSEMI) {
+    fun_t* outer_fun = p->fun;
+    p->fun = n;
+    n->body = expr(p, PREC_LOWEST);
+    if UNLIKELY(result != type_void && !types_iscompat(result, n->body->type)) {
+      const char* restype = fmtnode(p, 0, (const node_t*)result, 1);
+      const char* bodytype = fmtnode(p, 1, (const node_t*)n->body->type, 1);
+      error(p, (node_t*)n->body, "incompatible result type %s, expecting %s",
+        bodytype, restype);
+    }
+    p->fun = outer_fun;
+  }
+
+  if (has_named_params)
+    leave_scope(p);
+
   return (expr_t*)n;
 }
 
@@ -756,16 +837,16 @@ static const expr_parselet_t expr_parsetab[TOK_COUNT] = {
   // infix ops (in order of precedence from weakest to strongest)
   //[TCOMMA]     = {NULL, infix_op, PREC_COMMA},
   [TASSIGN]    = {NULL, infix_assign, PREC_ASSIGN}, // =
-  [TMULASSIGN] = {NULL, infix_opassign, PREC_ASSIGN}, // *=
-  [TDIVASSIGN] = {NULL, infix_opassign, PREC_ASSIGN}, // /=
-  [TMODASSIGN] = {NULL, infix_opassign, PREC_ASSIGN}, // %=
-  [TADDASSIGN] = {NULL, infix_opassign, PREC_ASSIGN}, // +=
-  [TSUBASSIGN] = {NULL, infix_opassign, PREC_ASSIGN}, // -=
-  [TSHLASSIGN] = {NULL, infix_opassign, PREC_ASSIGN}, // <<=
-  [TSHRASSIGN] = {NULL, infix_opassign, PREC_ASSIGN}, // >>=
-  [TANDASSIGN] = {NULL, infix_opassign, PREC_ASSIGN}, // &=
-  [TXORASSIGN] = {NULL, infix_opassign, PREC_ASSIGN}, // ^=
-  [TORASSIGN]  = {NULL, infix_opassign, PREC_ASSIGN}, // |=
+  [TMULASSIGN] = {NULL, infix_assign, PREC_ASSIGN}, // *=
+  [TDIVASSIGN] = {NULL, infix_assign, PREC_ASSIGN}, // /=
+  [TMODASSIGN] = {NULL, infix_assign, PREC_ASSIGN}, // %=
+  [TADDASSIGN] = {NULL, infix_assign, PREC_ASSIGN}, // +=
+  [TSUBASSIGN] = {NULL, infix_assign, PREC_ASSIGN}, // -=
+  [TSHLASSIGN] = {NULL, infix_assign, PREC_ASSIGN}, // <<=
+  [TSHRASSIGN] = {NULL, infix_assign, PREC_ASSIGN}, // >>=
+  [TANDASSIGN] = {NULL, infix_assign, PREC_ASSIGN}, // &=
+  [TXORASSIGN] = {NULL, infix_assign, PREC_ASSIGN}, // ^=
+  [TORASSIGN]  = {NULL, infix_assign, PREC_ASSIGN}, // |=
   [TOROR]      = {NULL, infix_op, PREC_LOGICAL_OR}, // ||
   [TANDAND]    = {NULL, infix_op, PREC_LOGICAL_AND}, // &&
   [TOR]        = {NULL, infix_op, PREC_BITWISE_OR}, // |
@@ -879,12 +960,6 @@ static const map_t* universe() {
     assertnotnull(valp);
     *valp = (void*)entries[i].node;
   }
-  #if DEBUG
-    for (usize i = 0; i < countof(entries); i++) {
-      void** vp = map_lookup(&m, entries[i].key, strlen(entries[i].key));
-      assertf(vp != NULL, "%s", entries[i].key);
-    }
-  #endif
   return &m;
 }
 

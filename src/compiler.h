@@ -30,9 +30,9 @@
   _( TYPE_I64 )\
   _( TYPE_F32 )\
   _( TYPE_F64 )\
-  _( TYPE_ARRAY )\
+  _( TYPE_ARRAY ) /* nodekind_isusertype assumes this is first user type */\
   _( TYPE_ENUM )\
-  _( TYPE_FUNC )\
+  _( TYPE_FUN )\
   _( TYPE_PTR )\
   _( TYPE_STRUCT )\
 // end FOREACH_NODEKIND_TYPE
@@ -104,6 +104,7 @@ typedef struct compiler {
   u32            errcount;    // number of errors encountered
   diag_t         diag;        // most recent diagnostic message
   buf_t          diagbuf;     // for diag.msg
+  map_t          typeidmap;
 } compiler_t;
 
 typedef struct {
@@ -160,12 +161,24 @@ typedef struct {
   usize size;
   u8    align;
   bool  isunsigned;
+  sym_t tid;
 } type_t;
 
 typedef struct {
   type_t;
+  u32 nrefs;
+} usertype_t;
+
+typedef struct {
+  usertype_t;
   type_t* elem;
 } arraytype_t;
+
+typedef struct {
+  usertype_t;
+  ptrarray_t params;
+  type_t*    result;
+} funtype_t;
 
 typedef struct {
   stmt_t;
@@ -192,7 +205,6 @@ typedef struct { // block is a declaration (stmt) or an expression depending on 
 
 typedef struct { // fun is a declaration (stmt) or an expression depending on use
   expr_t;
-  type_t*          result_type; // TODO: remove and just use "type" field
   ptrarray_t       params;
   sym_t nullable   name; // NULL if anonymous
   expr_t* nullable body; // NULL if function is a prototype
@@ -201,11 +213,12 @@ typedef struct { // fun is a declaration (stmt) or an expression depending on us
 // ———————— END AST ————————
 
 typedef struct {
-  scanner_t  scanner;
-  memalloc_t ast_ma; // AST allocator
-  scope_t    scope;
-  map_t      pkgdefs;
-  buf_t      tmpbuf[2];
+  scanner_t       scanner;
+  memalloc_t      ast_ma; // AST allocator
+  scope_t         scope;
+  map_t           pkgdefs;
+  buf_t           tmpbuf[2];
+  fun_t* nullable fun; // current function
 } parser_t;
 
 typedef struct {
@@ -221,20 +234,20 @@ typedef struct {
 
 extern node_t* last_resort_node;
 
-extern type_t* const type_void;
-extern type_t* const type_bool;
-extern type_t* const type_int;
-extern type_t* const type_uint;
-extern type_t* const type_i8;
-extern type_t* const type_i16;
-extern type_t* const type_i32;
-extern type_t* const type_i64;
-extern type_t* const type_u8;
-extern type_t* const type_u16;
-extern type_t* const type_u32;
-extern type_t* const type_u64;
-extern type_t* const type_f32;
-extern type_t* const type_f64;
+extern type_t* type_void;
+extern type_t* type_bool;
+extern type_t* type_int;
+extern type_t* type_uint;
+extern type_t* type_i8;
+extern type_t* type_i16;
+extern type_t* type_i32;
+extern type_t* type_i64;
+extern type_t* type_u8;
+extern type_t* type_u16;
+extern type_t* type_u32;
+extern type_t* type_u64;
+extern type_t* type_f32;
+extern type_t* type_f64;
 
 
 // input
@@ -277,14 +290,20 @@ inline static bool nodekind_isexpr(nodekind_t kind) {
   return EXPR_FUN <= kind && kind < TYPE_VOID; }
 inline static bool nodekind_islocal(nodekind_t kind) {
   return kind == EXPR_PARAM || kind == EXPR_VAR || kind == EXPR_LET; }
+inline static bool nodekind_isusertype(nodekind_t kind) {
+  return TYPE_ARRAY <= kind && kind < NODEKIND_COUNT; }
 inline static bool node_istype(const node_t* n) { return nodekind_istype(n->kind); }
 inline static bool node_isexpr(const node_t* n) { return nodekind_isexpr(n->kind); }
 inline static bool node_islocal(const node_t* n) { return nodekind_islocal(n->kind); }
+inline static bool node_isusertype(const node_t* n) {
+  return nodekind_isusertype(n->kind); }
+#define TYPEID_PREFIX(typekind)  ('A'+(typekind)-TYPE_VOID)
 
 // tokens
 const char* tok_name(tok_t); // e.g. (TEQ) => "TEQ"
 const char* tok_repr(tok_t); // e.g. (TEQ) => "="
 usize tok_descr(char* buf, usize bufcap, tok_t, slice_t lit); // e.g. "number 3"
+inline static bool tok_isassign(tok_t t) { return TASSIGN <= t && t <= TORASSIGN; }
 
 // diagnostics
 void report_diagv(compiler_t*, srcrange_t origin, diagkind_t, const char* fmt, va_list);
@@ -308,7 +327,8 @@ void scope_dispose(scope_t* s, memalloc_t ma);
 bool scope_push(scope_t* s, memalloc_t ma);
 void scope_pop(scope_t* s);
 bool scope_def(scope_t* s, memalloc_t ma, const void* key, void* value);
-void* nullable scope_lookup(scope_t* s, const void* key);
+void* nullable scope_lookup(scope_t* s, const void* key, u32 maxdepth);
 inline static bool scope_istoplevel(const scope_t* s) { return s->base == 0; }
+
 
 ASSUME_NONNULL_END

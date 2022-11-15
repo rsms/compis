@@ -315,30 +315,47 @@ static void scan1(scanner_t* s) {
   s->insertsemi = false;
 
   u8 c = *s->inp++; // load current char and advance input pointer
+  u8 nextc = *(s->inp - (u8)(s->inp == s->inend)) * (u8)(s->inp != s->inend);
+
+  #define OP2(tok1, c2, tok2) \
+    ( s->tok.t = (nextc == c2) ? (++s->inp, tok2) : tok1 )
 
   switch (c) {
-  case '(': s->tok.t = TLPAREN; return;
-  case ')': s->insertsemi = true; s->tok.t = TRPAREN; return;
-  case '{': s->tok.t = TLBRACE; return;
-  case '}': s->insertsemi = true; s->tok.t = TRBRACE; return;
-  case '[': s->tok.t = TLBRACK; return;
-  case ']': s->insertsemi = true; s->tok.t = TRBRACK; return;
-  case ';': s->tok.t = TSEMI; return;
-  case ',': s->tok.t = TCOMMA; return;
-  case '+': s->tok.t = TPLUS; return;
-  case '*': s->tok.t = TSTAR; return;
-  case '%': s->tok.t = TPERCENT; return;
-  case '&': s->tok.t = TAND; return;
-  case '|': s->tok.t = TOR; return;
-  case '^': s->tok.t = TXOR; return;
-  case '~': s->tok.t = TTILDE; return;
-  case '#': s->tok.t = THASH; return;
-  case '<': s->tok.t = TLT; return;
-  case '>': s->tok.t = TGT; return;
-  case '=': s->tok.t = TASSIGN;
-    if (s->inp < s->inend && *s->inp == '=')
-      s->inp++, s->tok.t = TEQ;
-    return;
+  case '(': s->tok.t = TLPAREN; break;
+  case ')': s->insertsemi = true; s->tok.t = TRPAREN; break;
+  case '{': s->tok.t = TLBRACE; break;
+  case '}': s->insertsemi = true; s->tok.t = TRBRACE; break;
+  case '[': s->tok.t = TLBRACK; break;
+  case ']': s->insertsemi = true; s->tok.t = TRBRACK; break;
+  case ';': s->tok.t = TSEMI; break;
+  case ',': s->tok.t = TCOMMA; break;
+  case '~': s->tok.t = TTILDE; break;
+  case '#': s->tok.t = THASH; break;
+  case '<': s->tok.t = TLT; break;
+  case '>': s->tok.t = TGT; break;
+
+  case '=': OP2( TASSIGN,  '=', TEQ); break;
+  case '+': OP2( TPLUS,    '=', TADDASSIGN); break;
+  case '*': OP2( TSTAR,    '=', TMULASSIGN); break;
+  case '%': OP2( TPERCENT, '=', TMODASSIGN); break;
+  case '&': OP2( TAND,     '=', TANDASSIGN); break;
+  case '|': OP2( TOR,      '=', TORASSIGN); break;
+  case '^': OP2( TXOR,     '=', TXORASSIGN); break;
+  case '-': s->tok.t = TMINUS; switch (nextc) {
+    case '-': s->tok.t = TMINUSMINUS; s->inp++; break;
+    case '=': s->tok.t = TMINUSMINUS; s->inp++; break;
+  } break;
+
+  case '/': s->tok.t = TSLASH; switch (nextc) {
+    case '/':
+    case '*':
+      s->inp--;
+      s->insertsemi = insertsemi;
+      skip_comment(s);
+      MUSTTAIL return scan0(s);
+    case '=':
+      ++s->inp, s->tok.t = TDIVASSIGN; break;
+  } break;
 
   case '0': return zeronumber(s);
 
@@ -357,16 +374,6 @@ static void scan1(scanner_t* s) {
       return;
     }
     s->tok.t = TDOT;
-    return;
-
-  case '/':
-    if (s->inp < s->inend && (*s->inp == '/' || *s->inp == '*')) {
-      s->inp--;
-      s->insertsemi = insertsemi;
-      skip_comment(s);
-      MUSTTAIL return scan0(s);
-    }
-    s->tok.t = TSLASH;
     return;
 
   default:

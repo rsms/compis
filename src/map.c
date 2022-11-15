@@ -129,6 +129,11 @@ static usize keyhash(const void *key, usize keysize, u64 seed) {
 }
 
 
+static usize ptrhash(const void *key, u64 seed) {
+  return wyhash64((u64)(uintptr)key, seed);
+}
+
+
 inline static bool keyeq(const mapent_t* ent, const void* key, usize keysize) {
   return ent->keysize == keysize && memcmp(ent->key, key, keysize) == 0;
 }
@@ -232,6 +237,26 @@ bool map_del(map_t* m, const void* key, usize keysize) {
   ent->key = DELMARK;
   ent->keysize = 0;
   return true;
+}
+
+
+void** nullable map_assign_ptr(map_t* m, memalloc_t ma, const void* key) {
+  u32 growlen = m->cap - (m->cap >> LOAD_FACTOR);
+  if (UNLIKELY(m->len >= growlen) && !map_grow(m, ma))
+    return NULL;
+  usize index = ptrhash(key, m->seed) & (m->cap - 1);
+  while (m->entries[index].key) {
+    if (m->entries[index].key == key)
+      return &m->entries[index].value;
+    if (m->entries[index].key == DELMARK) // recycle deleted slot
+      break;
+    if (++index == m->cap)
+      index = 0;
+  }
+  m->len++;
+  m->entries[index].key = key;
+  m->entries[index].keysize = sizeof(void*);
+  return &m->entries[index].value;
 }
 
 

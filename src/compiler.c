@@ -25,13 +25,16 @@ void compiler_init(compiler_t* c, memalloc_t ma, diaghandler_t dh) {
   c->ma = ma;
   c->triple = "";
   c->diaghandler = dh;
-  buf_init(&c->diagbuf, ma);
+  buf_init(&c->diagbuf, c->ma);
   set_cachedir(c, slice_cstr(".c0"));
+  if (!map_init(&c->typeidmap, c->ma, 16))
+    panic("out of memory");
 }
 
 
 void compiler_dispose(compiler_t* c) {
   buf_dispose(&c->diagbuf);
+  map_dispose(&c->typeidmap, c->ma);
 }
 
 

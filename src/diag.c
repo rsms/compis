@@ -52,10 +52,10 @@ usize tok_descr(char* buf, usize bufcap, tok_t t, slice_t lit) {
   usize len;
 
   switch (t) {
-    case TEOF:      typ = "end of input";         break;
-    case TID:       typ = "identifier";           break;
+    case TEOF:      typ = "end of input"; break;
+    case TID:       typ = "identifier"; quote = '"'; break;
     case TINTLIT:
-    case TFLOATLIT: typ = "number";               break;
+    case TFLOATLIT: typ = "number"; break;
     case TBYTELIT:  typ = "byte";   quote = '\''; break;
     case TSTRLIT:   typ = "string"; quote = '"';  break;
     default:

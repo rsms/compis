@@ -82,10 +82,10 @@ static void repr_type(abuf_t* s, const type_t* t, usize indent, reprflag_t fl) {
   switch (t->kind) {
     case TYPE_ARRAY:
     case TYPE_ENUM:
-    case TYPE_FUNC:
+    case TYPE_FUN:
     case TYPE_PTR:
     case TYPE_STRUCT:
-      dlog("TODO subtype(s)");
+      dlog("TODO subtype %s", nodekind_name(t->kind));
       break;
   }
   REPR_END('>');
@@ -114,7 +114,7 @@ static void repr_fun(abuf_t* s, const fun_t* n, usize indent, reprflag_t fl) {
   }
   {
     REPR_BEGIN('(', "result");
-    abuf_c(s, ' '), repr_type(s, n->result_type, indent, fl);
+    abuf_c(s, ' '), repr_type(s, ((funtype_t*)n->type)->result, indent, fl);
     REPR_END(')');
   }
   if (n->body)

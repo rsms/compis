@@ -19,9 +19,14 @@ inline static void map_dispose(map_t* m, memalloc_t ma) {
   mem_freetv(ma, m->entries, m->cap);
 }
 void map_clear(map_t* m); // remove all items (m remains valid)
+
 void** nullable map_assign(map_t* m, memalloc_t ma, const void* key, usize keysize);
 void** nullable map_lookup(const map_t* m, const void* key, usize keysize);
 bool map_del(map_t* m, const void* key, usize keysize);
+
+void** nullable map_assign_ptr(map_t* m, memalloc_t ma, const void* key);
+void** nullable map_lookup_ptr(const map_t* m, const void* key);
+bool map_del_ptr(map_t* m, const void* key);
 
 // Iterator. Example with c-string keys
 // for (mapent_t* e = map_it(m); map_itnext(m, &e); )

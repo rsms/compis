@@ -1,11 +1,16 @@
-// fun bar(int) int
-
 fun foo(x, y int) int {
-  var a = x / y
-  var b int
-  let z = x + y * 2
-  z * 3
+  var z = x + y * 2
+  z * 6
 }
 
-fun bar() void {
+fun bar(y, x int) int {
+  x + y
 }
+
+// fun cat(int) void {
+//   3
+// }
+
+// struct foo {
+//   x int
+// }

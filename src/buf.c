@@ -136,3 +136,11 @@ bool buf_printf(buf_t* b, const char* fmt, ...) {
   va_end(ap);
   return ok;
 }
+
+
+bool buf_print_leb128_u32(buf_t* b, u32 n) {
+  if (!buf_reserve(b, LEB128_NBYTE_32))
+    return false;
+  b->len += leb128_u32_write(b->bytes + b->len, n);
+  return true;
+}

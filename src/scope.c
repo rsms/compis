@@ -93,11 +93,14 @@ bool scope_def(scope_t* s, memalloc_t ma, const void* key, void* value) {
 }
 
 
-void* nullable scope_lookup(scope_t* s, const void* key) {
+void* nullable scope_lookup(scope_t* s, const void* key, u32 maxdepth) {
   u32 i = s->len;
   u32 base = s->base;
   while (i-- > 1) {
     if (i == base) {
+      if (maxdepth == 0)
+        break;
+      maxdepth--;
       base = (u32)(uintptr)s->ptr[i];
     } else if (s->ptr[i--] == key) {
       trace(s, "lookup %p => %p", key, s->ptr[i]);

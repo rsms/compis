@@ -185,15 +185,20 @@ static void block(cgen_t* g, const block_t* n, blockflag_t fl) {
 }
 
 
+static void id(cgen_t* g, sym_t nullable name) {
+  if (name && name != sym__) {
+    OUT_PRINT(name);
+  } else {
+    OUT_PRINTF("_anon%u", g->anon_idgen++);
+  }
+}
+
+
 static void fun(cgen_t* g, const fun_t* fun) {
   startline(g, fun->loc);
-  type(g, fun->result_type);
+  type(g, ((funtype_t*)fun->type)->result);
   OUT_PUTC(' ');
-  if (fun->name) {
-    OUT_PRINT(fun->name);
-  } else {
-    OUT_PRINTF("_anonfun_%u", g->anon_idgen++);
-  }
+  id(g, fun->name);
   OUT_PUTC('(');
   if (fun->params.len > 0) {
     for (u32 i = 0; i < fun->params.len; i++) {
@@ -201,7 +206,7 @@ static void fun(cgen_t* g, const fun_t* fun) {
       if (i) OUT_PRINT(", ");
       type(g, param->type);
       OUT_PUTC(' ');
-      OUT_PRINT(param->name);
+      id(g, param->name);
     }
   } else {
     OUT_PRINT("void");
@@ -211,7 +216,7 @@ static void fun(cgen_t* g, const fun_t* fun) {
     OUT_PRINT(";\n");
   } else if (fun->body->kind == EXPR_BLOCK) {
     blockflag_t fl = 0;
-    if (fun->result_type != type_void)
+    if (((funtype_t*)fun->type)->result != type_void)
       fl |= BLOCKFLAG_RET; // return last expression
     OUT_PUTC(' ');
     block(g, (block_t*)fun->body, fl);
@@ -224,14 +229,14 @@ static void fun(cgen_t* g, const fun_t* fun) {
 
 
 static void binop(cgen_t* g, const binop_t* n) {
-  if (n->op != TASSIGN)
+  if (!tok_isassign(n->op))
     OUT_PUTC('(');
   expr(g, n->left);
   OUT_PUTC(' ');
   OUT_PRINT(operator(n->op));
   OUT_PUTC(' ');
   expr(g, n->right);
-  if (n->op != TASSIGN)
+  if (!tok_isassign(n->op))
     OUT_PUTC(')');
 }
 
@@ -242,7 +247,7 @@ static void intlit(cgen_t* g, const intlit_t* n) {
 
 
 static void idexpr(cgen_t* g, const idexpr_t* n) {
-  OUT_PRINTF("%s", n->name);
+  id(g, n->name);
 }
 
 
@@ -276,7 +281,10 @@ static void zeroinit(cgen_t* g, const type_t* t) {
 static void vardef(cgen_t* g, const local_t* n) {
   type(g, n->type);
   OUT_PUTC(' ');
-  OUT_PRINTF("%s = ", n->name);
+  if (n->name == sym__)
+    OUT_PRINT("__attribute__((__unused__)) ");
+  id(g, n->name);
+  OUT_PRINT(" = ");
   if (n->init) {
     expr(g, n->init);
   } else {
@@ -289,7 +297,10 @@ static void letdef(cgen_t* g, const local_t* n) {
   OUT_PRINT("const ");
   type(g, n->type);
   OUT_PUTC(' ');
-  OUT_PRINTF("%s = ", n->name);
+  if (n->name == sym__)
+    OUT_PRINT("__attribute__((__unused__)) ");
+  id(g, n->name);
+  OUT_PRINT(" = ");
   assertnotnull(n->init);
   expr(g, n->init);
 }

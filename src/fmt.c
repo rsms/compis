@@ -85,7 +85,7 @@ static void fmt(abuf_t* s, const node_t* nullable n, u32 indent, u32 maxdepth) {
       fmt(s, fn->params.v[i], indent, maxdepth);
     }
     abuf_str(s, ") ");
-    fmt(s, (node_t*)fn->result_type, indent, maxdepth);
+    fmt(s, (node_t*)((funtype_t*)fn->type)->result, indent, maxdepth);
     if (fn->body) {
       abuf_c(s, ' ');
       fmt(s, (node_t*)fn->body, indent, maxdepth);
@@ -162,7 +162,7 @@ static void fmt(abuf_t* s, const node_t* nullable n, u32 indent, u32 maxdepth) {
     break;
   }
   case TYPE_ENUM:
-  case TYPE_FUNC:
+  case TYPE_FUN:
   case TYPE_PTR:
   case TYPE_STRUCT:
     dlog("TODO %s", nodekind_name(n->kind));
