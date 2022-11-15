@@ -325,7 +325,7 @@ static void* mkbad(parser_t* p) {
 }
 
 
-static void push_child(parser_t* p, ptrarray_t* children, void* child) {
+static void push(parser_t* p, ptrarray_t* children, void* child) {
   if UNLIKELY(!ptrarray_push(children, p->ast_ma, child))
     out_of_mem(p);
 }
@@ -567,10 +567,32 @@ static expr_t* infix_assign(parser_t* p, precedence_t prec, expr_t* left) {
 }
 
 
-static expr_t* postfix_paren(parser_t* p, precedence_t prec, expr_t* left) {
-  unaryop_t* n = mknode(p, unaryop_t, EXPR_POSTFIXOP);
+// exprlist = expr (("," | ";") expr)*
+static void exprlist(parser_t* p, ptrarray_t* args) {
+  for (;;) {
+    expr_t* n = expr(p, PREC_COMMA);
+    push(p, args, n);
+    if (currtok(p) != TSEMI && currtok(p) != TCOMMA)
+      break;
+    next(p);
+  }
+}
+
+
+static expr_t* postfix_call(parser_t* p, precedence_t prec, expr_t* left) {
+  call_t* n = mknode(p, call_t, EXPR_CALL);
   next(p);
-  panic("TODO");
+  if (left->type && left->type->kind == TYPE_FUN) {
+    funtype_t* ft = (funtype_t*)left->type;
+    n->type = ft->result;
+  } else {
+    error(p, (node_t*)n, "calling %s; not a function",
+      left->type ? nodekind_fmt(left->type->kind) : nodekind_fmt(left->kind));
+  }
+  n->recv = left;
+  if (currtok(p) != TRPAREN)
+    exprlist(p, &n->args);
+  expect(p, TRPAREN, "to end function call");
   return (expr_t*)n;
 }
 
@@ -596,7 +618,7 @@ static expr_t* prefix_block(parser_t* p, precedence_t prec) {
   next(p);
   enter_scope(p);
   while (currtok(p) != TRBRACE && currtok(p) != TEOF) {
-    push_child(p, &n->children, (node_t*)expr(p, PREC_LOWEST));
+    push(p, &n->children, (node_t*)expr(p, PREC_LOWEST));
     if (currtok(p) != TSEMI)
       break;
     next(p);
@@ -873,7 +895,7 @@ static const expr_parselet_t expr_parsetab[TOK_COUNT] = {
   [TTILDE]      = {prefix_op, NULL, PREC_UNARY_PREFIX}, // ~
 
   // postfix ops
-  [TLPAREN] = {NULL, postfix_paren, PREC_UNARY_POSTFIX}, // (
+  [TLPAREN] = {NULL, postfix_call, PREC_UNARY_POSTFIX}, // (
   [TLBRACK] = {NULL, postfix_brack, PREC_UNARY_POSTFIX}, // [
 
   // member ops
@@ -913,7 +935,7 @@ unit_t* parser_parse(parser_t* p, memalloc_t ast_ma, input_t* input) {
 
   while (currtok(p) != TEOF) {
     stmt_t* n = stmt(p, PREC_LOWEST);
-    push_child(p, &unit->children, n);
+    push(p, &unit->children, n);
     if (!expect_token(p, TSEMI, "")) {
       fastforward_semi(p);
     } else {

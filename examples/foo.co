@@ -1,10 +1,10 @@
-fun foo(x, y int) int {
-  var z = x + y * 2
-  z * 6
+fun bar(y, x int) int {
+  x * y
 }
 
-fun bar(y, x int) int {
-  x + y
+fun foo(x, y int) int {
+  var z = x + y * 2
+  bar(z, 6)
 }
 
 // fun cat(int) void {

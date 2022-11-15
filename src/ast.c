@@ -6,6 +6,7 @@
 
 typedef enum reprflag {
   REPRFLAG_HEAD = 1 << 0, // is list head
+  REPRFLAG_SHORT = 1 << 1,
 } reprflag_t;
 
 
@@ -60,12 +61,15 @@ const char* nodekind_name(nodekind_t kind) {
 }
 
 
+#define INDENT 2
+
+
 #define REPR_BEGIN(opench, kindname) ({ \
   if ((fl & REPRFLAG_HEAD) == 0) \
     abuf_c(s, '\n'), abuf_fill(s, ' ', indent); \
   fl &= ~REPRFLAG_HEAD; \
   abuf_c(s, (opench)); \
-  indent += 2; \
+  indent += INDENT; \
   abuf_str(s, (kindname)); \
 })
 
@@ -122,6 +126,21 @@ static void repr_fun(abuf_t* s, const fun_t* n, usize indent, reprflag_t fl) {
 }
 
 
+static void repr_call(abuf_t* s, const call_t* n, usize indent, reprflag_t fl) {
+  fl |= REPRFLAG_HEAD;
+  abuf_c(s, ' ');
+  repr(s, (const node_t*)n->recv, indent, fl | REPRFLAG_SHORT);
+  if (n->args.len == 0)
+    return;
+  abuf_c(s, ' ');
+  fl &= ~REPRFLAG_HEAD;
+  for (usize i = 0; i < n->args.len; i++) {
+    if (i) abuf_c(s, ' ');
+    repr(s, (const node_t*)n->args.v[i], indent, fl);
+  }
+}
+
+
 static void repr_nodearray(
   abuf_t* s, const ptrarray_t* nodes, usize indent, reprflag_t fl)
 {
@@ -151,11 +170,14 @@ static void repr(abuf_t* s, const node_t* n, usize indent, reprflag_t fl) {
   case NODE_UNIT:
     repr_nodearray(s, &((unit_t*)n)->children, indent, fl); break;
 
+  case EXPR_FUN:
+    repr_fun(s, (fun_t*)n, indent, fl); break;
+
   case EXPR_BLOCK:
     repr_nodearray(s, &((block_t*)n)->children, indent, fl); break;
 
-  case EXPR_FUN:
-    return repr_fun(s, (fun_t*)n, indent, fl);
+  case EXPR_CALL:
+    repr_call(s, (call_t*)n, indent, fl); break;
 
   case EXPR_PREFIXOP:
   case EXPR_POSTFIXOP: {

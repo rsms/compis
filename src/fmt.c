@@ -113,17 +113,24 @@ static void fmt(abuf_t* s, const node_t* nullable n, u32 indent, u32 maxdepth) {
     break;
   }
 
+  case EXPR_CALL:
+    dlog("TODO %s %s", __FUNCTION__, nodekind_name(n->kind));
+    break;
+
   case EXPR_ID:
     abuf_str(s, ((idexpr_t*)n)->name);
     break;
+
   case EXPR_PREFIXOP:
     abuf_str(s, tok_repr(((unaryop_t*)n)->op));
     fmt(s, (node_t*)((unaryop_t*)n)->expr, indent, maxdepth - 1);
     break;
+
   case EXPR_POSTFIXOP:
     fmt(s, (node_t*)((unaryop_t*)n)->expr, indent, maxdepth - 1);
     abuf_str(s, tok_repr(((unaryop_t*)n)->op));
     break;
+
   case EXPR_BINOP:
     fmt(s, (node_t*)((binop_t*)n)->left, indent, maxdepth - 1);
     abuf_c(s, ' ');
@@ -131,6 +138,7 @@ static void fmt(abuf_t* s, const node_t* nullable n, u32 indent, u32 maxdepth) {
     abuf_c(s, ' ');
     fmt(s, (node_t*)((binop_t*)n)->right, indent, maxdepth - 1);
     break;
+
   case EXPR_INTLIT: {
     const intlit_t* lit = (const intlit_t*)n;
     u32 base = 10;
@@ -139,6 +147,7 @@ static void fmt(abuf_t* s, const node_t* nullable n, u32 indent, u32 maxdepth) {
     abuf_u64(s, lit->intval, base);
     break;
   }
+
   case EXPR_FLOATLIT: {
     const floatlit_t* lit = (const floatlit_t*)n;
     double f64val = lit->type == type_f64 ? lit->f64val : (double)lit->f32val;

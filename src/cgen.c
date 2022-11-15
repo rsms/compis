@@ -185,6 +185,17 @@ static void block(cgen_t* g, const block_t* n, blockflag_t fl) {
 }
 
 
+static void call(cgen_t* g, const call_t* n) {
+  expr(g, n->recv);
+  OUT_PUTC('(');
+  for (u32 i = 0; i < n->args.len; i++) {
+    if (i) OUT_PRINT(", ");
+    expr(g, n->args.v[i]);
+  }
+  OUT_PUTC(')');
+}
+
+
 static void id(cgen_t* g, sym_t nullable name) {
   if (name && name != sym__) {
     OUT_PRINT(name);
@@ -315,6 +326,7 @@ static void expr(cgen_t* g, const expr_t* n) {
   case EXPR_VAR:    return vardef(g, (const local_t*)n);
   case EXPR_LET:    return letdef(g, (const local_t*)n);
   case EXPR_BLOCK:  return block(g, (const block_t*)n, BLOCKFLAG_EXPR);
+  case EXPR_CALL:   return call(g, (const call_t*)n);
   }
   debugdie(g, n, "unexpected node %s", nodekind_name(n->kind));
 }

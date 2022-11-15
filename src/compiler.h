@@ -10,6 +10,7 @@
   _( NODE_UNIT )\
   _( EXPR_FUN )/* nodekind_isexpr assumes this is first expr kind */\
   _( EXPR_BLOCK )\
+  _( EXPR_CALL )\
   _( EXPR_ID )\
   _( EXPR_PARAM )\
   _( EXPR_VAR )\
@@ -191,6 +192,7 @@ typedef struct { expr_t; union { double f64val; float f32val; }; } floatlit_t;
 typedef struct { expr_t; sym_t name; node_t* nullable ref; } idexpr_t;
 typedef struct { expr_t; tok_t op; expr_t* expr; } unaryop_t;
 typedef struct { expr_t; tok_t op; expr_t* left; expr_t* right; } binop_t;
+typedef struct { expr_t; expr_t* recv; ptrarray_t args; } call_t;
 
 typedef struct { // PARAM, VAR, LET
   expr_t;
