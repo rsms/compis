@@ -426,14 +426,60 @@ static type_t* named_type(parser_t* p, sym_t name, const node_t* nullable origin
 }
 
 
-static type_t* prefix_type_id(parser_t* p, precedence_t prec) {
+static type_t* type_id(parser_t* p, precedence_t prec) {
   type_t* t = named_type(p, p->scanner.sym, NULL);
   next(p);
   return t;
 }
 
 
-static expr_t* prefix_id(parser_t* p, precedence_t prec) {
+// field = id type ("=" expr)
+static field_t* field(parser_t* p) {
+  field_t* f = mknode(p, field_t, TYPE_STRUCT);
+  f->name = p->scanner.sym;
+  expect(p, TID, "");
+  f->type = type(p, PREC_MEMBER);
+  if (currtok(p) == TASSIGN) {
+    next(p);
+    f->init = expr(p, PREC_MEMBER);
+  }
+  return f;
+}
+
+
+static type_t* type_struct(parser_t* p, precedence_t prec) {
+  structtype_t* t = mknode(p, structtype_t, TYPE_STRUCT);
+  next(p);
+  while (currtok(p) != TRBRACE) {
+    field_t* n = field(p);
+    push(p, &t->fields, n);
+    if (currtok(p) != TSEMI)
+      break;
+    next(p);
+  }
+  expect(p, TRBRACE, "to end struct");
+  return (type_t*)t;
+}
+
+
+// typedef = "type" id type
+static stmt_t* stmt_typedef(parser_t* p, precedence_t prec) {
+  typedef_t* n = mknode(p, typedef_t, STMT_TYPEDEF);
+  next(p);
+  n->name = p->scanner.sym;
+  bool nameok = expect(p, TID, "");
+  if (nameok)
+    define(p, n->name, (node_t*)n);
+  n->type = type(p, prec);
+  if (nameok && !scope_def(&p->scope, p->scanner.compiler->ma, n->name, n->type))
+    out_of_mem(p);
+  if (n->type->kind == TYPE_STRUCT)
+    ((structtype_t*)n->type)->name = n->name;
+  return (stmt_t*)n;
+}
+
+
+static expr_t* expr_id(parser_t* p, precedence_t prec) {
   idexpr_t* n = mknode(p, idexpr_t, EXPR_ID);
   n->name = p->scanner.sym;
   n->ref = lookup_definition(p, n->name);
@@ -441,8 +487,11 @@ static expr_t* prefix_id(parser_t* p, precedence_t prec) {
     error(p, (node_t*)n, "undeclared identifier \"%s\"", n->name);
   } else if (node_isexpr(n->ref)) {
     n->type = ((expr_t*)n->ref)->type;
+  } else if (nodekind_istype(n->ref->kind)) {
+    n->type = (type_t*)n->ref;
   } else {
-    error(p, (node_t*)n, "%s is a %s", n->name, nodekind_fmt(n->ref->kind));
+    error(p, (node_t*)n, "cannot use %s \"%s\" as an expression",
+      nodekind_fmt(n->ref->kind), n->name);
   }
   next(p);
   return (expr_t*)n;
@@ -585,6 +634,8 @@ static expr_t* postfix_call(parser_t* p, precedence_t prec, expr_t* left) {
   if (left->type && left->type->kind == TYPE_FUN) {
     funtype_t* ft = (funtype_t*)left->type;
     n->type = ft->result;
+  } else if (left->type && nodekind_istype(left->type->kind)) {
+    n->type = left->type;
   } else {
     error(p, (node_t*)n, "calling %s; not a function",
       left->type ? nodekind_fmt(left->type->kind) : nodekind_fmt(left->kind));
@@ -605,10 +656,38 @@ static expr_t* postfix_brack(parser_t* p, precedence_t prec, expr_t* left) {
 }
 
 
+static field_t* nullable find_field(ptrarray_t* fields, sym_t name) {
+  for (u32 i = 0; i < fields->len; i++) {
+    field_t* f = fields->v[i];
+    if (f->name == name)
+      return f;
+  }
+  return NULL;
+}
+
+
+// member = expr "." id
 static expr_t* postfix_member(parser_t* p, precedence_t prec, expr_t* left) {
-  unaryop_t* n = mknode(p, unaryop_t, EXPR_POSTFIXOP);
+  member_t* n = mknode(p, member_t, EXPR_MEMBER);
   next(p);
-  panic("TODO");
+  n->recv = left;
+  n->name = p->scanner.sym;
+  if (!expect(p, TID, ""))
+    goto end;
+  if UNLIKELY(!n->recv->type || n->recv->type->kind != TYPE_STRUCT) {
+    const char* s = fmtnode(p, 0, (const node_t*)n->recv, 1);
+    error(p, (node_t*)n, "%s has no member \"%s\"", s, n->name);
+    goto end;
+  }
+  structtype_t* t = (structtype_t*)n->recv->type;
+  field_t* f = find_field(&t->fields, n->name);
+  if UNLIKELY(!f) {
+    const char* s = fmtnode(p, 0, (const node_t*)n->recv, 1);
+    error(p, (node_t*)n, "%s has no field \"%s\"", s, n->name);
+    goto end;
+  }
+  n->type = f->type;
+end:
   return (expr_t*)n;
 }
 
@@ -728,10 +807,18 @@ oom:
 }
 
 
-static bool typeid_append(buf_t* buf, const type_t* t) {
-  if (nodekind_isusertype(t->kind)) {
-    return buf_print(buf, t->tid);
-  }
+static sym_t typeid(parser_t* p, type_t* t) {
+  if (t->tid)
+    return t->tid;
+  dlog("TODO create typeid for %s", nodekind_name(t->kind));
+  t->tid = sym__; // FIXME
+  return t->tid;
+}
+
+
+static bool typeid_append(parser_t* p, buf_t* buf, type_t* t) {
+  if (nodekind_isusertype(t->kind))
+    return buf_print(buf, typeid(p, t));
   assertf(nodekind_istype(t->kind), "%s", nodekind_name(t->kind));
   return buf_push(buf, (u8)t->tid[0]);
 }
@@ -746,10 +833,10 @@ static sym_t mk_fun_typeid(parser_t* p, const ptrarray_t* params, type_t* result
   for (u32 i = 0; i < params->len; i++) {
     local_t* param = params->v[i];
     assert(param->kind == EXPR_PARAM);
-    if UNLIKELY(!typeid_append(buf, param->type))
+    if UNLIKELY(!typeid_append(p, buf, param->type))
       goto fail;
   }
-  if UNLIKELY(!typeid_append(buf, result))
+  if UNLIKELY(!typeid_append(p, buf, result))
     goto fail;
   return sym_intern(buf->p, buf->len);
 fail:
@@ -847,7 +934,7 @@ static expr_t* prefix_fun(parser_t* p, precedence_t prec) {
 }
 
 
-static stmt_t* funstmt(parser_t* p, precedence_t prec) {
+static stmt_t* stmt_prefix_fun(parser_t* p, precedence_t prec) {
   fun_t* n = (fun_t*)prefix_fun(p, prec);
   if UNLIKELY(n->kind == EXPR_FUN && !n->name)
     error(p, (node_t*)n, "anonymous function at top level");
@@ -902,7 +989,7 @@ static const expr_parselet_t expr_parsetab[TOK_COUNT] = {
   [TDOT] = {NULL, postfix_member, PREC_MEMBER}, // .
 
   // keywords & identifiers
-  [TID]  = {prefix_id, NULL, PREC_MEMBER},
+  [TID]  = {expr_id, NULL, PREC_MEMBER},
   [TFUN] = {prefix_fun, NULL, PREC_MEMBER},
   [TLET] = {prefix_var, NULL, PREC_MEMBER},
   [TVAR] = {prefix_var, NULL, PREC_MEMBER},
@@ -917,12 +1004,14 @@ static const expr_parselet_t expr_parsetab[TOK_COUNT] = {
 
 
 static const type_parselet_t type_parsetab[TOK_COUNT] = {
-  [TID] = {prefix_type_id, NULL, PREC_MEMBER},
+  [TID]     = {type_id, NULL, PREC_MEMBER},
+  [TLBRACE] = {type_struct, NULL, PREC_MEMBER},
 };
 
 
 static const stmt_parselet_t stmt_parsetab[TOK_COUNT] = {
-  [TFUN] = {funstmt, NULL, PREC_MEMBER},
+  [TFUN]  = {stmt_prefix_fun, NULL, PREC_MEMBER},
+  [TTYPE] = {stmt_typedef, NULL, PREC_MEMBER},
 };
 
 

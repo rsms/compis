@@ -119,9 +119,12 @@ static err_t compile_co_to_c(compiler_t* c, input_t* input, const char* cfile) {
       goto end;
     dlog("AST:\n%.*s\n", (int)buf.len, buf.chars);
 
-    buf_clear(&buf);
-    node_fmt(&buf, (const node_t*)unit, U32_MAX);
-    dlog("fmt:\n%.*s\n", (int)buf.len, buf.chars);
+    // print formatted c0 code
+    if (c->errcount == errcount) {
+      buf_clear(&buf);
+      node_fmt(&buf, (const node_t*)unit, U32_MAX);
+      dlog("fmt:\n%.*s\n", (int)buf.len, buf.chars);
+    }
   }
   #endif
 

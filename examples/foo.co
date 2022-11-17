@@ -1,16 +1,13 @@
+type Account {
+  x int = 3
+}
+
 fun bar(y, x int) int {
-  x * y
+  let a = Account(x)
+  a.x * y
 }
 
 fun foo(x, y int) int {
   var z = x + y * 2
   bar(z, 6)
 }
-
-// fun cat(int) void {
-//   3
-// }
-
-// struct foo {
-//   x int
-// }

@@ -87,7 +87,7 @@ u8* nullable buf_alloc(buf_t* b, usize len) {
   usize newlen;
   if (check_add_overflow(b->len, len, &newlen))
     return NULL;
-  if (len > b->cap && UNLIKELY(!buf_grow(b, len - b->cap)))
+  if (newlen > b->cap && UNLIKELY(!buf_grow(b, newlen - b->cap)))
     return NULL;
   u8* p = b->bytes + b->len;
   b->len = newlen;
@@ -97,10 +97,17 @@ u8* nullable buf_alloc(buf_t* b, usize len) {
 
 bool buf_append(buf_t* b, const void* src, usize len) {
   void* p = buf_alloc(b, len);
-  if UNLIKELY(p == NULL)
-    return false;
-  memcpy(p, src, len);
-  return true;
+  if (p)
+    memcpy(p, src, len);
+  return !!p;
+}
+
+
+bool buf_fill(buf_t* b, u8 byte, usize len) {
+  void* p = buf_alloc(b, len);
+  if (p)
+    memset(p, byte, len);
+  return !!p;
 }
 
 
@@ -135,6 +142,13 @@ bool buf_printf(buf_t* b, const char* fmt, ...) {
   bool ok = buf_vprintf(b, fmt, ap);
   va_end(ap);
   return ok;
+}
+
+
+bool buf_print_u64(buf_t* b, u64 n, u32 base) {
+  char buf[64];
+  u32 len = (u32)sfmtu64(buf, n, base);
+  return buf_append(b, buf, len);
 }
 
 

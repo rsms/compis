@@ -87,7 +87,7 @@ end:
 
 
 static void add_srclines(compiler_t* c, srcrange_t origin, abuf_t* s) {
-  const input_t* input = origin.focus.input;
+  const input_t* input = assertnotnull(origin.focus.input);
   c->diag.srclines = "";
 
   if (abuf_avail(s) < 4 || origin.focus.line == 0 || input->data.size == 0)
@@ -182,10 +182,10 @@ void report_diagv(
     abuf_t s = abuf_make(c->diagbuf.p, c->diagbuf.cap);
     c->diag.msg = s.p;
 
-    if (origin.focus.line > 0) {
+    if (origin.focus.line > 0 && origin.focus.input) {
       abuf_fmt(&s, "%s:%u:%u: ",
         origin.focus.input->name, origin.focus.line, origin.focus.col);
-    } else if (origin.focus.input->name[0] != 0) {
+    } else if (origin.focus.input && origin.focus.input->name[0] != 0) {
       abuf_fmt(&s, "%s: ", origin.focus.input->name);
     }
     abuf_str(&s, kind == DIAG_ERR ? "error: " : "warning: ");
@@ -202,7 +202,8 @@ void report_diagv(
     abuf_c(&s, '\0');
 
     // populate c->diag.srclines
-    add_srclines(c, origin, &s);
+    if (origin.focus.input)
+      add_srclines(c, origin, &s);
 
     usize len = abuf_terminate(&s);
     if (len < c->diagbuf.cap) {

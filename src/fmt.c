@@ -23,6 +23,8 @@ const char* nodekind_fmt(nodekind_t kind) {
       return "operation";
     case EXPR_INTLIT:
       return "literal constant";
+    case TYPE_STRUCT:
+      return "struct type";
     default:
       if (nodekind_istype(kind))
         return "type";
@@ -113,8 +115,22 @@ static void fmt(abuf_t* s, const node_t* nullable n, u32 indent, u32 maxdepth) {
     break;
   }
 
-  case EXPR_CALL:
-    dlog("TODO %s %s", __FUNCTION__, nodekind_name(n->kind));
+  case EXPR_CALL: {
+    const call_t* call = (const call_t*)n;
+    fmt(s, (const node_t*)call->recv, indent, maxdepth);
+    abuf_c(s, '(');
+    for (u32 i = 0; i < call->args.len; i++) {
+      if (i) abuf_str(s, ", ");
+      fmt(s, (const node_t*)call->args.v[i], indent, maxdepth);
+    }
+    abuf_c(s, ')');
+    break;
+  }
+
+  case EXPR_MEMBER:
+    fmt(s, (node_t*)((const member_t*)n)->recv, indent, maxdepth);
+    abuf_c(s, '.');
+    abuf_str(s, ((const member_t*)n)->name);
     break;
 
   case EXPR_ID:
@@ -174,13 +190,18 @@ static void fmt(abuf_t* s, const node_t* nullable n, u32 indent, u32 maxdepth) {
   case TYPE_FUN:
   case TYPE_PTR:
   case TYPE_STRUCT:
+  case STMT_TYPEDEF:
+  case NODE_FIELD:
     dlog("TODO %s", nodekind_name(n->kind));
-    FALLTHROUGH;
+    abuf_str(s, "/* TODO fmt ");
+    abuf_str(s, nodekind_name(n->kind));
+    abuf_str(s, "*/");
+    break;
 
   case NODE_BAD:
   case NODE_COMMENT:
   case NODEKIND_COUNT:
-    abuf_str(s, nodekind_name(n->kind));
+    assertf(0, "unexpected node %s", nodekind_name(n->kind));
   }
 }
 

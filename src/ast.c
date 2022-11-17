@@ -10,6 +10,13 @@ typedef enum reprflag {
 } reprflag_t;
 
 
+typedef struct {
+  buf_t outbuf;
+  err_t err;
+  map_t seen;
+} repr_t;
+
+
 // node kind string table with compressed indices (compared to table of pointers.)
 // We end up with something like this; one string with indices:
 //   enum {
@@ -56,39 +63,155 @@ static const struct {
   &(strtab).strs[ (strtab).offs[ MIN((kind), countof(strtab.offs)-1) ] ]
 
 
+#define CHAR(ch) ( \
+  buf_push(&r->outbuf, (ch)) ?: seterr(r, ErrNoMem) )
+
+#define PRINT(cstr) ( \
+  buf_print(&r->outbuf, (cstr)) ?: seterr(r, ErrNoMem) )
+
+#define PRINTF(fmt, args...) ( \
+  buf_printf(&r->outbuf, (fmt), ##args) ?: seterr(r, ErrNoMem) )
+
+#define FILL(byte, len) ( \
+  buf_fill(&r->outbuf, (byte), (len)) ?: seterr(r, ErrNoMem) )
+
+#define INDENT 2
+
+#define REPR_BEGIN(opench, kindname) ({ \
+  if ((fl & REPRFLAG_HEAD) == 0) \
+    CHAR('\n'), FILL(' ', indent); \
+  fl &= ~REPRFLAG_HEAD; \
+  CHAR(opench); \
+  indent += INDENT; \
+  PRINT(kindname); \
+})
+
+#define REPR_END(closech) \
+  ( CHAR((closech)), indent -= 2 )
+
+
 const char* nodekind_name(nodekind_t kind) {
   return STRTAB_GET(nodekind_strtab, kind);
 }
 
 
-#define INDENT 2
+static void seterr(repr_t* r, err_t err) {
+  if (!r->err)
+    r->err = err;
+}
 
 
-#define REPR_BEGIN(opench, kindname) ({ \
-  if ((fl & REPRFLAG_HEAD) == 0) \
-    abuf_c(s, '\n'), abuf_fill(s, ' ', indent); \
-  fl &= ~REPRFLAG_HEAD; \
-  abuf_c(s, (opench)); \
-  indent += INDENT; \
-  abuf_str(s, (kindname)); \
-})
+#define RPARAMS repr_t* r, usize indent, reprflag_t fl
+#define RARGS       r, indent, fl
+#define RARGSFL(fl) r, indent, fl
+
+static void repr(RPARAMS, const node_t* n);
+static void repr_type(RPARAMS, const type_t* t);
 
 
-#define REPR_END(closech) \
-  ( abuf_c(s, (closech)), indent -= 2 )
+static bool seen(repr_t* r, const void* n) {
+  if (nodekind_isbasictype(((const node_t*)n)->kind))
+    return false;
+  const void** vp = (const void**)map_assign_ptr(&r->seen, r->outbuf.ma, n);
+  if (vp && !*vp) {
+    *vp = n;
+    return false;
+  }
+  if (!vp)
+    seterr(r, ErrNoMem);
+  CHAR('\'');
+  return true;
+}
 
 
-static void repr(abuf_t* s, const node_t* n, usize indent, reprflag_t fl);
+static void repr_typedef(RPARAMS, const typedef_t* n) {
+  CHAR(' ');
+  PRINT(n->name);
+  CHAR(' ');
+  repr_type(RARGS, n->type);
+}
 
 
-static void repr_type(abuf_t* s, const type_t* t, usize indent, reprflag_t fl) {
+static void repr_field(RPARAMS, const field_t* n) {
+  REPR_BEGIN('(', n->name);
+  CHAR(' ');
+  fl |= REPRFLAG_HEAD;
+  repr_type(RARGS, n->type);
+  if (n->init) {
+    CHAR(' ');
+    repr(RARGS, (const node_t*)n->init);
+  }
+  REPR_END(')');
+}
+
+
+static void repr_struct(RPARAMS, const structtype_t* n, bool isnew) {
+  if (n->name)
+    CHAR(' '), PRINT(n->name);
+  if (isnew) for (u32 i = 0; i < n->fields.len; i++) {
+    CHAR(' ');
+    repr_field(RARGS, n->fields.v[i]);
+  }
+}
+
+
+static void repr_fun(RPARAMS, const fun_t* n) {
+  if (n->name) {
+    CHAR(' '), PRINT(n->name);
+  }
+  {
+    REPR_BEGIN('(', "params");
+    for (u32 i = 0; i < n->params.len; i++) {
+      if (i) CHAR(' ');
+      repr(RARGS, n->params.v[i]);
+    }
+    REPR_END(')');
+  }
+  {
+    REPR_BEGIN('(', "result");
+    CHAR(' ');
+    repr_type(RARGS, ((funtype_t*)n->type)->result);
+    REPR_END(')');
+  }
+  if (n->body)
+    CHAR(' '), repr(RARGS, (node_t*)n->body);
+}
+
+
+static void repr_call(RPARAMS, const call_t* n) {
+  fl |= REPRFLAG_HEAD;
+  CHAR(' ');
+  repr(RARGSFL(fl | REPRFLAG_SHORT), (const node_t*)n->recv);
+  if (n->args.len == 0)
+    return;
+  CHAR(' ');
+  fl &= ~REPRFLAG_HEAD;
+  for (usize i = 0; i < n->args.len; i++) {
+    if (i) CHAR(' ');
+    repr(RARGS, (const node_t*)n->args.v[i]);
+  }
+}
+
+
+static void repr_nodearray(RPARAMS, const ptrarray_t* nodes) {
+  for (usize i = 0; i < nodes->len; i++) {
+    CHAR(' ');
+    repr(RARGS, nodes->v[i]);
+  }
+}
+
+
+static void repr_type(RPARAMS, const type_t* t) {
   REPR_BEGIN('<', nodekind_name(t->kind));
+  bool isnew = !seen(r, t);
   switch (t->kind) {
+    case TYPE_STRUCT:
+      repr_struct(RARGS, (const structtype_t*)t, isnew);
+      break;
     case TYPE_ARRAY:
     case TYPE_ENUM:
     case TYPE_FUN:
     case TYPE_PTR:
-    case TYPE_STRUCT:
       dlog("TODO subtype %s", nodekind_name(t->kind));
       break;
   }
@@ -96,129 +219,87 @@ static void repr_type(abuf_t* s, const type_t* t, usize indent, reprflag_t fl) {
 }
 
 
-static void repr_local(abuf_t* s, const local_t* n, usize indent, reprflag_t fl) {
-  REPR_BEGIN('(', n->name);
-  abuf_c(s, ' ');
-  repr_type(s, n->type, indent, fl | REPRFLAG_HEAD);
-  REPR_END(')');
-}
-
-
-static void repr_fun(abuf_t* s, const fun_t* n, usize indent, reprflag_t fl) {
-  if (n->name) {
-    abuf_c(s, ' '), abuf_str(s, n->name);
-  }
-  {
-    REPR_BEGIN('(', "params");
-    for (u32 i = 0; i < n->params.len; i++) {
-      abuf_c(s, ' ');
-      repr_local(s, (local_t*)n->params.v[i], indent, fl);
-    }
-    REPR_END(')');
-  }
-  {
-    REPR_BEGIN('(', "result");
-    abuf_c(s, ' '), repr_type(s, ((funtype_t*)n->type)->result, indent, fl);
-    REPR_END(')');
-  }
-  if (n->body)
-    abuf_c(s, ' '), repr(s, (node_t*)n->body, indent, fl);
-}
-
-
-static void repr_call(abuf_t* s, const call_t* n, usize indent, reprflag_t fl) {
-  fl |= REPRFLAG_HEAD;
-  abuf_c(s, ' ');
-  repr(s, (const node_t*)n->recv, indent, fl | REPRFLAG_SHORT);
-  if (n->args.len == 0)
-    return;
-  abuf_c(s, ' ');
-  fl &= ~REPRFLAG_HEAD;
-  for (usize i = 0; i < n->args.len; i++) {
-    if (i) abuf_c(s, ' ');
-    repr(s, (const node_t*)n->args.v[i], indent, fl);
-  }
-}
-
-
-static void repr_nodearray(
-  abuf_t* s, const ptrarray_t* nodes, usize indent, reprflag_t fl)
-{
-  for (usize i = 0; i < nodes->len; i++) {
-    abuf_c(s, ' ');
-    repr(s, nodes->v[i], indent, fl);
-  }
-}
-
-
-static void repr(abuf_t* s, const node_t* n, usize indent, reprflag_t fl) {
+static void repr(RPARAMS, const node_t* n) {
   const char* kindname = STRTAB_GET(nodekind_strtab, n->kind);
   REPR_BEGIN('(', kindname);
 
   if (node_isexpr(n)) {
     expr_t* expr = (expr_t*)n;
-    abuf_c(s, ' ');
+    CHAR(' ');
     if (expr->type) {
-      repr_type(s, expr->type, indent, fl | REPRFLAG_HEAD);
+      repr_type(RARGSFL(fl | REPRFLAG_HEAD), expr->type);
     } else {
-      abuf_str(s, "<?>");
+      PRINT("<?>");
     }
   }
 
+  if (seen(r, n))
+    goto end;
+
   switch (n->kind) {
 
-  case NODE_UNIT:
-    repr_nodearray(s, &((unit_t*)n)->children, indent, fl); break;
+  case NODE_UNIT:    repr_nodearray(RARGS, &((unit_t*)n)->children); break;
+  case STMT_TYPEDEF: repr_typedef(RARGS, (typedef_t*)n); break;
+  case EXPR_FUN:     repr_fun(RARGS, (fun_t*)n); break;
+  case EXPR_BLOCK:   repr_nodearray(RARGS, &((block_t*)n)->children); break;
+  case EXPR_CALL:    repr_call(RARGS, (call_t*)n); break;
+  case EXPR_INTLIT:
+    CHAR(' '), buf_print_u64(&r->outbuf, ((intlit_t*)n)->intval, 10);
+    break;
 
-  case EXPR_FUN:
-    repr_fun(s, (fun_t*)n, indent, fl); break;
+  case EXPR_MEMBER:
+    CHAR(' '), PRINT(((const member_t*)n)->name);
+    CHAR(' '), repr(RARGS, (const node_t*)((const member_t*)n)->recv);
+    break;
 
-  case EXPR_BLOCK:
-    repr_nodearray(s, &((block_t*)n)->children, indent, fl); break;
-
-  case EXPR_CALL:
-    repr_call(s, (call_t*)n, indent, fl); break;
+  case EXPR_ID:
+    CHAR(' '), PRINT(((idexpr_t*)n)->name);
+    if (((idexpr_t*)n)->ref) {
+      CHAR(' ');
+      repr(RARGSFL(fl | REPRFLAG_HEAD), (const node_t*)((idexpr_t*)n)->ref);
+    }
+    break;
 
   case EXPR_PREFIXOP:
   case EXPR_POSTFIXOP: {
     unaryop_t* op = (unaryop_t*)n;
-    abuf_c(s, ' '), abuf_str(s, tok_repr(op->op));
-    abuf_c(s, ' '), repr(s, (node_t*)op->expr, indent, fl);
+    CHAR(' '), PRINT(tok_repr(op->op));
+    CHAR(' '), repr(RARGS, (node_t*)op->expr);
     break;
   }
 
   case EXPR_BINOP: {
     binop_t* op = (binop_t*)n;
-    abuf_c(s, ' '), abuf_str(s, tok_repr(op->op));
-    abuf_c(s, ' '), repr(s, (node_t*)op->left, indent, fl);
-    abuf_c(s, ' '), repr(s, (node_t*)op->right, indent, fl);
+    CHAR(' '), PRINT(tok_repr(op->op));
+    CHAR(' '), repr(RARGS, (node_t*)op->left);
+    CHAR(' '), repr(RARGS, (node_t*)op->right);
     break;
   }
 
-  case EXPR_INTLIT:
-    abuf_c(s, ' '), abuf_u64(s, ((intlit_t*)n)->intval, 10); break;
-
-  case EXPR_ID:
-    abuf_c(s, ' '), abuf_str(s, ((idexpr_t*)n)->name); break;
+  case EXPR_PARAM:
+  case EXPR_LET:
+  case EXPR_VAR:
+    if (((const local_t*)n)->init) {
+      CHAR(' ');
+      repr(RARGS, (const node_t*)((const local_t*)n)->init);
+    }
+    break;
 
   }
 
+end:
   REPR_END(')');
 }
 
 
 err_t node_repr(buf_t* buf, const node_t* n) {
-  usize needavail = 4096;
-  for (;;) {
-    buf_reserve(buf, needavail);
-    abuf_t s = abuf_make(buf->p, buf->cap);
-    repr(&s, n, 0, REPRFLAG_HEAD);
-    usize len = abuf_terminate(&s);
-    if (len < needavail) {
-      buf->len += len;
-      break;
-    }
-    needavail = len + 1;
-  }
-  return 0;
+  repr_t r = {
+    .outbuf = *buf,
+  };
+  if (!map_init(&r.seen, buf->ma, 64))
+    return ErrNoMem;
+  repr(&r, 0, REPRFLAG_HEAD, n);
+  *buf = r.outbuf;
+  map_dispose(&r.seen, buf->ma);
+  return r.err;
 }

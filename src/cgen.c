@@ -42,13 +42,13 @@ static void _error(cgen_t* g, srcrange_t srcrange, const char* fmt, ...) {
 }
 
 
-#define OUT_PUTC(ch) ( \
+#define CHAR(ch) ( \
   buf_push(&g->outbuf, (ch)) ?: seterr(g, ErrNoMem) )
 
-#define OUT_PRINT(cstr) ( \
+#define PRINT(cstr) ( \
   buf_print(&g->outbuf, (cstr)) ?: seterr(g, ErrNoMem) )
 
-#define OUT_PRINTF(fmt, args...) ( \
+#define PRINTF(fmt, args...) ( \
   buf_printf(&g->outbuf, (fmt), ##args) ?: seterr(g, ErrNoMem) )
 
 
@@ -56,10 +56,10 @@ static void startline(cgen_t* g, srcloc_t loc) {
   g->lineno++;
   if ((loc.line != 0) & ((g->lineno != loc.line) | (g->input != loc.input))) {
     g->lineno = loc.line;
-    OUT_PRINTF("\n#line %u", g->lineno);
+    PRINTF("\n#line %u", g->lineno);
     if (g->input != loc.input) {
       g->input = loc.input;
-      OUT_PRINTF(" \"%s\"", g->input->name);
+      PRINTF(" \"%s\"", g->input->name);
     }
   }
   u8* p = buf_alloc(&g->outbuf, g->indent*2 + 1);
@@ -123,19 +123,71 @@ static const char* operator(tok_t tok) {
 }
 
 
+static void field(cgen_t* g, const field_t* field) {
+  type(g, field->type);
+  CHAR(' ');
+  PRINT(field->name);
+}
+
+
+static void structtype(cgen_t* g, const structtype_t* n) {
+  if (n->name && g->scopenest > 0)
+    return PRINT(n->name);
+  PRINT("struct {");
+  g->indent++;
+  for (u32 i = 0; i < n->fields.len; i++) {
+    const field_t* f = n->fields.v[i];
+    startline(g, f->loc);
+    field(g, f);
+    CHAR(';');
+  }
+  g->indent--;
+  startline(g, (srcloc_t){0});
+  CHAR('}');
+}
+
+
 static void type(cgen_t* g, const type_t* t) {
   switch (t->kind) {
-  case TYPE_VOID: OUT_PRINT("void"); break;
-  case TYPE_BOOL: OUT_PRINT("_Bool"); break;
-  case TYPE_INT:  OUT_PRINT(t->isunsigned ? "unsigned int" : "int"); break;
-  case TYPE_I8:   OUT_PRINT(t->isunsigned ? "uint8_t"  : "int8_t"); break;
-  case TYPE_I16:  OUT_PRINT(t->isunsigned ? "uint16_t" : "int16_t"); break;
-  case TYPE_I32:  OUT_PRINT(t->isunsigned ? "uint32_t" : "int32_t"); break;
-  case TYPE_I64:  OUT_PRINT(t->isunsigned ? "uint64_t" : "int64_t"); break;
-  case TYPE_F32:  OUT_PRINT("float"); break;
-  case TYPE_F64:  OUT_PRINT("double"); break;
+  case TYPE_VOID: PRINT("void"); break;
+  case TYPE_BOOL: PRINT("_Bool"); break;
+  case TYPE_INT:  PRINT(t->isunsigned ? "unsigned int" : "int"); break;
+  case TYPE_I8:   PRINT(t->isunsigned ? "uint8_t"  : "int8_t"); break;
+  case TYPE_I16:  PRINT(t->isunsigned ? "uint16_t" : "int16_t"); break;
+  case TYPE_I32:  PRINT(t->isunsigned ? "uint32_t" : "int32_t"); break;
+  case TYPE_I64:  PRINT(t->isunsigned ? "uint64_t" : "int64_t"); break;
+  case TYPE_F32:  PRINT("float"); break;
+  case TYPE_F64:  PRINT("double"); break;
+  case TYPE_STRUCT: return structtype(g, (const structtype_t*)t);
   default: error(g, t, "unexpected type %s", nodekind_name(t->kind));
   }
+}
+
+
+static void zeroinit(cgen_t* g, const type_t* t) {
+  switch (t->kind) {
+  case TYPE_BOOL:
+    PRINT("false");
+    break;
+  case TYPE_INT:
+  case TYPE_I32:
+    PRINT(t->isunsigned ? "0u" : "0");
+    break;
+  case TYPE_I8:
+  case TYPE_I16:
+  case TYPE_I64:
+    CHAR('('); CHAR('('); type(g, t); PRINT(")0)");
+    break;
+  case TYPE_F32:
+    PRINT("0.0f");
+    break;
+  case TYPE_F64:
+    PRINT("0.0");
+    break;
+  default:
+    error(g, t, "unexpected type %s", nodekind_name(t->kind));
+  }
+  // PRINTF(";memset(&%s,0,%zu)", n->name, n->type->size);
 }
 
 
@@ -148,20 +200,22 @@ typedef enum {
 
 static void block(cgen_t* g, const block_t* n, blockflag_t fl) {
   u32 hasval = n->type != type_void && (fl & BLOCKFLAG_EXPR);
+  g->scopenest++;
 
   if (hasval) {
     type(g, n->type);
-    OUT_PUTC(' ');
-    OUT_PRINTF("_block_%zx", (uintptr)n);
+    CHAR(' ');
+    PRINTF("_block_%zx", (uintptr)n);
     if (hasval && n->children.len == 1) {
-      OUT_PRINT(" = ");
+      PRINT(" = ");
       expr(g, n->children.v[0]);
+      g->scopenest--;
       return;
     }
-    OUT_PUTC(';');
+    CHAR(';');
   }
 
-  OUT_PUTC('{');
+  CHAR('{');
   if (n->children.len > 0) {
     g->indent++;
     for (u32 i = 0, last = n->children.len - 1; i < n->children.len; i++) {
@@ -169,91 +223,140 @@ static void block(cgen_t* g, const block_t* n, blockflag_t fl) {
       startline(g, cn->loc);
       if (i == last) {
         if (hasval) {
-          OUT_PRINTF("_block_%zx = ", (uintptr)n);
+          PRINTF("_block_%zx = ", (uintptr)n);
         } else if (fl & BLOCKFLAG_RET) {
-          OUT_PRINT("return ");
+          PRINT("return ");
         }
       }
       assertf(nodekind_isexpr(cn->kind), "%s", nodekind_name(cn->kind));
       expr(g, (const expr_t*)cn);
-      OUT_PRINT(";");
+      PRINT(";");
     }
     g->indent--;
     startline(g, (srcloc_t){0});
   }
-  OUT_PUTC('}');
+  CHAR('}');
+  g->scopenest--;
+}
+
+
+static void structinit(cgen_t* g, const structtype_t* t, const ptrarray_t* args) {
+  CHAR('{');
+  for (u32 i = 0; i < args->len; i++) {
+    if (i) PRINT(", ");
+    expr(g, args->v[i]);
+  }
+  CHAR('}');
+}
+
+
+static void typecall(cgen_t* g, const call_t* n, const type_t* t) {
+  CHAR('('); type(g, t); CHAR(')');
+
+  switch (t->kind) {
+  case TYPE_VOID: PRINT("((void)0)"); break;
+  case TYPE_BOOL:
+  case TYPE_INT:
+  case TYPE_I8:
+  case TYPE_I16:
+  case TYPE_I32:
+  case TYPE_I64:
+  case TYPE_F32:
+  case TYPE_F64:
+    if (n->args.len == 0) {
+      zeroinit(g, t);
+    } else if UNLIKELY(n->args.len > 1) {
+      error(g, (const node_t*)n->recv, "too many values for %s", nodekind_name(t->kind));
+    } else {
+      expr(g, n->args.v[0]);
+    }
+    break;
+  case TYPE_STRUCT:
+    structinit(g, (const structtype_t*)t, &n->args);
+    break;
+  default:
+    error(g, t, "NOT IMPLEMENTED: type call %s", nodekind_name(t->kind));
+  }
 }
 
 
 static void call(cgen_t* g, const call_t* n) {
+  dlog("call n->recv=%s", nodekind_name(n->recv->kind));
+
+  // type call?
+  const idexpr_t* idrecv = (const idexpr_t*)n->recv;
+  if (n->recv->kind == EXPR_ID && nodekind_istype(idrecv->ref->kind))
+    return typecall(g, n, (const type_t*)idrecv->ref);
+  if (nodekind_istype(n->recv->kind))
+    return typecall(g, n, (const type_t*)n->recv);
+
   expr(g, n->recv);
-  OUT_PUTC('(');
+  CHAR('(');
   for (u32 i = 0; i < n->args.len; i++) {
-    if (i) OUT_PRINT(", ");
+    if (i) PRINT(", ");
     expr(g, n->args.v[i]);
   }
-  OUT_PUTC(')');
+  CHAR(')');
 }
 
 
 static void id(cgen_t* g, sym_t nullable name) {
   if (name && name != sym__) {
-    OUT_PRINT(name);
+    PRINT(name);
   } else {
-    OUT_PRINTF("_anon%u", g->anon_idgen++);
+    PRINTF("_anon%u", g->anon_idgen++);
   }
 }
 
 
 static void fun(cgen_t* g, const fun_t* fun) {
-  startline(g, fun->loc);
   type(g, ((funtype_t*)fun->type)->result);
-  OUT_PUTC(' ');
+  CHAR(' ');
   id(g, fun->name);
-  OUT_PUTC('(');
+  CHAR('(');
   if (fun->params.len > 0) {
     for (u32 i = 0; i < fun->params.len; i++) {
       local_t* param = fun->params.v[i];
-      if (i) OUT_PRINT(", ");
+      if (i) PRINT(", ");
       type(g, param->type);
-      OUT_PUTC(' ');
+      CHAR(' ');
       id(g, param->name);
     }
   } else {
-    OUT_PRINT("void");
+    PRINT("void");
   }
-  OUT_PUTC(')');
+  CHAR(')');
   if (fun->body == NULL) {
-    OUT_PRINT(";\n");
+    PRINT(";\n");
   } else if (fun->body->kind == EXPR_BLOCK) {
     blockflag_t fl = 0;
     if (((funtype_t*)fun->type)->result != type_void)
       fl |= BLOCKFLAG_RET; // return last expression
-    OUT_PUTC(' ');
+    CHAR(' ');
     block(g, (block_t*)fun->body, fl);
   } else {
-    OUT_PRINT(" { return ");
+    PRINT(" { return ");
     expr(g, fun->body);
-    OUT_PRINT("}\n");
+    PRINT("}\n");
   }
 }
 
 
 static void binop(cgen_t* g, const binop_t* n) {
   if (!tok_isassign(n->op))
-    OUT_PUTC('(');
+    CHAR('(');
   expr(g, n->left);
-  OUT_PUTC(' ');
-  OUT_PRINT(operator(n->op));
-  OUT_PUTC(' ');
+  CHAR(' ');
+  PRINT(operator(n->op));
+  CHAR(' ');
   expr(g, n->right);
   if (!tok_isassign(n->op))
-    OUT_PUTC(')');
+    CHAR(')');
 }
 
 
 static void intlit(cgen_t* g, const intlit_t* n) {
-  OUT_PRINTF("%llu", n->intval);
+  PRINTF("%llu", n->intval);
 }
 
 
@@ -262,40 +365,20 @@ static void idexpr(cgen_t* g, const idexpr_t* n) {
 }
 
 
-static void zeroinit(cgen_t* g, const type_t* t) {
-  switch (t->kind) {
-  case TYPE_BOOL:
-    OUT_PRINT("false");
-    break;
-  case TYPE_INT:
-  case TYPE_I32:
-    OUT_PRINT(t->isunsigned ? "0u" : "0");
-    break;
-  case TYPE_I8:
-  case TYPE_I16:
-  case TYPE_I64:
-    OUT_PUTC('('); OUT_PUTC('('); type(g, t); OUT_PRINT(")0)");
-    break;
-  case TYPE_F32:
-    OUT_PRINT("0.0f");
-    break;
-  case TYPE_F64:
-    OUT_PRINT("0.0");
-    break;
-  default:
-    error(g, t, "unexpected type %s", nodekind_name(t->kind));
-  }
-  // OUT_PRINTF(";memset(&%s,0,%zu)", n->name, n->type->size);
+static void member(cgen_t* g, const member_t* n) {
+  CHAR('('); expr(g, n->recv); CHAR(')');
+  PRINT(type_isusertype(n->recv->type) ? "->" : ".");
+  PRINT(n->name);
 }
 
 
 static void vardef(cgen_t* g, const local_t* n) {
   type(g, n->type);
-  OUT_PUTC(' ');
+  CHAR(' ');
   if (n->name == sym__)
-    OUT_PRINT("__attribute__((__unused__)) ");
+    PRINT("__attribute__((__unused__)) ");
   id(g, n->name);
-  OUT_PRINT(" = ");
+  PRINT(" = ");
   if (n->init) {
     expr(g, n->init);
   } else {
@@ -305,28 +388,64 @@ static void vardef(cgen_t* g, const local_t* n) {
 
 
 static void letdef(cgen_t* g, const local_t* n) {
-  OUT_PRINT("const ");
+  PRINT("const ");
   type(g, n->type);
-  OUT_PUTC(' ');
+  CHAR(' ');
   if (n->name == sym__)
-    OUT_PRINT("__attribute__((__unused__)) ");
+    PRINT("__attribute__((__unused__)) ");
   id(g, n->name);
-  OUT_PRINT(" = ");
+  PRINT(" = ");
   assertnotnull(n->init);
   expr(g, n->init);
 }
 
 
+static void typdef(cgen_t* g, const typedef_t* n) {
+  PRINT("typedef ");
+  type(g, n->type);
+  CHAR(' ');
+  id(g, n->name);
+}
+
+
 static void expr(cgen_t* g, const expr_t* n) {
-  switch (n->kind) {
+  switch ((enum nodekind)n->kind) {
   case EXPR_FUN:    return fun(g, (const fun_t*)n);
   case EXPR_BINOP:  return binop(g, (const binop_t*)n);
   case EXPR_INTLIT: return intlit(g, (const intlit_t*)n);
+  // case EXPR_FLOATLIT: TODO
   case EXPR_ID:     return idexpr(g, (const idexpr_t*)n);
+  // case EXPR_PARAM: TODO
   case EXPR_VAR:    return vardef(g, (const local_t*)n);
   case EXPR_LET:    return letdef(g, (const local_t*)n);
   case EXPR_BLOCK:  return block(g, (const block_t*)n, BLOCKFLAG_EXPR);
   case EXPR_CALL:   return call(g, (const call_t*)n);
+  case EXPR_MEMBER: return member(g, (const member_t*)n);
+  // case EXPR_PREFIXOP: TODO
+  // case EXPR_POSTFIXOP: TODO
+
+  // node types we should never see
+  case NODEKIND_COUNT:
+  case NODE_BAD:
+  case NODE_COMMENT:
+  case NODE_UNIT:
+  case NODE_FIELD:
+  case STMT_TYPEDEF:
+  case TYPE_VOID:
+  case TYPE_BOOL:
+  case TYPE_INT:
+  case TYPE_I8:
+  case TYPE_I16:
+  case TYPE_I32:
+  case TYPE_I64:
+  case TYPE_F32:
+  case TYPE_F64:
+  case TYPE_ARRAY:
+  case TYPE_ENUM:
+  case TYPE_FUN:
+  case TYPE_PTR:
+  case TYPE_STRUCT:
+    break;
   }
   debugdie(g, n, "unexpected node %s", nodekind_name(n->kind));
 }
@@ -334,10 +453,14 @@ static void expr(cgen_t* g, const expr_t* n) {
 
 static void stmt(cgen_t* g, const stmt_t* n) {
   bool semi = true;
+  startline(g, n->loc);
   switch (n->kind) {
   case EXPR_FUN:
-    fun(g, (const fun_t*)n); semi = false; break;
-
+    fun(g, (const fun_t*)n); semi = false;
+    break;
+  case STMT_TYPEDEF:
+    typdef(g, (const typedef_t*)n);
+    break;
   default:
     if (nodekind_isexpr(n->kind)) {
       expr(g, (expr_t*)n);
@@ -346,7 +469,7 @@ static void stmt(cgen_t* g, const stmt_t* n) {
     debugdie(g, n, "unexpected stmt node %s", nodekind_name(n->kind));
   }
   if (semi)
-    OUT_PRINT(";\n");
+    PRINT(";\n");
 }
 
 
@@ -363,14 +486,15 @@ err_t cgen_generate(cgen_t* g, const unit_t* n) {
   g->anon_idgen = 0;
   g->input = NULL;
   g->lineno = 0;
+  g->scopenest = 0;
 
-  OUT_PRINT("#include <stdint.h>\n");
+  PRINT("#include <stdint.h>\n");
 
   if (n->kind != NODE_UNIT)
     return ErrInvalid;
   unit(g, n);
 
-  OUT_PUTC('\n');
+  CHAR('\n');
 
   return g->err;
 }

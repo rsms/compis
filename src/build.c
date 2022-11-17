@@ -157,7 +157,7 @@ int build_main(int argc, const char** argv) {
   sym_init(memalloc_ctx());
 
   err_t err = build_exe(argv, (usize)argc);
-  if (err)
+  if (err && err != ErrCanceled)
     log("failed to build: %s", err_str(err));
 
   return err == 0 ? 0 : 1;

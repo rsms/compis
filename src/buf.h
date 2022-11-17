@@ -79,6 +79,9 @@ bool buf_nullterm(buf_t* b);
 // buf_append appends len bytes to the end of the buffer by copying src
 bool buf_append(buf_t* b, const void* src, usize len);
 
+// buf_fill appends len bytes (like buf_alloc + memset)
+bool buf_fill(buf_t* b, u8 byte, usize len);
+
 // buf_print appends a null-terminated string
 bool buf_print(buf_t* b, const char* cstr);
 
@@ -86,6 +89,7 @@ bool buf_print(buf_t* b, const char* cstr);
 bool buf_printf(buf_t* b, const char* fmt, ...) ATTR_FORMAT(printf, 2, 3);
 bool buf_vprintf(buf_t* b, const char* fmt, va_list);
 
+bool buf_print_u64(buf_t* b, u64 n, u32 base);
 bool buf_print_leb128_u32(buf_t* b, u32 n);
 
 ASSUME_NONNULL_END

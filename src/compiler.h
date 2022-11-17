@@ -8,6 +8,8 @@
   _( NODE_BAD )/* invalid node; parse error */ \
   _( NODE_COMMENT )\
   _( NODE_UNIT )\
+  _( NODE_FIELD )\
+  _( STMT_TYPEDEF )\
   _( EXPR_FUN )/* nodekind_isexpr assumes this is first expr kind */\
   _( EXPR_BLOCK )\
   _( EXPR_CALL )\
@@ -15,6 +17,7 @@
   _( EXPR_PARAM )\
   _( EXPR_VAR )\
   _( EXPR_LET )\
+  _( EXPR_MEMBER )\
   _( EXPR_PREFIXOP )\
   _( EXPR_POSTFIXOP )\
   _( EXPR_BINOP )\
@@ -182,6 +185,18 @@ typedef struct {
 } funtype_t;
 
 typedef struct {
+  usertype_t;
+  sym_t nullable name;   // NULL if anonymous
+  ptrarray_t     fields; // field_t*[]
+} structtype_t;
+
+typedef struct {
+  stmt_t;
+  sym_t   name;
+  type_t* type;
+} typedef_t;
+
+typedef struct {
   stmt_t;
   type_t* nullable type;
   u32              nrefs;
@@ -193,6 +208,7 @@ typedef struct { expr_t; sym_t name; node_t* nullable ref; } idexpr_t;
 typedef struct { expr_t; tok_t op; expr_t* expr; } unaryop_t;
 typedef struct { expr_t; tok_t op; expr_t* left; expr_t* right; } binop_t;
 typedef struct { expr_t; expr_t* recv; ptrarray_t args; } call_t;
+typedef struct { expr_t; expr_t* recv; sym_t name; } member_t;
 
 typedef struct { // PARAM, VAR, LET
   expr_t;
@@ -212,6 +228,13 @@ typedef struct { // fun is a declaration (stmt) or an expression depending on us
   expr_t* nullable body; // NULL if function is a prototype
 } fun_t;
 
+typedef struct {
+  node_t;
+  sym_t            name;
+  type_t*          type;
+  expr_t* nullable init;
+} field_t;
+
 // ———————— END AST ————————
 
 typedef struct {
@@ -230,6 +253,7 @@ typedef struct {
   u32         anon_idgen;
   usize       indent;
   u32         lineno;
+  u32         scopenest;
   const input_t* nullable input;
 } cgen_t;
 
@@ -287,18 +311,27 @@ const char* nodekind_name(nodekind_t); // e.g. "EXPR_INTLIT"
 const char* nodekind_fmt(nodekind_t); // e.g. "variable"
 err_t node_fmt(buf_t* buf, const node_t* nullable n, u32 depth); // e.g. i32, x, "foo"
 err_t node_repr(buf_t* buf, const node_t* n); // S-expr AST tree
+
 inline static bool nodekind_istype(nodekind_t kind) { return kind >= TYPE_VOID; }
 inline static bool nodekind_isexpr(nodekind_t kind) {
   return EXPR_FUN <= kind && kind < TYPE_VOID; }
 inline static bool nodekind_islocal(nodekind_t kind) {
   return kind == EXPR_PARAM || kind == EXPR_VAR || kind == EXPR_LET; }
+  inline static bool nodekind_isbasictype(nodekind_t kind) {
+  return TYPE_VOID <= kind && kind < TYPE_ARRAY; }
 inline static bool nodekind_isusertype(nodekind_t kind) {
   return TYPE_ARRAY <= kind && kind < NODEKIND_COUNT; }
+inline static bool nodekind_isptrtype(nodekind_t kind) {
+  return kind == TYPE_PTR; }
+
 inline static bool node_istype(const node_t* n) { return nodekind_istype(n->kind); }
 inline static bool node_isexpr(const node_t* n) { return nodekind_isexpr(n->kind); }
 inline static bool node_islocal(const node_t* n) { return nodekind_islocal(n->kind); }
 inline static bool node_isusertype(const node_t* n) {
   return nodekind_isusertype(n->kind); }
+inline static bool type_isusertype(const type_t* nullable t) {
+  return nodekind_isptrtype(assertnotnull(t)->kind); }
+
 #define TYPEID_PREFIX(typekind)  ('A'+(typekind)-TYPE_VOID)
 
 // tokens
