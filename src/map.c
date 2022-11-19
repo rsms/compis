@@ -260,6 +260,20 @@ void** nullable map_assign_ptr(map_t* m, memalloc_t ma, const void* key) {
 }
 
 
+void** nullable map_lookup_ptr(const map_t* m, const void* key) {
+  usize index = ptrhash(key, m->seed) & (m->cap - 1);
+  while (m->entries[index].key) {
+    if (m->entries[index].key == key)
+      return &m->entries[index].value;
+    if (++index == m->cap)
+      index = 0;
+  }
+  if (m->parent)
+    return map_lookup_ptr(m->parent, key);
+  return NULL;
+}
+
+
 bool map_itnext(const map_t* m, const mapent_t** ep) {
   for (const mapent_t* e = (*ep)+1, *end = m->entries + m->cap; e != end; e++) {
     if (e->key && e->key != DELMARK) {

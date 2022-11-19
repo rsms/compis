@@ -87,13 +87,36 @@ static u32 u64log10(u64 u) {
 }
 
 
+inline static scanstate_t save_scanstate(parser_t* p) {
+  return *(scanstate_t*)&p->scanner;
+}
+
+inline static void restore_scanstate(parser_t* p, scanstate_t state) {
+  *(scanstate_t*)&p->scanner = state;
+}
+
+
 inline static tok_t currtok(parser_t* p) {
   return p->scanner.tok.t;
 }
 
-
 inline static srcloc_t currloc(parser_t* p) {
   return p->scanner.tok.loc;
+}
+
+
+static void next(parser_t* p) {
+  scanner_next(&p->scanner);
+}
+
+
+static tok_t lookahead(parser_t* p, u32 distance) {
+  scanstate_t scanstate = save_scanstate(p);
+  while (distance--)
+    next(p);
+  tok_t tok = currtok(p);
+  restore_scanstate(p, scanstate);
+  return tok;
 }
 
 
@@ -128,11 +151,6 @@ inline static srcloc_t currloc(parser_t* p) {
   #define log_pratt_infix(...) ((void)0)
   #define log_pratt(...) ((void)0)
 #endif
-
-
-static void next(parser_t* p) {
-  scanner_next(&p->scanner);
-}
 
 
 // fastforward advances the scanner until one of the tokens in stoplist is encountered.
@@ -433,17 +451,53 @@ static type_t* type_id(parser_t* p, precedence_t prec) {
 }
 
 
-// field = id type ("=" expr)
-static field_t* field(parser_t* p) {
-  field_t* f = mknode(p, field_t, TYPE_STRUCT);
-  f->name = p->scanner.sym;
-  expect(p, TID, "");
-  f->type = type(p, PREC_MEMBER);
-  if (currtok(p) == TASSIGN) {
-    next(p);
-    f->init = expr(p, PREC_MEMBER);
+static field_t* nullable find_field(ptrarray_t* fields, sym_t name) {
+  for (u32 i = 0; i < fields->len; i++) {
+    field_t* f = fields->v[i];
+    if (f->name == name)
+      return f;
   }
-  return f;
+  return NULL;
+}
+
+
+// field = id ("," id)* type ("=" expr ("," expr))
+static void fieldset(parser_t* p, ptrarray_t* fields) {
+  u32 fields_start = fields->len;
+  for (;;) {
+    field_t* f = mknode(p, field_t, TYPE_STRUCT);
+    f->name = p->scanner.sym;
+    if (find_field(fields, f->name))
+      error(p, NULL, "duplicate field %s", f->name);
+    expect(p, TID, "");
+    push(p, fields, f);
+    if (currtok(p) != TCOMMA)
+      break;
+    next(p);
+  }
+
+  type_t* t = type(p, PREC_MEMBER);
+  for (u32 i = fields_start; i < fields->len; i++)
+    ((field_t*)fields->v[i])->type = t;
+
+  if (currtok(p) != TASSIGN)
+    return;
+  next(p);
+  u32 i = fields_start;
+  for (;;) {
+    if (i == fields->len) {
+      error(p, NULL, "excess field initializer");
+      expr(p, PREC_COMMA);
+      break;
+    }
+    field_t* f = fields->v[i++];
+    f->init = expr(p, PREC_COMMA);
+    if (currtok(p) != TCOMMA)
+      break;
+    next(p);
+  }
+  if (i < fields->len)
+    error(p, NULL, "missing field initializer");
 }
 
 
@@ -451,8 +505,7 @@ static type_t* type_struct(parser_t* p, precedence_t prec) {
   structtype_t* t = mknode(p, structtype_t, TYPE_STRUCT);
   next(p);
   while (currtok(p) != TRBRACE) {
-    field_t* n = field(p);
-    push(p, &t->fields, n);
+    fieldset(p, &t->fields);
     if (currtok(p) != TSEMI)
       break;
     next(p);
@@ -479,9 +532,7 @@ static stmt_t* stmt_typedef(parser_t* p, precedence_t prec) {
 }
 
 
-static expr_t* expr_id(parser_t* p, precedence_t prec) {
-  idexpr_t* n = mknode(p, idexpr_t, EXPR_ID);
-  n->name = p->scanner.sym;
+static idexpr_t* resolve_id(parser_t* p, idexpr_t* n) {
   n->ref = lookup_definition(p, n->name);
   if UNLIKELY(!n->ref) {
     error(p, (node_t*)n, "undeclared identifier \"%s\"", n->name);
@@ -493,8 +544,15 @@ static expr_t* expr_id(parser_t* p, precedence_t prec) {
     error(p, (node_t*)n, "cannot use %s \"%s\" as an expression",
       nodekind_fmt(n->ref->kind), n->name);
   }
+  return n;
+}
+
+
+static expr_t* expr_id(parser_t* p, precedence_t prec) {
+  idexpr_t* n = mknode(p, idexpr_t, EXPR_ID);
+  n->name = p->scanner.sym;
   next(p);
-  return (expr_t*)n;
+  return (expr_t*)resolve_id(p, n);
 }
 
 
@@ -616,11 +674,117 @@ static expr_t* infix_assign(parser_t* p, precedence_t prec, expr_t* left) {
 }
 
 
-// exprlist = expr (("," | ";") expr)*
-static void exprlist(parser_t* p, ptrarray_t* args) {
+static void validate_typecall_args(parser_t* p, call_t* call) {
+  dlog("TODO %s", __FUNCTION__);
+}
+
+
+/*static void check_types_compat(
+  parser_t* p,
+  const type_t* nullable x,
+  const type_t* nullable y,
+  const node_t* nullable origin)
+{
+  if UNLIKELY(!!x * !!y && !types_iscompat(x, y)) { // "!!x * !!y": ignore NULL
+    const char* xs = fmtnode(p, 0, (const node_t*)x, 1);
+    const char* ys = fmtnode(p, 1, (const node_t*)y, 1);
+    error(p, origin, "incompatible types, %s and %s", xs, ys);
+  }
+}*/
+
+
+static void validate_funcall_args(parser_t* p, call_t* call) {
+  dlog("TODO %s", __FUNCTION__);
+  const funtype_t* ft = (const funtype_t*)call->recv->type;
+
+  if UNLIKELY(call->args.len != ft->params.len) {
+    if (call->args.len < ft->params.len) {
+      return error(p, (const node_t*)call,
+        "not enough arguments in function call, expected %u", ft->params.len);
+    }
+    return error(p, (const node_t*)call,
+      "too many arguments in function call, expected %u", ft->params.len);
+  }
+
+  u32 i = 0, nargs = ft->params.len;
+  for (;i < nargs; i++) {
+    expr_t* arg = call->args.v[i];
+    local_t* param = ft->params.v[i];
+
+    if UNLIKELY(arg->kind == EXPR_PARAM && ((local_t*)arg)->name != param->name) {
+      for (u32 i = 0; i < nargs; i++) {
+        if (((local_t*)ft->params.v[i])->name == ((local_t*)arg)->name) {
+          const char* fts = fmtnode(p, 0, (const node_t*)ft, 1);
+          return error(p, (node_t*)arg,
+            "invalid argument position for parameter \"%s\" in function call %s",
+            ((local_t*)arg)->name, fts);
+        }
+      }
+      return error(p, (node_t*)arg,
+        "unknown paramemter \"%s\" in function call", ((local_t*)arg)->name);
+    }
+
+    if UNLIKELY(!types_iscompat(param->type, arg->type)) {
+      const char* got = fmtnode(p, 0, (const node_t*)arg->type, 1);
+      const char* expect = fmtnode(p, 1, (const node_t*)param->type, 1);
+      error(p, (node_t*)arg, "passing %s to parameter of type %s", got, expect);
+    }
+  }
+  if (i == nargs)
+    return;
+
+  // build map of parameters
+  u32 posend = i; // end of positional arguments
+  map_t seen;
+  if (!map_init(&seen, p->scanner.compiler->ma, nargs))
+    return out_of_mem(p);
+  for (u32 i = 0; i < nargs; i++) {
+    local_t* param = ft->params.v[i];
+    void** vp = map_assign_ptr(&seen, p->scanner.compiler->ma, param->name);
+    if UNLIKELY(!vp)
+      return out_of_mem(p);
+    if (i < posend)
+      *vp = param;
+  }
+
+  // check named arguments
+  dlog("posend %u, nargs %u", posend, nargs);
+  for (u32 i = posend; i < nargs; i++) {
+    local_t* arg = call->args.v[i]; assert(arg->kind == EXPR_PARAM);
+    void** vp = map_lookup_ptr(&seen, arg->name);
+    if UNLIKELY(!vp) {
+      error(p, (node_t*)arg, "unknown parameter \"%s\" in function call", arg->name);
+    } else if (*vp) {
+      error(p, (node_t*)arg, "duplicate argument \"%s\"", arg->name);
+    } else {
+      *vp = ft->params.v[i];
+    }
+  }
+
+  panic("LOLCAT");
+}
+
+
+static void validate_call_args(parser_t* p, call_t* call) {
+  if (call->recv->type->kind == TYPE_FUN)
+    return validate_funcall_args(p, call);
+  assert(nodekind_istype(call->recv->type->kind));
+  return validate_typecall_args(p, call);
+}
+
+
+// namedargs = id "=" expr ("," id "=" expr)*
+static void namedargs(parser_t* p, ptrarray_t* args) {
   for (;;) {
-    expr_t* n = expr(p, PREC_COMMA);
-    push(p, args, n);
+    local_t* namedarg = mknode(p, local_t, EXPR_PARAM);
+    namedarg->name = p->scanner.sym;
+    if (!expect(p, TID, ""))
+      break;
+    if (!expect(p, TCOLON, ""))
+      break;
+    namedarg->init = expr(p, PREC_COMMA);
+    namedarg->type = namedarg->init->type;
+    push(p, args, namedarg);
     if (currtok(p) != TSEMI && currtok(p) != TCOMMA)
       break;
     next(p);
@@ -628,7 +792,26 @@ static void exprlist(parser_t* p, ptrarray_t* args) {
 }
 
 
-static expr_t* postfix_call(parser_t* p, precedence_t prec, expr_t* left) {
+// args      = posargs ("," namedargs)
+//           | namedargs
+// posargs   = expr ("," expr)*
+// namedargs = id "=" expr ("," id "=" expr)*
+static void args(parser_t* p, ptrarray_t* args) {
+  bool posarg = true;
+  while (posarg) {
+    if (currtok(p) == TID && lookahead(p, 1) == TCOLON)
+      return namedargs(p, args);
+    expr_t* arg = expr(p, PREC_COMMA);
+    push(p, args, arg);
+    if (currtok(p) != TSEMI && currtok(p) != TCOMMA)
+      return;
+    next(p);
+  }
+}
+
+
+// call = expr "(" args? ")"
+static expr_t* expr_postfix_call(parser_t* p, precedence_t prec, expr_t* left) {
   call_t* n = mknode(p, call_t, EXPR_CALL);
   next(p);
   if (left->type && left->type->kind == TYPE_FUN) {
@@ -637,18 +820,20 @@ static expr_t* postfix_call(parser_t* p, precedence_t prec, expr_t* left) {
   } else if (left->type && nodekind_istype(left->type->kind)) {
     n->type = left->type;
   } else {
-    error(p, (node_t*)n, "calling %s; not a function",
+    error(p, (node_t*)n, "calling %s; expected function or type",
       left->type ? nodekind_fmt(left->type->kind) : nodekind_fmt(left->kind));
   }
   n->recv = left;
   if (currtok(p) != TRPAREN)
-    exprlist(p, &n->args);
+    args(p, &n->args);
+  validate_call_args(p, n);
   expect(p, TRPAREN, "to end function call");
   return (expr_t*)n;
 }
 
 
-static expr_t* postfix_brack(parser_t* p, precedence_t prec, expr_t* left) {
+// subscript = expr "[" expr "]"
+static expr_t* expr_postfix_subscript(parser_t* p, precedence_t prec, expr_t* left) {
   unaryop_t* n = mknode(p, unaryop_t, EXPR_POSTFIXOP);
   next(p);
   panic("TODO");
@@ -656,18 +841,8 @@ static expr_t* postfix_brack(parser_t* p, precedence_t prec, expr_t* left) {
 }
 
 
-static field_t* nullable find_field(ptrarray_t* fields, sym_t name) {
-  for (u32 i = 0; i < fields->len; i++) {
-    field_t* f = fields->v[i];
-    if (f->name == name)
-      return f;
-  }
-  return NULL;
-}
-
-
 // member = expr "." id
-static expr_t* postfix_member(parser_t* p, precedence_t prec, expr_t* left) {
+static expr_t* expr_postfix_member(parser_t* p, precedence_t prec, expr_t* left) {
   member_t* n = mknode(p, member_t, EXPR_MEMBER);
   next(p);
   n->recv = left;
@@ -845,7 +1020,7 @@ fail:
 }
 
 
-static funtype_t* funtype(parser_t* p, const ptrarray_t* params, type_t* result) {
+static funtype_t* funtype(parser_t* p, ptrarray_t* params, type_t* result) {
   // build typeid
   sym_t tid = mk_fun_typeid(p, params, result);
 
@@ -868,7 +1043,7 @@ static funtype_t* funtype(parser_t* p, const ptrarray_t* params, type_t* result)
     for (u32 i = 0; i < params->len; i++) {
       local_t* param = params->v[i];
       assert(param->kind == EXPR_PARAM);
-      ft->params.v[i] = param->type;
+      ft->params.v[i] = param;
     }
   }
   if UNLIKELY(vp == NULL) {
@@ -915,6 +1090,8 @@ static expr_t* prefix_fun(parser_t* p, precedence_t prec) {
 
   // body
   if (currtok(p) != TSEMI) {
+    if UNLIKELY(!has_named_params && n->params.len > 0)
+      error(p, NULL, "function without named arguments can't have a body");
     fun_t* outer_fun = p->fun;
     p->fun = n;
     n->body = expr(p, PREC_LOWEST);
@@ -982,11 +1159,11 @@ static const expr_parselet_t expr_parsetab[TOK_COUNT] = {
   [TTILDE]      = {prefix_op, NULL, PREC_UNARY_PREFIX}, // ~
 
   // postfix ops
-  [TLPAREN] = {NULL, postfix_call, PREC_UNARY_POSTFIX}, // (
-  [TLBRACK] = {NULL, postfix_brack, PREC_UNARY_POSTFIX}, // [
+  [TLPAREN] = {NULL, expr_postfix_call, PREC_UNARY_POSTFIX}, // (
+  [TLBRACK] = {NULL, expr_postfix_subscript, PREC_UNARY_POSTFIX}, // [
 
   // member ops
-  [TDOT] = {NULL, postfix_member, PREC_MEMBER}, // .
+  [TDOT] = {NULL, expr_postfix_member, PREC_MEMBER}, // .
 
   // keywords & identifiers
   [TID]  = {expr_id, NULL, PREC_MEMBER},
@@ -1043,24 +1220,29 @@ static const map_t* universe() {
   _Atomic(usize) init = 0;
   if (init++)
     return &m;
+
   const struct {
     const char* key;
     const void* node;
   } entries[] = {
+    // types
     {"void", type_void},
     {"bool", type_bool},
-    {"int", type_int},
+    {"int",  type_int},
     {"uint", type_uint},
-    {"i8", type_i8},
-    {"i16", type_i16},
-    {"i32", type_i32},
-    {"i64", type_i64},
-    {"u8", type_u8},
-    {"u16", type_u16},
-    {"u32", type_u32},
-    {"u64", type_u64},
-    {"f32", type_f32},
-    {"f64", type_f64},
+    {"i8",   type_i8},
+    {"i16",  type_i16},
+    {"i32",  type_i32},
+    {"i64",  type_i64},
+    {"u8",   type_u8},
+    {"u16",  type_u16},
+    {"u32",  type_u32},
+    {"u64",  type_u64},
+    {"f32",  type_f32},
+    {"f64",  type_f64},
+    // constants
+    {"true",  const_true},
+    {"false", const_false},
   };
   static void* storage[
     (MEMALLOC_BUMP_OVERHEAD + MAP_STORAGE_X(countof(entries))) / sizeof(void*)] = {0};

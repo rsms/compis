@@ -327,13 +327,13 @@ static void scan1(scanner_t* s) {
   case '}': s->insertsemi = true; s->tok.t = TRBRACE; break;
   case '[': s->tok.t = TLBRACK; break;
   case ']': s->insertsemi = true; s->tok.t = TRBRACK; break;
+  case ':': s->tok.t = TCOLON; break;
   case ';': s->tok.t = TSEMI; break;
   case ',': s->tok.t = TCOMMA; break;
+  case '?': s->tok.t = TQUESTION; break;
   case '~': s->tok.t = TTILDE; break;
-  case '#': s->tok.t = THASH; break;
-  case '<': s->tok.t = TLT; break;
-  case '>': s->tok.t = TGT; break;
-
+  case '<': OP2( TLT,      '<', TSHL); break;
+  case '>': OP2( TGT,      '>', TSHR); break;
   case '=': OP2( TASSIGN,  '=', TEQ); break;
   case '+': OP2( TPLUS,    '=', TADDASSIGN); break;
   case '*': OP2( TSTAR,    '=', TMULASSIGN); break;
@@ -345,7 +345,6 @@ static void scan1(scanner_t* s) {
     case '-': s->tok.t = TMINUSMINUS; s->inp++; break;
     case '=': s->tok.t = TMINUSMINUS; s->inp++; break;
   } break;
-
   case '/': s->tok.t = TSLASH; switch (nextc) {
     case '/':
     case '*':
@@ -356,11 +355,8 @@ static void scan1(scanner_t* s) {
     case '=':
       ++s->inp, s->tok.t = TDIVASSIGN; break;
   } break;
-
   case '0': return zeronumber(s);
-
-  case '.':
-    if (s->inp < s->inend) switch (*s->inp) {
+  case '.': switch (nextc) {
     case '0' ... '9':
       s->inp--;
       return floatnumber(s, 10);
@@ -371,11 +367,10 @@ static void scan1(scanner_t* s) {
         s->inp++;
         s->tok.t = TDOTDOTDOT;
       }
-      return;
-    }
-    s->tok.t = TDOT;
-    return;
-
+      break;
+    default:
+      s->tok.t = TDOT;
+  } break;
   default:
     if (isdigit(c)) {
       s->inp--;

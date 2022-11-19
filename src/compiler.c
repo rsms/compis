@@ -112,19 +112,19 @@ static err_t compile_co_to_c(compiler_t* c, input_t* input, const char* cfile) {
   parser_dispose(&parser);
 
   // print AST
-  #if DEBUG
+  #if DEBUG && 0
   {
     buf_t buf = buf_make(c->ma);
     if (( err = node_repr(&buf, (node_t*)unit) ))
       goto end;
     dlog("AST:\n%.*s\n", (int)buf.len, buf.chars);
 
-    // print formatted c0 code
-    if (c->errcount == errcount) {
-      buf_clear(&buf);
-      node_fmt(&buf, (const node_t*)unit, U32_MAX);
-      dlog("fmt:\n%.*s\n", (int)buf.len, buf.chars);
-    }
+    // // print formatted c0 code
+    // if (c->errcount == errcount) {
+    //   buf_clear(&buf);
+    //   node_fmt(&buf, (const node_t*)unit, U32_MAX);
+    //   dlog("fmt:\n%.*s\n", (int)buf.len, buf.chars);
+    // }
   }
   #endif
 

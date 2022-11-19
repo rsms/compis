@@ -1,13 +1,14 @@
 type Account {
-  x int = 3
+  x, y int = 3, 4
+  pretty bool
 }
 
-fun bar(y, x int) int {
-  let a = Account(x)
+fun bar(x, y int) int {
+  let a = Account(x, count: 5, pretty: true)
   a.x * y
 }
 
 fun foo(x, y int) int {
   var z = x + y * 2
-  bar(z, 6)
+  bar(z, y: 6)
 }

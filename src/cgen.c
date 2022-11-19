@@ -242,9 +242,20 @@ static void block(cgen_t* g, const block_t* n, blockflag_t fl) {
 
 static void structinit(cgen_t* g, const structtype_t* t, const ptrarray_t* args) {
   CHAR('{');
-  for (u32 i = 0; i < args->len; i++) {
+  u32 i = 0;
+  for (; i < args->len; i++) {
+    const node_t* arg = args->v[i];
+    if (arg->kind == EXPR_PARAM)
+      break;
     if (i) PRINT(", ");
-    expr(g, args->v[i]);
+    expr(g, (const expr_t*)arg);
+  }
+  // named arguments
+  for (; i < args->len; i++) {
+    if (i) PRINT(", ");
+    const local_t* arg = args->v[i];
+    CHAR('.'); PRINT(arg->name); CHAR('=');
+    expr(g, assertnotnull(arg->init));
   }
   CHAR('}');
 }
@@ -281,8 +292,6 @@ static void typecall(cgen_t* g, const call_t* n, const type_t* t) {
 
 
 static void call(cgen_t* g, const call_t* n) {
-  dlog("call n->recv=%s", nodekind_name(n->recv->kind));
-
   // type call?
   const idexpr_t* idrecv = (const idexpr_t*)n->recv;
   if (n->recv->kind == EXPR_ID && nodekind_istype(idrecv->ref->kind))
@@ -489,6 +498,8 @@ err_t cgen_generate(cgen_t* g, const unit_t* n) {
   g->scopenest = 0;
 
   PRINT("#include <stdint.h>\n");
+  PRINT("#define true 1\n");
+  PRINT("#define false 0\n");
 
   if (n->kind != NODE_UNIT)
     return ErrInvalid;

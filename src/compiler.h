@@ -21,6 +21,7 @@
   _( EXPR_PREFIXOP )\
   _( EXPR_POSTFIXOP )\
   _( EXPR_BINOP )\
+  _( EXPR_BOOLLIT )\
   _( EXPR_INTLIT )\
   _( EXPR_FLOATLIT )\
 // end FOREACH_NODEKIND
@@ -119,17 +120,21 @@ typedef struct {
 typedef const char* sym_t;
 
 typedef struct {
-  compiler_t* compiler;
   input_t*    input;       // input source
   const u8*   inp;         // input buffer current pointer
   const u8*   inend;       // input buffer end
   const u8*   linestart;   // start of current line
-  const u8*   tokstart;    // start of current token
-  const u8*   tokend;      // end of previous token
-  usize       litlenoffs;  // subtracted from source span len in scanner_litlen()
   token_t     tok;         // recently parsed token (current token during scanning)
   bool        insertsemi;  // insert a semicolon before next newline
   u32         lineno;      // monotonic line number counter (!= tok.loc.line)
+} scanstate_t;
+
+typedef struct {
+  scanstate_t;
+  compiler_t* compiler;
+  const u8*   tokstart;    // start of current token
+  const u8*   tokend;      // end of previous token
+  usize       litlenoffs;  // subtracted from source span len in scanner_litlen()
   u64         litint;      // parsed INTLIT
   buf_t       litbuf;      // interpreted source literal (e.g. "foo\n")
   sym_t       sym;         // identifier
@@ -180,7 +185,7 @@ typedef struct {
 
 typedef struct {
   usertype_t;
-  ptrarray_t params;
+  ptrarray_t params; // local_t*[]
   type_t*    result;
 } funtype_t;
 
@@ -202,6 +207,7 @@ typedef struct {
   u32              nrefs;
 } expr_t;
 
+typedef struct { expr_t; bool val; } boollit_t;
 typedef struct { expr_t; u64 intval; } intlit_t;
 typedef struct { expr_t; union { double f64val; float f32val; }; } floatlit_t;
 typedef struct { expr_t; sym_t name; node_t* nullable ref; } idexpr_t;
@@ -223,9 +229,9 @@ typedef struct { // block is a declaration (stmt) or an expression depending on 
 
 typedef struct { // fun is a declaration (stmt) or an expression depending on use
   expr_t;
-  ptrarray_t       params;
-  sym_t nullable   name; // NULL if anonymous
-  expr_t* nullable body; // NULL if function is a prototype
+  ptrarray_t       params; // local_t*[]
+  sym_t nullable   name;   // NULL if anonymous
+  expr_t* nullable body;   // NULL if function is a prototype
 } fun_t;
 
 typedef struct {
@@ -260,6 +266,7 @@ typedef struct {
 
 extern node_t* last_resort_node;
 
+// universe constants
 extern type_t* type_void;
 extern type_t* type_bool;
 extern type_t* type_int;
@@ -274,6 +281,8 @@ extern type_t* type_u32;
 extern type_t* type_u64;
 extern type_t* type_f32;
 extern type_t* type_f64;
+extern boollit_t* const_true;
+extern boollit_t* const_false;
 
 
 // input

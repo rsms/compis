@@ -243,6 +243,11 @@ static void repr(RPARAMS, const node_t* n) {
   case EXPR_FUN:     repr_fun(RARGS, (fun_t*)n); break;
   case EXPR_BLOCK:   repr_nodearray(RARGS, &((block_t*)n)->children); break;
   case EXPR_CALL:    repr_call(RARGS, (call_t*)n); break;
+
+  case EXPR_BOOLLIT:
+    CHAR(' '), PRINT(((const boollit_t*)n)->val ? "true" : "false");
+    break;
+
   case EXPR_INTLIT:
     CHAR(' '), buf_print_u64(&r->outbuf, ((intlit_t*)n)->intval, 10);
     break;
@@ -279,6 +284,7 @@ static void repr(RPARAMS, const node_t* n) {
   case EXPR_PARAM:
   case EXPR_LET:
   case EXPR_VAR:
+    CHAR(' '); PRINT(((const local_t*)n)->name);
     if (((const local_t*)n)->init) {
       CHAR(' ');
       repr(RARGS, (const node_t*)((const local_t*)n)->init);
