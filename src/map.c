@@ -224,10 +224,9 @@ void** nullable map_lookup(const map_t* m, const void* key, usize keysize) {
 }
 
 
-bool map_del(map_t* m, const void* key, usize keysize) {
-  void* vp = map_lookup(m, key, keysize);
+static bool map_del1(map_t* m, void* nullable vp) {
   if UNLIKELY(vp == NULL)
-    return NULL;
+    return false;
   if (m->len == 1) {
     map_clear(m); // clear all DELMARK entries
     return true;
@@ -237,6 +236,12 @@ bool map_del(map_t* m, const void* key, usize keysize) {
   ent->key = DELMARK;
   ent->keysize = 0;
   return true;
+}
+
+
+bool map_del(map_t* m, const void* key, usize keysize) {
+  void* vp = map_lookup(m, key, keysize);
+  return map_del1(m, vp);
 }
 
 
@@ -271,6 +276,12 @@ void** nullable map_lookup_ptr(const map_t* m, const void* key) {
   if (m->parent)
     return map_lookup_ptr(m->parent, key);
   return NULL;
+}
+
+
+bool map_del_ptr(map_t* m, const void* key) {
+  void* vp = map_lookup_ptr(m, key);
+  return map_del1(m, vp);
 }
 
 

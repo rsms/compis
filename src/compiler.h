@@ -28,13 +28,13 @@
 #define FOREACH_NODEKIND_TYPE(_) \
   _( TYPE_VOID ) /* must be first type kind */\
   _( TYPE_BOOL )\
-  _( TYPE_INT )\
   _( TYPE_I8  )\
   _( TYPE_I16 )\
   _( TYPE_I32 )\
   _( TYPE_I64 )\
   _( TYPE_F32 )\
   _( TYPE_F64 )\
+  _( TYPE_INT )\
   _( TYPE_ARRAY ) /* nodekind_isusertype assumes this is first user type */\
   _( TYPE_ENUM )\
   _( TYPE_FUN )\
@@ -234,13 +234,6 @@ typedef struct { // fun is a declaration (stmt) or an expression depending on us
   expr_t* nullable body;   // NULL if function is a prototype
 } fun_t;
 
-typedef struct {
-  node_t;
-  sym_t            name;
-  type_t*          type;
-  expr_t* nullable init;
-} field_t;
-
 // ———————— END AST ————————
 
 typedef struct {
@@ -249,7 +242,10 @@ typedef struct {
   scope_t         scope;
   map_t           pkgdefs;
   buf_t           tmpbuf[2];
+  map_t           tmpmap;
   fun_t* nullable fun; // current function
+  type_t*         typectx;
+  ptrarray_t      typectxstack;
 } parser_t;
 
 typedef struct {
@@ -260,6 +256,7 @@ typedef struct {
   usize       indent;
   u32         lineno;
   u32         scopenest;
+  map_t       tmpmap;
   const input_t* nullable input;
 } cgen_t;
 
@@ -311,7 +308,7 @@ void parser_dispose(parser_t* p);
 unit_t* parser_parse(parser_t* p, memalloc_t ast_ma, input_t*);
 
 // C code generator
-void cgen_init(cgen_t* g, compiler_t* c, memalloc_t out_ma);
+bool cgen_init(cgen_t* g, compiler_t* c, memalloc_t out_ma);
 void cgen_dispose(cgen_t* g);
 err_t cgen_generate(cgen_t* g, const unit_t* unit);
 
@@ -328,6 +325,8 @@ inline static bool nodekind_islocal(nodekind_t kind) {
   return kind == EXPR_PARAM || kind == EXPR_VAR || kind == EXPR_LET; }
   inline static bool nodekind_isbasictype(nodekind_t kind) {
   return TYPE_VOID <= kind && kind < TYPE_ARRAY; }
+inline static bool nodekind_isprimtype(nodekind_t kind) {
+  return TYPE_VOID <= kind && kind < TYPE_ARRAY; }
 inline static bool nodekind_isusertype(nodekind_t kind) {
   return TYPE_ARRAY <= kind && kind < NODEKIND_COUNT; }
 inline static bool nodekind_isptrtype(nodekind_t kind) {
@@ -340,6 +339,8 @@ inline static bool node_isusertype(const node_t* n) {
   return nodekind_isusertype(n->kind); }
 inline static bool type_isusertype(const type_t* nullable t) {
   return nodekind_isptrtype(assertnotnull(t)->kind); }
+inline static bool type_isprim(const type_t* nullable t) {
+  return nodekind_isprimtype(assertnotnull(t)->kind); }
 
 #define TYPEID_PREFIX(typekind)  ('A'+(typekind)-TYPE_VOID)
 

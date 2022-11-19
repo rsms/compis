@@ -132,25 +132,12 @@ static void repr_typedef(RPARAMS, const typedef_t* n) {
 }
 
 
-static void repr_field(RPARAMS, const field_t* n) {
-  REPR_BEGIN('(', n->name);
-  CHAR(' ');
-  fl |= REPRFLAG_HEAD;
-  repr_type(RARGS, n->type);
-  if (n->init) {
-    CHAR(' ');
-    repr(RARGS, (const node_t*)n->init);
-  }
-  REPR_END(')');
-}
-
-
 static void repr_struct(RPARAMS, const structtype_t* n, bool isnew) {
   if (n->name)
     CHAR(' '), PRINT(n->name);
   if (isnew) for (u32 i = 0; i < n->fields.len; i++) {
     CHAR(' ');
-    repr_field(RARGS, n->fields.v[i]);
+    repr(RARGS, n->fields.v[i]);
   }
 }
 
@@ -205,15 +192,22 @@ static void repr_type(RPARAMS, const type_t* t) {
   REPR_BEGIN('<', nodekind_name(t->kind));
   bool isnew = !seen(r, t);
   switch (t->kind) {
-    case TYPE_STRUCT:
-      repr_struct(RARGS, (const structtype_t*)t, isnew);
-      break;
-    case TYPE_ARRAY:
-    case TYPE_ENUM:
-    case TYPE_FUN:
-    case TYPE_PTR:
-      dlog("TODO subtype %s", nodekind_name(t->kind));
-      break;
+  case TYPE_INT:
+  case TYPE_I8:
+  case TYPE_I16:
+  case TYPE_I32:
+  case TYPE_I64:
+    PRINT(t->isunsigned ? " u" : " s");
+    break;
+  case TYPE_STRUCT:
+    repr_struct(RARGS, (const structtype_t*)t, isnew);
+    break;
+  case TYPE_ARRAY:
+  case TYPE_ENUM:
+  case TYPE_FUN:
+  case TYPE_PTR:
+    dlog("TODO subtype %s", nodekind_name(t->kind));
+    break;
   }
   REPR_END('>');
 }
@@ -281,6 +275,7 @@ static void repr(RPARAMS, const node_t* n) {
     break;
   }
 
+  case NODE_FIELD:
   case EXPR_PARAM:
   case EXPR_LET:
   case EXPR_VAR:

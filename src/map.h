@@ -29,7 +29,7 @@ void** nullable map_lookup_ptr(const map_t* m, const void* key);
 bool map_del_ptr(map_t* m, const void* key);
 
 // Iterator. Example with c-string keys
-// for (mapent_t* e = map_it(m); map_itnext(m, &e); )
+// for (const mapent_t* e = map_it(m); map_itnext(m, &e); )
 //   dlog("%*.s => %zx", (int)e->keysize, (const char*)e->key, e->value);
 inline static const mapent_t* nullable map_it(const map_t* m) { return m->entries; }
 bool map_itnext(const map_t* m, const mapent_t** ep);

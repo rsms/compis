@@ -112,7 +112,7 @@ static err_t compile_co_to_c(compiler_t* c, input_t* input, const char* cfile) {
   parser_dispose(&parser);
 
   // print AST
-  #if DEBUG && 0
+  #if DEBUG && 1
   {
     buf_t buf = buf_make(c->ma);
     if (( err = node_repr(&buf, (node_t*)unit) ))
@@ -136,7 +136,8 @@ static err_t compile_co_to_c(compiler_t* c, input_t* input, const char* cfile) {
 
   // generate C code
   cgen_t g;
-  cgen_init(&g, c, c->ma);
+  if (!cgen_init(&g, c, c->ma))
+    goto end;
   err = cgen_generate(&g, unit);
   if (!err) {
     dlog("—————————\n%.*s\n—————————", (int)g.outbuf.len, g.outbuf.chars);

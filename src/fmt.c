@@ -2,6 +2,8 @@
 #include "compiler.h"
 #include "abuf.h"
 
+// TODO: rewrite this to use buf_t, like ast.c and cgen.c
+
 
 const char* nodekind_fmt(nodekind_t kind) {
   switch (kind) {
@@ -76,6 +78,35 @@ static void funtype(abuf_t* s, const funtype_t* nullable n, u32 indent, u32 maxd
   }
   abuf_str(s, ") ");
   fmt(s, (const node_t*)n->result, indent, maxdepth);
+}
+
+
+static void structtype(
+  abuf_t* s, const structtype_t* nullable t, u32 indent, u32 maxdepth)
+{
+  if (t->name)
+    abuf_str(s, t->name);
+  if (maxdepth == 0)
+    return;
+  if (t->name)
+    abuf_c(s, ' ');
+  abuf_c(s, '{');
+  if (t->fields.len > 0) {
+    indent++;
+    for (u32 i = 0; i < t->fields.len; i++) {
+      startline(s, indent);
+      const local_t* f = t->fields.v[i];
+      abuf_str(s, f->name), abuf_c(s, ' ');
+      fmt(s, (const node_t*)f->type, indent, maxdepth);
+      if (f->init) {
+        abuf_str(s, " = ");
+        fmt(s, (const node_t*)f->init, indent, maxdepth);
+      }
+    }
+    indent--;
+    startline(s, indent);
+  }
+  abuf_c(s, '}');
 }
 
 
@@ -207,7 +238,8 @@ static void fmt(abuf_t* s, const node_t* nullable n, u32 indent, u32 maxdepth) {
   case TYPE_I64:  abuf_str(s, ((type_t*)n)->isunsigned ? "u64" : "i64"); break;
   case TYPE_F32:  abuf_str(s, "f32"); break;
   case TYPE_F64:  abuf_str(s, "f64"); break;
-  case TYPE_FUN:  return funtype(s, (const funtype_t*)n, indent, maxdepth);
+  case TYPE_FUN:  return funtype(s, (const funtype_t*)n, indent, maxdepth - 1);
+  case TYPE_STRUCT: return structtype(s, (const structtype_t*)n, indent, maxdepth - 1);
   case TYPE_ARRAY: {
     arraytype_t* a = (arraytype_t*)n;
     abuf_fmt(s, "[%zu]", a->size);
@@ -217,7 +249,6 @@ static void fmt(abuf_t* s, const node_t* nullable n, u32 indent, u32 maxdepth) {
 
   case TYPE_ENUM:
   case TYPE_PTR:
-  case TYPE_STRUCT:
   case STMT_TYPEDEF:
   case NODE_FIELD:
     dlog("TODO %s", nodekind_name(n->kind));

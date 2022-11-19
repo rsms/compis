@@ -2,15 +2,19 @@
 #include "compiler.h"
 
 
-void cgen_init(cgen_t* g, compiler_t* c, memalloc_t out_ma) {
+bool cgen_init(cgen_t* g, compiler_t* c, memalloc_t out_ma) {
   memset(g, 0, sizeof(*g));
   g->compiler = c;
   buf_init(&g->outbuf, out_ma);
+  if (!map_init(&g->tmpmap, g->compiler->ma, 32))
+    return false;
+  return true;
 }
 
 
 void cgen_dispose(cgen_t* g) {
   buf_dispose(&g->outbuf);
+  map_dispose(&g->tmpmap, g->compiler->ma);
 }
 
 
@@ -21,7 +25,8 @@ static void seterr(cgen_t* g, err_t err) {
 
 
 #define error(g, node_or_type, fmt, args...) \
-  _error((g), (srcrange_t){ .focus = (node_or_type)->loc }, "[cgen] " fmt, ##args)
+  _error((g), (srcrange_t){ .focus = assertnotnull(node_or_type)->loc }, \
+    "[cgen] " fmt, ##args)
 
 #if DEBUG
   #define debugdie(g, node_or_type, fmt, args...) ( \
@@ -123,7 +128,7 @@ static const char* operator(tok_t tok) {
 }
 
 
-static void field(cgen_t* g, const field_t* field) {
+static void field(cgen_t* g, const local_t* field) {
   type(g, field->type);
   CHAR(' ');
   PRINT(field->name);
@@ -136,7 +141,7 @@ static void structtype(cgen_t* g, const structtype_t* n) {
   PRINT("struct {");
   g->indent++;
   for (u32 i = 0; i < n->fields.len; i++) {
-    const field_t* f = n->fields.v[i];
+    const local_t* f = n->fields.v[i];
     startline(g, f->loc);
     field(g, f);
     CHAR(';');
@@ -250,18 +255,57 @@ static void structinit(cgen_t* g, const structtype_t* t, const ptrarray_t* args)
     if (i) PRINT(", ");
     expr(g, (const expr_t*)arg);
   }
+  if (i == args->len) {
+    CHAR('}');
+    return;
+  }
+
   // named arguments
+  u32 posend = i;
+
+  // record fields with non-zero initializers
+  map_t* initmap = &g->tmpmap;
+  map_clear(initmap);
+  for (u32 i = posend; i < t->fields.len; i++) {
+    const local_t* f = t->fields.v[i];
+    if (f->init) {
+      const void** vp = (const void**)map_assign_ptr(initmap, g->compiler->ma, f->name);
+      if UNLIKELY(!vp)
+        return seterr(g, ErrNoMem);
+      *vp = f;
+    }
+  }
+
+  // generate named arguments
   for (; i < args->len; i++) {
     if (i) PRINT(", ");
     const local_t* arg = args->v[i];
     CHAR('.'); PRINT(arg->name); CHAR('=');
     expr(g, assertnotnull(arg->init));
+    map_del_ptr(initmap, arg->name);
   }
+
+  // generate remaining fields with non-zero initializers
+  for (const mapent_t* e = map_it(initmap); map_itnext(initmap, &e); ) {
+    if (i) PRINT(", ");
+    const local_t* f = e->value;
+    CHAR('.'); PRINT(f->name); CHAR('=');
+    expr(g, assertnotnull(f->init));
+  }
+
   CHAR('}');
 }
 
 
 static void typecall(cgen_t* g, const call_t* n, const type_t* t) {
+  // skip redundant "(T)v" when v is T
+  if (type_isprim(t)) {
+    assert(n->args.len == 1);
+    const expr_t* arg = n->args.v[0];
+    if (arg->type == t)
+      return expr(g, arg);
+  }
+
   CHAR('('); type(g, t); CHAR(')');
 
   switch (t->kind) {
@@ -276,9 +320,8 @@ static void typecall(cgen_t* g, const call_t* n, const type_t* t) {
   case TYPE_F64:
     if (n->args.len == 0) {
       zeroinit(g, t);
-    } else if UNLIKELY(n->args.len > 1) {
-      error(g, (const node_t*)n->recv, "too many values for %s", nodekind_name(t->kind));
     } else {
+      assert(n->args.len == 1);
       expr(g, n->args.v[0]);
     }
     break;
@@ -286,6 +329,7 @@ static void typecall(cgen_t* g, const call_t* n, const type_t* t) {
     structinit(g, (const structtype_t*)t, &n->args);
     break;
   default:
+    dlog("NOT IMPLEMENTED: type call %s", nodekind_name(t->kind));
     error(g, t, "NOT IMPLEMENTED: type call %s", nodekind_name(t->kind));
   }
 }
@@ -303,7 +347,10 @@ static void call(cgen_t* g, const call_t* n) {
   CHAR('(');
   for (u32 i = 0; i < n->args.len; i++) {
     if (i) PRINT(", ");
-    expr(g, n->args.v[i]);
+    const expr_t* arg = n->args.v[i];
+    if (arg->kind == EXPR_PARAM) // named argument
+      arg = ((const local_t*)arg)->init;
+    expr(g, arg);
   }
   CHAR(')');
 }
@@ -365,7 +412,15 @@ static void binop(cgen_t* g, const binop_t* n) {
 
 
 static void intlit(cgen_t* g, const intlit_t* n) {
+  // case TYPE_I8:  maxval = u ? 0xffllu : 0x7fllu; break;
+  // case TYPE_I16: maxval = u ? 0xffffllu : 0x7fffllu; break;
+  if (n->type->kind < TYPE_I32)
+    CHAR('('), type(g, n->type), CHAR(')');
   PRINTF("%llu", n->intval);
+  if (n->type->kind > TYPE_I32)
+    PRINT("ll");
+  if (n->type->isunsigned)
+    CHAR('u');
 }
 
 

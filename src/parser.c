@@ -236,7 +236,9 @@ static const char* fmtnode(parser_t* p, u32 bufindex, const node_t* n, u32 depth
 
 static void unexpected(parser_t* p, const char* errmsg) {
   const char* tokstr = fmttok(p, 0, currtok(p), scanner_lit(&p->scanner));
-  int msglen = (int)strlen(errmsg) + (*errmsg != 0);
+  int msglen = (int)strlen(errmsg);
+  if (msglen && *errmsg != ',' && *errmsg != ';')
+    msglen++;
   error(p, NULL, "unexpected %s%*s", tokstr, msglen, errmsg);
 }
 
@@ -275,8 +277,11 @@ static void leave_scope(parser_t* p) {
   for (u32 i = p->scope.base + 1; i < p->scope.len; i++) {
     const node_t* n = p->scope.ptr[i++];
     sym_t name = p->scope.ptr[i];
-    if (node_isexpr(n) && ((const expr_t*)n)->nrefs == 0 && n->kind != EXPR_FUN)
+    if (name != sym__ && node_isexpr(n) && ((const expr_t*)n)->nrefs == 0 &&
+        n->kind != EXPR_FUN)
+    {
       warning(p, n, "unused %s \"%s\"", nodekind_fmt(n->kind), name);
+    }
   }
   scope_pop(&p->scope);
 }
@@ -349,8 +354,37 @@ static void push(parser_t* p, ptrarray_t* children, void* child) {
 }
 
 
+static void typectx_push(parser_t* p, type_t* t) {
+  if UNLIKELY(!ptrarray_push(&p->typectxstack, p->scanner.compiler->ma, p->typectx))
+    out_of_mem(p);
+  p->typectx = t;
+}
+
+static void typectx_pop(parser_t* p) {
+  assert(p->typectxstack.len > 0);
+  p->typectx = ptrarray_pop(&p->typectxstack);
+}
+
+
 static bool types_iscompat(const type_t* nullable x, const type_t* nullable y) {
+  switch (x->kind) {
+  case TYPE_INT:
+  case TYPE_I8:
+  case TYPE_I16:
+  case TYPE_I32:
+  case TYPE_I64:
+    return (x == y) & (x->isunsigned == y->isunsigned);
+  }
   return x == y;
+}
+
+
+static bool types_isconvertible(const type_t* nullable dst, const type_t* nullable src) {
+  if (dst == src)
+    return true;
+  if (type_isprim(dst) && type_isprim(src))
+    return true;
+  return false;
 }
 
 
@@ -451,9 +485,9 @@ static type_t* type_id(parser_t* p, precedence_t prec) {
 }
 
 
-static field_t* nullable find_field(ptrarray_t* fields, sym_t name) {
+static local_t* nullable find_field(ptrarray_t* fields, sym_t name) {
   for (u32 i = 0; i < fields->len; i++) {
-    field_t* f = fields->v[i];
+    local_t* f = fields->v[i];
     if (f->name == name)
       return f;
   }
@@ -465,7 +499,7 @@ static field_t* nullable find_field(ptrarray_t* fields, sym_t name) {
 static void fieldset(parser_t* p, ptrarray_t* fields) {
   u32 fields_start = fields->len;
   for (;;) {
-    field_t* f = mknode(p, field_t, TYPE_STRUCT);
+    local_t* f = mknode(p, local_t, NODE_FIELD);
     f->name = p->scanner.sym;
     if (find_field(fields, f->name))
       error(p, NULL, "duplicate field %s", f->name);
@@ -478,10 +512,11 @@ static void fieldset(parser_t* p, ptrarray_t* fields) {
 
   type_t* t = type(p, PREC_MEMBER);
   for (u32 i = fields_start; i < fields->len; i++)
-    ((field_t*)fields->v[i])->type = t;
+    ((local_t*)fields->v[i])->type = t;
 
   if (currtok(p) != TASSIGN)
     return;
+
   next(p);
   u32 i = fields_start;
   for (;;) {
@@ -490,11 +525,19 @@ static void fieldset(parser_t* p, ptrarray_t* fields) {
       expr(p, PREC_COMMA);
       break;
     }
-    field_t* f = fields->v[i++];
+    local_t* f = fields->v[i++];
+    typectx_push(p, f->type);
     f->init = expr(p, PREC_COMMA);
+    typectx_pop(p);
     if (currtok(p) != TCOMMA)
       break;
     next(p);
+    if UNLIKELY(!types_iscompat(f->type, f->init->type)) {
+      const char* got = fmtnode(p, 0, (const node_t*)f->init->type, 1);
+      const char* expect = fmtnode(p, 1, (const node_t*)f->type, 1);
+      error(p, (node_t*)f->init,
+        "field initializer of type %s where type %s is expected", got, expect);
+    }
   }
   if (i < fields->len)
     error(p, NULL, "missing field initializer");
@@ -575,7 +618,9 @@ static expr_t* prefix_var(parser_t* p, precedence_t prec) {
     n->type = type(p, PREC_LOWEST);
     if (currtok(p) == TASSIGN) {
       next(p);
+      typectx_push(p, n->type);
       n->init = expr(p, prec);
+      typectx_pop(p);
       check_types_compat(p, n->type, n->init->type, (node_t*)n);
     }
   }
@@ -586,8 +631,41 @@ static expr_t* prefix_var(parser_t* p, precedence_t prec) {
 static expr_t* prefix_intlit(parser_t* p, precedence_t prec) {
   intlit_t* n = mknode(p, intlit_t, EXPR_INTLIT);
   n->intval = p->scanner.litint;
-  n->type = type_int;
+  n->type = p->typectx;
+
+  // TODO: handle negative numbers (scanner needs updating)
+  u64 maxval = 0;
+  bool u = n->type->isunsigned;
+  switch (n->type->kind) {
+  case TYPE_I8:  maxval = u ? 0xffllu : 0x7fllu; break;
+  case TYPE_I16: maxval = u ? 0xffffllu : 0x7fffllu; break;
+  case TYPE_I32: maxval = u ? 0xffffffffllu : 0x7fffffffllu; break;
+  case TYPE_I64: maxval = u ? 0xffffffffffffffffllu : 0x7fffffffffffffffllu; break;
+  default:
+    if (n->intval <= 0x7fffffffllu) {
+      maxval = 0x7fffffffllu;
+      n->type = type_int;
+    } else if (n->intval <= 0xffffffffllu) {
+      maxval = 0xffffffffllu;
+      n->type = type_uint;
+    } else if (n->intval <= 0x7fffffffffffffffllu) {
+      maxval = 0x7fffffffffffffffllu;
+      n->type = type_i64;
+    } else {
+      maxval = 0xffffffffffffffffllu;
+      n->type = type_u64;
+    }
+  }
+
+  if UNLIKELY(n->intval > maxval) {
+    const char* ts = fmtnode(p, 0, (const node_t*)n->type, 1);
+    slice_t lit = scanner_lit(&p->scanner);
+    error(p, (node_t*)n, "integer constant %.*s overflows %s",
+      (int)lit.len, lit.chars, ts);
+  }
+
   next(p);
+
   return (expr_t*)n;
 }
 
@@ -674,94 +752,191 @@ static expr_t* infix_assign(parser_t* p, precedence_t prec, expr_t* left) {
 }
 
 
-static void validate_typecall_args(parser_t* p, call_t* call) {
-  dlog("TODO %s", __FUNCTION__);
+static void error_field_type(parser_t* p, const expr_t* arg, const local_t* f) {
+  const char* got = fmtnode(p, 0, (const node_t*)arg->type, 1);
+  const char* expect = fmtnode(p, 1, (const node_t*)f->type, 1);
+  const node_t* origin = (const node_t*)arg;
+  if (arg->kind == EXPR_PARAM)
+    origin = assertnotnull((const node_t*)((local_t*)arg)->init);
+  error(p, origin, "passing value of type %s for field \"%s\" of type %s",
+    got, f->name, expect);
 }
 
 
-/*static void check_types_compat(
-  parser_t* p,
-  const type_t* nullable x,
-  const type_t* nullable y,
-  const node_t* nullable origin)
-{
-  if UNLIKELY(!!x * !!y && !types_iscompat(x, y)) { // "!!x * !!y": ignore NULL
-    const char* xs = fmtnode(p, 0, (const node_t*)x, 1);
-    const char* ys = fmtnode(p, 1, (const node_t*)y, 1);
-    error(p, origin, "incompatible types, %s and %s", xs, ys);
+static void validate_structcall_args(parser_t* p, call_t* call) {
+  const structtype_t* t = (const structtype_t*)call->recv->type;
+  assert(call->args.len <= t->fields.len); // checked by validate_typecall_args
+
+  u32 i = 0;
+
+  // positional arguments
+  for (; i < call->args.len; i++) {
+    const expr_t* arg = call->args.v[i];
+    if (arg->kind == EXPR_PARAM)
+      break;
+    const local_t* f = t->fields.v[i];
+    if UNLIKELY(!types_iscompat(f->type, arg->type))
+      error_field_type(p, arg, f);
   }
-}*/
+
+  if (i == t->fields.len)
+    return;
+
+  // named arguments
+  u32 posend = i;
+  map_t* seen = &p->tmpmap;
+  map_clear(seen);
+
+  for (u32 i = 0; i < t->fields.len; i++) {
+    const local_t* f = t->fields.v[i];
+    void** vp = map_assign_ptr(seen, p->scanner.compiler->ma, f->name);
+    if UNLIKELY(!vp)
+      return out_of_mem(p);
+    if (i < posend) {
+      *vp = call->args.v[i];
+    } else {
+      *vp = (void*)f;
+    }
+  }
+
+  for (; i < call->args.len; i++) {
+    const local_t* arg = call->args.v[i];
+    assert(arg->kind == EXPR_PARAM); // checked by namedargs
+    const void** vp = (const void**)map_lookup_ptr(seen, arg->name);
+    if UNLIKELY(!vp || ((const node_t*)*vp)->kind == EXPR_PARAM) {
+      const char* s = fmtnode(p, 0, (const node_t*)t, 1);
+      if (!vp) {
+        error(p, (node_t*)arg, "unknown field \"%s\" in struct %s", arg->name, s);
+      } else {
+        error(p, (node_t*)arg, "duplicate value for field \"%s\" in struct %s",
+          arg->name, s);
+        warning(p, *vp, "value for field \"%s\" already provided here", arg->name);
+      }
+      continue;
+    }
+
+    const local_t* f = *vp;
+    *vp = arg;
+
+    if UNLIKELY(!types_iscompat(f->type, arg->type))
+      error_field_type(p, (const expr_t*)arg, f);
+  }
+}
+
+
+static void validate_primtypecall_arg(parser_t* p, call_t* call) {
+  const type_t* dst = call->recv->type;
+  assert(call->args.len == 1); // checked by validate_typecall_args
+  const expr_t* arg = call->args.v[0];
+  if UNLIKELY(!nodekind_isexpr(arg->kind))
+    return error(p, (node_t*)arg, "invalid value");
+  const type_t* src = arg->type;
+  if UNLIKELY(dst != src && !types_isconvertible(dst, src)) {
+    const char* dst_s = fmtnode(p, 0, (node_t*)dst, 1);
+    const char* src_s = fmtnode(p, 1, (node_t*)src, 1);
+    error(p, (node_t*)arg, "cannot convert value of type %s to type %s", src_s, dst_s);
+  }
+}
+
+
+static void validate_typecall_args(parser_t* p, call_t* call) {
+  const type_t* t = (const type_t*)call->recv->type;
+  u32 minargs = 0;
+  u32 maxargs = 0;
+
+  switch (t->kind) {
+  case TYPE_VOID:
+    break;
+  case TYPE_BOOL:
+  case TYPE_INT:
+  case TYPE_I8:
+  case TYPE_I16:
+  case TYPE_I32:
+  case TYPE_I64:
+  case TYPE_F32:
+  case TYPE_F64:
+    minargs = 1;
+    maxargs = 1;
+    break;
+  case TYPE_STRUCT:
+    maxargs = ((const structtype_t*)t)->fields.len;
+    break;
+  case TYPE_ARRAY:
+    minargs = 1;
+    maxargs = U32_MAX;
+    FALLTHROUGH;
+  case TYPE_ENUM:
+  case TYPE_PTR:
+    dlog("NOT IMPLEMENTED: %s", nodekind_name(t->kind));
+    error(p, (node_t*)call->recv, "NOT IMPLEMENTED: %s", nodekind_name(t->kind));
+    break;
+  default:
+    assertf(0,"unexpected %s", nodekind_name(t->kind));
+  }
+
+  if UNLIKELY(call->args.len < minargs) {
+    const node_t* origin = (const node_t*)call->recv;
+    if (call->args.len > 0)
+      origin = call->args.v[call->args.len - 1];
+    const char* typ = fmtnode(p, 0, (const node_t*)t, 1);
+    return error(p, origin,
+      "not enough arguments for %s type constructor, expecting%s %u",
+      typ, minargs != maxargs ? " at least" : "", minargs);
+  }
+
+  if UNLIKELY(call->args.len > maxargs) {
+    const node_t* arg = call->args.v[maxargs];
+    const char* argstr = fmtnode(p, 0, arg, 1);
+    const char* typstr = fmtnode(p, 1, (const node_t*)t, 1);
+    if (maxargs == 0) {
+      return error(p, arg, "unexpected value %s; %s type accepts no arguments",
+        argstr, typstr);
+    }
+    return error(p, arg, "unexpected extra value %s in %s type constructor",
+      argstr, typstr);
+  }
+
+  if (nodekind_isprimtype(t->kind))
+    return validate_primtypecall_arg(p, call);
+
+  if (t->kind == TYPE_STRUCT)
+    return validate_structcall_args(p, call);
+}
 
 
 static void validate_funcall_args(parser_t* p, call_t* call) {
-  dlog("TODO %s", __FUNCTION__);
   const funtype_t* ft = (const funtype_t*)call->recv->type;
 
   if UNLIKELY(call->args.len != ft->params.len) {
-    if (call->args.len < ft->params.len) {
-      return error(p, (const node_t*)call,
-        "not enough arguments in function call, expected %u", ft->params.len);
-    }
     return error(p, (const node_t*)call,
-      "too many arguments in function call, expected %u", ft->params.len);
+      "%s arguments in function call, expected %u",
+      call->args.len < ft->params.len ? "not enough" : "too many",
+      ft->params.len);
   }
 
   u32 i = 0, nargs = ft->params.len;
   for (;i < nargs; i++) {
     expr_t* arg = call->args.v[i];
     local_t* param = ft->params.v[i];
-
+    // check name
     if UNLIKELY(arg->kind == EXPR_PARAM && ((local_t*)arg)->name != param->name) {
-      for (u32 i = 0; i < nargs; i++) {
-        if (((local_t*)ft->params.v[i])->name == ((local_t*)arg)->name) {
-          const char* fts = fmtnode(p, 0, (const node_t*)ft, 1);
-          return error(p, (node_t*)arg,
-            "invalid argument position for parameter \"%s\" in function call %s",
-            ((local_t*)arg)->name, fts);
-        }
+      for (i = 0; i < nargs; i++) {
+        if (((local_t*)ft->params.v[i])->name == ((local_t*)arg)->name)
+          break;
       }
+      const char* fts = fmtnode(p, 0, (const node_t*)ft, 1);
       return error(p, (node_t*)arg,
-        "unknown paramemter \"%s\" in function call", ((local_t*)arg)->name);
+        "%s named argument \"%s\", in function call %s",
+        i == nargs ? "unknown" : "invalid position for",
+        ((local_t*)arg)->name, fts);
     }
-
+    // check type
     if UNLIKELY(!types_iscompat(param->type, arg->type)) {
       const char* got = fmtnode(p, 0, (const node_t*)arg->type, 1);
       const char* expect = fmtnode(p, 1, (const node_t*)param->type, 1);
       error(p, (node_t*)arg, "passing %s to parameter of type %s", got, expect);
     }
   }
-  if (i == nargs)
-    return;
-
-  // build map of parameters
-  u32 posend = i; // end of positional arguments
-  map_t seen;
-  if (!map_init(&seen, p->scanner.compiler->ma, nargs))
-    return out_of_mem(p);
-  for (u32 i = 0; i < nargs; i++) {
-    local_t* param = ft->params.v[i];
-    void** vp = map_assign_ptr(&seen, p->scanner.compiler->ma, param->name);
-    if UNLIKELY(!vp)
-      return out_of_mem(p);
-    if (i < posend)
-      *vp = param;
-  }
-
-  // check named arguments
-  dlog("posend %u, nargs %u", posend, nargs);
-  for (u32 i = posend; i < nargs; i++) {
-    local_t* arg = call->args.v[i]; assert(arg->kind == EXPR_PARAM);
-    void** vp = map_lookup_ptr(&seen, arg->name);
-    if UNLIKELY(!vp) {
-      error(p, (node_t*)arg, "unknown parameter \"%s\" in function call", arg->name);
-    } else if (*vp) {
-      error(p, (node_t*)arg, "duplicate argument \"%s\"", arg->name);
-    } else {
-      *vp = ft->params.v[i];
-    }
-  }
-
-  panic("LOLCAT");
 }
 
 
@@ -774,15 +949,25 @@ static void validate_call_args(parser_t* p, call_t* call) {
 
 
 // namedargs = id "=" expr ("," id "=" expr)*
-static void namedargs(parser_t* p, ptrarray_t* args) {
-  for (;;) {
+static void namedargs(parser_t* p, ptrarray_t* args, local_t** paramv, u32 paramc) {
+  for (u32 paramidx = 0; ;paramidx++) {
     local_t* namedarg = mknode(p, local_t, EXPR_PARAM);
     namedarg->name = p->scanner.sym;
-    if (!expect(p, TID, ""))
+    if (currtok(p) != TID) {
+      unexpected(p, ", expecting field name");
       break;
-    if (!expect(p, TCOLON, ""))
+    }
+    next(p);
+    if (currtok(p) != TCOLON) {
+      unexpected(p, ", expecting ':' after field name");
       break;
+    }
+    next(p);
+    if (paramidx < paramc)
+      typectx_push(p, paramv[paramidx]->type);
     namedarg->init = expr(p, PREC_COMMA);
+    if (paramidx < paramc)
+      typectx_pop(p);
     namedarg->type = namedarg->init->type;
     push(p, args, namedarg);
     if (currtok(p) != TSEMI && currtok(p) != TCOMMA)
@@ -796,37 +981,69 @@ static void namedargs(parser_t* p, ptrarray_t* args) {
 //           | namedargs
 // posargs   = expr ("," expr)*
 // namedargs = id "=" expr ("," id "=" expr)*
-static void args(parser_t* p, ptrarray_t* args) {
-  bool posarg = true;
-  while (posarg) {
-    if (currtok(p) == TID && lookahead(p, 1) == TCOLON)
-      return namedargs(p, args);
+static void args(parser_t* p, ptrarray_t* args, type_t* recvtype) {
+  local_t param0 = { {{EXPR_PARAM}}, .type = recvtype };
+  local_t** paramv = (local_t*[]){ &param0 };
+  u32 paramc = 1;
+
+  if (recvtype->kind == TYPE_FUN) {
+    funtype_t* ft = (funtype_t*)recvtype;
+    paramv = (local_t**)ft->params.v;
+    paramc = ft->params.len;
+  } else if (recvtype->kind == TYPE_STRUCT) {
+    structtype_t* st = (structtype_t*)recvtype;
+    paramv = (local_t**)st->fields.v;
+    paramc = st->fields.len;
+  }
+
+  typectx_push(p, type_void);
+
+  for (u32 paramidx = 0; ;paramidx++) {
+    if (currtok(p) == TID && lookahead(p, 1) == TCOLON) {
+      if (paramidx >= paramc) {
+        paramc = 0;
+      } else {
+        paramv += paramidx;
+        paramc -= paramidx;
+      }
+      return namedargs(p, args, paramv, paramc);
+    }
+    if (paramidx < paramc)
+      typectx_push(p, paramv[paramidx]->type);
     expr_t* arg = expr(p, PREC_COMMA);
+    if (paramidx < paramc)
+      typectx_pop(p);
     push(p, args, arg);
     if (currtok(p) != TSEMI && currtok(p) != TCOMMA)
       return;
     next(p);
   }
+
+  typectx_pop(p);
 }
 
 
 // call = expr "(" args? ")"
 static expr_t* expr_postfix_call(parser_t* p, precedence_t prec, expr_t* left) {
+  u32 errcount = p->scanner.compiler->errcount;
   call_t* n = mknode(p, call_t, EXPR_CALL);
   next(p);
+  type_t* recvtype = left->type;
   if (left->type && left->type->kind == TYPE_FUN) {
     funtype_t* ft = (funtype_t*)left->type;
     n->type = ft->result;
   } else if (left->type && nodekind_istype(left->type->kind)) {
     n->type = left->type;
+    recvtype = left->type;
   } else {
     error(p, (node_t*)n, "calling %s; expected function or type",
       left->type ? nodekind_fmt(left->type->kind) : nodekind_fmt(left->kind));
   }
   n->recv = left;
   if (currtok(p) != TRPAREN)
-    args(p, &n->args);
-  validate_call_args(p, n);
+    args(p, &n->args, recvtype ? recvtype : type_void);
+  if (errcount == p->scanner.compiler->errcount)
+    validate_call_args(p, n);
   expect(p, TRPAREN, "to end function call");
   return (expr_t*)n;
 }
@@ -855,7 +1072,7 @@ static expr_t* expr_postfix_member(parser_t* p, precedence_t prec, expr_t* left)
     goto end;
   }
   structtype_t* t = (structtype_t*)n->recv->type;
-  field_t* f = find_field(&t->fields, n->name);
+  local_t* f = find_field(&t->fields, n->name);
   if UNLIKELY(!f) {
     const char* s = fmtnode(p, 0, (const node_t*)n->recv, 1);
     error(p, (node_t*)n, "%s has no field \"%s\"", s, n->name);
@@ -1199,6 +1416,8 @@ unit_t* parser_parse(parser_t* p, memalloc_t ast_ma, input_t* input) {
   unit_t* unit = mknode(p, unit_t, NODE_UNIT);
   next(p);
 
+  enter_scope(p);
+
   while (currtok(p) != TEOF) {
     stmt_t* n = stmt(p, PREC_LOWEST);
     push(p, &unit->children, n);
@@ -1259,20 +1478,38 @@ static const map_t* universe() {
 
 bool parser_init(parser_t* p, compiler_t* c) {
   memset(p, 0, sizeof(*p));
+
   if (!scanner_init(&p->scanner, c))
     return false;
+
   if (!map_init(&p->pkgdefs, c->ma, 32))
-    return false;
+    goto err1;
   p->pkgdefs.parent = universe();
+
+  if (!map_init(&p->tmpmap, c->ma, 32))
+    goto err2;
+
   for (usize i = 0; i < countof(p->tmpbuf); i++)
     buf_init(&p->tmpbuf[i], c->ma);
+
+  // note: p->typectxstack is valid when zero initialized
+  p->typectx = type_void;
+
   return true;
+err1:
+  scanner_dispose(&p->scanner);
+err2:
+  map_dispose(&p->pkgdefs, c->ma);
+  return false;
 }
 
 
 void parser_dispose(parser_t* p) {
   for (usize i = 0; i < countof(p->tmpbuf); i++)
     buf_dispose(&p->tmpbuf[i]);
-  map_dispose(&p->pkgdefs, p->scanner.compiler->ma);
+  memalloc_t ma = p->scanner.compiler->ma;
+  map_dispose(&p->pkgdefs, ma);
+  map_dispose(&p->tmpmap, ma);
+  ptrarray_dispose(&p->typectxstack, ma);
   scanner_dispose(&p->scanner);
 }
