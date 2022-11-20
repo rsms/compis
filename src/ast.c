@@ -243,7 +243,18 @@ static void repr(RPARAMS, const node_t* n) {
     break;
 
   case EXPR_INTLIT:
-    CHAR(' '), buf_print_u64(&r->outbuf, ((intlit_t*)n)->intval, 10);
+    CHAR(' ');
+    if (((intlit_t*)n)->type->isunsigned) {
+      buf_print_u64(&r->outbuf, ((intlit_t*)n)->intval, 10);
+    } else {
+      u64 u = ((intlit_t*)n)->intval;
+      i64 s = *(i64*)&u;
+      if (s < 0) {
+        u = (u64)-s;
+        CHAR('-');
+      }
+      buf_print_u64(&r->outbuf, u, 10);
+    }
     break;
 
   case EXPR_MEMBER:

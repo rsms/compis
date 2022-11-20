@@ -139,7 +139,9 @@ static void number(scanner_t* s, int base) {
   s->litint = 0;
   const u8* start_inp = s->inp;
 
-  u64 cutoff = 0xFFFFFFFFFFFFFFFFllu; // u64
+  u64 cutoff = 0xffffffffffffffffllu; // u64
+  if (*s->tokstart == '-')
+    cutoff = 0x8000000000000000llu; // I64_MIN
   u64 acc = 0;
   u64 cutlim = cutoff % base;
   cutoff /= (u64)base;
@@ -160,6 +162,10 @@ static void number(scanner_t* s, int base) {
         c = base; // trigger error branch below
         break;
       default:
+        if (*s->tokstart == '-') {
+          dlog(">> %lld", -*(i64*)&acc);
+          acc = (u64)-*(i64*)&acc;
+        }
         goto end;
     }
     if UNLIKELY(c >= base) {
@@ -176,8 +182,10 @@ static void number(scanner_t* s, int base) {
   }
 end:
   s->litint = acc;
-  if UNLIKELY(any < 0)
-    error(s, "integer literal too large");
+  if UNLIKELY(any < 0) {
+    error(s, "integer literal too large; overflows %c64",
+      *s->tokstart == '-' ? 'i' : 'u');
+  }
   if UNLIKELY(c == '_')
     error(s, "trailing \"_\" after integer literal");
 }
@@ -186,21 +194,9 @@ end:
 static void zeronumber(scanner_t* s) {
   int base = 10;
   if (s->inp < s->inend) switch (*s->inp) {
-    case 'X':
-    case 'x':
-      base = 16;
-      s->inp++;
-      break;
-    case 'B':
-    case 'b':
-      base = 2;
-      s->inp++;
-      break;
-    case 'O':
-    case 'o':
-      base = 8;
-      s->inp++;
-      break;
+    case 'X': case 'x': base = 16; s->inp++; break;
+    case 'B': case 'b': base = 2;  s->inp++; break;
+    case 'O': case 'o': base = 8;  s->inp++; break;
   }
   return number(s, base);
 }
@@ -335,15 +331,26 @@ static void scan1(scanner_t* s) {
   case '<': OP2( TLT,      '<', TSHL); break;
   case '>': OP2( TGT,      '>', TSHR); break;
   case '=': OP2( TASSIGN,  '=', TEQ); break;
-  case '+': OP2( TPLUS,    '=', TADDASSIGN); break;
   case '*': OP2( TSTAR,    '=', TMULASSIGN); break;
   case '%': OP2( TPERCENT, '=', TMODASSIGN); break;
   case '&': OP2( TAND,     '=', TANDASSIGN); break;
   case '|': OP2( TOR,      '=', TORASSIGN); break;
   case '^': OP2( TXOR,     '=', TXORASSIGN); break;
-  case '-': s->tok.t = TMINUS; switch (nextc) {
+  case '+': switch (nextc) {
+    case '+': s->tok.t = TPLUSPLUS; s->inp++; break;
+    case '=': s->tok.t = TADDASSIGN; s->inp++; break;
+    case '0': return s->inp++, zeronumber(s);
+    default:
+      if (isdigit(nextc)) return s->inp++, number(s, 10);
+      s->tok.t = TPLUS;
+  } break;
+  case '-': switch (nextc) {
     case '-': s->tok.t = TMINUSMINUS; s->inp++; break;
-    case '=': s->tok.t = TMINUSMINUS; s->inp++; break;
+    case '=': s->tok.t = TSUBASSIGN; s->inp++; break;
+    case '0': return s->inp++, zeronumber(s); // e.g. "-0xBEEF"
+    default:
+      if (isdigit(nextc)) return s->inp++, number(s, 10); // e.g. "-123"
+      s->tok.t = TMINUS;
   } break;
   case '/': s->tok.t = TSLASH; switch (nextc) {
     case '/':

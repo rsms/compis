@@ -128,13 +128,6 @@ static const char* operator(tok_t tok) {
 }
 
 
-static void field(cgen_t* g, const local_t* field) {
-  type(g, field->type);
-  CHAR(' ');
-  PRINT(field->name);
-}
-
-
 static void structtype(cgen_t* g, const structtype_t* n) {
   if (n->name && g->scopenest > 0)
     return PRINT(n->name);

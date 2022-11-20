@@ -29,19 +29,19 @@ typedef double             f64;
 #define I8_MAX    0x7f
 #define I16_MAX   0x7fff
 #define I32_MAX   0x7fffffff
-#define I64_MAX   0x7fffffffffffffff
+#define I64_MAX   0x7fffffffffffffffll
 #define ISIZE_MAX __LONG_MAX__
 
 #define I8_MIN    (-0x80)
 #define I16_MIN   (-0x8000)
 #define I32_MIN   (-0x80000000)
-#define I64_MIN   (-0x8000000000000000)
+#define I64_MIN   (-0x8000000000000000ll)
 #define ISIZE_MIN (-__LONG_MAX__ -1L)
 
 #define U8_MAX    0xff
 #define U16_MAX   0xffff
 #define U32_MAX   0xffffffff
-#define U64_MAX   0xffffffffffffffff
+#define U64_MAX   0xffffffffffffffffllu
 #ifdef __SIZE_MAX__
   #define USIZE_MAX __SIZE_MAX__
 #else
