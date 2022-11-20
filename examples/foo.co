@@ -1,18 +1,19 @@
-fun bar() void {
-  let x = -0xfffffffffffffff
+type Account {
+  x, y, z u32 = 3, 4, 5
+  pretty bool
 }
-// type Account {
-//   x, y, z u32 = 3, 4, 5
-//   pretty bool
-// }
 
-// fun bar(x, y int) int {
-//   let _ = i8(-3)
-//   let a = Account(u32(x), pretty: true, y: 5)
-//   int(a.x) * y
-// }
+fun bar(x, y int) int {
+  let _ = i8(-3)
+  let a = Account(u32(x), pretty: true, y: 5)
+  int(a.x) * y
+}
 
-// fun foo(x, y int) int {
-//   var z = x + y * int(2)
-//   bar(z, y: 6)
-// }
+fun foo(x, y int) int {
+  var z = x + y * int(2)
+  bar(z, y: 6)
+}
+
+fun negative_int() void {
+  let _ = -0x8000000000000000
+}

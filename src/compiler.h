@@ -137,6 +137,7 @@ typedef struct {
   usize       litlenoffs;  // subtracted from source span len in scanner_litlen()
   u64         litint;      // parsed INTLIT
   buf_t       litbuf;      // interpreted source literal (e.g. "foo\n")
+  bool        isneg;       // true if litint is a i64
   sym_t       sym;         // identifier
 } scanner_t;
 

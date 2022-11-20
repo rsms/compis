@@ -70,6 +70,8 @@ slice_t scanner_lit(const scanner_t* s) {
 
 ATTR_FORMAT(printf,2,3)
 static void error(scanner_t* s, const char* fmt, ...) {
+  if (s->inp == s->inend && s->tok.t == TEOF)
+    return;
   srcrange_t srcrange = { .focus = s->tok.loc };
   va_list ap;
   va_start(ap, fmt);
@@ -137,10 +139,11 @@ static void number(scanner_t* s, int base) {
   s->tok.t = TINTLIT;
   s->insertsemi = true;
   s->litint = 0;
+  s->isneg = *s->tokstart == '-';
   const u8* start_inp = s->inp;
 
-  u64 cutoff = 0xffffffffffffffffllu; // u64
-  if (*s->tokstart == '-')
+  u64 cutoff = 0xffffffffffffffffllu; // U64_MAX
+  if (s->isneg)
     cutoff = 0x8000000000000000llu; // I64_MIN
   u64 acc = 0;
   u64 cutlim = cutoff % base;
@@ -162,10 +165,6 @@ static void number(scanner_t* s, int base) {
         c = base; // trigger error branch below
         break;
       default:
-        if (*s->tokstart == '-') {
-          dlog(">> %lld", -*(i64*)&acc);
-          acc = (u64)-*(i64*)&acc;
-        }
         goto end;
     }
     if UNLIKELY(c >= base) {
@@ -181,11 +180,11 @@ static void number(scanner_t* s, int base) {
     }
   }
 end:
+  if (s->isneg)
+    acc |= 0x1000000000000000;
   s->litint = acc;
-  if UNLIKELY(any < 0) {
-    error(s, "integer literal too large; overflows %c64",
-      *s->tokstart == '-' ? 'i' : 'u');
-  }
+  if UNLIKELY(any < 0)
+    error(s, "integer literal too large; overflows %c64", s->isneg ? 'i' : 'u');
   if UNLIKELY(c == '_')
     error(s, "trailing \"_\" after integer literal");
 }
@@ -341,7 +340,7 @@ static void scan1(scanner_t* s) {
     case '=': s->tok.t = TADDASSIGN; s->inp++; break;
     case '0': return s->inp++, zeronumber(s);
     default:
-      if (isdigit(nextc)) return s->inp++, number(s, 10);
+      if (isdigit(nextc)) return number(s, 10);
       s->tok.t = TPLUS;
   } break;
   case '-': switch (nextc) {
@@ -349,7 +348,7 @@ static void scan1(scanner_t* s) {
     case '=': s->tok.t = TSUBASSIGN; s->inp++; break;
     case '0': return s->inp++, zeronumber(s); // e.g. "-0xBEEF"
     default:
-      if (isdigit(nextc)) return s->inp++, number(s, 10); // e.g. "-123"
+      if (isdigit(nextc)) return number(s, 10); // e.g. "-123"
       s->tok.t = TMINUS;
   } break;
   case '/': s->tok.t = TSLASH; switch (nextc) {

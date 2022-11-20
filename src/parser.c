@@ -192,6 +192,8 @@ srcrange_t node_srcrange(const node_t* n) {
 
 ATTR_FORMAT(printf,3,4)
 static void error(parser_t* p, const node_t* nullable n, const char* fmt, ...) {
+  if (p->scanner.inp == p->scanner.inend && p->scanner.tok.t == TEOF)
+    return;
   srcrange_t srcrange = n ? node_srcrange(n) : (srcrange_t){ .focus = currloc(p), };
   va_list ap;
   va_start(ap, fmt);
@@ -628,44 +630,51 @@ static expr_t* prefix_var(parser_t* p, precedence_t prec) {
 }
 
 
-static expr_t* prefix_intlit(parser_t* p, precedence_t prec) {
-  intlit_t* n = mknode(p, intlit_t, EXPR_INTLIT);
-  n->intval = p->scanner.litint;
-  n->type = p->typectx;
-
-  // TODO: handle negative numbers (scanner needs updating)
+static type_t* select_int_type(parser_t* p, const intlit_t* n) {
+  type_t* type = p->typectx;
   u64 maxval = 0;
-  bool u = n->type->isunsigned;
-  switch (n->type->kind) {
-  case TYPE_I8:  maxval = u ? 0xffllu : 0x7fllu; break;
-  case TYPE_I16: maxval = u ? 0xffffllu : 0x7fffllu; break;
-  case TYPE_I32: maxval = u ? 0xffffffffllu : 0x7fffffffllu; break;
-  case TYPE_I64: maxval = u ? 0xffffffffffffffffllu : 0x7fffffffffffffffllu; break;
-  default:
-    if (n->intval <= 0x7fffffffllu) {
-      maxval = 0x7fffffffllu;
-      n->type = type_int;
-    } else if (n->intval <= 0xffffffffllu) {
-      maxval = 0xffffffffllu;
-      n->type = type_uint;
-    } else if (n->intval <= 0x7fffffffffffffffllu) {
-      maxval = 0x7fffffffffffffffllu;
-      n->type = type_i64;
+  u64 uintval = n->intval;
+  u64 isneg = p->scanner.isneg;
+  if (p->scanner.isneg)
+    uintval &= ~0x1000000000000000; // clear negative bit
+
+  bool u = type->isunsigned;
+
+  switch (type->kind) {
+  case TYPE_I8:  maxval = u ? 0xffllu               : 0x7fllu+isneg; break;
+  case TYPE_I16: maxval = u ? 0xffffllu             : 0x7fffllu+isneg; break;
+  case TYPE_I32: maxval = u ? 0xffffffffllu         : 0x7fffffffllu+isneg; break;
+  case TYPE_I64: maxval = u ? 0xffffffffffffffffllu : 0x7fffffffffffffffllu+isneg; break;
+  default: // all other type contexts results in TYPE_INT
+    if (p->scanner.isneg) {
+      if (uintval <= 0x80000000llu)         return type_int;
+      if (uintval <= 0x8000000000000000llu) return type_i64;
+      // trigger error report
+      maxval = 0x8000000000000000llu;
+      type = type_i64;
     } else {
+      if (n->intval <= 0x7fffffffllu)         return type_int;
+      if (n->intval <= 0x7fffffffffffffffllu) return type_i64;
       maxval = 0xffffffffffffffffllu;
-      n->type = type_u64;
+      type = type_u64;
     }
   }
 
-  if UNLIKELY(n->intval > maxval) {
-    const char* ts = fmtnode(p, 0, (const node_t*)n->type, 1);
+  if UNLIKELY(uintval > maxval) {
+    const char* ts = fmtnode(p, 0, (const node_t*)type, 1);
     slice_t lit = scanner_lit(&p->scanner);
     error(p, (node_t*)n, "integer constant %.*s overflows %s",
       (int)lit.len, lit.chars, ts);
   }
+  return type;
+}
 
+
+static expr_t* prefix_intlit(parser_t* p, precedence_t prec) {
+  intlit_t* n = mknode(p, intlit_t, EXPR_INTLIT);
+  n->intval = p->scanner.litint;
+  n->type = select_int_type(p, n);
   next(p);
-
   return (expr_t*)n;
 }
 

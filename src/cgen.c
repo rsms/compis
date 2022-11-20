@@ -423,11 +423,19 @@ static void binop(cgen_t* g, const binop_t* n) {
 
 
 static void intlit(cgen_t* g, const intlit_t* n) {
-  // case TYPE_I8:  maxval = u ? 0xffllu : 0x7fllu; break;
-  // case TYPE_I16: maxval = u ? 0xffffllu : 0x7fffllu; break;
   if (n->type->kind < TYPE_I32)
     CHAR('('), type(g, n->type), CHAR(')');
-  PRINTF("%llu", n->intval);
+
+  u64 u = n->intval;
+  if (!n->type->isunsigned && (u & 0x1000000000000000) ) {
+    u &= ~0x1000000000000000;
+    CHAR('-');
+  }
+  u32 base = u >= 1024 ? 16 : 10;
+  if (base == 16)
+    PRINT("0x");
+  buf_print_u64(&g->outbuf, u, base) ?: seterr(g, ErrNoMem);
+
   if (n->type->kind > TYPE_I32)
     PRINT("ll");
   if (n->type->isunsigned)
