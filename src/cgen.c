@@ -139,15 +139,33 @@ static void structtype(cgen_t* g, const structtype_t* n) {
   if (n->name && g->scopenest > 0)
     return PRINT(n->name);
   PRINT("struct {");
-  g->indent++;
-  for (u32 i = 0; i < n->fields.len; i++) {
-    const local_t* f = n->fields.v[i];
-    startline(g, f->loc);
-    field(g, f);
+  if (n->fields.len == 0) {
+    PRINT("u8 _unused;");
+  } else {
+    g->indent++;
+    const type_t* t = NULL;
+    for (u32 i = 0; i < n->fields.len; i++) {
+      const local_t* f = n->fields.v[i];
+      bool newline = f->loc.line != g->lineno;
+      if (newline) {
+        if (i) CHAR(';');
+        t = NULL;
+        startline(g, f->loc);
+      }
+      if (f->type != t) {
+        if (i && !newline) PRINT("; ");
+        type(g, f->type);
+        CHAR(' ');
+        t = f->type;
+      } else {
+        PRINT(", ");
+      }
+      PRINT(f->name);
+    }
     CHAR(';');
+    g->indent--;
+    startline(g, (srcloc_t){0});
   }
-  g->indent--;
-  startline(g, (srcloc_t){0});
   CHAR('}');
 }
 
