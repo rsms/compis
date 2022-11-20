@@ -12,7 +12,7 @@ Build & test:
 
 Build & run in continuous mode:
 
-    ./build.sh -wf=examples/hello.c \
+    ./build.sh -wf=examples/foo.co \
       -run='out/debug/c0 build examples/hello.c examples/foo.co && ./a.out'
 
 
