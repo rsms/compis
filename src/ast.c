@@ -254,6 +254,14 @@ static void repr(RPARAMS, const node_t* n) {
     break;
   }
 
+  case EXPR_FLOATLIT:
+    if (((const floatlit_t*)n)->type == type_f64) {
+      PRINTF(" %f", ((const floatlit_t*)n)->f64val);
+    } else {
+      PRINTF(" %f", ((const floatlit_t*)n)->f32val);
+    }
+    break;
+
   case EXPR_MEMBER:
     CHAR(' '), PRINT(((const member_t*)n)->name);
     CHAR(' '), repr(RARGS, (const node_t*)((const member_t*)n)->recv);

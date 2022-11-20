@@ -443,6 +443,15 @@ static void intlit(cgen_t* g, const intlit_t* n) {
 }
 
 
+static void floatlit(cgen_t* g, const floatlit_t* n) {
+  if (n->type->kind == TYPE_F64) {
+    PRINTF("%f", n->f64val);
+  } else {
+    PRINTF("%ff", n->f32val);
+  }
+}
+
+
 static void idexpr(cgen_t* g, const idexpr_t* n) {
   id(g, n->name);
 }
@@ -493,11 +502,11 @@ static void typdef(cgen_t* g, const typedef_t* n) {
 
 static void expr(cgen_t* g, const expr_t* n) {
   switch ((enum nodekind)n->kind) {
-  case EXPR_FUN:    return fun(g, (const fun_t*)n);
-  case EXPR_BINOP:  return binop(g, (const binop_t*)n);
-  case EXPR_INTLIT: return intlit(g, (const intlit_t*)n);
-  // case EXPR_FLOATLIT: TODO
-  case EXPR_ID:     return idexpr(g, (const idexpr_t*)n);
+  case EXPR_FUN:      return fun(g, (const fun_t*)n);
+  case EXPR_BINOP:    return binop(g, (const binop_t*)n);
+  case EXPR_INTLIT:   return intlit(g, (const intlit_t*)n);
+  case EXPR_FLOATLIT: return floatlit(g, (const floatlit_t*)n);
+  case EXPR_ID:       return idexpr(g, (const idexpr_t*)n);
   // case EXPR_PARAM: TODO
   case EXPR_VAR:    return vardef(g, (const local_t*)n);
   case EXPR_LET:    return letdef(g, (const local_t*)n);

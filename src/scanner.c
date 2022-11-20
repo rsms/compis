@@ -95,6 +95,8 @@ static void floatnumber(scanner_t* s, int base) {
   if UNLIKELY(!buf_reserve(&s->litbuf, 128))
     return error(s, "out of memory");
   int ok = 1;
+  if (*s->tokstart == '-')
+    ok = buf_push(&s->litbuf, '-');
   if (base == 16)
     ok = buf_print(&s->litbuf, "0x");
 
@@ -367,13 +369,12 @@ static void scan1(scanner_t* s) {
       s->inp--;
       return floatnumber(s, 10);
     case '.':
-      s->tok.t = TDOTDOT;
-      s->inp++;
-      if (s->inp < s->inend && *s->inp == '.') {
-        s->inp++;
+      if (s->inp+1 < s->inend && s->inp[1] == '.') {
+        s->inp += 2;
         s->tok.t = TDOTDOTDOT;
+        break;
       }
-      break;
+      FALLTHROUGH;
     default:
       s->tok.t = TDOT;
   } break;

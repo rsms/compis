@@ -310,6 +310,9 @@ static node_t* nullable lookup_definition(parser_t* p, sym_t name) {
 
 static void define(parser_t* p, sym_t name, node_t* n) {
   //dlog("define %s => %s@%p", name, nodekind_name(n->kind), n);
+  if (name == sym__)
+    return;
+
   node_t* existing = scope_lookup(&p->scope, name, 0);
   if (existing)
     goto err_duplicate;
@@ -681,24 +684,24 @@ static expr_t* prefix_intlit(parser_t* p, precedence_t prec) {
 
 static expr_t* prefix_floatlit(parser_t* p, precedence_t prec) {
   floatlit_t* n = mknode(p, floatlit_t, EXPR_FLOATLIT);
-  n->type = type_f64;
-  // n->type = type_f32; // TODO: type context
-
   char* endptr = NULL;
-  if (n->type == type_f64) {
+
+  if (p->typectx == type_f32) {
+    n->type = type_f32;
+    n->f32val = strtof(p->scanner.litbuf.chars, &endptr);
+    if (endptr != p->scanner.litbuf.chars + p->scanner.litbuf.len) {
+      error(p, (node_t*)n, "invalid floating-point constant");
+    } else if (n->f32val == HUGE_VALF) {
+      error(p, (node_t*)n, "32-bit floating-point constant too large");
+    }
+  } else {
+    n->type = type_f64;
     n->f64val = strtod(p->scanner.litbuf.chars, &endptr);
     if (endptr != p->scanner.litbuf.chars + p->scanner.litbuf.len) {
       error(p, (node_t*)n, "invalid floating-point constant");
     } else if (n->f64val == HUGE_VAL) {
       // e.g. 1.e999
       error(p, (node_t*)n, "64-bit floating-point constant too large");
-    }
-  } else if (n->type == type_f32) {
-    n->f32val = strtof(p->scanner.litbuf.chars, &endptr);
-    if (endptr != p->scanner.litbuf.chars + p->scanner.litbuf.len) {
-      error(p, (node_t*)n, "invalid floating-point constant");
-    } else if (n->f32val == HUGE_VALF) {
-      error(p, (node_t*)n, "32-bit floating-point constant too large");
     }
   }
 

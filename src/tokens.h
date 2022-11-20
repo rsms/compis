@@ -6,7 +6,6 @@ _( TLBRACE, "{" ) _( TRBRACE, "}" )
 _( TLBRACK, "[" ) _( TRBRACK, "]" )
 
 _( TDOT,        "." )
-_( TDOTDOT,     ".." )
 _( TDOTDOTDOT,  "..." )
 _( TCOLON,      ":" )
 _( TCOMMA,      "," )
