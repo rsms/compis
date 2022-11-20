@@ -198,6 +198,7 @@ static void zeronumber(scanner_t* s) {
     case 'X': case 'x': base = 16; s->inp++; break;
     case 'B': case 'b': base = 2;  s->inp++; break;
     case 'O': case 'o': base = 8;  s->inp++; break;
+    case '.': s->inp--; return floatnumber(s, 10);
   }
   return number(s, base);
 }
