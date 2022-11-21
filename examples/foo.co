@@ -1,20 +1,31 @@
-type Account {
+type Thing {
   x, y, z u32 = 3, 4, 5
   pretty bool
 }
 
-fun bar(x, y int) int {
-  let _ = i8(-3)
-  let a = Account(u32(x), pretty: true, y: 5)
-  int(a.x) * y
+fun Thing.foo(x u32) u32 {
+  x * x
 }
 
-fun foo(x, y int) int {
-  var z = x + y * int(2)
-  bar(z, y: 6)
+fun bar(x, y u32) u32 {
+  let a = Thing(1)
+  a.foo(x)
 }
 
-fun negative_num() void {
-  let _ = -0x8000000000000000
-  let _ = -1.23
-}
+
+
+// fun bar(x, y int) int {
+//   let _ = i8(-3)
+//   let a = Thing(u32(x), pretty: true, y: 5)
+//   int(a.x) * y
+// }
+
+// fun foo(x, y int) int {
+//   var z = x + y * int(2)
+//   bar(z, y: 6)
+// }
+
+// fun negative_num() void {
+//   let _ = -0x8000000000000000
+//   let _ = -1.23
+// }

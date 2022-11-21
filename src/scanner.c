@@ -6,9 +6,9 @@
 // #define DEBUG_SCANNING
 
 
-static const struct { const char* s; tok_t t; } keywordtab[] = {
+static const struct { const char* s; u8 len; tok_t t; } keywordtab[] = {
   #define _(NAME, ...)
-  #define KEYWORD(str, NAME) {str, NAME},
+  #define KEYWORD(str, NAME) {str, (u8)strlen(str), NAME},
   #include "tokens.h"
   #undef _
   #undef KEYWORD
@@ -244,19 +244,25 @@ static void identifier_utf8(scanner_t* s) {
 static void maybe_keyword(scanner_t* s) {
   // binary search for matching keyword & convert currtok to keyword
   usize low = 0, high = countof(keywordtab), mid;
-  int cmp;
   slice_t lit = scanner_lit(s);
+  int cmp;
+
+  if (lit.len > KEYWORD_MAXLEN)
+    return;
 
   while (low < high) {
     mid = (low + high) / 2;
     cmp = strncmp(lit.chars, keywordtab[mid].s, lit.len);
-    //dlog("maybe_keyword %.*s <> %s = %d",
+    // dlog("maybe_keyword %.*s <> %s = %d",
     //  (int)lit.len, lit.chars, keywordtab[mid].s, cmp);
     if (cmp == 0) {
-      s->tok.t = keywordtab[mid].t;
-      break;
-    }
-    if (cmp < 0) {
+      if (lit.len < keywordtab[mid].len) {
+        high = mid;
+      } else {
+        s->tok.t = keywordtab[mid].t;
+        break;
+      }
+    } else if (cmp < 0) {
       high = mid;
     } else {
       low = mid + 1;

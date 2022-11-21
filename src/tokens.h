@@ -63,3 +63,6 @@ KEYWORD( "return",   TRETURN )
 KEYWORD( "struct",   TSTRUCT )
 KEYWORD( "type",     TTYPE )
 KEYWORD( "var",      TVAR )
+
+#undef  KEYWORD_MAXLEN
+#define KEYWORD_MAXLEN 6

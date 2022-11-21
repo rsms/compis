@@ -20,7 +20,7 @@ static const char* opt_outfile = "a.out";
 
 static void diaghandler(const diag_t* d, void* nullable userdata) {
   log("%s", d->msg);
-  if (*d->srclines)
+  if (d->srclines && *d->srclines)
     log("%s", d->srclines);
 }
 

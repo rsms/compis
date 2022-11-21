@@ -192,8 +192,10 @@ typedef struct {
 
 typedef struct {
   usertype_t;
-  sym_t nullable name;   // NULL if anonymous
-  ptrarray_t     fields; // field_t*[]
+  sym_t nullable name;    // NULL if anonymous
+  ptrarray_t     fields;  // field_t*[]
+  ptrarray_t     methods; // fun_t*[]
+  bool           hasinit; // true if at least one field has an initializer
 } structtype_t;
 
 typedef struct {
@@ -215,7 +217,13 @@ typedef struct { expr_t; sym_t name; node_t* nullable ref; } idexpr_t;
 typedef struct { expr_t; tok_t op; expr_t* expr; } unaryop_t;
 typedef struct { expr_t; tok_t op; expr_t* left; expr_t* right; } binop_t;
 typedef struct { expr_t; expr_t* recv; ptrarray_t args; } call_t;
-typedef struct { expr_t; expr_t* recv; sym_t name; } member_t;
+
+typedef struct {
+  expr_t;
+  expr_t* recv;   // e.g. "x" in "x.y"
+  sym_t   name;   // e.g. "y" in "x.y"
+  expr_t* target; // e.g. "y" in "x.y"
+} member_t;
 
 typedef struct { // PARAM, VAR, LET
   expr_t;
@@ -233,6 +241,7 @@ typedef struct { // fun is a declaration (stmt) or an expression depending on us
   ptrarray_t       params; // local_t*[]
   sym_t nullable   name;   // NULL if anonymous
   expr_t* nullable body;   // NULL if function is a prototype
+  type_t*          self;   // first parameter is self of this type (methods only)
 } fun_t;
 
 // ———————— END AST ————————
@@ -244,6 +253,7 @@ typedef struct {
   map_t           pkgdefs;
   buf_t           tmpbuf[2];
   map_t           tmpmap;
+  map_t           methodmap; // maps type_t* -> ptrarray_t of methods (fun_t*[])
   fun_t* nullable fun; // current function
   type_t*         typectx;
   ptrarray_t      typectxstack;

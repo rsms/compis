@@ -157,7 +157,11 @@ static void repr_fun(RPARAMS, const fun_t* n) {
   {
     REPR_BEGIN('(', "result");
     CHAR(' ');
-    repr_type(RARGS, ((funtype_t*)n->type)->result);
+    if (n->type->kind == TYPE_FUN) {
+      repr_type(RARGS, ((funtype_t*)n->type)->result);
+    } else {
+      CHAR('?');
+    }
     REPR_END(')');
   }
   if (n->body)
@@ -166,13 +170,11 @@ static void repr_fun(RPARAMS, const fun_t* n) {
 
 
 static void repr_call(RPARAMS, const call_t* n) {
-  fl |= REPRFLAG_HEAD;
   CHAR(' ');
   repr(RARGSFL(fl | REPRFLAG_SHORT), (const node_t*)n->recv);
   if (n->args.len == 0)
     return;
   CHAR(' ');
-  fl &= ~REPRFLAG_HEAD;
   for (usize i = 0; i < n->args.len; i++) {
     if (i) CHAR(' ');
     repr(RARGS, (const node_t*)n->args.v[i]);

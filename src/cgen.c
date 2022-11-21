@@ -266,7 +266,8 @@ static void structinit(cgen_t* g, const structtype_t* t, const ptrarray_t* args)
     if (i) PRINT(", ");
     expr(g, (const expr_t*)arg);
   }
-  if (i == args->len) {
+
+  if (i == args->len && !t->hasinit) {
     CHAR('}');
     return;
   }
@@ -297,6 +298,7 @@ static void structinit(cgen_t* g, const structtype_t* t, const ptrarray_t* args)
   }
 
   // generate remaining fields with non-zero initializers
+  // FIXME TODO: sort
   for (const mapent_t* e = map_it(initmap); map_itnext(initmap, &e); ) {
     if (i) PRINT(", ");
     const local_t* f = e->value;
@@ -353,9 +355,28 @@ static void call(cgen_t* g, const call_t* n) {
     return typecall(g, n, (const type_t*)idrecv->ref);
   if (nodekind_istype(n->recv->kind))
     return typecall(g, n, (const type_t*)n->recv);
+  assert(n->recv->type->kind == TYPE_FUN);
 
-  expr(g, n->recv);
+  expr_t* self = NULL;
+  if (n->recv->kind == EXPR_MEMBER && ((member_t*)n->recv)->target->kind == EXPR_FUN) {
+    member_t* m = (member_t*)n->recv;
+    fun_t* f = (fun_t*)m->target;
+    if (f->self) {
+      assert(f->params.len > 0);
+      dlog("TODO self");
+      self = m->recv; // FIXME
+    }
+    assert(f->name != sym__);
+    PRINT(f->name);
+  } else {
+    expr(g, n->recv);
+  }
   CHAR('(');
+  if (self) {
+    expr(g, self);
+    if (n->args.len > 0)
+      PRINT(", ");
+  }
   for (u32 i = 0; i < n->args.len; i++) {
     if (i) PRINT(", ");
     const expr_t* arg = n->args.v[i];
@@ -458,6 +479,7 @@ static void idexpr(cgen_t* g, const idexpr_t* n) {
 
 
 static void member(cgen_t* g, const member_t* n) {
+  // assert(n->type->kind != TYPE_FUN);
   CHAR('('); expr(g, n->recv); CHAR(')');
   PRINT(type_isusertype(n->recv->type) ? "->" : ".");
   PRINT(n->name);
