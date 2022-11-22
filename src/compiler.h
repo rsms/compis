@@ -137,7 +137,6 @@ typedef struct {
   usize       litlenoffs;  // subtracted from source span len in scanner_litlen()
   u64         litint;      // parsed INTLIT
   buf_t       litbuf;      // interpreted source literal (e.g. "foo\n")
-  bool        isneg;       // true if litint is a i64
   sym_t       sym;         // identifier
 } scanner_t;
 
@@ -227,7 +226,7 @@ typedef struct {
 
 typedef struct { // PARAM, VAR, LET
   expr_t;
-  sym_t            name;
+  sym_t   nullable name; // may be NULL for PARAM
   expr_t* nullable init;
 } local_t;
 

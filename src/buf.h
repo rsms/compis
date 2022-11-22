@@ -71,7 +71,12 @@ bool buf_reserve(buf_t* b, usize minavail);
 u8* nullable buf_alloc(buf_t* b, usize len) WARN_UNUSED_RESULT;
 
 // buf_push appends a byte
-bool buf_push(buf_t* b, u8 byte);
+inline static bool buf_push(buf_t* b, u8 byte) {
+  if (UNLIKELY(b->len >= b->cap) && UNLIKELY(!buf_grow(b, 1)))
+    return false;
+  b->bytes[b->len++] = byte;
+  return true;
+}
 
 // buf_nullterm appends a 0 byte without increasing len
 bool buf_nullterm(buf_t* b);

@@ -78,11 +78,12 @@ static const struct {
 #define INDENT 2
 
 #define REPR_BEGIN(opench, kindname) ({ \
-  if ((fl & REPRFLAG_HEAD) == 0) \
+  if ((fl & REPRFLAG_HEAD) == 0) { \
     CHAR('\n'), FILL(' ', indent); \
+    indent += INDENT; \
+  } \
   fl &= ~REPRFLAG_HEAD; \
   CHAR(opench); \
-  indent += INDENT; \
   PRINT(kindname); \
 })
 
@@ -169,6 +170,17 @@ static void repr_fun(RPARAMS, const fun_t* n) {
 }
 
 
+static void repr_funtype(RPARAMS, const funtype_t* n) {
+  PRINT(" (");
+  for (u32 i = 0; i < n->params.len; i++) {
+    if (i) CHAR(' ');
+    repr(RARGS, n->params.v[i]);
+  }
+  CHAR(')');
+  repr_type(RARGS, n->result);
+}
+
+
 static void repr_call(RPARAMS, const call_t* n) {
   CHAR(' ');
   repr(RARGSFL(fl | REPRFLAG_SHORT), (const node_t*)n->recv);
@@ -204,9 +216,15 @@ static void repr_type(RPARAMS, const type_t* t) {
   case TYPE_STRUCT:
     repr_struct(RARGS, (const structtype_t*)t, isnew);
     break;
+  case TYPE_FUN:
+    if (isnew) {
+      repr_funtype(RARGS, (const funtype_t*)t);
+    } else {
+      CHAR('\'');
+    }
+    break;
   case TYPE_ARRAY:
   case TYPE_ENUM:
-  case TYPE_FUN:
   case TYPE_PTR:
     dlog("TODO subtype %s", nodekind_name(t->kind));
     break;
@@ -219,7 +237,7 @@ static void repr(RPARAMS, const node_t* n) {
   const char* kindname = STRTAB_GET(nodekind_strtab, n->kind);
   REPR_BEGIN('(', kindname);
 
-  if (node_isexpr(n)) {
+  if (node_isexpr(n) || n->kind == NODE_FIELD) {
     expr_t* expr = (expr_t*)n;
     CHAR(' ');
     if (expr->type) {

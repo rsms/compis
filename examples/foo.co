@@ -1,29 +1,23 @@
 type Thing {
   x, y, z u32 = 3, 4, 5
   pretty bool
+  f1 fun(int)int
 }
 
-fun Thing.foo(x u32) u32 {
+fun Thing.foo(x int) int {
   x * x
 }
 
-fun bar(x, y u32) u32 {
-  let a = Thing(1)
-  a.foo(x)
+fun bar(x, y int) int {
+  let a = Thing(u32(x), pretty: true, y: 5)
+  // a.f1(x)
+  int(a.x) + a.foo(x) * y
 }
 
-
-
-// fun bar(x, y int) int {
-//   let _ = i8(-3)
-//   let a = Thing(u32(x), pretty: true, y: 5)
-//   int(a.x) * y
-// }
-
-// fun foo(x, y int) int {
-//   var z = x + y * int(2)
-//   bar(z, y: 6)
-// }
+fun foo(x, y int) int {
+  var z = x + y * int(2)
+  bar(z, y: 6)
+}
 
 // fun negative_num() void {
 //   let _ = -0x8000000000000000

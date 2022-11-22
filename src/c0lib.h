@@ -155,8 +155,8 @@ typedef double             f64;
   #ifndef nullable
     #define nullable
   #endif
-  #define C0_ASSUME_NONNULL_BEGIN
-  #define C0_ASSUME_NONNULL_END
+  #define ASSUME_NONNULL_BEGIN
+  #define ASSUME_NONNULL_END
 #endif
 
 //—————————————————————————————————————————————————————————————————————————————————————

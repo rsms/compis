@@ -246,7 +246,9 @@ static void unexpected(parser_t* p, const char* errmsg) {
 static void expect_fail(parser_t* p, tok_t expecttok, const char* errmsg) {
   const char* want = fmttok(p, 0, expecttok, (slice_t){0});
   const char* got = fmttok(p, 1, currtok(p), scanner_lit(&p->scanner));
-  int msglen = (int)strlen(errmsg) + (*errmsg != 0);
+  int msglen = (int)strlen(errmsg);
+  if (msglen && *errmsg != ',' && *errmsg != ';')
+    msglen++;
   error(p, NULL, "expected %s%*s, got %s", want, msglen, errmsg, got);
 }
 
@@ -263,6 +265,19 @@ static bool expect(parser_t* p, tok_t expecttok, const char* errmsg) {
   bool ok = expect_token(p, expecttok, errmsg);
   next(p);
   return ok;
+}
+
+
+static bool expect2(parser_t* p, tok_t tok, const char* errmsg) {
+  if LIKELY(currtok(p) == tok) {
+    next(p);
+    return true;
+  }
+  unexpected(p, errmsg);
+  fastforward(p, (const tok_t[]){ tok, TSEMI, 0 });
+  if (currtok(p) == tok)
+    next(p);
+  return false;
 }
 
 
@@ -670,12 +685,11 @@ static expr_t* prefix_var(parser_t* p, precedence_t prec) {
 }
 
 
-static type_t* select_int_type(parser_t* p, const intlit_t* n) {
+static type_t* select_int_type(parser_t* p, const intlit_t* n, u64 isneg) {
   type_t* type = p->typectx;
   u64 maxval = 0;
   u64 uintval = n->intval;
-  u64 isneg = p->scanner.isneg;
-  if (p->scanner.isneg)
+  if (isneg)
     uintval &= ~0x1000000000000000; // clear negative bit
 
   bool u = type->isunsigned;
@@ -686,7 +700,7 @@ static type_t* select_int_type(parser_t* p, const intlit_t* n) {
   case TYPE_I32: maxval = u ? 0xffffffffllu         : 0x7fffffffllu+isneg; break;
   case TYPE_I64: maxval = u ? 0xffffffffffffffffllu : 0x7fffffffffffffffllu+isneg; break;
   default: // all other type contexts results in TYPE_INT
-    if (p->scanner.isneg) {
+    if (isneg) {
       if (uintval <= 0x80000000llu)         return type_int;
       if (uintval <= 0x8000000000000000llu) return type_i64;
       // trigger error report
@@ -703,25 +717,29 @@ static type_t* select_int_type(parser_t* p, const intlit_t* n) {
   if UNLIKELY(uintval > maxval) {
     const char* ts = fmtnode(p, 0, (const node_t*)type, 1);
     slice_t lit = scanner_lit(&p->scanner);
-    error(p, (node_t*)n, "integer constant %.*s overflows %s",
-      (int)lit.len, lit.chars, ts);
+    error(p, (node_t*)n, "integer constant %s%.*s overflows %s",
+      isneg ? "-" : "", (int)lit.len, lit.chars, ts);
   }
   return type;
 }
 
 
-static expr_t* prefix_intlit(parser_t* p, precedence_t prec) {
+static expr_t* intlit(parser_t* p, bool isneg) {
   intlit_t* n = mkexpr(p, intlit_t, EXPR_INTLIT);
   n->intval = p->scanner.litint;
-  n->type = select_int_type(p, n);
+  n->type = select_int_type(p, n, (u64)isneg);
   next(p);
   return (expr_t*)n;
 }
 
 
-static expr_t* prefix_floatlit(parser_t* p, precedence_t prec) {
+static expr_t* floatlit(parser_t* p, bool isneg) {
   floatlit_t* n = mkexpr(p, floatlit_t, EXPR_FLOATLIT);
   char* endptr = NULL;
+
+  // note: scanner always starts float litbuf with '+'
+  if (isneg)
+    p->scanner.litbuf.chars[0] = '-';
 
   if (p->typectx == type_f32) {
     n->type = type_f32;
@@ -747,11 +765,27 @@ static expr_t* prefix_floatlit(parser_t* p, precedence_t prec) {
 }
 
 
+static expr_t* prefix_intlit(parser_t* p, precedence_t prec) {
+  return intlit(p, /*isneg*/false);
+}
+
+
+static expr_t* prefix_floatlit(parser_t* p, precedence_t prec) {
+  return floatlit(p, /*isneg*/false);
+}
+
+
 static expr_t* prefix_op(parser_t* p, precedence_t prec) {
   unaryop_t* n = mkexpr(p, unaryop_t, EXPR_PREFIXOP);
   n->op = currtok(p);
   next(p);
-  n->expr = expr(p, prec);
+  // special case for negative number constants
+  bool isneg = n->op == TMINUS;
+  switch (currtok(p)) {
+    case TINTLIT:   n->expr = intlit(p, isneg); break;
+    case TFLOATLIT: n->expr = floatlit(p, isneg); break;
+    default:        n->expr = expr(p, prec);
+  }
   n->type = n->expr->type;
   return (expr_t*)n;
 }
@@ -1152,7 +1186,7 @@ static expr_t* prefix_block(parser_t* p, precedence_t prec) {
       break;
     next(p);
   }
-  expect(p, TRBRACE, "to end block");
+  expect2(p, TRBRACE, ", expected '}' or ';'");
   leave_scope(p);
   if (n->children.len > 0) {
     expr_t* last_expr = n->children.v[n->children.len-1];
@@ -1182,6 +1216,7 @@ static bool params(parser_t* p, ptrarray_t* params) {
     local_t* param = mkexpr(p, local_t, EXPR_PARAM);
     if UNLIKELY(param == NULL)
       goto oom;
+    param->type = NULL; // clear type_void set by mkexpr for later check
 
     if (!ptrarray_push(params, p->ast_ma, param))
       goto oom;
@@ -1396,7 +1431,7 @@ static void fun_name(parser_t* p, fun_t* fun) {
   buf_t* buf = &p->tmpbuf[0];
   buf_clear(buf);
   buf_print(buf, recv_name);
-  buf_push(buf, '$');
+  buf_print(buf, "·"); // U+00B7 MIDDLE DOT (UTF8: "\xC2\xB7")
   if UNLIKELY(!buf_print(buf, method_name)) {
     out_of_mem(p);
   } else {

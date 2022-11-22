@@ -128,6 +128,51 @@ static const char* operator(tok_t tok) {
 }
 
 
+static void funtype(cgen_t* g, const funtype_t* t, const char* nullable name) {
+  // void(*name)(args)
+  type(g, t->result);
+  PRINT("(*");
+  if (!name || name == sym__) {
+    PRINTF("_anon%u", g->anon_idgen++);
+  } else {
+    PRINT(name);
+  }
+  PRINT(")(");
+  if (t->params.len == 0) {
+    PRINT("void");
+  } else {
+    for (u32 i = 0; i < t->params.len; i++) {
+      if (i) PRINT(", ");
+      local_t* param = t->params.v[i]; assert(param->kind == EXPR_PARAM);
+      type(g, param->type);
+      if (param->name && param->name != sym__) {
+        CHAR(' ');
+        dlog(">> %s", param->name);
+        PRINT(param->name);
+      }
+    }
+  }
+  CHAR(')');
+}
+
+
+// WIP
+// static void clocal(cgen_t* g, const type_t* t, const char* nullable name) {
+//   // e.g. "int x", "int(*x)(int)"
+//   if (t->kind == TYPE_FUN)
+//     return funtype(g, (const funtype_t*)t, name);
+//   type(g, t);
+//   if (!name)
+//     return;
+//   CHAR(' ');
+//   if (name == sym__) {
+//     PRINTF("_anon%u", g->anon_idgen++);
+//   } else {
+//     PRINT(name);
+//   }
+// }
+
+
 static void structtype(cgen_t* g, const structtype_t* n) {
   if (n->name && g->scopenest > 0)
     return PRINT(n->name);
@@ -147,6 +192,10 @@ static void structtype(cgen_t* g, const structtype_t* n) {
       }
       if (f->type != t) {
         if (i && !newline) PRINT("; ");
+        if (f->type->kind == TYPE_FUN) {
+          funtype(g, (const funtype_t*)f->type, f->name);
+          continue;
+        }
         type(g, f->type);
         CHAR(' ');
         t = f->type;
@@ -175,7 +224,24 @@ static void type(cgen_t* g, const type_t* t) {
   case TYPE_F32:  PRINT("float"); break;
   case TYPE_F64:  PRINT("double"); break;
   case TYPE_STRUCT: return structtype(g, (const structtype_t*)t);
-  default: error(g, t, "unexpected type %s", nodekind_name(t->kind));
+  case TYPE_FUN:    return funtype(g, (const funtype_t*)t, NULL);
+  default:
+    dlog("unexpected type %s", nodekind_name(t->kind));
+    error(g, t, "unexpected type %s", nodekind_name(t->kind));
+  }
+}
+
+
+static void expr_as_value(cgen_t* g, const expr_t* n) {
+  switch (n->kind) {
+  case EXPR_INTLIT:
+  case EXPR_FLOATLIT:
+  case EXPR_ID:
+  case EXPR_PREFIXOP:
+  case EXPR_POSTFIXOP:
+    return expr(g, n);
+  default:
+    CHAR('('); expr(g, n); CHAR(')');
   }
 }
 
@@ -335,7 +401,7 @@ static void typecall(cgen_t* g, const call_t* n, const type_t* t) {
       zeroinit(g, t);
     } else {
       assert(n->args.len == 1);
-      expr(g, n->args.v[0]);
+      expr_as_value(g, n->args.v[0]);
     }
     break;
   case TYPE_STRUCT:
@@ -407,8 +473,10 @@ static void fun(cgen_t* g, const fun_t* fun) {
       local_t* param = fun->params.v[i];
       if (i) PRINT(", ");
       type(g, param->type);
-      CHAR(' ');
-      id(g, param->name);
+      if (param->name && param->name != sym__) {
+        CHAR(' ');
+        PRINT(param->name);
+      }
     }
   } else {
     PRINT("void");
@@ -431,15 +499,25 @@ static void fun(cgen_t* g, const fun_t* fun) {
 
 
 static void binop(cgen_t* g, const binop_t* n) {
-  if (!tok_isassign(n->op))
-    CHAR('(');
-  expr(g, n->left);
+  expr_as_value(g, n->left);
   CHAR(' ');
   PRINT(operator(n->op));
   CHAR(' ');
-  expr(g, n->right);
-  if (!tok_isassign(n->op))
-    CHAR(')');
+  expr_as_value(g, n->right);
+}
+
+
+static void prefixop(cgen_t* g, const unaryop_t* n) {
+  if (n->expr->kind == EXPR_INTLIT && n->expr->type->kind < TYPE_I32)
+    CHAR('('), type(g, n->expr->type), CHAR(')');
+  PRINT(operator(n->op));
+  expr_as_value(g, n->expr);
+}
+
+
+static void postfixop(cgen_t* g, const unaryop_t* n) {
+  expr_as_value(g, n->expr);
+  PRINT(operator(n->op));
 }
 
 
@@ -457,7 +535,7 @@ static void intlit(cgen_t* g, const intlit_t* n) {
     PRINT("0x");
   buf_print_u64(&g->outbuf, u, base) ?: seterr(g, ErrNoMem);
 
-  if (n->type->kind > TYPE_I32)
+  if (n->type->kind == TYPE_I64)
     PRINT("ll");
   if (n->type->isunsigned)
     CHAR('u');
@@ -479,10 +557,16 @@ static void idexpr(cgen_t* g, const idexpr_t* n) {
 
 
 static void member(cgen_t* g, const member_t* n) {
-  // assert(n->type->kind != TYPE_FUN);
-  CHAR('('); expr(g, n->recv); CHAR(')');
-  PRINT(type_isusertype(n->recv->type) ? "->" : ".");
+  if (n->type->kind == TYPE_PTR || n->type->kind == TYPE_FUN) {
+    PRINT("__nullcheck(");
+    expr(g, n->recv);
+  } else {
+    expr_as_value(g, n->recv);
+  }
+  PRINT(n->recv->kind == TYPE_PTR ? "->" : ".");
   PRINT(n->name);
+  if (n->type->kind == TYPE_PTR || n->type->kind == TYPE_FUN)
+    CHAR(')');
 }
 
 
@@ -498,19 +582,6 @@ static void vardef(cgen_t* g, const local_t* n) {
   } else {
     zeroinit(g, n->type);
   }
-}
-
-
-static void letdef(cgen_t* g, const local_t* n) {
-  PRINT("const ");
-  type(g, n->type);
-  CHAR(' ');
-  if (n->name == sym__)
-    PRINT("__attribute__((__unused__)) ");
-  id(g, n->name);
-  PRINT(" = ");
-  assertnotnull(n->init);
-  expr(g, n->init);
 }
 
 
@@ -530,13 +601,15 @@ static void expr(cgen_t* g, const expr_t* n) {
   case EXPR_FLOATLIT: return floatlit(g, (const floatlit_t*)n);
   case EXPR_ID:       return idexpr(g, (const idexpr_t*)n);
   // case EXPR_PARAM: TODO
-  case EXPR_VAR:    return vardef(g, (const local_t*)n);
-  case EXPR_LET:    return letdef(g, (const local_t*)n);
-  case EXPR_BLOCK:  return block(g, (const block_t*)n, BLOCKFLAG_EXPR);
-  case EXPR_CALL:   return call(g, (const call_t*)n);
-  case EXPR_MEMBER: return member(g, (const member_t*)n);
-  // case EXPR_PREFIXOP: TODO
-  // case EXPR_POSTFIXOP: TODO
+  case EXPR_BLOCK:    return block(g, (const block_t*)n, BLOCKFLAG_EXPR);
+  case EXPR_CALL:     return call(g, (const call_t*)n);
+  case EXPR_MEMBER:   return member(g, (const member_t*)n);
+  case EXPR_PREFIXOP: return prefixop(g, (const unaryop_t*)n);
+  case EXPR_POSTFIXOP: return postfixop(g, (const unaryop_t*)n);
+
+  case EXPR_VAR:
+  case EXPR_LET:
+    return vardef(g, (const local_t*)n);
 
   // node types we should never see
   case NODEKIND_COUNT:
@@ -605,6 +678,7 @@ err_t cgen_generate(cgen_t* g, const unit_t* n) {
   PRINT("#include <stdint.h>\n");
   PRINT("#define true 1\n");
   PRINT("#define false 0\n");
+  PRINT("#define __nullcheck(x) x\n");
 
   if (n->kind != NODE_UNIT)
     return ErrInvalid;

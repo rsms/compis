@@ -67,14 +67,6 @@ bool buf_reserve(buf_t* b, usize minavail) {
 }
 
 
-bool buf_push(buf_t* b, u8 byte) {
-  if (UNLIKELY(b->len >= b->cap) && UNLIKELY(!buf_grow(b, 1)))
-    return false;
-  b->bytes[b->len++] = byte;
-  return true;
-}
-
-
 bool buf_nullterm(buf_t* b) {
   if (UNLIKELY(b->len >= b->cap) && UNLIKELY(!buf_grow(b, 1)))
     return false;

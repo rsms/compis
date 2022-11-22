@@ -94,6 +94,7 @@ static void floatnumber(scanner_t* s, int base) {
   buf_clear(&s->litbuf);
   if UNLIKELY(!buf_reserve(&s->litbuf, 128))
     return error(s, "out of memory");
+  buf_push(&s->litbuf, '+');
   int ok = 1;
   if (*s->tokstart == '-')
     ok = buf_push(&s->litbuf, '-');
@@ -141,12 +142,9 @@ static void number(scanner_t* s, int base) {
   s->tok.t = TINTLIT;
   s->insertsemi = true;
   s->litint = 0;
-  s->isneg = *s->tokstart == '-';
   const u8* start_inp = s->inp;
 
   u64 cutoff = 0xffffffffffffffffllu; // U64_MAX
-  if (s->isneg)
-    cutoff = 0x8000000000000000llu; // I64_MIN
   u64 acc = 0;
   u64 cutlim = cutoff % base;
   cutoff /= (u64)base;
@@ -182,11 +180,9 @@ static void number(scanner_t* s, int base) {
     }
   }
 end:
-  if (s->isneg)
-    acc |= 0x1000000000000000;
   s->litint = acc;
   if UNLIKELY(any < 0)
-    error(s, "integer literal too large; overflows %c64", s->isneg ? 'i' : 'u');
+    error(s, "integer literal too large; overflows u64");
   if UNLIKELY(c == '_')
     error(s, "trailing \"_\" after integer literal");
 }
@@ -347,18 +343,12 @@ static void scan1(scanner_t* s) {
   case '+': switch (nextc) {
     case '+': s->tok.t = TPLUSPLUS; s->inp++; break;
     case '=': s->tok.t = TADDASSIGN; s->inp++; break;
-    case '0': return s->inp++, zeronumber(s);
-    default:
-      if (isdigit(nextc)) return number(s, 10);
-      s->tok.t = TPLUS;
+    default: s->tok.t = TPLUS;
   } break;
   case '-': switch (nextc) {
     case '-': s->tok.t = TMINUSMINUS; s->inp++; break;
     case '=': s->tok.t = TSUBASSIGN; s->inp++; break;
-    case '0': return s->inp++, zeronumber(s); // e.g. "-0xBEEF"
-    default:
-      if (isdigit(nextc)) return number(s, 10); // e.g. "-123"
-      s->tok.t = TMINUS;
+    default: s->tok.t = TMINUS;
   } break;
   case '/': s->tok.t = TSLASH; switch (nextc) {
     case '/':
