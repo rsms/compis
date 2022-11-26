@@ -20,6 +20,9 @@ inline static void map_dispose(map_t* m, memalloc_t ma) {
 }
 void map_clear(map_t* m); // remove all items (m remains valid)
 
+mapent_t* nullable map_assign_ent(
+  map_t* m, memalloc_t ma, const void* key, usize keysize);
+
 void** nullable map_assign(map_t* m, memalloc_t ma, const void* key, usize keysize);
 void** nullable map_lookup(const map_t* m, const void* key, usize keysize);
 bool map_del(map_t* m, const void* key, usize keysize);

@@ -60,16 +60,32 @@ export CC=clang
 export CXX=clang++
 
 
-# echo "---------- nim ----------"
-# _download_pushsrc \
-#   https://github.com/nim-lang/Nim/archive/refs/tags/v1.6.8.tar.gz \
-#   a12466ed07713818c5ed5d7a56c647d30075a3989e7ac2a6e7696b1e0796a281 \
-#   nim-v1.6.8.tar.gz
-# ls -l
-# _popsrc
+# echo "---------- mir ----------"
+
+# MIR_GIT_TREE=7528f3fdeffc2db2dbc581f64c57f43a105c5047
+# MIR_SHA256=215596022af3e9a83c0aade0ec08f34b0498861d2c1ed93eee94b74ffc48e370
+# if [ "$(cat "$DEPS_DIR/mir/version" 2>/dev/null)" = $MIR_GIT_TREE ]; then
+#   echo "deps/mir: up to date"
+#   echo "deps/mir: to rebuild: rm -rf '$DEPS_DIR/mir' && $0 $@"
+# else
+#   # https://github.com/vnmakarov/mir/blob/master/INSTALL.md
+#   rm -rf $DEPS_DIR/mir
+#   _download_pushsrc \
+#     https://github.com/vnmakarov/mir/archive/$MIR_GIT_TREE.tar.gz \
+#     $MIR_SHA256 \
+#     mir-$MIR_GIT_TREE.tar.gz
+#   make -j$(nproc)
+#   mkdir -p "$DEPS_DIR/mir"
+#   make PREFIX="$DEPS_DIR/mir" install
+#   _popsrc
+#   echo $MIR_GIT_TREE > "$DEPS_DIR/mir/version"
+# fi
+
+
 
 # ---------- test compiler ----------
 if ! [ -f $DEPS_DIR/cc-tested ]; then
+  echo "---------- test cc ----------"
   CC_TEST_DIR=$OUTDIR/cc-test
   rm -rf $CC_TEST_DIR
   mkdir -p $CC_TEST_DIR

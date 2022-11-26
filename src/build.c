@@ -51,8 +51,7 @@ static err_t build_exe(const char** srcfilev, usize filecount) {
 
   compiler_t c;
   compiler_init(&c, memalloc_ctx(), &diaghandler);
-  c.triple = llvm_host_triple();
-  //c.triple = "aarch64-linux-unknown";
+  // compiler_set_triple(&c, "aarch64-linux-unknown");
   dlog("compiler.triple: %s", c.triple);
 
   // fv is an array of files we are building
@@ -140,9 +139,9 @@ static int parse_cli_options(int argc, const char** argv) {
 
 
 int build_main(int argc, const char** argv) {
-  // C0ROOT = dirname($0)
-  char* C0ROOT = LLVMGetMainExecutable(argv[0]);
-  C0ROOT[path_dirlen(C0ROOT, strlen(C0ROOT))] = 0;
+  char* c0root = LLVMGetMainExecutable(argv[0]);
+  c0root[path_dirlen(c0root, strlen(c0root))] = 0;
+  C0ROOT = c0root;
 
   int numflags = parse_cli_options(argc, argv);
   if (numflags < 0)

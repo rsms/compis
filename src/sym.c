@@ -5,7 +5,8 @@
 static map_t      symbols;
 static memalloc_t sym_ma;
 
-sym_t sym__; // "_"
+sym_t sym__;    // "_"
+sym_t sym_this; // "this"
 
 
 static sym_t defsym(const char* cstr) {
@@ -24,19 +25,23 @@ void sym_init(memalloc_t ma) {
   if (!map_init(&symbols, sym_ma, 4096/sizeof(mapent_t)/2))
     panic("out of memory");
   sym__ = defsym("_");
+  sym_this = defsym("this");
 }
 
 
 sym_t sym_intern(const void* key, usize keylen) {
-  void** vp = map_assign(&symbols, sym_ma, key, keylen);
-  if UNLIKELY(!vp)
+  mapent_t* ent = map_assign_ent(&symbols, sym_ma, key, keylen);
+  if UNLIKELY(!ent)
     goto oom;
-  if UNLIKELY(*vp == NULL) {
-    *vp = mem_strdup(sym_ma, (slice_t){ .p=key, .len=keylen }, 0);
-    if UNLIKELY(!*vp)
-      goto oom;
-  }
-  return *vp;
+  if (ent->value)
+    return ent->value;
+  ent->value = mem_strdup(sym_ma, (slice_t){ .p=key, .len=keylen }, 0);
+  if UNLIKELY(!ent->value)
+    goto oom;
+  // update key as the key parameter is a borrowed ref
+  ent->key = ent->value;
+  ent->keysize = keylen;
+  return ent->value;
 oom:
   panic("out of memory");
 }

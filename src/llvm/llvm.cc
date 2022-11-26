@@ -67,6 +67,13 @@ void llvm_triple_info(const char* triplestr, CoLLVMTargetInfo* info) {
   info->os_type     = (CoLLVMOS)triple.getOS();
   info->env_type    = (CoLLVMEnvironment)triple.getEnvironment();
   info->obj_format  = (CoLLVMObjectFormat)triple.getObjectFormat();
+  info->is_little_endian = triple.isLittleEndian();
+  info->ptr_size = 4;
+  if (triple.isArch64Bit()) {
+    info->ptr_size = 8;
+  } else if (triple.isArch16Bit()) {
+    info->ptr_size = 2;
+  }
 }
 
 

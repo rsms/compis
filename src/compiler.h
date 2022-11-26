@@ -21,6 +21,7 @@
   _( EXPR_PREFIXOP )\
   _( EXPR_POSTFIXOP )\
   _( EXPR_BINOP )\
+  _( EXPR_DEREF )\
   _( EXPR_BOOLLIT )\
   _( EXPR_INTLIT )\
   _( EXPR_FLOATLIT )\
@@ -38,7 +39,7 @@
   _( TYPE_ARRAY ) /* nodekind_isusertype assumes this is first user type */\
   _( TYPE_ENUM )\
   _( TYPE_FUN )\
-  _( TYPE_PTR )\
+  _( TYPE_REF )\
   _( TYPE_STRUCT )\
 // end FOREACH_NODEKIND_TYPE
 
@@ -104,12 +105,15 @@ typedef struct compiler {
   const char*    triple;      // target triple
   char*          cachedir;    // defaults to ".c0"
   char*          objdir;      // "${cachedir}/obj"
+  char*          cflags;
   diaghandler_t  diaghandler; // called when errors are encountered
   void* nullable userdata;    // passed to diaghandler
   u32            errcount;    // number of errors encountered
   diag_t         diag;        // most recent diagnostic message
   buf_t          diagbuf;     // for diag.msg
   map_t          typeidmap;
+  usize          ptrsize;     // byte size of pointer, e.g. 8 for i64
+  bool           isbigendian;
 } compiler_t;
 
 typedef struct {
@@ -169,7 +173,7 @@ typedef struct {
   node_t;
   usize size;
   u8    align;
-  bool  isunsigned;
+  bool  isunsigned; // only used by primitive types
   sym_t tid;
 } type_t;
 
@@ -196,6 +200,12 @@ typedef struct {
   ptrarray_t     methods; // fun_t*[]
   bool           hasinit; // true if at least one field has an initializer
 } structtype_t;
+
+typedef struct {
+  usertype_t;
+  type_t* elem;
+  bool    ismut;
+} reftype_t;
 
 typedef struct {
   stmt_t;
@@ -228,6 +238,7 @@ typedef struct { // PARAM, VAR, LET
   expr_t;
   sym_t   nullable name; // may be NULL for PARAM
   expr_t* nullable init;
+  bool    isthis; // [PARAM only] it's the special "this" parameter
 } local_t;
 
 typedef struct { // block is a declaration (stmt) or an expression depending on use
@@ -237,10 +248,10 @@ typedef struct { // block is a declaration (stmt) or an expression depending on 
 
 typedef struct { // fun is a declaration (stmt) or an expression depending on use
   expr_t;
-  ptrarray_t       params; // local_t*[]
-  sym_t nullable   name;   // NULL if anonymous
-  expr_t* nullable body;   // NULL if function is a prototype
-  type_t*          self;   // first parameter is self of this type (methods only)
+  ptrarray_t       params;   // local_t*[]
+  sym_t nullable   name;     // NULL if anonymous
+  expr_t* nullable body;     // NULL if function is a prototype
+  type_t*          methodof; // non-NULL for methods: type "this" is a method of
 } fun_t;
 
 // ———————— END AST ————————
@@ -302,6 +313,7 @@ filetype_t filetype_guess(const char* filename);
 // compiler
 void compiler_init(compiler_t* c, memalloc_t, diaghandler_t);
 void compiler_dispose(compiler_t* c);
+void compiler_set_triple(compiler_t* c, const char* triple);
 void compiler_set_cachedir(compiler_t* c, slice_t cachedir);
 err_t compiler_compile(compiler_t*, promise_t*, input_t*, buf_t* ofile);
 
@@ -340,7 +352,7 @@ inline static bool nodekind_isprimtype(nodekind_t kind) {
 inline static bool nodekind_isusertype(nodekind_t kind) {
   return TYPE_ARRAY <= kind && kind < NODEKIND_COUNT; }
 inline static bool nodekind_isptrtype(nodekind_t kind) {
-  return kind == TYPE_PTR; }
+  return kind == TYPE_REF; }
 
 inline static bool node_istype(const node_t* n) { return nodekind_istype(n->kind); }
 inline static bool node_isexpr(const node_t* n) { return nodekind_isexpr(n->kind); }
@@ -374,7 +386,8 @@ ATTR_FORMAT(printf,4,5) inline static void report_diag(
 // symbols
 void sym_init(memalloc_t);
 sym_t sym_intern(const void* key, usize keylen);
-extern sym_t sym__; // "_"
+extern sym_t sym__;    // "_"
+extern sym_t sym_this; // "this"
 
 // scope
 void scope_clear(scope_t* s);

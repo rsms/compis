@@ -77,9 +77,12 @@ static const struct {
 
 #define INDENT 2
 
+#define NEWLINE() \
+  ( CHAR('\n'), FILL(' ', indent) )
+
 #define REPR_BEGIN(opench, kindname) ({ \
   if ((fl & REPRFLAG_HEAD) == 0) { \
-    CHAR('\n'), FILL(' ', indent); \
+    NEWLINE(); \
     indent += INDENT; \
   } \
   fl &= ~REPRFLAG_HEAD; \
@@ -144,27 +147,23 @@ static void repr_struct(RPARAMS, const structtype_t* n, bool isnew) {
 
 
 static void repr_fun(RPARAMS, const fun_t* n) {
-  if (n->name) {
-    CHAR(' '), PRINT(n->name);
-  }
-  {
-    REPR_BEGIN('(', "params");
-    for (u32 i = 0; i < n->params.len; i++) {
-      if (i) CHAR(' ');
-      repr(RARGS, n->params.v[i]);
-    }
-    REPR_END(')');
-  }
-  {
-    REPR_BEGIN('(', "result");
-    CHAR(' ');
-    if (n->type->kind == TYPE_FUN) {
-      repr_type(RARGS, ((funtype_t*)n->type)->result);
-    } else {
-      CHAR('?');
-    }
-    REPR_END(')');
-  }
+
+  // REPR_BEGIN('(', "params");
+  // for (u32 i = 0; i < n->params.len; i++) {
+  //   if (i) CHAR(' ');
+  //   repr(RARGS, n->params.v[i]);
+  // }
+  // REPR_END(')');
+
+  // REPR_BEGIN('(', "result");
+  // CHAR(' ');
+  // if (n->type->kind == TYPE_FUN) {
+  //   repr_type(RARGS, ((funtype_t*)n->type)->result);
+  // } else {
+  //   CHAR('?');
+  // }
+  // REPR_END(')');
+
   if (n->body)
     CHAR(' '), repr(RARGS, (node_t*)n->body);
 }
@@ -223,9 +222,14 @@ static void repr_type(RPARAMS, const type_t* t) {
       CHAR('\'');
     }
     break;
+  case TYPE_REF:
+    CHAR(' ');
+    if (((const reftype_t*)t)->ismut)
+      PRINT("mut ");
+    repr_type(RARGSFL(fl | REPRFLAG_HEAD), ((const reftype_t*)t)->elem);
+    break;
   case TYPE_ARRAY:
   case TYPE_ENUM:
-  case TYPE_PTR:
     dlog("TODO subtype %s", nodekind_name(t->kind));
     break;
   }
@@ -239,12 +243,20 @@ static void repr(RPARAMS, const node_t* n) {
 
   if (node_isexpr(n) || n->kind == NODE_FIELD) {
     expr_t* expr = (expr_t*)n;
-    CHAR(' ');
+    if (n->kind == EXPR_FUN && ((fun_t*)n)->name) {
+      CHAR(' '), PRINT(((fun_t*)n)->name);
+      NEWLINE();
+      indent += INDENT;
+    } else {
+      CHAR(' ');
+    }
     if (expr->type) {
       repr_type(RARGSFL(fl | REPRFLAG_HEAD), expr->type);
     } else {
       PRINT("<?>");
     }
+    if (n->kind == EXPR_FUN && ((fun_t*)n)->name)
+      indent -= INDENT;
   }
 
   if (seen(r, n))
@@ -303,6 +315,10 @@ static void repr(RPARAMS, const node_t* n) {
     break;
   }
 
+  case EXPR_DEREF:
+    CHAR(' '), repr(RARGS, (node_t*)((unaryop_t*)n)->expr);
+    break;
+
   case EXPR_BINOP: {
     binop_t* op = (binop_t*)n;
     CHAR(' '), PRINT(tok_repr(op->op));
@@ -335,7 +351,7 @@ err_t node_repr(buf_t* buf, const node_t* n) {
   };
   if (!map_init(&r.seen, buf->ma, 64))
     return ErrNoMem;
-  repr(&r, 0, REPRFLAG_HEAD, n);
+  repr(&r, INDENT, REPRFLAG_HEAD, n);
   *buf = r.outbuf;
   map_dispose(&r.seen, buf->ma);
   return r.err;

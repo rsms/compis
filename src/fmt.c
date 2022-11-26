@@ -23,8 +23,12 @@ const char* nodekind_fmt(nodekind_t kind) {
     case EXPR_POSTFIXOP:
     case EXPR_BINOP:
       return "operation";
+    case EXPR_DEREF:
+      return "dereference";
     case EXPR_INTLIT:
       return "literal constant";
+    case EXPR_MEMBER:
+      return "struct field";
     case TYPE_STRUCT:
       return "struct type";
     default:
@@ -191,13 +195,14 @@ static void fmt(abuf_t* s, const node_t* nullable n, u32 indent, u32 maxdepth) {
     abuf_str(s, ((idexpr_t*)n)->name);
     break;
 
+  case EXPR_DEREF:
   case EXPR_PREFIXOP:
     abuf_str(s, tok_repr(((unaryop_t*)n)->op));
-    fmt(s, (node_t*)((unaryop_t*)n)->expr, indent, maxdepth - 1);
+    fmt(s, (node_t*)((unaryop_t*)n)->expr, indent, maxdepth);
     break;
 
   case EXPR_POSTFIXOP:
-    fmt(s, (node_t*)((unaryop_t*)n)->expr, indent, maxdepth - 1);
+    fmt(s, (node_t*)((unaryop_t*)n)->expr, indent, maxdepth);
     abuf_str(s, tok_repr(((unaryop_t*)n)->op));
     break;
 
@@ -246,9 +251,14 @@ static void fmt(abuf_t* s, const node_t* nullable n, u32 indent, u32 maxdepth) {
     fmt(s, (node_t*)a->elem, indent, maxdepth);
     break;
   }
+  case TYPE_REF: {
+    const reftype_t* pt = (const reftype_t*)n;
+    abuf_str(s, pt->ismut ? "mut&" : "&");
+    fmt(s, (node_t*)pt->elem, indent, maxdepth);
+    break;
+  }
 
   case TYPE_ENUM:
-  case TYPE_PTR:
   case STMT_TYPEDEF:
   case NODE_FIELD:
     dlog("TODO %s", nodekind_name(n->kind));

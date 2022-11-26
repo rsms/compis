@@ -189,6 +189,8 @@ typedef struct {
   CoLLVMOS           os_type;
   CoLLVMEnvironment  env_type;
   CoLLVMObjectFormat obj_format;
+  u8                 ptr_size; // in bytes, e.g. 8 for i64
+  bool               is_little_endian;
 } CoLLVMTargetInfo;
 
 // CoLLVMVersionTuple represents a version. -1 is used to indicate "not applicable."

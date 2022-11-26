@@ -47,33 +47,29 @@ static void _error(cgen_t* g, srcrange_t srcrange, const char* fmt, ...) {
 }
 
 
-#define CHAR(ch) ( \
-  buf_push(&g->outbuf, (ch)) ?: seterr(g, ErrNoMem) )
-
-#define PRINT(cstr) ( \
-  buf_print(&g->outbuf, (cstr)) ?: seterr(g, ErrNoMem) )
-
-#define PRINTF(fmt, args...) ( \
-  buf_printf(&g->outbuf, (fmt), ##args) ?: seterr(g, ErrNoMem) )
+#define CHAR(ch)             ( buf_push(&g->outbuf, (ch)), ((void)0) )
+#define PRINT(cstr)          ( buf_print(&g->outbuf, (cstr)), ((void)0) )
+#define PRINTF(fmt, args...) ( buf_printf(&g->outbuf, (fmt), ##args), ((void)0) )
 
 
 static void startline(cgen_t* g, srcloc_t loc) {
   g->lineno++;
   if ((loc.line != 0) & ((g->lineno != loc.line) | (g->input != loc.input))) {
-    g->lineno = loc.line;
-    PRINTF("\n#line %u", g->lineno);
-    if (g->input != loc.input) {
-      g->input = loc.input;
-      PRINTF(" \"%s\"", g->input->name);
+    if (g->lineno < loc.line && g->input == loc.input) {
+      buf_fill(&g->outbuf, '\n', loc.line - g->lineno);
+    } else {
+      if (g->scopenest == 0)
+        CHAR('\n');
+      PRINTF("\n#line %u", loc.line);
+      if (g->input != loc.input) {
+        g->input = loc.input;
+        PRINTF(" \"%s\"", g->input->name);
+      }
     }
+    g->lineno = loc.line;
   }
-  u8* p = buf_alloc(&g->outbuf, g->indent*2 + 1);
-  if UNLIKELY(!p) {
-    seterr(g, ErrNoMem);
-    return;
-  }
-  *p = '\n';
-  memset(p+1, ' ', g->indent*2);
+  CHAR('\n');
+  buf_fill(&g->outbuf, ' ', g->indent*2);
 }
 
 
@@ -142,8 +138,10 @@ static void funtype(cgen_t* g, const funtype_t* t, const char* nullable name) {
     PRINT("void");
   } else {
     for (u32 i = 0; i < t->params.len; i++) {
-      if (i) PRINT(", ");
       local_t* param = t->params.v[i]; assert(param->kind == EXPR_PARAM);
+      // if (!type_isprim(param->type) && !param->ismut)
+      //   PRINT("const ");
+      if (i) PRINT(", ");
       type(g, param->type);
       if (param->name && param->name != sym__) {
         CHAR(' ');
@@ -212,6 +210,14 @@ static void structtype(cgen_t* g, const structtype_t* n) {
 }
 
 
+static void reftype(cgen_t* g, const reftype_t* t, const char* nullable name) {
+  if (!t->ismut)
+    PRINT("const ");
+  type(g, t->elem);
+  CHAR('*');
+}
+
+
 static void type(cgen_t* g, const type_t* t) {
   switch (t->kind) {
   case TYPE_VOID: PRINT("void"); break;
@@ -225,6 +231,7 @@ static void type(cgen_t* g, const type_t* t) {
   case TYPE_F64:  PRINT("double"); break;
   case TYPE_STRUCT: return structtype(g, (const structtype_t*)t);
   case TYPE_FUN:    return funtype(g, (const funtype_t*)t, NULL);
+  case TYPE_REF:    return reftype(g, (const reftype_t*)t, NULL);
   default:
     dlog("unexpected type %s", nodekind_name(t->kind));
     error(g, t, "unexpected type %s", nodekind_name(t->kind));
@@ -239,6 +246,7 @@ static void expr_as_value(cgen_t* g, const expr_t* n) {
   case EXPR_ID:
   case EXPR_PREFIXOP:
   case EXPR_POSTFIXOP:
+  case EXPR_MEMBER:
     return expr(g, n);
   default:
     CHAR('('); expr(g, n); CHAR(')');
@@ -281,9 +289,9 @@ typedef enum {
 
 
 static void block(cgen_t* g, const block_t* n, blockflag_t fl) {
-  u32 hasval = n->type != type_void && (fl & BLOCKFLAG_EXPR);
   g->scopenest++;
 
+  u32 hasval = n->type != type_void && (fl & BLOCKFLAG_EXPR);
   if (hasval) {
     type(g, n->type);
     CHAR(' ');
@@ -297,12 +305,18 @@ static void block(cgen_t* g, const block_t* n, blockflag_t fl) {
     CHAR(';');
   }
 
+  u32 start_lineno = g->lineno;
+
   CHAR('{');
   if (n->children.len > 0) {
     g->indent++;
     for (u32 i = 0, last = n->children.len - 1; i < n->children.len; i++) {
       const expr_t* cn = n->children.v[i];
-      startline(g, cn->loc);
+      if (cn->loc.line != g->lineno && cn->loc.line) {
+        startline(g, cn->loc);
+      } else {
+        CHAR(' ');
+      }
       if (i == last) {
         if (hasval) {
           PRINTF("_block_%zx = ", (uintptr)n);
@@ -315,7 +329,11 @@ static void block(cgen_t* g, const block_t* n, blockflag_t fl) {
       PRINT(";");
     }
     g->indent--;
-    startline(g, (srcloc_t){0});
+    if (start_lineno != g->lineno) {
+      startline(g, (srcloc_t){0});
+    } else {
+      CHAR(' ');
+    }
   }
   CHAR('}');
   g->scopenest--;
@@ -424,13 +442,14 @@ static void call(cgen_t* g, const call_t* n) {
   assert(n->recv->type->kind == TYPE_FUN);
 
   expr_t* self = NULL;
+  bool isselfref = false;
   if (n->recv->kind == EXPR_MEMBER && ((member_t*)n->recv)->target->kind == EXPR_FUN) {
     member_t* m = (member_t*)n->recv;
     fun_t* f = (fun_t*)m->target;
-    if (f->self) {
-      assert(f->params.len > 0);
-      dlog("TODO self");
-      self = m->recv; // FIXME
+    if (f->params.len > 0 && ((const local_t*)f->params.v[0])->isthis) {
+      const local_t* thisparam = f->params.v[0];
+      isselfref = thisparam->type->kind == TYPE_REF;
+      self = m->recv;
     }
     assert(f->name != sym__);
     PRINT(f->name);
@@ -439,6 +458,8 @@ static void call(cgen_t* g, const call_t* n) {
   }
   CHAR('(');
   if (self) {
+    if (isselfref && self->type->kind != TYPE_REF)
+      CHAR('&');
     expr(g, self);
     if (n->args.len > 0)
       PRINT(", ");
@@ -469,15 +490,19 @@ static void fun(cgen_t* g, const fun_t* fun) {
   id(g, fun->name);
   CHAR('(');
   if (fun->params.len > 0) {
+    g->scopenest++;
     for (u32 i = 0; i < fun->params.len; i++) {
       local_t* param = fun->params.v[i];
       if (i) PRINT(", ");
+      // if (!type_isprim(param->type) && !param->ismut)
+      //   PRINT("const ");
       type(g, param->type);
       if (param->name && param->name != sym__) {
         CHAR(' ');
         PRINT(param->name);
       }
     }
+    g->scopenest--;
   } else {
     PRINT("void");
   }
@@ -493,7 +518,7 @@ static void fun(cgen_t* g, const fun_t* fun) {
   } else {
     PRINT(" { return ");
     expr(g, fun->body);
-    PRINT("}\n");
+    PRINT("}");
   }
 }
 
@@ -533,7 +558,7 @@ static void intlit(cgen_t* g, const intlit_t* n) {
   u32 base = u >= 1024 ? 16 : 10;
   if (base == 16)
     PRINT("0x");
-  buf_print_u64(&g->outbuf, u, base) ?: seterr(g, ErrNoMem);
+  buf_print_u64(&g->outbuf, u, base);
 
   if (n->type->kind == TYPE_I64)
     PRINT("ll");
@@ -557,21 +582,26 @@ static void idexpr(cgen_t* g, const idexpr_t* n) {
 
 
 static void member(cgen_t* g, const member_t* n) {
-  if (n->type->kind == TYPE_PTR || n->type->kind == TYPE_FUN) {
+  // TODO: nullcheck doesn't work for assignments, e.g. "foo->ptr = ptr"
+  // bool insert_nullcheck = n->type->kind == TYPE_REF || n->type->kind == TYPE_FUN;
+  bool insert_nullcheck = false;
+  if (insert_nullcheck) {
     PRINT("__nullcheck(");
     expr(g, n->recv);
   } else {
     expr_as_value(g, n->recv);
   }
-  PRINT(n->recv->kind == TYPE_PTR ? "->" : ".");
+  PRINT(n->recv->type->kind == TYPE_REF ? "->" : ".");
   PRINT(n->name);
-  if (n->type->kind == TYPE_PTR || n->type->kind == TYPE_FUN)
+  if (insert_nullcheck)
     CHAR(')');
 }
 
 
 static void vardef(cgen_t* g, const local_t* n) {
   type(g, n->type);
+  if (n->kind == EXPR_LET && (type_isprim(n->type) || n->type->kind == TYPE_REF))
+    PRINT(" const");
   CHAR(' ');
   if (n->name == sym__)
     PRINT("__attribute__((__unused__)) ");
@@ -604,6 +634,7 @@ static void expr(cgen_t* g, const expr_t* n) {
   case EXPR_BLOCK:    return block(g, (const block_t*)n, BLOCKFLAG_EXPR);
   case EXPR_CALL:     return call(g, (const call_t*)n);
   case EXPR_MEMBER:   return member(g, (const member_t*)n);
+  case EXPR_DEREF:
   case EXPR_PREFIXOP: return prefixop(g, (const unaryop_t*)n);
   case EXPR_POSTFIXOP: return postfixop(g, (const unaryop_t*)n);
 
@@ -630,7 +661,7 @@ static void expr(cgen_t* g, const expr_t* n) {
   case TYPE_ARRAY:
   case TYPE_ENUM:
   case TYPE_FUN:
-  case TYPE_PTR:
+  case TYPE_REF:
   case TYPE_STRUCT:
     break;
   }
@@ -656,7 +687,7 @@ static void stmt(cgen_t* g, const stmt_t* n) {
     debugdie(g, n, "unexpected stmt node %s", nodekind_name(n->kind));
   }
   if (semi)
-    PRINT(";\n");
+    CHAR(';');
 }
 
 
@@ -675,16 +706,19 @@ err_t cgen_generate(cgen_t* g, const unit_t* n) {
   g->lineno = 0;
   g->scopenest = 0;
 
-  PRINT("#include <stdint.h>\n");
-  PRINT("#define true 1\n");
-  PRINT("#define false 0\n");
-  PRINT("#define __nullcheck(x) x\n");
+  PRINT("#include <c0prelude.h>\n");
 
   if (n->kind != NODE_UNIT)
     return ErrInvalid;
   unit(g, n);
 
-  CHAR('\n');
+  // make sure outputs ends with LF
+  if (g->outbuf.len > 0 && g->outbuf.chars[g->outbuf.len-1] != '\n')
+    CHAR('\n');
+
+  // check if we ran out of memory by appending \0 without affecting len
+  if (!buf_nullterm(&g->outbuf))
+    seterr(g, ErrNoMem);
 
   return g->err;
 }

@@ -3,30 +3,49 @@
 #include "path.h"
 #include "abuf.h"
 #include "sha256.h"
+#include "llvm/llvm.h"
 
 #include <unistd.h> // fork
 #include <err.h>
 
+// build.c
+extern const char* C0ROOT;
+
 
 static void set_cachedir(compiler_t* c, slice_t cachedir) {
   c->cachedir = mem_strdup(c->ma, cachedir, 0);
+  safecheck(c->cachedir);
+  c->objdir = mem_strcat(c->ma, cachedir, slice_cstr(PATH_SEPARATOR_STR "obj"));
+  safecheck(c->objdir);
+}
 
-  const char* objdir_name = "obj";
-  // poor coder's path_join(cachedir, "obj"):
-  c->objdir = mem_strdup(c->ma, cachedir, 1 + strlen(objdir_name));
-  c->objdir[cachedir.len] = PATH_SEPARATOR;
-  memcpy(c->objdir + cachedir.len + 1, objdir_name, strlen(objdir_name));
-  c->objdir[cachedir.len + 1 + strlen(objdir_name)] = 0;
+
+static void set_cflags(compiler_t* c) {
+  buf_t buf = buf_make(c->ma);
+  buf_printf(&buf, "-I%s/../../lib", C0ROOT);
+  bool ok = buf_nullterm(&buf);
+  safecheck(ok);
+  c->cflags = buf.chars;
+}
+
+
+void compiler_set_triple(compiler_t* c, const char* triple) {
+  c->triple = triple;
+  CoLLVMTargetInfo info;
+  llvm_triple_info(triple, &info);
+  c->ptrsize = info.ptr_size;
+  c->isbigendian = !info.is_little_endian;
 }
 
 
 void compiler_init(compiler_t* c, memalloc_t ma, diaghandler_t dh) {
   memset(c, 0, sizeof(*c));
   c->ma = ma;
-  c->triple = "";
   c->diaghandler = dh;
   buf_init(&c->diagbuf, c->ma);
+  compiler_set_triple(c, llvm_host_triple());
   set_cachedir(c, slice_cstr(".c0"));
+  set_cflags(c);
   if (!map_init(&c->typeidmap, c->ma, 16))
     panic("out of memory");
 }
@@ -69,6 +88,7 @@ static err_t compile_c_async(
     "-Werror=implicit-function-declaration",
     "-Werror=incompatible-pointer-types",
     "-Werror=format-insufficient-args",
+    c->cflags,
     "-c", "-xc", cfile,
     "-o", ofile,
   };

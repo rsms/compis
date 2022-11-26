@@ -216,6 +216,20 @@ char* nullable mem_strdup(memalloc_t ma, slice_t src, usize extracap) {
 }
 
 
+char* nullable mem_strcat(memalloc_t ma, slice_t src1, slice_t src2) {
+  usize size;
+  if (check_add_overflow(src1.len, src2.len, &size) || size == USIZE_MAX)
+    return NULL;
+  char* dst = mem_alloc(ma, size + 1).p;
+  if UNLIKELY(dst == NULL)
+    return NULL;
+  memcpy(dst, src1.p, src1.len);
+  memcpy(dst + src1.len, src2.p, src2.len);
+  dst[size] = 0;
+  return dst;
+}
+
+
 void* nullable mem_allocv(memalloc_t ma, usize count, usize size) {
   if (check_mul_overflow(count, size, &size))
     return NULL;

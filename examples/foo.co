@@ -1,16 +1,34 @@
 type Thing {
   x, y, z u32 = 3, 4, 5
   pretty bool
-  f1 fun(int)int
+  ref &int
+  // meow u32
+  //fptr fun(int)int
 }
 
-fun Thing.foo(x int) int {
-  x * x
-}
+// fun refs() {
+//   // let v = 3 ; let r = mut&v // error: mut ref to immut binding
+//   // var v = 3 ; let r mut&int = &v // error: incompatible types, mut&int and &int
+//   var v = 3 ; let r mut&int = mut&v ; let p &int = &v // ok, ok
+//   // let rr = &r // error: referencing reference type mut&int
+//   // let v2 = *r // ok
+//   // *p = 4 // error: cannot assign via immutable reference of type &int
+//   *r = 4
+// }
+
+// fun Thing.refs(mut this) {
+//   var v = 3
+//   this.ref = &v
+// }
+
+fun Thing.foo(this, x int) int { int(this.x) * x }
+fun Thing.bar(this) u32 { this.x * this.y }
+fun Thing.set_x(mut this, x u32) u32 { this.x = x }
 
 fun bar(x, y int) int {
   let a = Thing(u32(x), pretty: true, y: 5)
-  // a.f1(x)
+  //a.fptr(x)
+  a.set_x(9)
   int(a.x) + a.foo(x) * y
 }
 

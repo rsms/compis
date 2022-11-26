@@ -674,6 +674,7 @@ static void mem_freev(memalloc_t, void* array, usize count, usize elemsize);
 
 // utilities
 char* nullable mem_strdup(memalloc_t, slice_t src, usize extracap);
+char* nullable mem_strcat(memalloc_t, slice_t src1, slice_t src2);
 
 // allocators
 #define MEMALLOC_STORAGE_ZEROED 1 // flag to memalloc_bump: storage is zeroed

@@ -190,14 +190,16 @@ static bool map_grow(map_t* m, memalloc_t ma) {
 }
 
 
-void** nullable map_assign(map_t* m, memalloc_t ma, const void* key, usize keysize) {
+mapent_t* nullable map_assign_ent(
+  map_t* m, memalloc_t ma, const void* key, usize keysize)
+{
   u32 growlen = m->cap - (m->cap >> LOAD_FACTOR);
   if (UNLIKELY(m->len >= growlen) && !map_grow(m, ma))
     return NULL;
   usize index = keyhash(key, keysize, m->seed) & (m->cap - 1);
   while (m->entries[index].key) {
     if (keyeq(&m->entries[index], key, keysize))
-      return &m->entries[index].value;
+      return &m->entries[index];
     if (m->entries[index].key == DELMARK) // recycle deleted slot
       break;
     if (++index == m->cap)
@@ -206,7 +208,13 @@ void** nullable map_assign(map_t* m, memalloc_t ma, const void* key, usize keysi
   m->len++;
   m->entries[index].key = key;
   m->entries[index].keysize = keysize;
-  return &m->entries[index].value;
+  return &m->entries[index];
+}
+
+
+void** nullable map_assign(map_t* m, memalloc_t ma, const void* key, usize keysize) {
+  mapent_t* ent = map_assign_ent(m, ma, key, keysize);
+  return ent ? &ent->value : NULL;
 }
 
 
