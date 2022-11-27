@@ -257,16 +257,18 @@ typedef struct { // fun is a declaration (stmt) or an expression depending on us
 // ———————— END AST ————————
 
 typedef struct {
-  scanner_t       scanner;
-  memalloc_t      ast_ma; // AST allocator
-  scope_t         scope;
-  map_t           pkgdefs;
-  buf_t           tmpbuf[2];
-  map_t           tmpmap;
-  map_t           methodmap; // maps type_t* -> ptrarray_t of methods (fun_t*[])
-  fun_t* nullable fun; // current function
-  type_t*         typectx;
-  ptrarray_t      typectxstack;
+  scanner_t        scanner;
+  memalloc_t       ast_ma; // AST allocator
+  scope_t          scope;
+  map_t            pkgdefs;
+  buf_t            tmpbuf[2];
+  map_t            tmpmap;
+  map_t            methodmap; // maps type_t* -> ptrarray_t of methods (fun_t*[])
+  fun_t* nullable  fun; // current function
+  type_t*          typectx;
+  ptrarray_t       typectxstack;
+  expr_t* nullable dotctx; // for ".name" shorthand
+  ptrarray_t       dotctxstack;
 } parser_t;
 
 typedef struct {

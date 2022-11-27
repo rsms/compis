@@ -2,8 +2,7 @@ type Thing {
   x, y, z u32 = 3, 4, 5
   pretty bool
   ref &int
-  // meow u32
-  //fptr fun(int)int
+  // fptr fun(int)int
 }
 
 // fun refs() {
@@ -18,12 +17,12 @@ type Thing {
 
 // fun Thing.refs(mut this) {
 //   var v = 3
-//   this.ref = &v
+//   .ref = &v
 // }
 
-fun Thing.foo(this, x int) int { int(this.x) * x }
-fun Thing.bar(this) u32 { this.x * this.y }
-fun Thing.set_x(mut this, x u32) u32 { this.x = x }
+fun Thing.foo(this, x int) int { int(.x) * x }
+fun Thing.bar(this) u32 { .x * .y }
+fun Thing.set_x(mut this, x u32) u32 { .x = x }
 
 fun bar(x, y int) int {
   let a = Thing(u32(x), pretty: true, y: 5)

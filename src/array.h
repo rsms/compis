@@ -164,7 +164,38 @@ static void        NAME_move(NAME_t* a, u32 dst, u32 start, u32 end)
   UNUSED inline static void NAME##_move(NAME##_t* a, u32 dst, u32 start, u32 end){\
     array_move(T, (array_t*)(a), dst, start, end); }
 
+#define DEF_ARRAY_TYPE_NULLABLEPTR(T, NAME) \
+  typedef struct {              \
+    union {                     \
+      struct {                  \
+        T* nullable v;          \
+      };                        \
+      array_t;                  \
+    };                          \
+  } NAME##_t;                   \
+  \
+  UNUSED inline static void NAME##_init(NAME##_t* a) { \
+    array_init((array_t*)(a)); } \
+  UNUSED inline static void NAME##_dispose(NAME##_t* a, memalloc_t ma) { \
+    array_dispose(T, (array_t*)(a), ma); } \
+  UNUSED inline static T nullable NAME##_at_safe(NAME##_t* a, u32 i) { \
+    return array_at_safe(T, (array_t*)(a), i); } \
+  UNUSED inline static T* NAME##_ptr_safe(NAME##_t* a, u32 i) { \
+    return array_ptr_safe(T, (array_t*)(a), i); } \
+  UNUSED inline static bool NAME##_push(NAME##_t* a, memalloc_t ma, T nullable val) { \
+    return array_push(T, (array_t*)(a), ma, val); } \
+  UNUSED inline static T nullable NAME##_pop(NAME##_t* a) { \
+    return a->v[--a->len]; } \
+  UNUSED inline static T* nullable NAME##_alloc(NAME##_t* a, memalloc_t ma, u32 len){\
+    return array_alloc(T, (array_t*)(a), ma, len); } \
+  UNUSED inline static bool NAME##_reserve(NAME##_t* a, memalloc_t ma, u32 minavail){\
+    return array_reserve(T, (array_t*)(a), ma, minavail); } \
+  UNUSED inline static void NAME##_remove(NAME##_t* a, u32 start, u32 len) { \
+    array_remove(T, (array_t*)(a), start, len); } \
+  UNUSED inline static void NAME##_move(NAME##_t* a, u32 dst, u32 start, u32 end){\
+    array_move(T, (array_t*)(a), dst, start, end); }
 
-DEF_ARRAY_TYPE(void*, ptrarray)
+
+DEF_ARRAY_TYPE_NULLABLEPTR(void*, ptrarray)
 
 ASSUME_NONNULL_END

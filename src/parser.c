@@ -412,6 +412,18 @@ static void typectx_pop(parser_t* p) {
 }
 
 
+static void dotctx_push(parser_t* p, expr_t* nullable n) {
+  if UNLIKELY(!ptrarray_push(&p->dotctxstack, p->scanner.compiler->ma, p->dotctx))
+    out_of_mem(p);
+  p->dotctx = n;
+}
+
+static void dotctx_pop(parser_t* p) {
+  assert(p->dotctxstack.len > 0);
+  p->dotctx = ptrarray_pop(&p->dotctxstack);
+}
+
+
 static bool types_isconvertible(const type_t* dst, const type_t* src) {
   assertnotnull(dst);
   assertnotnull(src);
@@ -1404,6 +1416,18 @@ static expr_t* expr_postfix_member(parser_t* p, precedence_t prec, expr_t* left)
 }
 
 
+// dotmember = "." id
+static expr_t* expr_dotmember(parser_t* p) {
+  if UNLIKELY(!p->dotctx) {
+    error(p, NULL, "\".\" shorthand outside of context");
+    expr_t* n = mkbad(p);
+    fastforward_semi(p);
+    return n;
+  }
+  return expr_postfix_member(p, PREC_MEMBER, p->dotctx);
+}
+
+
 static expr_t* prefix_block(parser_t* p) {
   block_t* n = mkexpr(p, block_t, EXPR_BLOCK);
   next(p);
@@ -1792,12 +1816,6 @@ static bool fun_prototype(parser_t* p, fun_t* n) {
     has_named_params = fun_params(p, n);
   expect(p, TRPAREN, "to end parameters");
 
-  {
-    /* var v = 3     */ int v = 3;
-    /* let r = mut&v */ int* const r = &v;
-    /* let p = &v    */ const int* const p = &v;
-  }
-
   // result type
   type_t* result = type_void;
   // check for "{}", e.g. "fun foo() {}" => "fun foo() void {}"
@@ -1837,9 +1855,18 @@ static expr_t* expr_fun(parser_t* p) {
 
     funtype_t* ft = (funtype_t*)n->type;
 
+    bool hasthis = n->params.len && ((local_t*)n->params.v[0])->isthis;
+    if (hasthis) {
+      assertnotnull(n->methodof);
+      dotctx_push(p, n->params.v[0]);
+    }
+
     typectx_push(p, ft->result);
     n->body = expr(p, PREC_LOWEST);
     typectx_pop(p);
+
+    if (hasthis)
+      dotctx_pop(p);
 
     // check type of implicit return value
     if UNLIKELY(ft->kind == TYPE_FUN && ft->result != type_void &&
@@ -2003,8 +2030,9 @@ bool parser_init(parser_t* p, compiler_t* c) {
   for (usize i = 0; i < countof(p->tmpbuf); i++)
     buf_init(&p->tmpbuf[i], c->ma);
 
-  // note: p->typectxstack is valid when zero initialized
+  // note: p->typectxstack & dotctxstack are valid when zero initialized
   p->typectx = type_void;
+  p->dotctx = NULL;
 
   return true;
 err3:
@@ -2025,6 +2053,7 @@ void parser_dispose(parser_t* p) {
   map_dispose(&p->tmpmap, ma);
   map_dispose(&p->methodmap, ma);
   ptrarray_dispose(&p->typectxstack, ma);
+  ptrarray_dispose(&p->dotctxstack, ma);
   scanner_dispose(&p->scanner);
 }
 
@@ -2077,7 +2106,7 @@ static const expr_parselet_t expr_parsetab[TOK_COUNT] = {
   [TLBRACK] = {NULL, expr_postfix_subscript, PREC_UNARY_POSTFIX}, // [
 
   // member ops
-  [TDOT] = {NULL, expr_postfix_member, PREC_MEMBER}, // .
+  [TDOT] = {expr_dotmember, expr_postfix_member, PREC_MEMBER}, // .
 
   // keywords & identifiers
   [TID]  = {expr_id, NULL, 0},

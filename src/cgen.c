@@ -244,6 +244,7 @@ static void expr_as_value(cgen_t* g, const expr_t* n) {
   case EXPR_INTLIT:
   case EXPR_FLOATLIT:
   case EXPR_ID:
+  case EXPR_PARAM:
   case EXPR_PREFIXOP:
   case EXPR_POSTFIXOP:
   case EXPR_MEMBER:
@@ -581,6 +582,11 @@ static void idexpr(cgen_t* g, const idexpr_t* n) {
 }
 
 
+static void param(cgen_t* g, const local_t* n) {
+  id(g, n->name);
+}
+
+
 static void member(cgen_t* g, const member_t* n) {
   // TODO: nullcheck doesn't work for assignments, e.g. "foo->ptr = ptr"
   // bool insert_nullcheck = n->type->kind == TYPE_REF || n->type->kind == TYPE_FUN;
@@ -630,7 +636,7 @@ static void expr(cgen_t* g, const expr_t* n) {
   case EXPR_INTLIT:   return intlit(g, (const intlit_t*)n);
   case EXPR_FLOATLIT: return floatlit(g, (const floatlit_t*)n);
   case EXPR_ID:       return idexpr(g, (const idexpr_t*)n);
-  // case EXPR_PARAM: TODO
+  case EXPR_PARAM:    return param(g, (const local_t*)n);
   case EXPR_BLOCK:    return block(g, (const block_t*)n, BLOCKFLAG_EXPR);
   case EXPR_CALL:     return call(g, (const call_t*)n);
   case EXPR_MEMBER:   return member(g, (const member_t*)n);
