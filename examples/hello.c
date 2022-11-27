@@ -4,6 +4,6 @@
 int foo(int x,int y);
 
 int main(int argc, const char* argv[argc+1]) {
-  printf("Hello world! foo() => %d\n", foo(1, 3));
+  printf("Hello world! foo(1,3) => %d\n", foo(1, 3));
   return 0;
 }

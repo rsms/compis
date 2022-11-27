@@ -324,6 +324,22 @@ static void repr(RPARAMS, const node_t* n) {
     break;
   }
 
+  case EXPR_FOR: {
+    forexpr_t* e = (forexpr_t*)n;
+    if (e->start || e->end) {
+      REPR_BEGIN('(', "");
+      CHAR(' ');
+      repr(RARGSFL(fl | REPRFLAG_HEAD), (const node_t*)e->start);
+      repr(RARGS, (const node_t*)e->cond);
+      repr(RARGS, (const node_t*)e->end);
+      REPR_END(')');
+    } else {
+      repr(RARGS, (const node_t*)e->cond);
+    }
+    repr(RARGS, (const node_t*)e->thenb);
+    break;
+  }
+
   case EXPR_DEREF:
     CHAR(' '), repr(RARGS, (node_t*)((unaryop_t*)n)->expr);
     break;

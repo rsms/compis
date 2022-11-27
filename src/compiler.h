@@ -23,6 +23,7 @@
   _( EXPR_BINOP )\
   _( EXPR_DEREF )\
   _( EXPR_IF )\
+  _( EXPR_FOR )\
   _( EXPR_BOOLLIT )\
   _( EXPR_INTLIT )\
   _( EXPR_FLOATLIT )\
@@ -227,7 +228,21 @@ typedef struct { expr_t; sym_t name; node_t* nullable ref; } idexpr_t;
 typedef struct { expr_t; tok_t op; expr_t* expr; } unaryop_t;
 typedef struct { expr_t; tok_t op; expr_t* left; expr_t* right; } binop_t;
 typedef struct { expr_t; expr_t* recv; ptrarray_t args; } call_t;
-typedef struct { expr_t; expr_t* cond; expr_t* thenb; expr_t* nullable elseb; } ifexpr_t;
+
+typedef struct {
+  expr_t;
+  expr_t* cond;
+  expr_t* thenb;
+  expr_t* nullable elseb;
+} ifexpr_t;
+
+typedef struct {
+  expr_t;
+  expr_t* nullable start;
+  expr_t* cond;
+  expr_t* thenb;
+  expr_t* nullable end;
+} forexpr_t;
 
 typedef struct {
   expr_t;

@@ -1,4 +1,3 @@
-
 fun foo(x, y int) int {
   for (x < 4) x++
   for var i = 0; i < 4; i++ {

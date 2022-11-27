@@ -625,6 +625,20 @@ static void ifexpr(cgen_t* g, const ifexpr_t* n) {
 }
 
 
+static void forexpr(cgen_t* g, const forexpr_t* n) {
+  PRINT("for (");
+  if (n->start)
+    expr(g, n->start);
+  PRINT("; ");
+  expr(g, n->cond);
+  PRINT("; ");
+  if (n->end)
+    expr(g, n->end);
+  PRINT(") ");
+  expr_in_block(g, n->thenb);
+}
+
+
 static void vardef(cgen_t* g, const local_t* n) {
   type(g, n->type);
   if (n->kind == EXPR_LET && (type_isprim(n->type) || n->type->kind == TYPE_REF))
@@ -662,6 +676,7 @@ static void expr(cgen_t* g, const expr_t* n) {
   case EXPR_CALL:     return call(g, (const call_t*)n);
   case EXPR_MEMBER:   return member(g, (const member_t*)n);
   case EXPR_IF:       return ifexpr(g, (const ifexpr_t*)n);
+  case EXPR_FOR:      return forexpr(g, (const forexpr_t*)n);
   case EXPR_DEREF:
   case EXPR_PREFIXOP:  return prefixop(g, (const unaryop_t*)n);
   case EXPR_POSTFIXOP: return postfixop(g, (const unaryop_t*)n);

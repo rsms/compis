@@ -759,6 +759,41 @@ static expr_t* expr_if(parser_t* p) {
 }
 
 
+// for       = "for" ( for_head | for_phead ) expr
+// for_head  = ( expr | expr? ";" expr ";" expr? )
+// for_phead = "(" for_head ")"
+static expr_t* expr_for(parser_t* p) {
+  forexpr_t* n = mkexpr(p, forexpr_t, EXPR_FOR);
+  next(p);
+  bool paren = currtok(p) == TLPAREN;
+  if (paren)
+    next(p);
+  if (currtok(p) == TSEMI) {
+    // "for ; i < 4; i++"
+    next(p);
+    n->cond = expr(p, PREC_COMMA);
+    expect(p, TSEMI, "");
+    next(p);
+    n->end = expr(p, PREC_COMMA);
+  } else {
+    // "for i < 4"
+    n->cond = expr(p, PREC_COMMA);
+    if (currtok(p) == TSEMI) {
+      // "for i = 0; i < 4; i++"
+      next(p);
+      n->start = n->cond;
+      n->cond = expr(p, PREC_COMMA);
+      expect(p, TSEMI, "");
+      n->end = expr(p, PREC_COMMA);
+    }
+  }
+  if (paren)
+    expect(p, TRPAREN, "");
+  n->thenb = expr(p, PREC_COMMA);
+  return (expr_t*)n;
+}
+
+
 static type_t* select_int_type(parser_t* p, const intlit_t* n, u64 isneg) {
   type_t* type = p->typectx;
   u64 maxval = 0;
@@ -860,16 +895,6 @@ static expr_t* expr_prefix_op(parser_t* p) {
     default:        n->expr = expr(p, PREC_UNARY_PREFIX);
   }
   n->type = n->expr->type;
-  return (expr_t*)n;
-}
-
-
-static expr_t* postfix_op(parser_t* p, precedence_t prec, expr_t* left) {
-  unaryop_t* n = mkexpr(p, unaryop_t, EXPR_POSTFIXOP);
-  n->op = currtok(p);
-  next(p);
-  n->expr = left;
-  n->type = left->type;
   return (expr_t*)n;
 }
 
@@ -1004,6 +1029,17 @@ err:
 static expr_t* expr_infix_assign(parser_t* p, precedence_t prec, expr_t* left) {
   binop_t* n = (binop_t*)expr_infix_op(p, prec, left);
   check_assign(p, n->left);
+  return (expr_t*)n;
+}
+
+
+static expr_t* postfix_op(parser_t* p, precedence_t prec, expr_t* left) {
+  unaryop_t* n = mkexpr(p, unaryop_t, EXPR_POSTFIXOP);
+  n->op = currtok(p);
+  next(p);
+  n->expr = left;
+  n->type = left->type;
+  check_assign(p, left);
   return (expr_t*)n;
 }
 
@@ -2138,6 +2174,7 @@ static const expr_parselet_t expr_parsetab[TOK_COUNT] = {
   [TLET] = {expr_var, NULL, 0},
   [TVAR] = {expr_var, NULL, 0},
   [TIF]  = {expr_if, NULL, 0},
+  [TFOR] = {expr_for, NULL, 0},
 
   // constant literals
   [TINTLIT]   = {expr_intlit, NULL, 0},
