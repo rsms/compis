@@ -292,7 +292,7 @@ typedef enum {
 static void block(cgen_t* g, const block_t* n, blockflag_t fl) {
   g->scopenest++;
 
-  u32 hasval = n->type != type_void && (fl & BLOCKFLAG_EXPR);
+  u32 hasval = n->type != type_void && (fl & BLOCKFLAG_EXPR) && n->nrefs > 0;
   if (hasval) {
     type(g, n->type);
     CHAR(' ');
@@ -604,6 +604,27 @@ static void member(cgen_t* g, const member_t* n) {
 }
 
 
+static void expr_in_block(cgen_t* g, const expr_t* n) {
+  if (n->kind == EXPR_BLOCK || n->kind == EXPR_IF)
+    return expr(g, n);
+  PRINT("{ ");
+  expr(g, n);
+  PRINT("; }");
+}
+
+
+static void ifexpr(cgen_t* g, const ifexpr_t* n) {
+  PRINT("if (");
+  expr(g, n->cond);
+  PRINT(") ");
+  expr_in_block(g, n->thenb);
+  if (n->elseb) {
+    PRINT(" else ");
+    expr_in_block(g, n->elseb);
+  }
+}
+
+
 static void vardef(cgen_t* g, const local_t* n) {
   type(g, n->type);
   if (n->kind == EXPR_LET && (type_isprim(n->type) || n->type->kind == TYPE_REF))
@@ -640,8 +661,9 @@ static void expr(cgen_t* g, const expr_t* n) {
   case EXPR_BLOCK:    return block(g, (const block_t*)n, BLOCKFLAG_EXPR);
   case EXPR_CALL:     return call(g, (const call_t*)n);
   case EXPR_MEMBER:   return member(g, (const member_t*)n);
+  case EXPR_IF:       return ifexpr(g, (const ifexpr_t*)n);
   case EXPR_DEREF:
-  case EXPR_PREFIXOP: return prefixop(g, (const unaryop_t*)n);
+  case EXPR_PREFIXOP:  return prefixop(g, (const unaryop_t*)n);
   case EXPR_POSTFIXOP: return postfixop(g, (const unaryop_t*)n);
 
   case EXPR_VAR:

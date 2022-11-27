@@ -315,6 +315,15 @@ static void repr(RPARAMS, const node_t* n) {
     break;
   }
 
+  case EXPR_IF: {
+    ifexpr_t* e = (ifexpr_t*)n;
+    repr(RARGS, (const node_t*)e->cond);
+    repr(RARGS, (const node_t*)e->thenb);
+    if (e->elseb)
+      repr(RARGS, (const node_t*)e->elseb);
+    break;
+  }
+
   case EXPR_DEREF:
     CHAR(' '), repr(RARGS, (node_t*)((unaryop_t*)n)->expr);
     break;

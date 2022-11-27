@@ -1,0 +1,18 @@
+type Thing {
+  ref &int
+}
+
+fun refs() {
+  // let v = 3 ; let r = mut&v // error: mut ref to immut binding
+  // var v = 3 ; let r mut&int = &v // error: incompatible types, mut&int and &int
+  var v = 3 ; let r mut&int = mut&v ; let p &int = &v // ok, ok
+  // let rr = &r // error: referencing reference type mut&int
+  // let v2 = *r // ok
+  // *p = 4 // error: cannot assign via immutable reference of type &int
+  *r = 4
+}
+
+fun Thing.refs(mut this) {
+  var v = 3
+  .ref = &v
+}

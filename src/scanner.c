@@ -341,12 +341,12 @@ static void scan1(scanner_t* s) {
   case '|': OP2( TOR,      '=', TORASSIGN); break;
   case '^': OP2( TXOR,     '=', TXORASSIGN); break;
   case '+': switch (nextc) {
-    case '+': s->tok.t = TPLUSPLUS; s->inp++; break;
+    case '+': s->insertsemi = true; s->tok.t = TPLUSPLUS; s->inp++; break;
     case '=': s->tok.t = TADDASSIGN; s->inp++; break;
     default: s->tok.t = TPLUS;
   } break;
   case '-': switch (nextc) {
-    case '-': s->tok.t = TMINUSMINUS; s->inp++; break;
+    case '-': s->insertsemi = true; s->tok.t = TMINUSMINUS; s->inp++; break;
     case '=': s->tok.t = TSUBASSIGN; s->inp++; break;
     default: s->tok.t = TMINUS;
   } break;

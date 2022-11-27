@@ -1,0 +1,17 @@
+type Thing {
+  x, y, z u32 = 3, 4, 5
+  pretty bool
+  ref &int
+  // fptr fun(int)int
+}
+
+fun Thing.foo(this, x int) int { int(.x) * x }
+fun Thing.bar(this) u32 { .x * .y }
+fun Thing.set_x(mut this, x u32) u32 { .x = x }
+
+fun bar(x, y int) int {
+  let a = Thing(u32(x), pretty: true, y: 5)
+  //a.fptr(x)
+  a.set_x(9)
+  int(a.x) + a.foo(x) * y
+}

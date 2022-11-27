@@ -191,6 +191,17 @@ static void fmt(abuf_t* s, const node_t* nullable n, u32 indent, u32 maxdepth) {
     abuf_str(s, ((const member_t*)n)->name);
     break;
 
+  case EXPR_IF:
+    abuf_str(s, "if ");
+    fmt(s, (node_t*)((const ifexpr_t*)n)->cond, indent, maxdepth);
+    abuf_c(s, ' ');
+    fmt(s, (node_t*)((const ifexpr_t*)n)->thenb, indent, maxdepth);
+    if (((const ifexpr_t*)n)->elseb) {
+      abuf_str(s, " else ");
+      fmt(s, (node_t*)((const ifexpr_t*)n)->elseb, indent, maxdepth);
+    }
+    break;
+
   case EXPR_ID:
     abuf_str(s, ((idexpr_t*)n)->name);
     break;

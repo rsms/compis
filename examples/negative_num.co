@@ -1,0 +1,4 @@
+fun negative_num() void {
+  let _ = -0x8000000000000000
+  let _ = -1.23
+}

@@ -714,7 +714,7 @@ static expr_t* expr_id(parser_t* p) {
 }
 
 
-static expr_t* prefix_var(parser_t* p) {
+static expr_t* expr_var(parser_t* p) {
   local_t* n = mkexpr(p, local_t, currtok(p) == TLET ? EXPR_LET : EXPR_VAR);
   next(p);
   if (currtok(p) != TID) {
@@ -740,6 +740,20 @@ static expr_t* prefix_var(parser_t* p) {
       typectx_pop(p);
       check_types_compat(p, n->type, n->init->type, (node_t*)n->init);
     }
+  }
+  return (expr_t*)n;
+}
+
+
+static expr_t* expr_if(parser_t* p) {
+  ifexpr_t* n = mkexpr(p, ifexpr_t, EXPR_IF);
+  next(p);
+  n->cond = expr(p, PREC_COMMA);
+  n->thenb = expr(p, PREC_COMMA);
+  // n->type = n->thenb; // TODO: type of if...else (rvalue flags needed?)
+  if (currtok(p) == TELSE) {
+    next(p);
+    n->elseb = expr(p, PREC_COMMA);
   }
   return (expr_t*)n;
 }
@@ -825,17 +839,17 @@ static expr_t* floatlit(parser_t* p, bool isneg) {
 }
 
 
-static expr_t* prefix_intlit(parser_t* p) {
+static expr_t* expr_intlit(parser_t* p) {
   return intlit(p, /*isneg*/false);
 }
 
 
-static expr_t* prefix_floatlit(parser_t* p) {
+static expr_t* expr_floatlit(parser_t* p) {
   return floatlit(p, /*isneg*/false);
 }
 
 
-static expr_t* prefix_op(parser_t* p) {
+static expr_t* expr_prefix_op(parser_t* p) {
   unaryop_t* n = mkexpr(p, unaryop_t, EXPR_PREFIXOP);
   n->op = currtok(p);
   next(p);
@@ -854,13 +868,13 @@ static expr_t* postfix_op(parser_t* p, precedence_t prec, expr_t* left) {
   unaryop_t* n = mkexpr(p, unaryop_t, EXPR_POSTFIXOP);
   n->op = currtok(p);
   next(p);
-  n->expr = expr(p, prec);
-  n->type = n->expr->type;
+  n->expr = left;
+  n->type = left->type;
   return (expr_t*)n;
 }
 
 
-static expr_t* infix_op(parser_t* p, precedence_t prec, expr_t* left) {
+static expr_t* expr_infix_op(parser_t* p, precedence_t prec, expr_t* left) {
   binop_t* n = mkexpr(p, binop_t, EXPR_BINOP);
   n->op = currtok(p);
   next(p);
@@ -987,8 +1001,8 @@ err:
 }
 
 
-static expr_t* infix_assign(parser_t* p, precedence_t prec, expr_t* left) {
-  binop_t* n = (binop_t*)infix_op(p, prec, left);
+static expr_t* expr_infix_assign(parser_t* p, precedence_t prec, expr_t* left) {
+  binop_t* n = (binop_t*)expr_infix_op(p, prec, left);
   check_assign(p, n->left);
   return (expr_t*)n;
 }
@@ -1053,6 +1067,15 @@ static expr_t* expr_mut(parser_t* p) {
     return mkbad(p);
   }
   return expr_ref1(p, /*ismut*/true);
+}
+
+
+// group = "(" expr ")"
+static expr_t* expr_group(parser_t* p) {
+  next(p);
+  expr_t* n = expr(p, PREC_COMMA);
+  expect(p, TRPAREN, "");
+  return n;
 }
 
 
@@ -1428,7 +1451,7 @@ static expr_t* expr_dotmember(parser_t* p) {
 }
 
 
-static expr_t* prefix_block(parser_t* p) {
+static expr_t* expr_block(parser_t* p) {
   block_t* n = mkexpr(p, block_t, EXPR_BLOCK);
   next(p);
   enter_scope(p);
@@ -1870,7 +1893,7 @@ static expr_t* expr_fun(parser_t* p) {
 
     // check type of implicit return value
     if UNLIKELY(ft->kind == TYPE_FUN && ft->result != type_void &&
-      !types_iscompat(ft->result, n->body->type) )
+      n->body->type && !types_iscompat(ft->result, n->body->type) )
     {
       const char* restype = fmtnode(p, 0, (const node_t*)ft->result, 1);
       const char* bodytype = fmtnode(p, 1, (const node_t*)n->body->type, 1);
@@ -1884,9 +1907,10 @@ static expr_t* expr_fun(parser_t* p) {
           //   origin = NULL;
         }
       }
-      if (origin)
+      if (origin) {
         error(p, origin, "unexpected implicit function return type %s, expecting %s",
           bodytype, restype);
+      }
     }
 
     p->fun = outer_fun;
@@ -2063,46 +2087,46 @@ void parser_dispose(parser_t* p) {
 
 static const expr_parselet_t expr_parsetab[TOK_COUNT] = {
   // infix ops (in order of precedence from weakest to strongest)
-  //[TCOMMA]     = {NULL, infix_op, PREC_COMMA},
-  [TASSIGN]    = {NULL, infix_assign, PREC_ASSIGN}, // =
-  [TMULASSIGN] = {NULL, infix_assign, PREC_ASSIGN}, // *=
-  [TDIVASSIGN] = {NULL, infix_assign, PREC_ASSIGN}, // /=
-  [TMODASSIGN] = {NULL, infix_assign, PREC_ASSIGN}, // %=
-  [TADDASSIGN] = {NULL, infix_assign, PREC_ASSIGN}, // +=
-  [TSUBASSIGN] = {NULL, infix_assign, PREC_ASSIGN}, // -=
-  [TSHLASSIGN] = {NULL, infix_assign, PREC_ASSIGN}, // <<=
-  [TSHRASSIGN] = {NULL, infix_assign, PREC_ASSIGN}, // >>=
-  [TANDASSIGN] = {NULL, infix_assign, PREC_ASSIGN}, // &=
-  [TXORASSIGN] = {NULL, infix_assign, PREC_ASSIGN}, // ^=
-  [TORASSIGN]  = {NULL, infix_assign, PREC_ASSIGN}, // |=
-  [TOROR]      = {NULL, infix_op, PREC_LOGICAL_OR}, // ||
-  [TANDAND]    = {NULL, infix_op, PREC_LOGICAL_AND}, // &&
-  [TOR]        = {NULL, infix_op, PREC_BITWISE_OR}, // |
-  [TXOR]       = {NULL, infix_op, PREC_BITWISE_XOR}, // ^
-  [TAND]       = {expr_ref, infix_op, PREC_BITWISE_AND}, // &
-  [TEQ]        = {NULL, infix_op, PREC_EQUAL}, // ==
-  [TNEQ]       = {NULL, infix_op, PREC_EQUAL}, // !=
-  [TLT]        = {NULL, infix_op, PREC_COMPARE},   // <
-  [TGT]        = {NULL, infix_op, PREC_COMPARE},   // >
-  [TLTEQ]      = {NULL, infix_op, PREC_COMPARE}, // <=
-  [TGTEQ]      = {NULL, infix_op, PREC_COMPARE}, // >=
-  [TSHL]       = {NULL, infix_op, PREC_SHIFT}, // >>
-  [TSHR]       = {NULL, infix_op, PREC_SHIFT}, // <<
-  [TPLUS]      = {prefix_op, infix_op, PREC_ADD}, // +
-  [TMINUS]     = {prefix_op, infix_op, PREC_ADD}, // -
-  [TSTAR]      = {expr_deref, infix_op, PREC_MUL}, // *
-  [TSLASH]     = {NULL, infix_op, PREC_MUL}, // /
-  [TPERCENT]   = {NULL, infix_op, PREC_MUL}, // %
+  //[TCOMMA]     = {NULL, expr_infix_op, PREC_COMMA},
+  [TASSIGN]    = {NULL, expr_infix_assign, PREC_ASSIGN}, // =
+  [TMULASSIGN] = {NULL, expr_infix_assign, PREC_ASSIGN}, // *=
+  [TDIVASSIGN] = {NULL, expr_infix_assign, PREC_ASSIGN}, // /=
+  [TMODASSIGN] = {NULL, expr_infix_assign, PREC_ASSIGN}, // %=
+  [TADDASSIGN] = {NULL, expr_infix_assign, PREC_ASSIGN}, // +=
+  [TSUBASSIGN] = {NULL, expr_infix_assign, PREC_ASSIGN}, // -=
+  [TSHLASSIGN] = {NULL, expr_infix_assign, PREC_ASSIGN}, // <<=
+  [TSHRASSIGN] = {NULL, expr_infix_assign, PREC_ASSIGN}, // >>=
+  [TANDASSIGN] = {NULL, expr_infix_assign, PREC_ASSIGN}, // &=
+  [TXORASSIGN] = {NULL, expr_infix_assign, PREC_ASSIGN}, // ^=
+  [TORASSIGN]  = {NULL, expr_infix_assign, PREC_ASSIGN}, // |=
+  [TOROR]      = {NULL, expr_infix_op, PREC_LOGICAL_OR}, // ||
+  [TANDAND]    = {NULL, expr_infix_op, PREC_LOGICAL_AND}, // &&
+  [TOR]        = {NULL, expr_infix_op, PREC_BITWISE_OR}, // |
+  [TXOR]       = {NULL, expr_infix_op, PREC_BITWISE_XOR}, // ^
+  [TAND]       = {expr_ref, expr_infix_op, PREC_BITWISE_AND}, // &
+  [TEQ]        = {NULL, expr_infix_op, PREC_EQUAL}, // ==
+  [TNEQ]       = {NULL, expr_infix_op, PREC_EQUAL}, // !=
+  [TLT]        = {NULL, expr_infix_op, PREC_COMPARE},   // <
+  [TGT]        = {NULL, expr_infix_op, PREC_COMPARE},   // >
+  [TLTEQ]      = {NULL, expr_infix_op, PREC_COMPARE}, // <=
+  [TGTEQ]      = {NULL, expr_infix_op, PREC_COMPARE}, // >=
+  [TSHL]       = {NULL, expr_infix_op, PREC_SHIFT}, // >>
+  [TSHR]       = {NULL, expr_infix_op, PREC_SHIFT}, // <<
+  [TPLUS]      = {expr_prefix_op, expr_infix_op, PREC_ADD}, // +
+  [TMINUS]     = {expr_prefix_op, expr_infix_op, PREC_ADD}, // -
+  [TSTAR]      = {expr_deref, expr_infix_op, PREC_MUL}, // *
+  [TSLASH]     = {NULL, expr_infix_op, PREC_MUL}, // /
+  [TPERCENT]   = {NULL, expr_infix_op, PREC_MUL}, // %
 
   // prefix and postfix ops (in addition to the ones above)
-  [TPLUSPLUS]   = {prefix_op, postfix_op, PREC_UNARY_PREFIX}, // ++
-  [TMINUSMINUS] = {prefix_op, postfix_op, PREC_UNARY_PREFIX}, // --
-  [TNOT]        = {prefix_op, NULL, PREC_UNARY_PREFIX}, // !
-  [TTILDE]      = {prefix_op, NULL, PREC_UNARY_PREFIX}, // ~
+  [TPLUSPLUS]   = {expr_prefix_op, postfix_op, PREC_UNARY_PREFIX}, // ++
+  [TMINUSMINUS] = {expr_prefix_op, postfix_op, PREC_UNARY_PREFIX}, // --
+  [TNOT]        = {expr_prefix_op, NULL, PREC_UNARY_PREFIX}, // !
+  [TTILDE]      = {expr_prefix_op, NULL, PREC_UNARY_PREFIX}, // ~
   [TMUT]        = {expr_mut, NULL, PREC_UNARY_PREFIX},
+  [TLPAREN]     = {expr_group, expr_postfix_call, PREC_UNARY_POSTFIX}, // (
 
   // postfix ops
-  [TLPAREN] = {NULL, expr_postfix_call, PREC_UNARY_POSTFIX}, // (
   [TLBRACK] = {NULL, expr_postfix_subscript, PREC_UNARY_POSTFIX}, // [
 
   // member ops
@@ -2111,15 +2135,16 @@ static const expr_parselet_t expr_parsetab[TOK_COUNT] = {
   // keywords & identifiers
   [TID]  = {expr_id, NULL, 0},
   [TFUN] = {expr_fun, NULL, 0},
-  [TLET] = {prefix_var, NULL, 0},
-  [TVAR] = {prefix_var, NULL, 0},
+  [TLET] = {expr_var, NULL, 0},
+  [TVAR] = {expr_var, NULL, 0},
+  [TIF]  = {expr_if, NULL, 0},
 
   // constant literals
-  [TINTLIT]   = {prefix_intlit, NULL, 0},
-  [TFLOATLIT] = {prefix_floatlit, NULL, 0},
+  [TINTLIT]   = {expr_intlit, NULL, 0},
+  [TFLOATLIT] = {expr_floatlit, NULL, 0},
 
   // block
-  [TLBRACE] = {prefix_block, NULL, 0},
+  [TLBRACE] = {expr_block, NULL, 0},
 };
 
 
