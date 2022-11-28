@@ -202,6 +202,28 @@ static void fmt(abuf_t* s, const node_t* nullable n, u32 indent, u32 maxdepth) {
     }
     break;
 
+  case EXPR_FOR:
+    if (maxdepth == 1) {
+      abuf_str(s, "for");
+    } else {
+      forexpr_t* e = (forexpr_t*)n;
+      abuf_str(s, "for ");
+      if (e->start || e->end) {
+        if (e->start)
+          fmt(s, (node_t*)e->start, indent, maxdepth - 1);
+        abuf_str(s, "; ");
+        fmt(s, (node_t*)e->cond, indent, maxdepth - 1);
+        abuf_str(s, "; ");
+        if (e->end)
+          fmt(s, (node_t*)e->start, indent, maxdepth - 1);
+      } else {
+        fmt(s, (node_t*)e->cond, indent, maxdepth - 1);
+      }
+      abuf_c(s, ' ');
+      fmt(s, (node_t*)e->body, indent, maxdepth - 1);
+    }
+    break;
+
   case EXPR_ID:
     abuf_str(s, ((idexpr_t*)n)->name);
     break;
@@ -266,6 +288,11 @@ static void fmt(abuf_t* s, const node_t* nullable n, u32 indent, u32 maxdepth) {
     const reftype_t* pt = (const reftype_t*)n;
     abuf_str(s, pt->ismut ? "mut&" : "&");
     fmt(s, (node_t*)pt->elem, indent, maxdepth);
+    break;
+  }
+  case TYPE_OPTIONAL: {
+    abuf_c(s, '?');
+    fmt(s, (node_t*)((const opttype_t*)n)->elem, indent, maxdepth);
     break;
   }
 

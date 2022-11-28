@@ -1,8 +1,29 @@
 
+// type ListNode {
+//   value int
+//   next ?*ListNode // optional owning reference
+//   prev ?&ListNode // optional borrowed reference
+// }
+
+// fun foo(x, y int) int {
+//   var head = ListNode()  // struct on stack {0,NULL,NULL}
+//   var n1 = ListNode(value: x, prev: &head)
+//   var n2 = ListNode(value: y, prev: &n1)
+//   var n3 = ListNode(value: 3, prev: &n2)
+//   head.next = n1
+//   n1.next = n2
+//   n2.next = n3
+//   0
+// }
+
+type Thing {
+  a ?int
+}
+
 fun foo(x, y int) int {
-  for (x < 4) x++
-  for var i = 0; i < 4; i++ {
-    x++
-  }
-  x * y
+  let t = Thing()
+  t.a = x
+  // var z ?int = x
+  // z = y
+  x
 }

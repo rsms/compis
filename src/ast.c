@@ -336,7 +336,7 @@ static void repr(RPARAMS, const node_t* n) {
     } else {
       repr(RARGS, (const node_t*)e->cond);
     }
-    repr(RARGS, (const node_t*)e->thenb);
+    repr(RARGS, (const node_t*)e->body);
     break;
   }
 

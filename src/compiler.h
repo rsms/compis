@@ -42,6 +42,7 @@
   _( TYPE_ENUM )\
   _( TYPE_FUN )\
   _( TYPE_REF )\
+  _( TYPE_OPTIONAL )\
   _( TYPE_STRUCT )\
 // end FOREACH_NODEKIND_TYPE
 
@@ -210,6 +211,11 @@ typedef struct {
 } reftype_t;
 
 typedef struct {
+  usertype_t;
+  type_t* elem;
+} opttype_t;
+
+typedef struct {
   stmt_t;
   sym_t   name;
   type_t* type;
@@ -240,7 +246,7 @@ typedef struct {
   expr_t;
   expr_t* nullable start;
   expr_t* cond;
-  expr_t* thenb;
+  expr_t* body;
   expr_t* nullable end;
 } forexpr_t;
 
@@ -291,11 +297,13 @@ typedef struct {
 typedef struct {
   compiler_t* compiler;
   buf_t       outbuf;
+  buf_t       headbuf;
   err_t       err;
   u32         anon_idgen;
   usize       indent;
   u32         lineno;
   u32         scopenest;
+  map_t       typedefmap;
   map_t       tmpmap;
   const input_t* nullable input;
 } cgen_t;
@@ -378,10 +386,12 @@ inline static bool node_isexpr(const node_t* n) { return nodekind_isexpr(n->kind
 inline static bool node_islocal(const node_t* n) { return nodekind_islocal(n->kind); }
 inline static bool node_isusertype(const node_t* n) {
   return nodekind_isusertype(n->kind); }
-inline static bool type_isusertype(const type_t* nullable t) {
+inline static bool type_isptr(const type_t* nullable t) {
   return nodekind_isptrtype(assertnotnull(t)->kind); }
 inline static bool type_isprim(const type_t* nullable t) {
   return nodekind_isprimtype(assertnotnull(t)->kind); }
+inline static bool type_isopt(const type_t* nullable t) {
+  return assertnotnull(t)->kind == TYPE_OPTIONAL; }
 
 #define TYPEID_PREFIX(typekind)  ('A'+(typekind)-TYPE_VOID)
 
@@ -405,6 +415,7 @@ ATTR_FORMAT(printf,4,5) inline static void report_diag(
 // symbols
 void sym_init(memalloc_t);
 sym_t sym_intern(const void* key, usize keylen);
+sym_t sym_snprintf(char* buf, usize bufcap, const char* fmt, ...)ATTR_FORMAT(printf,3,4);
 extern sym_t sym__;    // "_"
 extern sym_t sym_this; // "this"
 

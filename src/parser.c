@@ -25,7 +25,7 @@ typedef enum {
   PREC_SHIFT,         // <<  >>
   PREC_ADD,           // +  -
   PREC_MUL,           // *  /  %
-  PREC_UNARY_PREFIX,  // ++  --  +  -  !  ~  *  &
+  PREC_UNARY_PREFIX,  // ++  --  +  -  !  ~  *  &  ?
   PREC_UNARY_POSTFIX, // ++  --  ()  []
   PREC_MEMBER,        // .
 
@@ -439,28 +439,36 @@ static bool types_iscompat(const type_t* dst, const type_t* src) {
   assertnotnull(dst);
   assertnotnull(src);
   switch (dst->kind) {
-  case TYPE_INT:
-  case TYPE_I8:
-  case TYPE_I16:
-  case TYPE_I32:
-  case TYPE_I64:
-    return (dst == src) && (dst->isunsigned == src->isunsigned);
-  case TYPE_REF: {
-    // &T    -> &T
-    // &T    -> mut&T
-    // mut&T -> mut&T
-    // mut&T -x &T
-    if (src->kind != TYPE_REF)
+    case TYPE_INT:
+    case TYPE_I8:
+    case TYPE_I16:
+    case TYPE_I32:
+    case TYPE_I64:
+      return (dst == src) && (dst->isunsigned == src->isunsigned);
+    case TYPE_REF: {
+      // &T    <= &T
+      // mut&T <= &T
+      // mut&T <= mut&T
+      // &T    x= mut&T
+      if (src->kind != TYPE_REF)
+        return false;
+      const reftype_t* d = (const reftype_t*)dst;
+      const reftype_t* s = (const reftype_t*)src;
+      if (types_iscompat(d->elem, s->elem) &&
+          (s->ismut == d->ismut || s->ismut || !d->ismut))
+      {
+        return true;
+      }
       return false;
-    const reftype_t* d = (const reftype_t*)dst;
-    const reftype_t* s = (const reftype_t*)src;
-    if (types_iscompat(d->elem, s->elem) &&
-        (s->ismut == d->ismut || s->ismut || !d->ismut))
-    {
-      return true;
     }
-    return false;
-  }
+    case TYPE_OPTIONAL: {
+      // ?T <= T
+      // ?T <= ?T
+      const opttype_t* d = (const opttype_t*)dst;
+      if (src->kind == TYPE_OPTIONAL)
+        src = ((const opttype_t*)src)->elem;
+      return types_iscompat(d->elem, src);
+    }
   }
   return dst == src;
 }
@@ -673,6 +681,40 @@ static type_t* type_struct(parser_t* p) {
 }
 
 
+static type_t* type_ref1(parser_t* p, bool ismut) {
+  reftype_t* t = mkreftype(p, ismut);
+  next(p);
+  t->elem = type(p, PREC_UNARY_PREFIX);
+  return (type_t*)t;
+}
+
+
+// ref_type = "&" type
+static type_t* type_ref(parser_t* p) {
+  return type_ref1(p, /*ismut*/false);
+}
+
+
+// mut_type = "mut" ref_type
+static type_t* type_mut(parser_t* p) {
+  next(p);
+  if UNLIKELY(currtok(p) != TAND) {
+    unexpected(p, "expecting '&'");
+    return mkbad(p);
+  }
+  return type_ref1(p, /*ismut*/true);
+}
+
+
+// optional_type = "?" type
+static type_t* type_optional(parser_t* p) {
+  opttype_t* t = mknode(p, opttype_t, TYPE_OPTIONAL);
+  next(p);
+  t->elem = type(p, PREC_UNARY_PREFIX);
+  return (type_t*)t;
+}
+
+
 // typedef = "type" id type
 static stmt_t* stmt_typedef(parser_t* p) {
   typedef_t* n = mknode(p, typedef_t, STMT_TYPEDEF);
@@ -724,7 +766,6 @@ static expr_t* expr_var(parser_t* p) {
     n->name = p->scanner.sym;
     next(p);
   }
-  define(p, n->name, (node_t*)n);
   if (currtok(p) == TASSIGN) {
     next(p);
     typectx_push(p, type_void);
@@ -741,6 +782,7 @@ static expr_t* expr_var(parser_t* p) {
       check_types_compat(p, n->type, n->init->type, (node_t*)n->init);
     }
   }
+  define(p, n->name, (node_t*)n);
   return (expr_t*)n;
 }
 
@@ -789,7 +831,7 @@ static expr_t* expr_for(parser_t* p) {
   }
   if (paren)
     expect(p, TRPAREN, "");
-  n->thenb = expr(p, PREC_COMMA);
+  n->body = expr(p, PREC_COMMA);
   return (expr_t*)n;
 }
 
@@ -1316,7 +1358,7 @@ static void validate_call_args(parser_t* p, call_t* call) {
 }
 
 
-// namedargs = id "=" expr ("," id "=" expr)*
+// namedargs = id ":" expr ("," id ":" expr)*
 static void namedargs(parser_t* p, ptrarray_t* args, local_t** paramv, u32 paramc) {
   for (u32 paramidx = 0; ;paramidx++) {
     local_t* namedarg = mkexpr(p, local_t, EXPR_PARAM);
@@ -1348,7 +1390,6 @@ static void namedargs(parser_t* p, ptrarray_t* args, local_t** paramv, u32 param
 // args      = posargs ("," namedargs)
 //           | namedargs
 // posargs   = expr ("," expr)*
-// namedargs = id "=" expr ("," id "=" expr)*
 static void args(parser_t* p, ptrarray_t* args, type_t* recvtype) {
   local_t param0 = { {{EXPR_PARAM}}, .type = recvtype };
   local_t** paramv = (local_t*[]){ &param0 };
@@ -1887,6 +1928,14 @@ static bool fun_prototype(parser_t* p, fun_t* n) {
 }
 
 
+static type_t* type_fun(parser_t* p) {
+  fun_t f = { .kind = EXPR_FUN, .loc = currloc(p) };
+  next(p);
+  fun_prototype(p, &f);
+  return (type_t*)f.type;
+}
+
+
 // fundef = "fun" name "(" params? ")" result ( ";" | "{" body "}")
 // result = params
 // body   = (stmt ";")*
@@ -1964,45 +2013,6 @@ static stmt_t* stmt_fun(parser_t* p) {
   if UNLIKELY(n->kind == EXPR_FUN && !n->name)
     error(p, (node_t*)n, "anonymous function at top level");
   return (stmt_t*)n;
-}
-
-
-static type_t* type_fun(parser_t* p) {
-  fun_t f = { .kind = EXPR_FUN, .loc = currloc(p) };
-  next(p);
-  fun_prototype(p, &f);
-  return (type_t*)f.type;
-}
-
-
-static type_t* type_ref1(parser_t* p, bool ismut) {
-  reftype_t* t = mkreftype(p, ismut);
-  next(p);
-  t->elem = type(p, PREC_UNARY_PREFIX);
-  return (type_t*)t;
-}
-
-
-// ref_type = "&" type
-static type_t* type_ref(parser_t* p) {
-  return type_ref1(p, /*ismut*/false);
-}
-
-
-// mut_type = "mut" ref_type
-static type_t* type_mut(parser_t* p) {
-  next(p);
-  if UNLIKELY(currtok(p) != TAND) {
-    unexpected(p, "expecting '&'");
-    return mkbad(p);
-  }
-  return type_ref1(p, /*ismut*/true);
-}
-
-
-static type_t* type_infix_ref(parser_t* p, precedence_t prec, type_t* left) {
-  dlog("TODO %s", __FUNCTION__);
-  return left;
 }
 
 
@@ -2185,15 +2195,18 @@ static const expr_parselet_t expr_parsetab[TOK_COUNT] = {
 };
 
 
+// type
 static const type_parselet_t type_parsetab[TOK_COUNT] = {
-  [TID]     = {type_id, NULL, 0},
-  [TLBRACE] = {type_struct, NULL, 0},
-  [TFUN]    = {type_fun, NULL, 0},
-  [TAND]    = {type_ref, type_infix_ref, PREC_MEMBER},
-  [TMUT]    = {type_mut, NULL, 0},
+  [TID]       = {type_id, NULL, 0},
+  [TLBRACE]   = {type_struct, NULL, 0},
+  [TFUN]      = {type_fun, NULL, 0},
+  [TAND]      = {type_ref, NULL, 0},
+  [TMUT]      = {type_mut, NULL, 0},
+  [TQUESTION] = {type_optional, NULL, 0},
 };
 
 
+// statement
 static const stmt_parselet_t stmt_parsetab[TOK_COUNT] = {
   [TFUN]  = {stmt_fun, NULL, 0},
   [TTYPE] = {stmt_typedef, NULL, 0},

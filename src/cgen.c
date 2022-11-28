@@ -6,15 +6,22 @@ bool cgen_init(cgen_t* g, compiler_t* c, memalloc_t out_ma) {
   memset(g, 0, sizeof(*g));
   g->compiler = c;
   buf_init(&g->outbuf, out_ma);
-  if (!map_init(&g->tmpmap, g->compiler->ma, 32))
+  buf_init(&g->headbuf, out_ma);
+  if (!map_init(&g->typedefmap, g->compiler->ma, 32))
     return false;
+  if (!map_init(&g->tmpmap, g->compiler->ma, 32)) {
+    map_dispose(&g->typedefmap, g->compiler->ma);
+    return false;
+  }
   return true;
 }
 
 
 void cgen_dispose(cgen_t* g) {
-  buf_dispose(&g->outbuf);
   map_dispose(&g->tmpmap, g->compiler->ma);
+  map_dispose(&g->typedefmap, g->compiler->ma);
+  buf_dispose(&g->headbuf);
+  buf_dispose(&g->outbuf);
 }
 
 
@@ -28,6 +35,7 @@ static void seterr(cgen_t* g, err_t err) {
   _error((g), (srcrange_t){ .focus = assertnotnull(node_or_type)->loc }, \
     "[cgen] " fmt, ##args)
 
+
 #if DEBUG
   #define debugdie(g, node_or_type, fmt, args...) ( \
     _error((g), (srcrange_t){ .focus = (node_or_type)->loc }, "[cgen] " fmt, ##args), \
@@ -36,6 +44,7 @@ static void seterr(cgen_t* g, err_t err) {
 #else
   #define debugdie(...) ((void)0)
 #endif
+
 
 ATTR_FORMAT(printf,3,4)
 static void _error(cgen_t* g, srcrange_t srcrange, const char* fmt, ...) {
@@ -46,6 +55,8 @@ static void _error(cgen_t* g, srcrange_t srcrange, const char* fmt, ...) {
   seterr(g, ErrInvalid);
 }
 
+
+#define ANON_FMT "_anon%x"
 
 #define CHAR(ch)             ( buf_push(&g->outbuf, (ch)), ((void)0) )
 #define PRINT(cstr)          ( buf_print(&g->outbuf, (cstr)), ((void)0) )
@@ -76,6 +87,7 @@ static void startline(cgen_t* g, srcloc_t loc) {
 static void type(cgen_t* g, const type_t*);
 static void stmt(cgen_t* g, const stmt_t*);
 static void expr(cgen_t* g, const expr_t*);
+static void expr_as_value(cgen_t* g, const expr_t* n);
 
 
 static const char* operator(tok_t tok) {
@@ -124,12 +136,34 @@ static const char* operator(tok_t tok) {
 }
 
 
+typedef sym_t(*gentypedef_t)(cgen_t* g, const type_t* t);
+
+
+static sym_t intern_typedef(cgen_t* g, const type_t* t, gentypedef_t f) {
+  sym_t* vp = (sym_t*)map_assign_ptr(&g->typedefmap, g->compiler->ma, t);
+  if UNLIKELY(!vp)
+    return seterr(g, ErrNoMem), sym__;
+  if (*vp)
+    return *vp;
+
+  buf_t outbuf = g->outbuf;
+  g->outbuf = g->headbuf;
+  sym_t name = f(g, t);
+  g->headbuf = g->outbuf;
+  g->outbuf = outbuf;
+
+  *vp = name;
+
+  return name;
+}
+
+
 static void funtype(cgen_t* g, const funtype_t* t, const char* nullable name) {
   // void(*name)(args)
   type(g, t->result);
   PRINT("(*");
   if (!name || name == sym__) {
-    PRINTF("_anon%u", g->anon_idgen++);
+    PRINTF(ANON_FMT, g->anon_idgen++);
   } else {
     PRINT(name);
   }
@@ -152,23 +186,6 @@ static void funtype(cgen_t* g, const funtype_t* t, const char* nullable name) {
   }
   CHAR(')');
 }
-
-
-// WIP
-// static void clocal(cgen_t* g, const type_t* t, const char* nullable name) {
-//   // e.g. "int x", "int(*x)(int)"
-//   if (t->kind == TYPE_FUN)
-//     return funtype(g, (const funtype_t*)t, name);
-//   type(g, t);
-//   if (!name)
-//     return;
-//   CHAR(' ');
-//   if (name == sym__) {
-//     PRINTF("_anon%u", g->anon_idgen++);
-//   } else {
-//     PRINT(name);
-//   }
-// }
 
 
 static void structtype(cgen_t* g, const structtype_t* n) {
@@ -210,7 +227,7 @@ static void structtype(cgen_t* g, const structtype_t* n) {
 }
 
 
-static void reftype(cgen_t* g, const reftype_t* t, const char* nullable name) {
+static void reftype(cgen_t* g, const reftype_t* t) {
   if (!t->ismut)
     PRINT("const ");
   type(g, t->elem);
@@ -218,10 +235,41 @@ static void reftype(cgen_t* g, const reftype_t* t, const char* nullable name) {
 }
 
 
+static sym_t gen_opttypedef(cgen_t* g, const type_t* tp) {
+  char namebuf[64];
+  sym_t name = sym_snprintf(namebuf, sizeof(namebuf), "_·optional%x", g->anon_idgen++);
+  const opttype_t* t = (const opttype_t*)tp;
+  PRINT("typedef struct{bool ok; "); type(g, t->elem); PRINTF(" v;} %s;", name);
+  return name;
+}
+
+
+static void opttype(cgen_t* g, const opttype_t* t) {
+  if (type_isptr(t->elem)) {
+    // NULL used for "no value"
+    type(g, t->elem);
+  } else {
+    sym_t typename = intern_typedef(g, (const type_t*)t, gen_opttypedef);
+    PRINT(typename);
+  }
+}
+
+
+static void optinit(cgen_t* g, const opttype_t* t, const expr_t* init, bool isshort) {
+  if (type_isptr(t->elem)) {
+    expr(g, init);
+  } else {
+    if (!isshort)
+      CHAR('('), opttype(g, t), CHAR(')');
+    PRINT("{true,"); expr(g, init); CHAR('}');
+  }
+}
+
+
 static void type(cgen_t* g, const type_t* t) {
   switch (t->kind) {
   case TYPE_VOID: PRINT("void"); break;
-  case TYPE_BOOL: PRINT("_Bool"); break;
+  case TYPE_BOOL: PRINT("bool"); break;
   case TYPE_INT:  PRINT(t->isunsigned ? "unsigned int" : "int"); break;
   case TYPE_I8:   PRINT(t->isunsigned ? "uint8_t"  : "int8_t"); break;
   case TYPE_I16:  PRINT(t->isunsigned ? "uint16_t" : "int16_t"); break;
@@ -229,9 +277,10 @@ static void type(cgen_t* g, const type_t* t) {
   case TYPE_I64:  PRINT(t->isunsigned ? "uint64_t" : "int64_t"); break;
   case TYPE_F32:  PRINT("float"); break;
   case TYPE_F64:  PRINT("double"); break;
-  case TYPE_STRUCT: return structtype(g, (const structtype_t*)t);
-  case TYPE_FUN:    return funtype(g, (const funtype_t*)t, NULL);
-  case TYPE_REF:    return reftype(g, (const reftype_t*)t, NULL);
+  case TYPE_STRUCT:   return structtype(g, (const structtype_t*)t);
+  case TYPE_FUN:      return funtype(g, (const funtype_t*)t, NULL);
+  case TYPE_REF:      return reftype(g, (const reftype_t*)t);
+  case TYPE_OPTIONAL: return opttype(g, (const opttype_t*)t);
   default:
     dlog("unexpected type %s", nodekind_name(t->kind));
     error(g, t, "unexpected type %s", nodekind_name(t->kind));
@@ -275,7 +324,11 @@ static void zeroinit(cgen_t* g, const type_t* t) {
   case TYPE_F64:
     PRINT("0.0");
     break;
+  case TYPE_OPTIONAL:
+    PRINT("{0}");
+    break;
   default:
+    dlog("unexpected type %s", nodekind_name(t->kind));
     error(g, t, "unexpected type %s", nodekind_name(t->kind));
   }
   // PRINTF(";memset(&%s,0,%zu)", n->name, n->type->size);
@@ -353,6 +406,10 @@ static void structinit(cgen_t* g, const structtype_t* t, const ptrarray_t* args)
   }
 
   if (i == args->len && !t->hasinit) {
+    if (i == 0 && t->fields.len > 0) {
+      const local_t* f = t->fields.v[0];
+      zeroinit(g, f->type);
+    }
     CHAR('}');
     return;
   }
@@ -480,7 +537,7 @@ static void id(cgen_t* g, sym_t nullable name) {
   if (name && name != sym__) {
     PRINT(name);
   } else {
-    PRINTF("_anon%u", g->anon_idgen++);
+    PRINTF(ANON_FMT, g->anon_idgen++);
   }
 }
 
@@ -526,9 +583,18 @@ static void fun(cgen_t* g, const fun_t* fun) {
 
 static void binop(cgen_t* g, const binop_t* n) {
   expr_as_value(g, n->left);
-  CHAR(' ');
-  PRINT(operator(n->op));
-  CHAR(' ');
+  if (n->op == TASSIGN && type_isopt(n->type) && !type_isopt(n->right->type)) {
+    // if (n->left->kind == EXPR_ID || n->left->kind == EXPR_MEMBER) {
+    //   PRINT(type_isptr(n->left->type) ? "->v = " : ".v = ");
+    // } else {
+      PRINT(" = ");
+      return optinit(g, (const opttype_t*)n->type, n->right, /*isshort*/false);
+    // }
+  } else {
+    CHAR(' ');
+    PRINT(operator(n->op));
+    CHAR(' ');
+  }
   expr_as_value(g, n->right);
 }
 
@@ -635,7 +701,7 @@ static void forexpr(cgen_t* g, const forexpr_t* n) {
   if (n->end)
     expr(g, n->end);
   PRINT(") ");
-  expr_in_block(g, n->thenb);
+  expr_in_block(g, n->body);
 }
 
 
@@ -649,7 +715,11 @@ static void vardef(cgen_t* g, const local_t* n) {
   id(g, n->name);
   PRINT(" = ");
   if (n->init) {
-    expr(g, n->init);
+    if (n->type->kind == TYPE_OPTIONAL && n->init->type->kind != TYPE_OPTIONAL) {
+      optinit(g, (const opttype_t*)n->type, n->init, /*isshort*/true);
+    } else {
+      expr(g, n->init);
+    }
   } else {
     zeroinit(g, n->type);
   }
@@ -744,12 +814,16 @@ err_t cgen_generate(cgen_t* g, const unit_t* n) {
   // reset generator state
   g->err = 0;
   buf_clear(&g->outbuf);
+  buf_clear(&g->headbuf);
+  map_clear(&g->typedefmap);
+  map_clear(&g->tmpmap);
   g->anon_idgen = 0;
   g->input = NULL;
   g->lineno = 0;
   g->scopenest = 0;
 
   PRINT("#include <c0prelude.h>\n");
+  usize bodystart = g->outbuf.len;
 
   if (n->kind != NODE_UNIT)
     return ErrInvalid;
@@ -758,6 +832,19 @@ err_t cgen_generate(cgen_t* g, const unit_t* n) {
   // make sure outputs ends with LF
   if (g->outbuf.len > 0 && g->outbuf.chars[g->outbuf.len-1] != '\n')
     CHAR('\n');
+
+  dlog("g->headbuf.len %zu", g->headbuf.len);
+
+  // inject head to beginning of outbuf
+  if (g->headbuf.len > 0) {
+    usize bodylen = g->outbuf.len - bodystart;
+    usize headlen = g->headbuf.len;
+    buf_alloc(&g->outbuf, headlen); // note: updates outbuf.len
+    u8* src = &g->outbuf.bytes[bodystart];
+    u8* dst = &g->outbuf.bytes[bodystart + headlen];
+    memmove(dst, src, bodylen);
+    memcpy(src, g->headbuf.p, headlen);
+  }
 
   // check if we ran out of memory by appending \0 without affecting len
   if (!buf_nullterm(&g->outbuf))

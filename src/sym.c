@@ -45,3 +45,13 @@ sym_t sym_intern(const void* key, usize keylen) {
 oom:
   panic("out of memory");
 }
+
+
+sym_t sym_snprintf(char* buf, usize bufcap, const char* fmt, ...) {
+  va_list ap;
+  va_start(ap, fmt);
+  usize len = vsnprintf(buf, bufcap, fmt, ap);
+  sym_t s = sym_intern(buf, len);
+  va_end(ap);
+  return s;
+}
