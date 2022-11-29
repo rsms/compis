@@ -475,7 +475,7 @@ static void block(cgen_t* g, const block_t* n, blockflag_t fl) {
 
 static void structinit_field(cgen_t* g, const type_t* t, const expr_t* value) {
   if (t->kind == TYPE_OPTIONAL && !type_isptr(((const opttype_t*)t)->elem)) {
-    PRINT("{.v="); expr(g, value); CHAR('}');
+    PRINT("{.ok=1,.v="); expr(g, value); CHAR('}');
   } else {
     expr(g, value);
   }
