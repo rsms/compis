@@ -45,17 +45,18 @@ bool buf_grow(buf_t* b, usize extracap) {
       if (check_add_overflow(b->cap, extracap, &newcap))
         return false;
   }
-  if (b->external) {
-    mem_t m = mem_alloc(b->ma, newcap);
-    if (!m.p)
-      return false;
-    memcpy(m.p, b->p, b->len);
-    b->p = m.p;
-    b->cap = newcap;
-    b->external = false;
-    return true;
-  }
-  return mem_resize(b->ma, (mem_t*)b, newcap);
+
+  if (!b->external)
+    return mem_resize(b->ma, (mem_t*)b, newcap);
+
+  mem_t m = mem_alloc(b->ma, newcap);
+  if (!m.p)
+    return false;
+  memcpy(m.p, b->p, b->len);
+  b->p = m.p;
+  b->cap = newcap;
+  b->external = false;
+  return true;
 }
 
 
@@ -92,6 +93,20 @@ bool buf_append(buf_t* b, const void* src, usize len) {
   if (p)
     memcpy(p, src, len);
   return !!p;
+}
+
+
+bool buf_insert(buf_t* b, usize index, const void* src, usize len) {
+  if (len == 0)
+    return true;
+  if UNLIKELY(!buf_reserve(b, len) || index > b->len)
+    return false;
+  void* dst = &b->bytes[index];
+  if (index < b->len)
+    memmove(&b->bytes[index + len], dst, b->len - index);
+  memcpy(dst, src, len);
+  b->len += len;
+  return true;
 }
 
 

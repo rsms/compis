@@ -1,0 +1,59 @@
+type Thing {
+  a ?int
+  b int
+}
+
+fun make_thing() ?Thing {
+  let v ?Thing = Thing()
+  v
+}
+
+fun make_thing_ptr() ?&Thing {
+  let v Thing = Thing()
+  let p ?&Thing = &v
+  p
+}
+
+fun opt_if_let_tmp() int {
+  // call may have side effects; generated code uses a temporary
+  if let t = make_thing() {
+    return t.b
+  }
+  0
+}
+
+fun opt_if_let_no_tmp1(thing ?Thing) int {
+  // no side effects from expression "thing" since its a local
+  if let t = thing {
+    return t.b
+  }
+  0
+}
+
+fun opt_if_let_no_tmp2() int {
+  // call may have side effects but returns a pointer; no temporary needed
+  if let t = make_thing_ptr() {
+    return t.b
+  }
+  0
+}
+
+fun takes_opt_ref(thing ?&Thing) int {
+  if thing {
+    // type of thing is "&Thing"
+    if let a = thing.a {
+      // type of a is "int"
+      return a
+    }
+  }
+  0
+}
+
+fun foo(x, y int) int {
+  let t = Thing(a: x)
+  t.a = x
+  if let a = t.a {
+    return x * y * a
+  }
+  x * y
+}

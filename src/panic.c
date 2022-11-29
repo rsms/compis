@@ -22,7 +22,7 @@ void _panic(const char* file, int line, const char* fun, const char* fmt, ...) {
   vfprintf(fp, fmt, ap);
   va_end(ap);
 
-  fprintf(fp, " in %s at %s:%d\n", fun, file, line);
+  fprintf(fp, " (%s at %s:%d)\n", fun, file, line);
 
   #ifdef HAS_BACKTRACE
     void* buf[32];

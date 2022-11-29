@@ -56,29 +56,40 @@ static void _error(cgen_t* g, srcrange_t srcrange, const char* fmt, ...) {
 }
 
 
-#define ANON_FMT "_anon%x"
+#define ANON_PREFIX "_·"
+#define ANON_FMT ANON_PREFIX "%x"
 
 #define CHAR(ch)             ( buf_push(&g->outbuf, (ch)), ((void)0) )
 #define PRINT(cstr)          ( buf_print(&g->outbuf, (cstr)), ((void)0) )
 #define PRINTF(fmt, args...) ( buf_printf(&g->outbuf, (fmt), ##args), ((void)0) )
 
 
+static bool startloc(cgen_t* g, srcloc_t loc) {
+  if (loc.line == 0 || (g->lineno == loc.line && g->input == loc.input))
+    return false;
+
+  if (g->lineno < loc.line && g->input == loc.input && loc.line - g->lineno < 4) {
+    buf_fill(&g->outbuf, '\n', loc.line - g->lineno);
+  } else {
+    if (g->outbuf.len && g->outbuf.chars[g->outbuf.len-1] != '\n')
+      CHAR('\n');
+    if (g->scopenest == 0)
+      CHAR('\n');
+    PRINTF("#line %u", loc.line);
+    if (g->input != loc.input) {
+      g->input = loc.input;
+      PRINTF(" \"%s\"", g->input->name);
+    }
+  }
+
+  g->lineno = loc.line;
+  return true;
+}
+
+
 static void startline(cgen_t* g, srcloc_t loc) {
   g->lineno++;
-  if ((loc.line != 0) & ((g->lineno != loc.line) | (g->input != loc.input))) {
-    if (g->lineno < loc.line && g->input == loc.input) {
-      buf_fill(&g->outbuf, '\n', loc.line - g->lineno);
-    } else {
-      if (g->scopenest == 0)
-        CHAR('\n');
-      PRINTF("\n#line %u", loc.line);
-      if (g->input != loc.input) {
-        g->input = loc.input;
-        PRINTF(" \"%s\"", g->input->name);
-      }
-    }
-    g->lineno = loc.line;
-  }
+  startloc(g, loc);
   CHAR('\n');
   buf_fill(&g->outbuf, ' ', g->indent*2);
 }
@@ -136,23 +147,79 @@ static const char* operator(tok_t tok) {
 }
 
 
+static bool type_is_struct_impl(const type_t* t) {
+  return t->kind == TYPE_STRUCT || t->kind == TYPE_OPTIONAL;
+}
+
+
 typedef sym_t(*gentypedef_t)(cgen_t* g, const type_t* t);
 
 
 static sym_t intern_typedef(cgen_t* g, const type_t* t, gentypedef_t f) {
-  sym_t* vp = (sym_t*)map_assign_ptr(&g->typedefmap, g->compiler->ma, t);
+  assertf(type_is_struct_impl(t), "update type_is_struct_impl");
+  const void* key = t;
+  if (t->kind == TYPE_OPTIONAL)
+    key = typeid((type_t*)t);
+
+  sym_t* vp = (sym_t*)map_assign_ptr(&g->typedefmap, g->compiler->ma, key);
   if UNLIKELY(!vp)
     return seterr(g, ErrNoMem), sym__;
   if (*vp)
     return *vp;
 
+  buf_t headbuf = g->headbuf;
+  usize headoffs = g->headoffs;
+  u32 lineno = g->lineno;
+  g->lineno = 0;
+
+  if (g->headnest) {
+    // allocate buffer for potential nested call to intern_typedef by f
+    g->headbuf = buf_make(g->compiler->ma);
+    headbuf.len = 0;
+    g->headoffs = 0;
+  }
+
+  // save & replace outbuf
   buf_t outbuf = g->outbuf;
-  g->outbuf = g->headbuf;
+  g->outbuf = headbuf;
+  g->headnest++;
+
+  if (startloc(g, t->loc))
+    CHAR('\n');
+
   sym_t name = f(g, t);
-  g->headbuf = g->outbuf;
+  *vp = name;
+  PRINT(";\n");
+
+  // restore outbuf
+  g->headnest--;
+  headbuf = g->outbuf; // reload
   g->outbuf = outbuf;
 
-  *vp = name;
+  // in case this is a nested call to intern_typedef, instert into parent headbuf
+  if (g->headnest) {
+    if (headoffs > 0 && g->outbuf.chars[headoffs - 1] != '\n') {
+      CHAR('\n');
+      headoffs++;
+    }
+    if (!buf_insert(&g->outbuf, headoffs, headbuf.p, headbuf.len))
+      seterr(g, ErrNoMem);
+    g->headoffs = g->outbuf.len;
+    buf_dispose(&g->headbuf);
+  } else {
+    // write "#line N" if it is not already in outbuf
+    char tmp[24];
+    usize len = snprintf(tmp, sizeof(tmp), "#line %u\n", lineno);
+    if (g->outbuf.len <= len ||
+      g->outbuf.chars[g->outbuf.len - len - 1] != '\n' ||
+      memcmp(&g->outbuf.chars[g->outbuf.len - len], tmp, len) != 0)
+    {
+      PRINTF("#line %u\n", lineno);
+    }
+    g->lineno = lineno;
+  }
+
+  g->headbuf = headbuf;
 
   return name;
 }
@@ -188,10 +255,9 @@ static void funtype(cgen_t* g, const funtype_t* t, const char* nullable name) {
 }
 
 
-static void structtype(cgen_t* g, const structtype_t* n) {
-  if (n->name && g->scopenest > 0)
-    return PRINT(n->name);
-  PRINT("struct {");
+static sym_t gen_structtype(cgen_t* g, const type_t* tp) {
+  const structtype_t* n = (const structtype_t*)tp;
+  PRINT("typedef struct {");
   if (n->fields.len == 0) {
     PRINT("u8 _unused;");
   } else {
@@ -223,7 +289,19 @@ static void structtype(cgen_t* g, const structtype_t* n) {
     g->indent--;
     startline(g, (srcloc_t){0});
   }
-  CHAR('}');
+  PRINT("} ");
+  sym_t name = n->name;
+  if (!name) {
+    char buf[strlen(ANON_PREFIX "structXXXXXXXX.")];
+    name = sym_snprintf(buf, sizeof(buf), ANON_PREFIX "struct%x", g->anon_idgen++);
+  }
+  PRINT(name);
+  return name;
+}
+
+
+static void structtype(cgen_t* g, const structtype_t* t) {
+  PRINT(intern_typedef(g, (const type_t*)t, gen_structtype));
 }
 
 
@@ -237,9 +315,10 @@ static void reftype(cgen_t* g, const reftype_t* t) {
 
 static sym_t gen_opttypedef(cgen_t* g, const type_t* tp) {
   char namebuf[64];
-  sym_t name = sym_snprintf(namebuf, sizeof(namebuf), "_·optional%x", g->anon_idgen++);
+  sym_t name = sym_snprintf(namebuf, sizeof(namebuf),
+    ANON_PREFIX "optional%x", g->anon_idgen++);
   const opttype_t* t = (const opttype_t*)tp;
-  PRINT("typedef struct{bool ok; "); type(g, t->elem); PRINTF(" v;} %s;", name);
+  PRINT("typedef struct{bool ok; "); type(g, t->elem); PRINTF(" v;} %s", name);
   return name;
 }
 
@@ -394,15 +473,26 @@ static void block(cgen_t* g, const block_t* n, blockflag_t fl) {
 }
 
 
+static void structinit_field(cgen_t* g, const type_t* t, const expr_t* value) {
+  if (t->kind == TYPE_OPTIONAL && !type_isptr(((const opttype_t*)t)->elem)) {
+    PRINT("{.v="); expr(g, value); CHAR('}');
+  } else {
+    expr(g, value);
+  }
+}
+
+
 static void structinit(cgen_t* g, const structtype_t* t, const ptrarray_t* args) {
+  assert(args->len <= t->fields.len);
   CHAR('{');
   u32 i = 0;
   for (; i < args->len; i++) {
-    const node_t* arg = args->v[i];
+    const expr_t* arg = args->v[i]; assert(nodekind_isexpr(arg->kind));
+    const local_t* f = t->fields.v[0];
     if (arg->kind == EXPR_PARAM)
       break;
     if (i) PRINT(", ");
-    expr(g, (const expr_t*)arg);
+    structinit_field(g, f->type, arg);
   }
 
   if (i == args->len && !t->hasinit) {
@@ -417,17 +507,15 @@ static void structinit(cgen_t* g, const structtype_t* t, const ptrarray_t* args)
   // named arguments
   u32 posend = i;
 
-  // record fields with non-zero initializers
+  // create map of fields (name => field)
   map_t* initmap = &g->tmpmap;
   map_clear(initmap);
   for (u32 i = posend; i < t->fields.len; i++) {
     const local_t* f = t->fields.v[i];
-    if (f->init) {
-      const void** vp = (const void**)map_assign_ptr(initmap, g->compiler->ma, f->name);
-      if UNLIKELY(!vp)
-        return seterr(g, ErrNoMem);
-      *vp = f;
-    }
+    const void** vp = (const void**)map_assign_ptr(initmap, g->compiler->ma, f->name);
+    if UNLIKELY(!vp)
+      return seterr(g, ErrNoMem);
+    *vp = f;
   }
 
   // generate named arguments
@@ -435,17 +523,21 @@ static void structinit(cgen_t* g, const structtype_t* t, const ptrarray_t* args)
     if (i) PRINT(", ");
     const local_t* arg = args->v[i];
     CHAR('.'); PRINT(arg->name); CHAR('=');
-    expr(g, assertnotnull(arg->init));
+    const local_t** fp = (const local_t**)map_lookup_ptr(initmap, arg->name);
+    assert(fp && *fp);
+    structinit_field(g, (*fp)->type, assertnotnull(arg->init));
     map_del_ptr(initmap, arg->name);
   }
 
   // generate remaining fields with non-zero initializers
   // FIXME TODO: sort
   for (const mapent_t* e = map_it(initmap); map_itnext(initmap, &e); ) {
-    if (i) PRINT(", ");
     const local_t* f = e->value;
-    CHAR('.'); PRINT(f->name); CHAR('=');
-    expr(g, assertnotnull(f->init));
+    if (f->init) {
+      if (i) PRINT(", ");
+      CHAR('.'); PRINT(f->name); CHAR('=');
+      structinit_field(g, (f)->type, assertnotnull(f->init));
+    }
   }
 
   CHAR('}');
@@ -663,6 +755,9 @@ static void member(cgen_t* g, const member_t* n) {
   } else {
     expr_as_value(g, n->recv);
   }
+  if (n->recv->type->kind == TYPE_OPTIONAL) {
+    panic("TODO optional access!");
+  }
   PRINT(n->recv->type->kind == TYPE_REF ? "->" : ".");
   PRINT(n->name);
   if (insert_nullcheck)
@@ -679,14 +774,81 @@ static void expr_in_block(cgen_t* g, const expr_t* n) {
 }
 
 
+static void vardef1(cgen_t* g, const local_t* n, const char* name) {
+  type(g, n->type);
+  if (n->kind == EXPR_LET && (type_isprim(n->type) || n->type->kind == TYPE_REF))
+    PRINT(" const");
+  CHAR(' ');
+  if (name == sym__)
+    PRINT("__attribute__((__unused__)) ");
+  id(g, name);
+  PRINT(" = ");
+  if (n->init) {
+    if (n->type->kind == TYPE_OPTIONAL && n->init->type->kind != TYPE_OPTIONAL) {
+      optinit(g, (const opttype_t*)n->type, n->init, /*isshort*/true);
+    } else {
+      expr(g, n->init);
+    }
+  } else {
+    zeroinit(g, n->type);
+  }
+}
+
+
+static void vardef(cgen_t* g, const local_t* n) {
+  vardef1(g, n, n->name);
+}
+
+
+// expr_no_sideeffects returns true if materializing n has no side effects
+static bool expr_no_sideeffects(const expr_t* n) {
+  switch (n->kind) {
+  case EXPR_ID:
+    return true;
+  case EXPR_MEMBER:
+    return expr_no_sideeffects(((const member_t*)n)->recv);
+  default:
+    return false;
+  }
+}
+
+
 static void ifexpr(cgen_t* g, const ifexpr_t* n) {
-  PRINT("if (");
-  expr(g, n->cond);
-  PRINT(") ");
+  bool has_outer_block = false;
+  if (n->cond->kind == EXPR_LET || n->cond->kind == EXPR_VAR) {
+    // optional check, e.g. "if let x = optional_x { x }"
+    assert(type_isopt(n->cond->type));
+    has_outer_block = true;
+    PRINT("/*if*/{ ");
+    const local_t* local = (const local_t*)n->cond;
+    const type_t* inner_type = ((opttype_t*)local->type)->elem;
+    if (expr_no_sideeffects(local->init) || type_isptr(inner_type)) {
+      // avoid tmp var when local->init is guaranteed to not have side effects
+      type(g, inner_type);
+      CHAR(' '); id(g, local->name); PRINT(" = "); expr(g, local->init);
+      if (type_isptr(inner_type)) {
+        PRINTF("; if (%s != NULL) ", local->name);
+      } else {
+        PRINT(".v; if ("); expr(g, local->init); PRINT(".ok) ");
+      }
+    } else {
+      vardef1(g, local, ANON_PREFIX "tmp");
+      PRINT("; ");
+      type(g, ((opttype_t*)local->type)->elem);
+      PRINTF(" %s = " ANON_PREFIX "tmp.v; if (" ANON_PREFIX "tmp.ok) ", local->name);
+    }
+  } else {
+    PRINT("if (");
+    expr(g, n->cond);
+    PRINT(") ");
+  }
   expr_in_block(g, n->thenb);
   if (n->elseb) {
     PRINT(" else ");
     expr_in_block(g, n->elseb);
+  }
+  if (has_outer_block) {
+    PRINT(" }");
   }
 }
 
@@ -705,51 +867,50 @@ static void forexpr(cgen_t* g, const forexpr_t* n) {
 }
 
 
-static void vardef(cgen_t* g, const local_t* n) {
-  type(g, n->type);
-  if (n->kind == EXPR_LET && (type_isprim(n->type) || n->type->kind == TYPE_REF))
-    PRINT(" const");
-  CHAR(' ');
-  if (n->name == sym__)
-    PRINT("__attribute__((__unused__)) ");
-  id(g, n->name);
-  PRINT(" = ");
-  if (n->init) {
-    if (n->type->kind == TYPE_OPTIONAL && n->init->type->kind != TYPE_OPTIONAL) {
-      optinit(g, (const opttype_t*)n->type, n->init, /*isshort*/true);
-    } else {
-      expr(g, n->init);
-    }
-  } else {
-    zeroinit(g, n->type);
+static void retexpr(cgen_t* g, const retexpr_t* n) {
+  PRINT("return");
+  if (n->values.len == 0)
+    return;
+  if (n->values.len == 1) {
+    CHAR(' ');
+    expr(g, n->values.v[0]);
+    return;
   }
+  panic("TODO multiple return values (tuple)");
 }
 
 
-static void typdef(cgen_t* g, const typedef_t* n) {
-  PRINT("typedef ");
-  type(g, n->type);
-  CHAR(' ');
-  id(g, n->name);
+static void typedef_(cgen_t* g, const typedef_t* n) {
+  if (type_is_struct_impl(n->type)) {
+    usize outbuf_len = g->outbuf.len;
+    type(g, n->type);
+    g->outbuf.len = outbuf_len; // undo printing of "T;"
+  } else {
+    PRINT("typedef ");
+    type(g, n->type);
+    CHAR(' ');
+    id(g, n->name);
+  }
 }
 
 
 static void expr(cgen_t* g, const expr_t* n) {
   switch ((enum nodekind)n->kind) {
-  case EXPR_FUN:      return fun(g, (const fun_t*)n);
-  case EXPR_BINOP:    return binop(g, (const binop_t*)n);
-  case EXPR_INTLIT:   return intlit(g, (const intlit_t*)n);
-  case EXPR_FLOATLIT: return floatlit(g, (const floatlit_t*)n);
-  case EXPR_ID:       return idexpr(g, (const idexpr_t*)n);
-  case EXPR_PARAM:    return param(g, (const local_t*)n);
-  case EXPR_BLOCK:    return block(g, (const block_t*)n, BLOCKFLAG_EXPR);
-  case EXPR_CALL:     return call(g, (const call_t*)n);
-  case EXPR_MEMBER:   return member(g, (const member_t*)n);
-  case EXPR_IF:       return ifexpr(g, (const ifexpr_t*)n);
-  case EXPR_FOR:      return forexpr(g, (const forexpr_t*)n);
+  case EXPR_FUN:       return fun(g, (const fun_t*)n);
+  case EXPR_INTLIT:    return intlit(g, (const intlit_t*)n);
+  case EXPR_FLOATLIT:  return floatlit(g, (const floatlit_t*)n);
+  case EXPR_ID:        return idexpr(g, (const idexpr_t*)n);
+  case EXPR_PARAM:     return param(g, (const local_t*)n);
+  case EXPR_BLOCK:     return block(g, (const block_t*)n, BLOCKFLAG_EXPR);
+  case EXPR_CALL:      return call(g, (const call_t*)n);
+  case EXPR_MEMBER:    return member(g, (const member_t*)n);
+  case EXPR_IF:        return ifexpr(g, (const ifexpr_t*)n);
+  case EXPR_FOR:       return forexpr(g, (const forexpr_t*)n);
+  case EXPR_RETURN:    return retexpr(g, (const retexpr_t*)n);
   case EXPR_DEREF:
   case EXPR_PREFIXOP:  return prefixop(g, (const unaryop_t*)n);
   case EXPR_POSTFIXOP: return postfixop(g, (const unaryop_t*)n);
+  case EXPR_BINOP:     return binop(g, (const binop_t*)n);
 
   case EXPR_VAR:
   case EXPR_LET:
@@ -784,13 +945,16 @@ static void expr(cgen_t* g, const expr_t* n) {
 
 static void stmt(cgen_t* g, const stmt_t* n) {
   bool semi = true;
+  usize outbuf_len1 = g->outbuf.len;
   startline(g, n->loc);
+  usize outbuf_len2 = g->outbuf.len;
+
   switch (n->kind) {
   case EXPR_FUN:
     fun(g, (const fun_t*)n); semi = false;
     break;
   case STMT_TYPEDEF:
-    typdef(g, (const typedef_t*)n);
+    typedef_(g, (const typedef_t*)n);
     break;
   default:
     if (nodekind_isexpr(n->kind)) {
@@ -799,8 +963,12 @@ static void stmt(cgen_t* g, const stmt_t* n) {
     }
     debugdie(g, n, "unexpected stmt node %s", nodekind_name(n->kind));
   }
-  if (semi)
+  if (g->outbuf.len == outbuf_len2) {
+    // undo startline
+    g->outbuf.len = outbuf_len1;
+  } else if (semi) {
     CHAR(';');
+  }
 }
 
 
@@ -821,30 +989,29 @@ err_t cgen_generate(cgen_t* g, const unit_t* n) {
   g->input = NULL;
   g->lineno = 0;
   g->scopenest = 0;
+  g->headnest = 0;
 
   PRINT("#include <c0prelude.h>\n");
-  usize bodystart = g->outbuf.len;
+  if (n->loc.input) {
+    g->input = n->loc.input;
+    PRINTF("\n#line 1 \"%s\"\n", n->loc.input->name);
+  }
+
+  usize headstart = g->outbuf.len;
 
   if (n->kind != NODE_UNIT)
     return ErrInvalid;
   unit(g, n);
 
+  if (g->headbuf.len > 0) {
+
+    if (!buf_insert(&g->outbuf, headstart, g->headbuf.p, g->headbuf.len))
+      seterr(g, ErrNoMem);
+  }
+
   // make sure outputs ends with LF
   if (g->outbuf.len > 0 && g->outbuf.chars[g->outbuf.len-1] != '\n')
     CHAR('\n');
-
-  dlog("g->headbuf.len %zu", g->headbuf.len);
-
-  // inject head to beginning of outbuf
-  if (g->headbuf.len > 0) {
-    usize bodylen = g->outbuf.len - bodystart;
-    usize headlen = g->headbuf.len;
-    buf_alloc(&g->outbuf, headlen); // note: updates outbuf.len
-    u8* src = &g->outbuf.bytes[bodystart];
-    u8* dst = &g->outbuf.bytes[bodystart + headlen];
-    memmove(dst, src, bodylen);
-    memcpy(src, g->headbuf.p, headlen);
-  }
 
   // check if we ran out of memory by appending \0 without affecting len
   if (!buf_nullterm(&g->outbuf))

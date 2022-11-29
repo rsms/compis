@@ -4,7 +4,7 @@
 
 #include <stdlib.h>
 
-#define LOG_PRATT(fmt, args...) log("parse> " fmt, ##args)
+// #define LOG_PRATT(fmt, args...) log("parse> " fmt, ##args)
 #if !defined(LOG_PRATT) || !defined(DEBUG)
   #undef LOG_PRATT
   #define LOG_PRATT(args...) ((void)0)
@@ -327,6 +327,19 @@ static node_t* nullable lookup_definition(parser_t* p, sym_t name) {
     ((usertype_t*)n)->nrefs++;
   }
   return n;
+}
+
+
+static void define_replace(parser_t* p, sym_t name, node_t* n) {
+  assert(name != sym__);
+  if (!scope_def(&p->scope, p->scanner.compiler->ma, name, n))
+    out_of_mem(p);
+  if (scope_istoplevel(&p->scope)) {
+    void** vp = map_assign(&p->pkgdefs, p->scanner.compiler->ma, name, strlen(name));
+    if (!vp)
+      return out_of_mem(p);
+    *vp = n;
+  }
 }
 
 
@@ -787,16 +800,62 @@ static expr_t* expr_var(parser_t* p) {
 }
 
 
+// T* CLONE_NODE(T* node)
+#define CLONE_NODE(nptr) ( \
+  (__typeof__(nptr))memcpy( \
+    mkexpr(p, __typeof__(*(nptr)), ((node_t*)(nptr))->kind), \
+    (nptr), \
+    sizeof(*(nptr))) \
+)
+
+
+static void check_if_cond(parser_t* p, expr_t* cond) {
+  if (cond->type->kind == TYPE_BOOL)
+    return;
+  if (type_isopt(cond->type)) {
+    // redefine as non-optional
+    if (cond->kind == EXPR_ID) {
+      // e.g. "if x { ... }"
+      idexpr_t* v1 = (idexpr_t*)cond;
+      idexpr_t* v2 = CLONE_NODE(v1);
+      v2->type = ((opttype_t*)v2->type)->elem;
+      define_replace(p, v2->name, (node_t*)v2);
+      return;
+    }
+    if (cond->kind == EXPR_LET || cond->kind == EXPR_VAR) {
+      // e.g. "if let x = expr { ... }"
+      // note that we must copy the local even though it is only used within
+      // the "then" branch to retain the information about the optional check.
+      local_t* v1 = (local_t*)cond;
+      local_t* v2 = CLONE_NODE(v1);
+      v2->type = ((opttype_t*)v2->type)->elem;
+      define_replace(p, v2->name, (node_t*)v2);
+      return;
+    }
+    dlog("TODO if-check on optional of kind %s", nodekind_name(cond->kind));
+  }
+  error(p, (node_t*)cond, "conditional is not a boolean");
+}
+
+
 static expr_t* expr_if(parser_t* p) {
   ifexpr_t* n = mkexpr(p, ifexpr_t, EXPR_IF);
   next(p);
+
+  enter_scope(p);
+
   n->cond = expr(p, PREC_COMMA);
+  check_if_cond(p, n->cond);
   n->thenb = expr(p, PREC_COMMA);
-  // n->type = n->thenb; // TODO: type of if...else (rvalue flags needed?)
   if (currtok(p) == TELSE) {
     next(p);
     n->elseb = expr(p, PREC_COMMA);
   }
+
+  // n->type = n->thenb; // TODO: type of if...else (rvalue flags needed?)
+
+  leave_scope(p);
+
   return (expr_t*)n;
 }
 
@@ -832,6 +891,28 @@ static expr_t* expr_for(parser_t* p) {
   if (paren)
     expect(p, TRPAREN, "");
   n->body = expr(p, PREC_COMMA);
+  return (expr_t*)n;
+}
+
+
+// return = "return" (expr ("," expr)*)?
+static expr_t* expr_return(parser_t* p) {
+  retexpr_t* n = mkexpr(p, retexpr_t, EXPR_RETURN);
+  next(p);
+  if (currtok(p) == TSEMI)
+    return (expr_t*)n;
+  for (;;) {
+    expr_t* value = expr(p, PREC_COMMA);
+    push(p, &n->values, value);
+    if (currtok(p) != TCOMMA)
+      break;
+    next(p);
+  }
+  if (n->values.len == 1) {
+    n->type = ((expr_t*)n->values.v[0])->type;
+  } else {
+    dlog("TODO tuple type");
+  }
   return (expr_t*)n;
 }
 
@@ -1483,14 +1564,18 @@ static expr_t* expr_postfix_member(parser_t* p, precedence_t prec, expr_t* left)
   if (!expect(p, TID, ""))
     return (expr_t*)n;
 
-  structtype_t* st = (structtype_t*)n->recv->type;
-  bool isptr = st && st->kind == TYPE_REF;
-  if (isptr) {
+  // get struct type, unwrapping optional and ref
+  structtype_t* st = assertnotnull((structtype_t*)n->recv->type);
+  if (st->kind == TYPE_OPTIONAL) {
+    opttype_t* opt = (opttype_t*)st;
+    st = assertnotnull((structtype_t*)opt->elem);
+  }
+  if (st->kind == TYPE_REF) {
     reftype_t* pt = (reftype_t*)st;
-    st = (structtype_t*)pt->elem;
+    st = assertnotnull((structtype_t*)pt->elem);
   }
 
-  if UNLIKELY(!st || st->kind != TYPE_STRUCT) {
+  if UNLIKELY(st->kind != TYPE_STRUCT) {
     const char* s = fmtnode(p, 0, (const node_t*)st, 1);
     error(p, (node_t*)n, "%s has no member \"%s\"", s, n->name);
     return (expr_t*)n;
@@ -1712,66 +1797,6 @@ static type_t** _typeidmap_assign(parser_t* p, sym_t tid, nodekind_t kind) {
 }
 
 
-static sym_t typeid(parser_t* p, type_t* t);
-
-
-static bool typeid_append(parser_t* p, buf_t* buf, type_t* t) {
-  if (nodekind_isusertype(t->kind))
-    return buf_print(buf, typeid(p, t));
-  assertf(nodekind_istype(t->kind), "%s", nodekind_name(t->kind));
-  return buf_push(buf, (u8)t->tid[0]);
-}
-
-
-static sym_t typeid(parser_t* p, type_t* t) {
-  if (t->tid)
-    return t->tid;
-  char storage[64];
-  buf_t buf = buf_makeext(p->scanner.compiler->ma, storage, sizeof(storage));
-  buf_push(&buf, TYPEID_PREFIX(t->kind));
-  switch (t->kind) {
-    case TYPE_FUN:
-      assertf(0,"funtype should have precomputed typeid");
-      break;
-    case TYPE_REF:
-      if (!typeid_append(p, &buf, ((reftype_t*)t)->elem))
-        goto fail;
-      break;
-    case TYPE_STRUCT: {
-      structtype_t* st = (structtype_t*)t;
-      if UNLIKELY(!buf_print_leb128_u32(&buf, st->fields.len))
-        goto fail;
-      for (u32 i = 0; i < st->fields.len; i++) {
-        local_t* field = st->fields.v[i];
-        assert(field->kind == NODE_FIELD);
-        if UNLIKELY(!typeid_append(p, &buf, assertnotnull(field->type)))
-          goto fail;
-      }
-      break;
-    }
-    default:
-      t->tid = sym__;
-      dlog("TODO create typeid for %s", nodekind_name(t->kind));
-  }
-
-  #if 0 && DEBUG
-    char tmp[128];
-    abuf_t s = abuf_make(tmp, sizeof(tmp));
-    abuf_repr(&s, buf.p, buf.len);
-    abuf_terminate(&s);
-    dlog("build typeid %s \"%s\"", nodekind_name(t->kind), tmp);
-  #endif
-
-  t->tid = sym_intern(buf.p, buf.len);
-  goto end;
-fail:
-  out_of_mem(p);
-end:
-  buf_dispose(&buf);
-  return t->tid;
-}
-
-
 static sym_t typeid_fun(parser_t* p, const ptrarray_t* params, type_t* result) {
   buf_t* buf = &p->tmpbuf[0];
   buf_clear(buf);
@@ -1781,10 +1806,10 @@ static sym_t typeid_fun(parser_t* p, const ptrarray_t* params, type_t* result) {
   for (u32 i = 0; i < params->len; i++) {
     local_t* param = params->v[i];
     assert(param->kind == EXPR_PARAM);
-    if UNLIKELY(!typeid_append(p, buf, assertnotnull(param->type)))
+    if UNLIKELY(!typeid_append(buf, assertnotnull(param->type)))
       goto fail;
   }
-  if UNLIKELY(!typeid_append(p, buf, result))
+  if UNLIKELY(!typeid_append(buf, result))
     goto fail;
   return sym_intern(buf->p, buf->len);
 fail:
@@ -2185,6 +2210,7 @@ static const expr_parselet_t expr_parsetab[TOK_COUNT] = {
   [TVAR] = {expr_var, NULL, 0},
   [TIF]  = {expr_if, NULL, 0},
   [TFOR] = {expr_for, NULL, 0},
+  [TRETURN] = {expr_return, NULL, 0},
 
   // constant literals
   [TINTLIT]   = {expr_intlit, NULL, 0},

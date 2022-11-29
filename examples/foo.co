@@ -18,12 +18,13 @@
 
 type Thing {
   a ?int
+  b int
 }
 
 fun foo(x, y int) int {
-  let t = Thing()
-  t.a = x
-  // var z ?int = x
-  // z = y
-  x
+  let t = Thing(a: x)
+  if let a = t.a {
+    return x * y * a
+  }
+  x * y
 }

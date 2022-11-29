@@ -24,6 +24,7 @@
   _( EXPR_DEREF )\
   _( EXPR_IF )\
   _( EXPR_FOR )\
+  _( EXPR_RETURN )\
   _( EXPR_BOOLLIT )\
   _( EXPR_INTLIT )\
   _( EXPR_FLOATLIT )\
@@ -234,6 +235,7 @@ typedef struct { expr_t; sym_t name; node_t* nullable ref; } idexpr_t;
 typedef struct { expr_t; tok_t op; expr_t* expr; } unaryop_t;
 typedef struct { expr_t; tok_t op; expr_t* left; expr_t* right; } binop_t;
 typedef struct { expr_t; expr_t* recv; ptrarray_t args; } call_t;
+typedef struct { expr_t; ptrarray_t values; } retexpr_t;
 
 typedef struct {
   expr_t;
@@ -298,6 +300,8 @@ typedef struct {
   compiler_t* compiler;
   buf_t       outbuf;
   buf_t       headbuf;
+  usize       headoffs;
+  u32         headnest;
   err_t       err;
   u32         anon_idgen;
   usize       indent;
@@ -394,6 +398,10 @@ inline static bool type_isopt(const type_t* nullable t) {
   return assertnotnull(t)->kind == TYPE_OPTIONAL; }
 
 #define TYPEID_PREFIX(typekind)  ('A'+(typekind)-TYPE_VOID)
+
+sym_t nullable _typeid(type_t*);
+inline static sym_t nullable typeid(type_t* t) { return t->tid ? t->tid : _typeid(t); }
+bool typeid_append(buf_t* buf, type_t* t);
 
 // tokens
 const char* tok_name(tok_t); // e.g. (TEQ) => "TEQ"
