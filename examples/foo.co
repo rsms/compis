@@ -22,8 +22,7 @@ fun opt_if_let_tmp() int {
   0
 }
 
-fun opt_if_expr_tmp1() int {
-  // call may have side effects; generated code uses a temporary
+fun opt_if_expr_no_tmp1() int {
   if make_thing() {
     1
   } else {
@@ -31,8 +30,7 @@ fun opt_if_expr_tmp1() int {
   }
 }
 
-fun opt_if_expr_tmp2() int {
-  // call may have side effects; generated code uses a temporary
+fun opt_if_expr_no_tmp2() int {
   if make_thing_ptr() {
     1
   } else {
