@@ -30,37 +30,37 @@ typedef enum {
   PREC_MEMBER,        // .
 
   PREC_LOWEST = PREC_COMMA,
-} precedence_t;
+} prec_t;
 
 
-//#define PPARAMS parser_t* p, precedence_t prec
+//#define PPARAMS parser_t* p, prec_t prec
 #define PARGS   p, prec
 
 typedef stmt_t*(*prefix_stmt_parselet_t)(parser_t* p);
-typedef stmt_t*(*infix_stmt_parselet_t)(parser_t* p, precedence_t prec, stmt_t* left);
+typedef stmt_t*(*infix_stmt_parselet_t)(parser_t* p, prec_t prec, stmt_t* left);
 
-typedef expr_t*(*prefix_expr_parselet_t)(parser_t* p);
-typedef expr_t*(*infix_expr_parselet_t)(parser_t* p, precedence_t prec, expr_t* left);
+typedef expr_t*(*prefix_expr_parselet_t)(parser_t*, exprflag_t);
+typedef expr_t*(*infix_expr_parselet_t)(parser_t*, prec_t, expr_t*, exprflag_t);
 
 typedef type_t*(*prefix_type_parselet_t)(parser_t* p);
-typedef type_t*(*infix_type_parselet_t)(parser_t* p, precedence_t prec, type_t* left);
+typedef type_t*(*infix_type_parselet_t)(parser_t* p, prec_t prec, type_t* left);
 
 typedef struct {
   prefix_stmt_parselet_t nullable prefix;
   infix_stmt_parselet_t  nullable infix;
-  precedence_t                    prec;
+  prec_t                    prec;
 } stmt_parselet_t;
 
 typedef struct {
   prefix_expr_parselet_t nullable prefix;
   infix_expr_parselet_t  nullable infix;
-  precedence_t                    prec;
+  prec_t                    prec;
 } expr_parselet_t;
 
 typedef struct {
   prefix_type_parselet_t nullable prefix;
   infix_type_parselet_t  nullable infix;
-  precedence_t                    prec;
+  prec_t                    prec;
 } type_parselet_t;
 
 // parselet table (defined towards end of file)
@@ -140,8 +140,8 @@ static bool lookahead_issym(parser_t* p, sym_t sym) {
   }
   static void log_pratt_infix(
     parser_t* p, const char* class,
-    const void* nullable parselet_infix, precedence_t parselet_prec,
-    precedence_t ctx_prec)
+    const void* nullable parselet_infix, prec_t parselet_prec,
+    prec_t ctx_prec)
   {
     char buf[128];
     abuf_t a = abuf_make(buf, sizeof(buf));
@@ -296,17 +296,29 @@ static void enter_scope(parser_t* p) {
 }
 
 
-static void leave_scope(parser_t* p) {
-  // check for unused definitions
+static void check_unused(parser_t* p) {
   for (u32 i = p->scope.base + 1; i < p->scope.len; i++) {
     const node_t* n = p->scope.ptr[i++];
     sym_t name = p->scope.ptr[i];
-    if (name != sym__ && node_isexpr(n) && ((const expr_t*)n)->nrefs == 0 &&
-        n->kind != EXPR_FUN && (n->kind != EXPR_PARAM || !((local_t*)n)->isthis) )
-    {
+    if (name != sym__ && node_isexpr(n) && ((const expr_t*)n)->nrefs == 0) {
+      switch (n->kind) {
+      case EXPR_FUN:
+      case EXPR_ID:
+        continue;
+      case EXPR_PARAM:
+        if (((local_t*)n)->isthis)
+          continue;
+        break;
+      }
+      dlog("%p", n);
       warning(p, n, "unused %s \"%s\"", nodekind_fmt(n->kind), name);
     }
   }
+}
+
+
+static void leave_scope(parser_t* p) {
+  check_unused(p);
   scope_pop(&p->scope);
 }
 
@@ -344,7 +356,6 @@ static void define_replace(parser_t* p, sym_t name, node_t* n) {
 
 
 static void define(parser_t* p, sym_t name, node_t* n) {
-  //dlog("define %s => %s@%p", name, nodekind_name(n->kind), n);
   if (name == sym__)
     return;
 
@@ -370,8 +381,8 @@ err_duplicate:
 }
 
 
-#define mknode(p, TYPE, kind)  ( (TYPE*)_mknode((p), sizeof(TYPE), (kind)) )
-#define mkexpr(p, TYPE, kind)  ( (TYPE*)_mkexpr((p), sizeof(TYPE), (kind)) )
+#define mknode(p, TYPE, kind)      ( (TYPE*)_mknode((p), sizeof(TYPE), (kind)) )
+#define mkexpr(p, TYPE, kind, fl)  ( (TYPE*)_mkexpr((p), sizeof(TYPE), (kind), (fl)) )
 
 static node_t* _mknode(parser_t* p, usize size, nodekind_t kind) {
   mem_t m = mem_alloc_zeroed(p->ast_ma, size);
@@ -384,17 +395,19 @@ static node_t* _mknode(parser_t* p, usize size, nodekind_t kind) {
 }
 
 
-static expr_t* _mkexpr(parser_t* p, usize size, nodekind_t kind) {
+static expr_t* _mkexpr(parser_t* p, usize size, nodekind_t kind, exprflag_t fl) {
   assertf(nodekind_isexpr(kind), "%s", nodekind_name(kind));
   expr_t* n = (expr_t*)_mknode(p, size, kind);
-  if ((node_t*)n != last_resort_node)
-    n->type = type_void;
+  n->flags = fl;
+  n->type = type_void;
   return n;
 }
 
 
 static void* mkbad(parser_t* p) {
-  return mknode(p, __typeof__(_last_resort_node), NODE_BAD);
+  expr_t* n = (expr_t*)mknode(p, __typeof__(_last_resort_node), NODE_BAD);
+  n->type = type_void;
+  return n;
 }
 
 
@@ -501,7 +514,7 @@ static void check_types_compat(
 }
 
 
-static stmt_t* stmt(parser_t* p, precedence_t prec) {
+static stmt_t* stmt(parser_t* p, prec_t prec) {
   tok_t tok = currtok(p);
   const stmt_parselet_t* parselet = &stmt_parsetab[tok];
   log_pratt(p, "prefix stmt");
@@ -522,7 +535,7 @@ static stmt_t* stmt(parser_t* p, precedence_t prec) {
 }
 
 
-static expr_t* expr(parser_t* p, precedence_t prec) {
+static expr_t* expr(parser_t* p, prec_t prec, exprflag_t fl) {
   tok_t tok = currtok(p);
   const expr_parselet_t* parselet = &expr_parsetab[tok];
   log_pratt(p, "prefix expr");
@@ -531,19 +544,19 @@ static expr_t* expr(parser_t* p, precedence_t prec) {
     fastforward_semi(p);
     return mkbad(p);
   }
-  expr_t* n = parselet->prefix(p);
+  expr_t* n = parselet->prefix(p, fl);
   for (;;) {
     tok = currtok(p);
     parselet = &expr_parsetab[tok];
     log_pratt_infix(p, "expr", parselet->infix, parselet->prec, prec);
     if (parselet->infix == NULL || parselet->prec < prec)
       return n;
-    n = parselet->infix(PARGS, n);
+    n = parselet->infix(PARGS, n, fl);
   }
 }
 
 
-static type_t* type(parser_t* p, precedence_t prec) {
+static type_t* type(parser_t* p, prec_t prec) {
   tok_t tok = currtok(p);
   const type_parselet_t* parselet = &type_parsetab[tok];
   log_pratt(p, "prefix type");
@@ -649,12 +662,12 @@ static bool fieldset(parser_t* p, ptrarray_t* fields) {
   for (;;) {
     if (i == fields->len) {
       error(p, NULL, "excess field initializer");
-      expr(p, PREC_COMMA);
+      expr(p, PREC_COMMA, EX_RVALUE);
       break;
     }
     local_t* f = fields->v[i++];
     typectx_push(p, f->type);
-    f->init = expr(p, PREC_COMMA);
+    f->init = expr(p, PREC_COMMA, EX_RVALUE);
     typectx_pop(p);
     if (currtok(p) != TCOMMA)
       break;
@@ -761,16 +774,16 @@ static idexpr_t* resolve_id(parser_t* p, idexpr_t* n) {
 }
 
 
-static expr_t* expr_id(parser_t* p) {
-  idexpr_t* n = mkexpr(p, idexpr_t, EXPR_ID);
+static expr_t* expr_id(parser_t* p, exprflag_t fl) {
+  idexpr_t* n = mkexpr(p, idexpr_t, EXPR_ID, fl);
   n->name = p->scanner.sym;
   next(p);
   return (expr_t*)resolve_id(p, n);
 }
 
 
-static expr_t* expr_var(parser_t* p) {
-  local_t* n = mkexpr(p, local_t, currtok(p) == TLET ? EXPR_LET : EXPR_VAR);
+static expr_t* expr_var(parser_t* p, exprflag_t fl) {
+  local_t* n = mkexpr(p, local_t, currtok(p) == TLET ? EXPR_LET : EXPR_VAR, fl);
   next(p);
   if (currtok(p) != TID) {
     unexpected(p, "expecting identifier");
@@ -782,7 +795,7 @@ static expr_t* expr_var(parser_t* p) {
   if (currtok(p) == TASSIGN) {
     next(p);
     typectx_push(p, type_void);
-    n->init = expr(p, PREC_ASSIGN);
+    n->init = expr(p, PREC_ASSIGN, fl | EX_RVALUE);
     typectx_pop(p);
     n->type = n->init->type;
   } else {
@@ -790,7 +803,7 @@ static expr_t* expr_var(parser_t* p) {
     if (currtok(p) == TASSIGN) {
       next(p);
       typectx_push(p, n->type);
-      n->init = expr(p, PREC_ASSIGN);
+      n->init = expr(p, PREC_ASSIGN, fl | EX_RVALUE);
       typectx_pop(p);
       check_types_compat(p, n->type, n->init->type, (node_t*)n->init);
     }
@@ -803,58 +816,97 @@ static expr_t* expr_var(parser_t* p) {
 // T* CLONE_NODE(T* node)
 #define CLONE_NODE(nptr) ( \
   (__typeof__(nptr))memcpy( \
-    mkexpr(p, __typeof__(*(nptr)), ((node_t*)(nptr))->kind), \
+    mknode(p, __typeof__(*(nptr)), ((node_t*)(nptr))->kind), \
     (nptr), \
     sizeof(*(nptr))) \
 )
 
 
-static void check_if_cond(parser_t* p, expr_t* cond) {
+static expr_t* nullable check_if_cond(parser_t* p, expr_t* cond) {
   if (cond->type->kind == TYPE_BOOL)
-    return;
-  if (type_isopt(cond->type)) {
-    // redefine as non-optional
-    if (cond->kind == EXPR_ID) {
+    return NULL;
+
+  if (!type_isopt(cond->type)) {
+    error(p, (node_t*)cond, "conditional is not a boolean");
+    return NULL;
+  }
+
+  // redefine as non-optional
+  switch (cond->kind) {
+    case EXPR_ID: {
       // e.g. "if x { ... }"
       idexpr_t* v1 = (idexpr_t*)cond;
       idexpr_t* v2 = CLONE_NODE(v1);
       v2->type = ((opttype_t*)v2->type)->elem;
       define_replace(p, v2->name, (node_t*)v2);
-      return;
+      return (expr_t*)v2;
     }
-    if (cond->kind == EXPR_LET || cond->kind == EXPR_VAR) {
+    case EXPR_LET:
+    case EXPR_VAR: {
       // e.g. "if let x = expr { ... }"
-      // note that we must copy the local even though it is only used within
-      // the "then" branch to retain the information about the optional check.
-      local_t* v1 = (local_t*)cond;
-      local_t* v2 = CLONE_NODE(v1);
-      v2->type = ((opttype_t*)v2->type)->elem;
-      define_replace(p, v2->name, (node_t*)v2);
-      return;
+      #if 0
+        // note that we must copy the local even though it is only used within
+        // the "then" branch to retain the information about the optional check.
+        local_t* v1 = (local_t*)cond;
+        local_t* v2 = CLONE_NODE(v1);
+        v2->type = ((opttype_t*)v2->type)->elem;
+        define_replace(p, v2->name, (node_t*)v2);
+        return (expr_t*)v2;
+      #else
+        ((local_t*)cond)->type = ((opttype_t*)cond->type)->elem;
+        cond->flags |= EX_OPTIONAL;
+        break;
+      #endif
     }
-    dlog("TODO if-check on optional of kind %s", nodekind_name(cond->kind));
   }
-  error(p, (node_t*)cond, "conditional is not a boolean");
+
+  return NULL;
 }
 
 
-static expr_t* expr_if(parser_t* p) {
-  ifexpr_t* n = mkexpr(p, ifexpr_t, EXPR_IF);
+static expr_t* expr_if(parser_t* p, exprflag_t fl) {
+  ifexpr_t* n = mkexpr(p, ifexpr_t, EXPR_IF, fl);
   next(p);
 
   enter_scope(p);
 
-  n->cond = expr(p, PREC_COMMA);
-  check_if_cond(p, n->cond);
-  n->thenb = expr(p, PREC_COMMA);
+  fl |= EX_RVALUE;
+  n->cond = expr(p, PREC_COMMA, fl);
+  expr_t* type_narrowed_binding = check_if_cond(p, n->cond);
+
+  n->thenb = expr(p, PREC_COMMA, fl);
+
   if (currtok(p) == TELSE) {
     next(p);
-    n->elseb = expr(p, PREC_COMMA);
+    n->elseb = expr(p, PREC_COMMA, fl);
   }
 
-  // n->type = n->thenb; // TODO: type of if...else (rvalue flags needed?)
+  if (n->elseb && n->elseb->type != type_void) {
+    n->type = n->thenb->type;
+    if UNLIKELY(!types_iscompat(n->thenb->type, n->elseb->type)) {
+      // TODO: type union
+      const char* a = fmtnode(p, 0, (const node_t*)n->thenb->type, 1);
+      const char* b = fmtnode(p, 1, (const node_t*)n->elseb->type, 1);
+      error(p, (node_t*)n->elseb,
+        "incompatible types %s and %s in \"if\" branches", a, b);
+    }
+  } else {
+    n->type = n->thenb->type;
+    if (n->type->kind != TYPE_OPTIONAL) {
+      opttype_t* t = mknode(p, opttype_t, TYPE_OPTIONAL);
+      t->elem = n->type;
+      n->type = (type_t*)t;
+    }
+  }
 
   leave_scope(p);
+
+  if (type_narrowed_binding) {
+    expr_t* dst = n->cond;
+    while (dst->kind == EXPR_ID && node_isexpr(((idexpr_t*)dst)->ref))
+      dst = (expr_t*)((idexpr_t*)dst)->ref;
+    dst->nrefs += type_narrowed_binding->nrefs;
+  }
 
   return (expr_t*)n;
 }
@@ -863,8 +915,8 @@ static expr_t* expr_if(parser_t* p) {
 // for       = "for" ( for_head | for_phead ) expr
 // for_head  = ( expr | expr? ";" expr ";" expr? )
 // for_phead = "(" for_head ")"
-static expr_t* expr_for(parser_t* p) {
-  forexpr_t* n = mkexpr(p, forexpr_t, EXPR_FOR);
+static expr_t* expr_for(parser_t* p, exprflag_t fl) {
+  forexpr_t* n = mkexpr(p, forexpr_t, EXPR_FOR, fl);
   next(p);
   bool paren = currtok(p) == TLPAREN;
   if (paren)
@@ -872,37 +924,37 @@ static expr_t* expr_for(parser_t* p) {
   if (currtok(p) == TSEMI) {
     // "for ; i < 4; i++"
     next(p);
-    n->cond = expr(p, PREC_COMMA);
+    n->cond = expr(p, PREC_COMMA, fl);
     expect(p, TSEMI, "");
     next(p);
-    n->end = expr(p, PREC_COMMA);
+    n->end = expr(p, PREC_COMMA, fl);
   } else {
     // "for i < 4"
-    n->cond = expr(p, PREC_COMMA);
+    n->cond = expr(p, PREC_COMMA, fl);
     if (currtok(p) == TSEMI) {
       // "for i = 0; i < 4; i++"
       next(p);
       n->start = n->cond;
-      n->cond = expr(p, PREC_COMMA);
+      n->cond = expr(p, PREC_COMMA, fl);
       expect(p, TSEMI, "");
-      n->end = expr(p, PREC_COMMA);
+      n->end = expr(p, PREC_COMMA, fl);
     }
   }
   if (paren)
     expect(p, TRPAREN, "");
-  n->body = expr(p, PREC_COMMA);
+  n->body = expr(p, PREC_COMMA, fl);
   return (expr_t*)n;
 }
 
 
 // return = "return" (expr ("," expr)*)?
-static expr_t* expr_return(parser_t* p) {
-  retexpr_t* n = mkexpr(p, retexpr_t, EXPR_RETURN);
+static expr_t* expr_return(parser_t* p, exprflag_t fl) {
+  retexpr_t* n = mkexpr(p, retexpr_t, EXPR_RETURN, fl);
   next(p);
   if (currtok(p) == TSEMI)
     return (expr_t*)n;
   for (;;) {
-    expr_t* value = expr(p, PREC_COMMA);
+    expr_t* value = expr(p, PREC_COMMA, fl | EX_RVALUE);
     push(p, &n->values, value);
     if (currtok(p) != TCOMMA)
       break;
@@ -956,8 +1008,8 @@ static type_t* select_int_type(parser_t* p, const intlit_t* n, u64 isneg) {
 }
 
 
-static expr_t* intlit(parser_t* p, bool isneg) {
-  intlit_t* n = mkexpr(p, intlit_t, EXPR_INTLIT);
+static expr_t* intlit(parser_t* p, exprflag_t fl, bool isneg) {
+  intlit_t* n = mkexpr(p, intlit_t, EXPR_INTLIT, fl);
   n->intval = p->scanner.litint;
   n->type = select_int_type(p, n, (u64)isneg);
   next(p);
@@ -965,8 +1017,8 @@ static expr_t* intlit(parser_t* p, bool isneg) {
 }
 
 
-static expr_t* floatlit(parser_t* p, bool isneg) {
-  floatlit_t* n = mkexpr(p, floatlit_t, EXPR_FLOATLIT);
+static expr_t* floatlit(parser_t* p, exprflag_t fl, bool isneg) {
+  floatlit_t* n = mkexpr(p, floatlit_t, EXPR_FLOATLIT, fl);
   char* endptr = NULL;
 
   // note: scanner always starts float litbuf with '+'
@@ -997,45 +1049,55 @@ static expr_t* floatlit(parser_t* p, bool isneg) {
 }
 
 
-static expr_t* expr_intlit(parser_t* p) {
-  return intlit(p, /*isneg*/false);
+static expr_t* expr_intlit(parser_t* p, exprflag_t fl) {
+  return intlit(p, fl, /*isneg*/false);
 }
 
 
-static expr_t* expr_floatlit(parser_t* p) {
-  return floatlit(p, /*isneg*/false);
+static expr_t* expr_floatlit(parser_t* p, exprflag_t fl) {
+  return floatlit(p, fl, /*isneg*/false);
 }
 
 
-static expr_t* expr_prefix_op(parser_t* p) {
-  unaryop_t* n = mkexpr(p, unaryop_t, EXPR_PREFIXOP);
+static expr_t* expr_prefix_op(parser_t* p, exprflag_t fl) {
+  unaryop_t* n = mkexpr(p, unaryop_t, EXPR_PREFIXOP, fl);
   n->op = currtok(p);
   next(p);
+  fl |= EX_RVALUE;
   switch (currtok(p)) {
     // special case for negative number constants
-    case TINTLIT:   n->expr = intlit(p, /*isneg*/n->op == TMINUS); break;
-    case TFLOATLIT: n->expr = floatlit(p, /*isneg*/n->op == TMINUS); break;
-    default:        n->expr = expr(p, PREC_UNARY_PREFIX);
+    case TINTLIT:   n->expr = intlit(p, /*isneg*/n->op == TMINUS, fl); break;
+    case TFLOATLIT: n->expr = floatlit(p, /*isneg*/n->op == TMINUS, fl); break;
+    default:        n->expr = expr(p, PREC_UNARY_PREFIX, fl);
   }
   n->type = n->expr->type;
   return (expr_t*)n;
 }
 
 
-static expr_t* expr_infix_op(parser_t* p, precedence_t prec, expr_t* left) {
-  binop_t* n = mkexpr(p, binop_t, EXPR_BINOP);
+static expr_t* expr_infix_op(parser_t* p, prec_t prec, expr_t* left, exprflag_t fl) {
+  binop_t* n = mkexpr(p, binop_t, EXPR_BINOP, fl);
   n->op = currtok(p);
   next(p);
 
-  n->type = left->type;
+  left->flags |= EX_RVALUE;
   n->left = left;
 
-  typectx_push(p, n->type);
-  n->right = expr(p, prec);
+  typectx_push(p, left->type);
+  n->right = expr(p, prec, fl | EX_RVALUE);
   typectx_pop(p);
 
   check_types_compat(p, n->left->type, n->right->type, (node_t*)n);
+
+  n->type = left->type;
   return (expr_t*)n;
+}
+
+
+static expr_t* expr_cmp_op(parser_t* p, prec_t prec, expr_t* left, exprflag_t fl) {
+  expr_t* n = expr_infix_op(p, prec, left, fl);
+  n->type = type_bool;
+  return n;
 }
 
 
@@ -1113,6 +1175,11 @@ static void check_assign_to_member(parser_t* p, member_t* m) {
 static void check_assign_to_id(parser_t* p, idexpr_t* id) {
   node_t* target = id->ref; // target is NULL when "id" is undefined
   if (target) switch (target->kind) {
+  case EXPR_ID:
+    // this happens when trying to assign to a type-narrowed local
+    // e.g. "var a ?int; if a { a = 3 }"
+    error(p, (node_t*)id, "cannot assign to type-narrowed binding \"%s\"", id->name);
+    break;
   case EXPR_VAR:
     break;
   case EXPR_PARAM:
@@ -1149,15 +1216,15 @@ err:
 }
 
 
-static expr_t* expr_infix_assign(parser_t* p, precedence_t prec, expr_t* left) {
-  binop_t* n = (binop_t*)expr_infix_op(p, prec, left);
+static expr_t* expr_infix_assign(parser_t* p, prec_t prec, expr_t* left, exprflag_t fl) {
+  binop_t* n = (binop_t*)expr_infix_op(p, prec, left, fl);
   check_assign(p, n->left);
   return (expr_t*)n;
 }
 
 
-static expr_t* postfix_op(parser_t* p, precedence_t prec, expr_t* left) {
-  unaryop_t* n = mkexpr(p, unaryop_t, EXPR_POSTFIXOP);
+static expr_t* postfix_op(parser_t* p, prec_t prec, expr_t* left, exprflag_t fl) {
+  unaryop_t* n = mkexpr(p, unaryop_t, EXPR_POSTFIXOP, fl);
   n->op = currtok(p);
   next(p);
   n->expr = left;
@@ -1168,11 +1235,11 @@ static expr_t* postfix_op(parser_t* p, precedence_t prec, expr_t* left) {
 
 
 // deref_expr = "*" expr
-static expr_t* expr_deref(parser_t* p) {
-  unaryop_t* n = mkexpr(p, unaryop_t, EXPR_DEREF);
+static expr_t* expr_deref(parser_t* p, exprflag_t fl) {
+  unaryop_t* n = mkexpr(p, unaryop_t, EXPR_DEREF, fl);
   n->op = currtok(p);
   next(p);
-  n->expr = expr(p, PREC_UNARY_PREFIX);
+  n->expr = expr(p, PREC_UNARY_PREFIX, fl);
   reftype_t* t = (reftype_t*)n->expr->type;
 
   if UNLIKELY(t->kind != TYPE_REF) {
@@ -1187,11 +1254,11 @@ static expr_t* expr_deref(parser_t* p) {
 
 
 // ref_expr = "&" location
-static expr_t* expr_ref1(parser_t* p, bool ismut) {
-  unaryop_t* n = mkexpr(p, unaryop_t, EXPR_PREFIXOP);
+static expr_t* expr_ref1(parser_t* p, bool ismut, exprflag_t fl) {
+  unaryop_t* n = mkexpr(p, unaryop_t, EXPR_PREFIXOP, fl);
   n->op = currtok(p);
   next(p);
-  n->expr = expr(p, PREC_UNARY_PREFIX);
+  n->expr = expr(p, PREC_UNARY_PREFIX, fl | EX_RVALUE);
 
   if UNLIKELY(n->expr->type->kind == TYPE_REF) {
     const char* ts = fmtnode(p, 0, (node_t*)n->expr->type, 1);
@@ -1213,26 +1280,26 @@ static expr_t* expr_ref1(parser_t* p, bool ismut) {
   return (expr_t*)n;
 }
 
-static expr_t* expr_ref(parser_t* p) {
-  return expr_ref1(p, /*ismut*/false);
+static expr_t* expr_ref(parser_t* p, exprflag_t fl) {
+  return expr_ref1(p, /*ismut*/false, fl);
 }
 
 
 // mut_expr = "mut" ref_expr
-static expr_t* expr_mut(parser_t* p) {
+static expr_t* expr_mut(parser_t* p, exprflag_t fl) {
   next(p);
   if UNLIKELY(currtok(p) != TAND) {
     unexpected(p, "expecting '&'");
     return mkbad(p);
   }
-  return expr_ref1(p, /*ismut*/true);
+  return expr_ref1(p, /*ismut*/true, fl);
 }
 
 
 // group = "(" expr ")"
-static expr_t* expr_group(parser_t* p) {
+static expr_t* expr_group(parser_t* p, exprflag_t fl) {
   next(p);
-  expr_t* n = expr(p, PREC_COMMA);
+  expr_t* n = expr(p, PREC_COMMA, fl);
   expect(p, TRPAREN, "");
   return n;
 }
@@ -1440,9 +1507,11 @@ static void validate_call_args(parser_t* p, call_t* call) {
 
 
 // namedargs = id ":" expr ("," id ":" expr)*
-static void namedargs(parser_t* p, ptrarray_t* args, local_t** paramv, u32 paramc) {
+static void namedargs(
+  parser_t* p, ptrarray_t* args, local_t** paramv, u32 paramc, exprflag_t fl)
+{
   for (u32 paramidx = 0; ;paramidx++) {
-    local_t* namedarg = mkexpr(p, local_t, EXPR_PARAM);
+    local_t* namedarg = mkexpr(p, local_t, EXPR_PARAM, fl);
     namedarg->name = p->scanner.sym;
     if (currtok(p) != TID) {
       unexpected(p, ", expecting field name");
@@ -1456,7 +1525,7 @@ static void namedargs(parser_t* p, ptrarray_t* args, local_t** paramv, u32 param
     next(p);
     if (paramidx < paramc)
       typectx_push(p, paramv[paramidx]->type);
-    namedarg->init = expr(p, PREC_COMMA);
+    namedarg->init = expr(p, PREC_COMMA, fl);
     if (paramidx < paramc)
       typectx_pop(p);
     namedarg->type = namedarg->init->type;
@@ -1471,7 +1540,7 @@ static void namedargs(parser_t* p, ptrarray_t* args, local_t** paramv, u32 param
 // args      = posargs ("," namedargs)
 //           | namedargs
 // posargs   = expr ("," expr)*
-static void args(parser_t* p, ptrarray_t* args, type_t* recvtype) {
+static void args(parser_t* p, ptrarray_t* args, type_t* recvtype, exprflag_t fl) {
   local_t param0 = { {{EXPR_PARAM}}, .type = recvtype };
   local_t** paramv = (local_t*[]){ &param0 };
   u32 paramc = 1;
@@ -1500,12 +1569,12 @@ static void args(parser_t* p, ptrarray_t* args, type_t* recvtype) {
         paramv += paramidx;
         paramc -= paramidx;
       }
-      return namedargs(p, args, paramv, paramc);
+      return namedargs(p, args, paramv, paramc, fl);
     }
 
     if (paramidx < paramc)
       typectx_push(p, paramv[paramidx]->type);
-    expr_t* arg = expr(p, PREC_COMMA);
+    expr_t* arg = expr(p, PREC_COMMA, fl);
     if (paramidx < paramc)
       typectx_pop(p);
 
@@ -1521,11 +1590,12 @@ static void args(parser_t* p, ptrarray_t* args, type_t* recvtype) {
 
 
 // call = expr "(" args? ")"
-static expr_t* expr_postfix_call(parser_t* p, precedence_t prec, expr_t* left) {
+static expr_t* expr_postfix_call(parser_t* p, prec_t prec, expr_t* left, exprflag_t fl) {
   u32 errcount = p->scanner.compiler->errcount;
-  call_t* n = mkexpr(p, call_t, EXPR_CALL);
+  call_t* n = mkexpr(p, call_t, EXPR_CALL, fl);
   next(p);
   type_t* recvtype = left->type;
+  left->flags |= EX_RVALUE;
   if (left->type && left->type->kind == TYPE_FUN) {
     funtype_t* ft = (funtype_t*)left->type;
     n->type = ft->result;
@@ -1538,7 +1608,7 @@ static expr_t* expr_postfix_call(parser_t* p, precedence_t prec, expr_t* left) {
   }
   n->recv = left;
   if (currtok(p) != TRPAREN)
-    args(p, &n->args, recvtype ? recvtype : type_void);
+    args(p, &n->args, recvtype ? recvtype : type_void, fl);
   if (errcount == p->scanner.compiler->errcount)
     validate_call_args(p, n);
   expect(p, TRPAREN, "to end function call");
@@ -1547,8 +1617,10 @@ static expr_t* expr_postfix_call(parser_t* p, precedence_t prec, expr_t* left) {
 
 
 // subscript = expr "[" expr "]"
-static expr_t* expr_postfix_subscript(parser_t* p, precedence_t prec, expr_t* left) {
-  unaryop_t* n = mkexpr(p, unaryop_t, EXPR_POSTFIXOP);
+static expr_t* expr_postfix_subscript(
+  parser_t* p, prec_t prec, expr_t* left, exprflag_t fl)
+{
+  unaryop_t* n = mkexpr(p, unaryop_t, EXPR_POSTFIXOP, fl);
   next(p);
   panic("TODO");
   return (expr_t*)n;
@@ -1556,9 +1628,12 @@ static expr_t* expr_postfix_subscript(parser_t* p, precedence_t prec, expr_t* le
 
 
 // member = expr "." id
-static expr_t* expr_postfix_member(parser_t* p, precedence_t prec, expr_t* left) {
-  member_t* n = mkexpr(p, member_t, EXPR_MEMBER);
+static expr_t* expr_postfix_member(
+  parser_t* p, prec_t prec, expr_t* left, exprflag_t fl)
+{
+  member_t* n = mkexpr(p, member_t, EXPR_MEMBER, fl);
   next(p);
+  left->flags |= EX_RVALUE;
   n->recv = left;
   n->name = p->scanner.sym;
   if (!expect(p, TID, ""))
@@ -1602,32 +1677,72 @@ static expr_t* expr_postfix_member(parser_t* p, precedence_t prec, expr_t* left)
 
 
 // dotmember = "." id
-static expr_t* expr_dotmember(parser_t* p) {
+static expr_t* expr_dotmember(parser_t* p, exprflag_t fl) {
   if UNLIKELY(!p->dotctx) {
     error(p, NULL, "\".\" shorthand outside of context");
     expr_t* n = mkbad(p);
     fastforward_semi(p);
     return n;
   }
-  return expr_postfix_member(p, PREC_MEMBER, p->dotctx);
+  return expr_postfix_member(p, PREC_MEMBER, p->dotctx, fl);
 }
 
 
-static expr_t* expr_block(parser_t* p) {
-  block_t* n = mkexpr(p, block_t, EXPR_BLOCK);
+static void typecheck_rvalue_block(parser_t* p, block_t* b) {
+  if (b->children.len == 0) {
+    b->type = type_void;
+    return;
+  }
+  expr_t* expr = b->children.v[b->children.len-1];
+  expr->flags |= EX_RVALUE;
+  if (expr->kind == EXPR_BLOCK)
+    typecheck_rvalue_block(p, (block_t*)expr);
+  b->type = expr->type;
+}
+
+
+static void clear_rvalue(parser_t* p, expr_t* n) {
+  n->flags &= ~EX_RVALUE;
+  switch (n->kind) {
+    case EXPR_IF:
+      clear_rvalue(p, ((ifexpr_t*)n)->thenb);
+      if (((ifexpr_t*)n)->elseb)
+        clear_rvalue(p, ((ifexpr_t*)n)->elseb);
+      break;
+    case EXPR_BLOCK: {
+      block_t* b = (block_t*)n;
+      for (u32 i = 0; i < b->children.len; i++)
+        clear_rvalue(p, b->children.v[i]);
+      break;
+    }
+  }
+}
+
+
+static expr_t* expr_block(parser_t* p, exprflag_t fl) {
+  block_t* n = mkexpr(p, block_t, EXPR_BLOCK, fl);
   next(p);
   enter_scope(p);
-  while (currtok(p) != TRBRACE && currtok(p) != TEOF) {
-    push(p, &n->children, (node_t*)expr(p, PREC_LOWEST));
-    if (currtok(p) != TSEMI)
-      break;
-    next(p);
+  bool isrvalue = fl & EX_RVALUE;
+  fl &= ~EX_RVALUE;
+  if (currtok(p) != TRBRACE && currtok(p) != TEOF) {
+    for (;;) {
+      expr_t* cn = expr(p, PREC_LOWEST, fl);
+      push(p, &n->children, (node_t*)cn);
+      if (currtok(p) != TSEMI)
+        break;
+      next(p);
+      if (currtok(p) == TRBRACE || currtok(p) == TEOF)
+        break;
+      clear_rvalue(p, cn);
+    }
   }
   expect2(p, TRBRACE, ", expected '}' or ';'");
   leave_scope(p);
-  if (n->children.len > 0) {
-    expr_t* last_expr = n->children.v[n->children.len-1];
-    n->type = last_expr->type;
+  if (isrvalue) {
+    typecheck_rvalue_block(p, n);
+  } else if (n->children.len > 0) {
+    clear_rvalue(p, n->children.v[n->children.len-1]);
   }
   return (expr_t*)n;
 }
@@ -1682,7 +1797,7 @@ static bool fun_params(parser_t* p, fun_t* fun) {
   ptrarray_t typeq = {0}; // local_t*[]
 
   while (currtok(p) != TEOF) {
-    local_t* param = mkexpr(p, local_t, EXPR_PARAM);
+    local_t* param = mkexpr(p, local_t, EXPR_PARAM, 0);
     if UNLIKELY(param == NULL)
       goto oom;
     param->type = NULL; // clear type_void set by mkexpr for later check
@@ -1961,11 +2076,56 @@ static type_t* type_fun(parser_t* p) {
 }
 
 
+static void fun_body(parser_t* p, fun_t* n, exprflag_t fl) {
+  bool hasthis = n->params.len && ((local_t*)n->params.v[0])->isthis;
+  if (hasthis) {
+    assertnotnull(n->methodof);
+    dotctx_push(p, n->params.v[0]);
+  }
+
+  fun_t* outer_fun = p->fun;
+  p->fun = n;
+
+  funtype_t* ft = (funtype_t*)n->type;
+
+  fl |= EX_RVALUE;
+  if (ft->result == type_void)
+    fl &= ~EX_RVALUE;
+
+  typectx_push(p, ft->result);
+  n->body = expr(p, PREC_LOWEST, fl);
+  typectx_pop(p);
+
+  p->fun = outer_fun;
+
+  if (hasthis)
+    dotctx_pop(p);
+
+  if (n->body->kind == EXPR_BLOCK)
+    n->body->flags &= ~EX_RVALUE;
+
+  // check type of implicit return value
+  if UNLIKELY(ft->result != type_void && !types_iscompat(ft->result, n->body->type) &&
+              ft->kind == TYPE_FUN)
+  {
+    const char* restype = fmtnode(p, 0, (const node_t*)ft->result, 1);
+    const char* bodytype = fmtnode(p, 1, (const node_t*)n->body->type, 1);
+    node_t* origin = (node_t*)n->body;
+    while (origin->kind == EXPR_BLOCK && ((block_t*)origin)->children.len > 0)
+      origin = ((block_t*)origin)->children.v[((block_t*)origin)->children.len-1];
+    if (origin) {
+      error(p, origin, "unexpected result type %s, function returns %s",
+        bodytype, restype);
+    }
+  }
+}
+
+
 // fundef = "fun" name "(" params? ")" result ( ";" | "{" body "}")
 // result = params
 // body   = (stmt ";")*
-static expr_t* expr_fun(parser_t* p) {
-  fun_t* n = mkexpr(p, fun_t, EXPR_FUN);
+static expr_t* expr_fun(parser_t* p, exprflag_t fl) {
+  fun_t* n = mkexpr(p, fun_t, EXPR_FUN, fl);
   next(p);
   bool has_named_params = fun_prototype(p, n);
 
@@ -1982,48 +2142,7 @@ static expr_t* expr_fun(parser_t* p) {
   if (currtok(p) != TSEMI) {
     if UNLIKELY(!has_named_params && n->params.len > 0)
       error(p, NULL, "function without named arguments can't have a body");
-
-    fun_t* outer_fun = p->fun;
-    p->fun = n;
-
-    funtype_t* ft = (funtype_t*)n->type;
-
-    bool hasthis = n->params.len && ((local_t*)n->params.v[0])->isthis;
-    if (hasthis) {
-      assertnotnull(n->methodof);
-      dotctx_push(p, n->params.v[0]);
-    }
-
-    typectx_push(p, ft->result);
-    n->body = expr(p, PREC_LOWEST);
-    typectx_pop(p);
-
-    if (hasthis)
-      dotctx_pop(p);
-
-    // check type of implicit return value
-    if UNLIKELY(ft->kind == TYPE_FUN && ft->result != type_void &&
-      n->body->type && !types_iscompat(ft->result, n->body->type) )
-    {
-      const char* restype = fmtnode(p, 0, (const node_t*)ft->result, 1);
-      const char* bodytype = fmtnode(p, 1, (const node_t*)n->body->type, 1);
-      node_t* origin = (node_t*)n->body;
-      if (origin->kind == EXPR_BLOCK) {
-        block_t* b = (block_t*)origin;
-        if (b->children.len > 0) {
-          origin = b->children.v[b->children.len-1];
-          // // TODO: don't report error twice from "return"
-          // if (origin->kind == EXPR_RETURN)
-          //   origin = NULL;
-        }
-      }
-      if (origin) {
-        error(p, origin, "unexpected implicit function return type %s, expecting %s",
-          bodytype, restype);
-      }
-    }
-
-    p->fun = outer_fun;
+    fun_body(p, n, fl);
   }
 
   if (has_named_params)
@@ -2034,7 +2153,7 @@ static expr_t* expr_fun(parser_t* p) {
 
 
 static stmt_t* stmt_fun(parser_t* p) {
-  fun_t* n = (fun_t*)expr_fun(p);
+  fun_t* n = (fun_t*)expr_fun(p, 0);
   if UNLIKELY(n->kind == EXPR_FUN && !n->name)
     error(p, (node_t*)n, "anonymous function at top level");
   return (stmt_t*)n;
@@ -2158,7 +2277,6 @@ void parser_dispose(parser_t* p) {
 
 static const expr_parselet_t expr_parsetab[TOK_COUNT] = {
   // infix ops (in order of precedence from weakest to strongest)
-  //[TCOMMA]     = {NULL, expr_infix_op, PREC_COMMA},
   [TASSIGN]    = {NULL, expr_infix_assign, PREC_ASSIGN}, // =
   [TMULASSIGN] = {NULL, expr_infix_assign, PREC_ASSIGN}, // *=
   [TDIVASSIGN] = {NULL, expr_infix_assign, PREC_ASSIGN}, // /=
@@ -2170,17 +2288,17 @@ static const expr_parselet_t expr_parsetab[TOK_COUNT] = {
   [TANDASSIGN] = {NULL, expr_infix_assign, PREC_ASSIGN}, // &=
   [TXORASSIGN] = {NULL, expr_infix_assign, PREC_ASSIGN}, // ^=
   [TORASSIGN]  = {NULL, expr_infix_assign, PREC_ASSIGN}, // |=
-  [TOROR]      = {NULL, expr_infix_op, PREC_LOGICAL_OR}, // ||
-  [TANDAND]    = {NULL, expr_infix_op, PREC_LOGICAL_AND}, // &&
+  [TOROR]      = {NULL, expr_cmp_op, PREC_LOGICAL_OR}, // ||
+  [TANDAND]    = {NULL, expr_cmp_op, PREC_LOGICAL_AND}, // &&
   [TOR]        = {NULL, expr_infix_op, PREC_BITWISE_OR}, // |
   [TXOR]       = {NULL, expr_infix_op, PREC_BITWISE_XOR}, // ^
   [TAND]       = {expr_ref, expr_infix_op, PREC_BITWISE_AND}, // &
-  [TEQ]        = {NULL, expr_infix_op, PREC_EQUAL}, // ==
-  [TNEQ]       = {NULL, expr_infix_op, PREC_EQUAL}, // !=
-  [TLT]        = {NULL, expr_infix_op, PREC_COMPARE},   // <
-  [TGT]        = {NULL, expr_infix_op, PREC_COMPARE},   // >
-  [TLTEQ]      = {NULL, expr_infix_op, PREC_COMPARE}, // <=
-  [TGTEQ]      = {NULL, expr_infix_op, PREC_COMPARE}, // >=
+  [TEQ]        = {NULL, expr_cmp_op, PREC_EQUAL}, // ==
+  [TNEQ]       = {NULL, expr_cmp_op, PREC_EQUAL}, // !=
+  [TLT]        = {NULL, expr_cmp_op, PREC_COMPARE},   // <
+  [TGT]        = {NULL, expr_cmp_op, PREC_COMPARE},   // >
+  [TLTEQ]      = {NULL, expr_cmp_op, PREC_COMPARE}, // <=
+  [TGTEQ]      = {NULL, expr_cmp_op, PREC_COMPARE}, // >=
   [TSHL]       = {NULL, expr_infix_op, PREC_SHIFT}, // >>
   [TSHR]       = {NULL, expr_infix_op, PREC_SHIFT}, // <<
   [TPLUS]      = {expr_prefix_op, expr_infix_op, PREC_ADD}, // +

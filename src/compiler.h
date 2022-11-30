@@ -159,6 +159,12 @@ enum nodekind {
   NODEKIND_COUNT,
 };
 
+typedef u8 exprflag_t;
+enum exprflag {
+  EX_RVALUE   = 1 << 0, // expression is used as an rvalue
+  EX_OPTIONAL = 1 << 1, // type-narrowed from optional
+};
+
 typedef struct {
   nodekind_t kind;
   srcloc_t   loc;
@@ -226,6 +232,7 @@ typedef struct {
   stmt_t;
   type_t* nullable type;
   u32              nrefs;
+  exprflag_t       flags;
 } expr_t;
 
 typedef struct { expr_t; bool val; } boollit_t;
@@ -384,9 +391,12 @@ inline static bool nodekind_isusertype(nodekind_t kind) {
   return TYPE_ARRAY <= kind && kind < NODEKIND_COUNT; }
 inline static bool nodekind_isptrtype(nodekind_t kind) {
   return kind == TYPE_REF; }
+inline static bool nodekind_isvar(nodekind_t kind) {
+  return kind == EXPR_VAR || kind == EXPR_LET; }
 
 inline static bool node_istype(const node_t* n) { return nodekind_istype(n->kind); }
 inline static bool node_isexpr(const node_t* n) { return nodekind_isexpr(n->kind); }
+inline static bool node_isvar(const node_t* n) { return nodekind_isvar(n->kind); }
 inline static bool node_islocal(const node_t* n) { return nodekind_islocal(n->kind); }
 inline static bool node_isusertype(const node_t* n) {
   return nodekind_isusertype(n->kind); }

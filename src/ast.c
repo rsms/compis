@@ -228,6 +228,10 @@ static void repr_type(RPARAMS, const type_t* t) {
       PRINT("mut ");
     repr_type(RARGSFL(fl | REPRFLAG_HEAD), ((const reftype_t*)t)->elem);
     break;
+  case TYPE_OPTIONAL:
+    CHAR(' ');
+    repr_type(RARGSFL(fl | REPRFLAG_HEAD), ((const opttype_t*)t)->elem);
+    break;
   case TYPE_ARRAY:
   case TYPE_ENUM:
     dlog("TODO subtype %s", nodekind_name(t->kind));
@@ -250,6 +254,10 @@ static void repr(RPARAMS, const node_t* n) {
     } else {
       CHAR(' ');
     }
+    CHAR('{');
+    if (expr->flags & EX_RVALUE)   CHAR('r');
+    if (expr->flags & EX_OPTIONAL) CHAR('o');
+    PRINT("} ");
     if (expr->type) {
       repr_type(RARGSFL(fl | REPRFLAG_HEAD), expr->type);
     } else {

@@ -1,0 +1,7 @@
+fun block_result(x, y int) int {
+  { true }
+  {
+    { false }
+    { let z = 3 }
+  }
+}

@@ -57,18 +57,26 @@ static void _error(cgen_t* g, srcrange_t srcrange, const char* fmt, ...) {
 
 
 #define ANON_PREFIX "_·"
-#define ANON_FMT ANON_PREFIX "%x"
+#define ANON_FMT    ANON_PREFIX "%x"
 
 #define CHAR(ch)             ( buf_push(&g->outbuf, (ch)), ((void)0) )
 #define PRINT(cstr)          ( buf_print(&g->outbuf, (cstr)), ((void)0) )
 #define PRINTF(fmt, args...) ( buf_printf(&g->outbuf, (fmt), ##args), ((void)0) )
 
 
+static char lastchar(cgen_t* g) {
+  assert(g->outbuf.len > 0);
+  return g->outbuf.chars[g->outbuf.len-1];
+}
+
+
 static bool startloc(cgen_t* g, srcloc_t loc) {
-  if (loc.line == 0 || (g->lineno == loc.line && g->input == loc.input))
+  bool inputok = loc.input == NULL || g->input == loc.input;
+
+  if (loc.line == 0 || (g->lineno == loc.line && inputok))
     return false;
 
-  if (g->lineno < loc.line && g->input == loc.input && loc.line - g->lineno < 4) {
+  if (g->lineno < loc.line && inputok && loc.line - g->lineno < 4) {
     buf_fill(&g->outbuf, '\n', loc.line - g->lineno);
   } else {
     if (g->outbuf.len && g->outbuf.chars[g->outbuf.len-1] != '\n')
@@ -76,7 +84,7 @@ static bool startloc(cgen_t* g, srcloc_t loc) {
     if (g->scopenest == 0)
       CHAR('\n');
     PRINTF("#line %u", loc.line);
-    if (g->input != loc.input) {
+    if (!inputok) {
       g->input = loc.input;
       PRINTF(" \"%s\"", g->input->name);
     }
@@ -92,6 +100,11 @@ static void startline(cgen_t* g, srcloc_t loc) {
   startloc(g, loc);
   CHAR('\n');
   buf_fill(&g->outbuf, ' ', g->indent*2);
+}
+
+
+static void startlinex(cgen_t* g) {
+  startline(g, (srcloc_t){.line=g->lineno+1});
 }
 
 
@@ -206,15 +219,15 @@ static sym_t intern_typedef(cgen_t* g, const type_t* t, gentypedef_t f) {
       seterr(g, ErrNoMem);
     g->headoffs = g->outbuf.len;
     buf_dispose(&g->headbuf);
-  } else {
+  } else if (g->lineno != lineno) {
     // write "#line N" if it is not already in outbuf
     char tmp[24];
-    usize len = snprintf(tmp, sizeof(tmp), "#line %u\n", lineno);
+    usize len = snprintf(tmp, sizeof(tmp), "\n#line %u\n", lineno);
     if (g->outbuf.len <= len ||
       g->outbuf.chars[g->outbuf.len - len - 1] != '\n' ||
       memcmp(&g->outbuf.chars[g->outbuf.len - len], tmp, len) != 0)
     {
-      PRINTF("#line %u\n", lineno);
+      PRINT(tmp);
     }
     g->lineno = lineno;
   }
@@ -316,7 +329,7 @@ static void reftype(cgen_t* g, const reftype_t* t) {
 static sym_t gen_opttypedef(cgen_t* g, const type_t* tp) {
   char namebuf[64];
   sym_t name = sym_snprintf(namebuf, sizeof(namebuf),
-    ANON_PREFIX "optional%x", g->anon_idgen++);
+    ANON_PREFIX "opt%x", g->anon_idgen++);
   const opttype_t* t = (const opttype_t*)tp;
   PRINT("typedef struct{bool ok; "); type(g, t->elem); PRINTF(" v;} %s", name);
   return name;
@@ -328,19 +341,35 @@ static void opttype(cgen_t* g, const opttype_t* t) {
     // NULL used for "no value"
     type(g, t->elem);
   } else {
+    assert(t->elem->kind != TYPE_OPTIONAL);
     sym_t typename = intern_typedef(g, (const type_t*)t, gen_opttypedef);
     PRINT(typename);
   }
 }
 
 
-static void optinit(cgen_t* g, const opttype_t* t, const expr_t* init, bool isshort) {
-  if (type_isptr(t->elem)) {
-    expr(g, init);
+static void optinit(cgen_t* g, const expr_t* init, bool isshort) {
+  if (type_isptr(init->type))
+    return expr_as_value(g, init);
+  assert(init->type->kind != TYPE_OPTIONAL);
+  if (!isshort) {
+    opttype_t t = { .kind = TYPE_OPTIONAL, .elem = (type_t*)init->type };
+    CHAR('('), opttype(g, &t), CHAR(')');
+  }
+  PRINT("{true,"); expr_as_value(g, init); CHAR('}');
+}
+
+
+static void optzero(cgen_t* g, const type_t* elem, bool isshort) {
+  assert(elem->kind != TYPE_OPTIONAL);
+  if (type_isptr(elem)) {
+    PRINT("NULL");
   } else {
-    if (!isshort)
-      CHAR('('), opttype(g, t), CHAR(')');
-    PRINT("{true,"); expr(g, init); CHAR('}');
+    if (!isshort) {
+      opttype_t t = { .kind = TYPE_OPTIONAL, .elem = (type_t*)elem };
+      CHAR('('), opttype(g, &t), CHAR(')');
+    }
+    PRINT("{0}");
   }
 }
 
@@ -376,6 +405,8 @@ static void expr_as_value(cgen_t* g, const expr_t* n) {
   case EXPR_PREFIXOP:
   case EXPR_POSTFIXOP:
   case EXPR_MEMBER:
+  case EXPR_BLOCK:
+  case EXPR_CALL:
     return expr(g, n);
   default:
     CHAR('('); expr(g, n); CHAR(')');
@@ -417,30 +448,45 @@ static void zeroinit(cgen_t* g, const type_t* t) {
 typedef enum {
   BLOCKFLAG_NONE,
   BLOCKFLAG_RET,
-  BLOCKFLAG_EXPR,
 } blockflag_t;
+
+
+#define TMP_ID_SIZE (sizeof(ANON_PREFIX "tmp") + sizeof(uintptr)*8 + 1)
+
+static usize fmt_tmp_id(char* buf, usize bufcap, const void* n) {
+  return snprintf(buf, bufcap, ANON_PREFIX "tmp%zx", (uintptr)n);
+}
+
+static void print_tmp_id(cgen_t* g, const void* n) {
+  PRINTF(ANON_PREFIX "tmp%zx", (uintptr)n);
+}
 
 
 static void block(cgen_t* g, const block_t* n, blockflag_t fl) {
   g->scopenest++;
 
-  u32 hasval = n->type != type_void && (fl & BLOCKFLAG_EXPR) && n->nrefs > 0;
-  if (hasval) {
-    type(g, n->type);
-    CHAR(' ');
-    PRINTF("_block_%zx", (uintptr)n);
-    if (hasval && n->children.len == 1) {
-      PRINT(" = ");
-      expr(g, n->children.v[0]);
-      g->scopenest--;
+  if (n->children.len == 1 && (n->flags & EX_RVALUE)) {
+    expr_as_value(g, n->children.v[0]);
+    g->scopenest--;
+    return;
+  }
+
+  if (n->flags & EX_RVALUE) {
+    if (n->children.len == 0) {
+      PRINT("((void)0)");
       return;
     }
-    CHAR(';');
+    CHAR('(');
   }
+
+  CHAR('{');
+
+  u32 hasval = n->type != type_void && (n->flags & EX_RVALUE);
+  if (hasval)
+    type(g, n->type), CHAR(' '), print_tmp_id(g, n), CHAR(';');
 
   u32 start_lineno = g->lineno;
 
-  CHAR('{');
   if (n->children.len > 0) {
     g->indent++;
     for (u32 i = 0, last = n->children.len - 1; i < n->children.len; i++) {
@@ -452,14 +498,16 @@ static void block(cgen_t* g, const block_t* n, blockflag_t fl) {
       }
       if (i == last) {
         if (hasval) {
-          PRINTF("_block_%zx = ", (uintptr)n);
+          print_tmp_id(g, n);
+          PRINT(" = ");
         } else if (fl & BLOCKFLAG_RET) {
           PRINT("return ");
         }
       }
-      assertf(nodekind_isexpr(cn->kind), "%s", nodekind_name(cn->kind));
       expr(g, (const expr_t*)cn);
-      PRINT(";");
+
+      if ((cn->kind != EXPR_BLOCK && cn->kind != EXPR_IF) || lastchar(g) != '}')
+        CHAR(';');
     }
     g->indent--;
     if (start_lineno != g->lineno) {
@@ -468,8 +516,17 @@ static void block(cgen_t* g, const block_t* n, blockflag_t fl) {
       CHAR(' ');
     }
   }
-  CHAR('}');
+
   g->scopenest--;
+
+  if (hasval)
+    print_tmp_id(g, n), CHAR(';');
+
+  if (n->flags & EX_RVALUE) {
+    PRINT("})");
+  } else {
+    CHAR('}');
+  }
 }
 
 
@@ -680,7 +737,8 @@ static void binop(cgen_t* g, const binop_t* n) {
     //   PRINT(type_isptr(n->left->type) ? "->v = " : ".v = ");
     // } else {
       PRINT(" = ");
-      return optinit(g, (const opttype_t*)n->type, n->right, /*isshort*/false);
+      return optinit(g, n->right, /*isshort*/false);
+      // return optinit(g, ((const opttype_t*)n->type)->elem, n->right, false);
     // }
   } else {
     CHAR(' ');
@@ -774,10 +832,15 @@ static void expr_in_block(cgen_t* g, const expr_t* n) {
 }
 
 
-static void vardef1(cgen_t* g, const local_t* n, const char* name) {
+static void vardef1(cgen_t* g, const local_t* n, const char* name, bool wrap_rvalue) {
+  if ((n->flags & EX_RVALUE) && wrap_rvalue)
+    PRINT("({");
   type(g, n->type);
-  if (n->kind == EXPR_LET && (type_isprim(n->type) || n->type->kind == TYPE_REF))
+  if (n->kind == EXPR_LET && (type_isprim(n->type) ||
+    n->type->kind == TYPE_REF || n->type->kind == TYPE_OPTIONAL))
+  {
     PRINT(" const");
+  }
   CHAR(' ');
   if (name == sym__)
     PRINT("__attribute__((__unused__)) ");
@@ -785,18 +848,21 @@ static void vardef1(cgen_t* g, const local_t* n, const char* name) {
   PRINT(" = ");
   if (n->init) {
     if (n->type->kind == TYPE_OPTIONAL && n->init->type->kind != TYPE_OPTIONAL) {
-      optinit(g, (const opttype_t*)n->type, n->init, /*isshort*/true);
+      optinit(g, n->init, /*isshort*/true);
+      //optinit(g, ((const opttype_t*)n->type)->elem, n->init, /*isshort*/true);
     } else {
       expr(g, n->init);
     }
   } else {
     zeroinit(g, n->type);
   }
+  if ((n->flags & EX_RVALUE) && wrap_rvalue)
+    PRINT("; "), PRINT(name), PRINT(";})");
 }
 
 
 static void vardef(cgen_t* g, const local_t* n) {
-  vardef1(g, n, n->name);
+  vardef1(g, n, n->name, true);
 }
 
 
@@ -814,41 +880,182 @@ static bool expr_no_sideeffects(const expr_t* n) {
 
 
 static void ifexpr(cgen_t* g, const ifexpr_t* n) {
-  bool has_outer_block = false;
-  if (n->cond->kind == EXPR_LET || n->cond->kind == EXPR_VAR) {
-    // optional check, e.g. "if let x = optional_x { x }"
-    assert(type_isopt(n->cond->type));
-    has_outer_block = true;
-    PRINT("/*if*/{ ");
-    const local_t* local = (const local_t*)n->cond;
-    const type_t* inner_type = ((opttype_t*)local->type)->elem;
-    if (expr_no_sideeffects(local->init) || type_isptr(inner_type)) {
-      // avoid tmp var when local->init is guaranteed to not have side effects
-      type(g, inner_type);
-      CHAR(' '); id(g, local->name); PRINT(" = "); expr(g, local->init);
-      if (type_isptr(inner_type)) {
-        PRINTF("; if (%s != NULL) ", local->name);
-      } else {
-        PRINT(".v; if ("); expr(g, local->init); PRINT(".ok) ");
-      }
-    } else {
-      vardef1(g, local, ANON_PREFIX "tmp");
+  // TODO: rewrite and clean up this monster of a function
+  bool hasvar = n->cond->kind == EXPR_LET || n->cond->kind == EXPR_VAR;
+  bool has_tmp_opt = false;
+  char tmp[TMP_ID_SIZE];
+
+  if (n->flags & EX_RVALUE)
+    g->indent++;
+
+  if (hasvar) {
+    // optional check with var assignment
+    // e.g. "if let x = optional_x { x }" becomes:
+    //   ({ optional0 tmp = varinit; T x = tmp.v; if (tmp.ok) ... })
+    // or, when varinit has no side effects:
+    //   ({ T x = varinit.v; if (varinit.ok) ... })
+    const local_t* var = (const local_t*)n->cond;
+    assert(!type_isopt(var->type)); // should be narrowed & have EX_OPTIONAL
+
+    if (n->flags & EX_RVALUE)
+      CHAR('(');
+    PRINT("{ ");
+
+    g->indent++;
+
+    if ((var->flags & EX_OPTIONAL) == 0 ||
+        expr_no_sideeffects(var->init) ||
+        type_isptr(var->type))
+    {
+      // avoid tmp var when var->init is guaranteed to not have side effects
+      startline(g, var->loc);
+
+      // "T x = init;" | "T x = init.v;"
+      vardef1(g, var, var->name, false);
+      if ((var->flags & EX_OPTIONAL) && !type_isptr(var->type))
+        PRINT(".v");
       PRINT("; ");
-      type(g, ((opttype_t*)local->type)->elem);
-      PRINTF(" %s = " ANON_PREFIX "tmp.v; if (" ANON_PREFIX "tmp.ok) ", local->name);
+
+      //   "if (x != NULL)" | "((x != NULL) ?"
+      // | "if (init.ok)"   | "((init.ok) ?"
+      // | "if (x)"         | "((x) ?"
+      if (n->flags & EX_RVALUE) {
+        CHAR('(');
+      } else {
+        PRINT("if ");
+      }
+      if ((var->flags & EX_OPTIONAL) && !type_isptr(var->type)) {
+        CHAR('('), expr_as_value(g, var->init), PRINT(".ok)");
+      } else {
+        PRINTF("(%s)", var->name);
+      }
+      CHAR(' ');
+      if (n->flags & EX_RVALUE)
+        CHAR('?');
+    } else {
+      assert(var->flags & EX_OPTIONAL);
+      fmt_tmp_id(tmp, sizeof(tmp), var);
+
+      // "opt0 tmp = init;"
+      assert(!type_isopt(var->type));
+      opttype_t t = { .kind = TYPE_OPTIONAL, .elem = (type_t*)var->type };
+      opttype(g, &t);
+      PRINT(" const "), PRINT(tmp), PRINT(" = ");
+      expr_as_value(g, var->init);
+      CHAR(';');
+
+      // "K x = tmp.v;"
+      startline(g, var->loc);
+      type(g, var->type);
+      if (var->kind == EXPR_LET)
+        PRINT(" const");
+      PRINTF(" %s = %s.v; ", var->name, tmp);
+
+      //   "if (x != NULL)" | "((x != NULL) ?"
+      // | "if (init.ok)"   | "((init.ok) ?"
+      if (n->flags & EX_RVALUE) {
+        PRINTF("(%s.ok ?", tmp);
+      } else {
+        PRINTF("if (%s.ok) ", tmp);
+      }
     }
   } else {
-    PRINT("if (");
-    expr(g, n->cond);
-    PRINT(") ");
+    // no var definition in conditional
+    has_tmp_opt = (
+      n->cond->kind == EXPR_ID &&
+      type_isopt(n->cond->type) &&
+      !type_isptr(((const opttype_t*)n->cond->type)->elem)
+    );
+    const idexpr_t* id = NULL;
+
+    if (has_tmp_opt) {
+      // e.g. "let x ?int; let y = if x { use(x) }"
+      id = (const idexpr_t*)n->cond;
+      if (node_isexpr(id->ref) && ((const expr_t*)id->ref)->nrefs > 1) {
+        g->indent++;
+        if (n->flags & EX_RVALUE)
+          CHAR('(');
+        PRINT("{ ");
+        opttype(g, (const opttype_t*)n->cond->type);
+        fmt_tmp_id(tmp, sizeof(tmp), id);
+        PRINTF(" %s = %s; ", tmp, id->name);
+
+        // "T x = tmp.v;"
+        type(g, ((const opttype_t*)n->cond->type)->elem);
+        PRINTF(" %s = %s.v; ", id->name, tmp);
+      } else {
+        has_tmp_opt = false;
+      }
+    }
+
+    if (n->flags & EX_RVALUE) {
+      if (id) {
+        PRINTF("(%s.ok ? ", has_tmp_opt ? tmp : id->name);
+      } else {
+        CHAR('('), expr_as_value(g, n->cond);
+        if (n->cond->type->kind == TYPE_OPTIONAL &&
+          !type_isptr(((const opttype_t*)n->cond->type)->elem))
+        {
+          PRINT(".ok");
+        }
+        PRINT(" ? ");
+      }
+    } else {
+      if (id) {
+        PRINTF("if (%s.ok) ", has_tmp_opt ? tmp : id->name);
+      } else {
+        PRINT("if ("), expr_as_value(g, n->cond), CHAR(')');
+      }
+    }
   }
-  expr_in_block(g, n->thenb);
-  if (n->elseb) {
-    PRINT(" else ");
-    expr_in_block(g, n->elseb);
+
+  if (n->flags & EX_RVALUE) {
+    startline(g, n->thenb->loc);
+
+    if ((!n->elseb || n->elseb->type == type_void) && !type_isopt(n->thenb->type)) {
+      optinit(g, n->thenb, /*isshort*/false);
+    } else {
+      expr_as_value(g, n->thenb);
+    }
+    PRINT(" : (");
+    if (n->elseb) {
+      if (n->elseb->loc.line != g->lineno)
+        startline(g, n->elseb->loc);
+      expr_as_value(g, n->elseb);
+      if (n->elseb->type == type_void)
+        PRINT(", ");
+    } else {
+      CHAR(' ');
+    }
+    if (!n->elseb || n->elseb->type == type_void) {
+      type_t* elem = n->thenb->type;
+      if (type_isopt(elem))
+        elem = ((const opttype_t*)elem)->elem;
+      optzero(g, elem, /*isshort*/false);
+    }
+    PRINT("))");
+  } else {
+    expr_in_block(g, n->thenb);
+    if (n->elseb) {
+      if (lastchar(g) != '}')
+        CHAR(';'); // terminate non-block "then" body
+      PRINT(" else ");
+      expr_as_value(g, n->elseb);
+    }
   }
-  if (has_outer_block) {
-    PRINT(" }");
+
+  if (n->flags & EX_RVALUE)
+    g->indent--;
+
+  if (hasvar || has_tmp_opt) {
+    g->indent--;
+    bool needsemi = lastchar(g) != '}';
+    if (needsemi)
+      CHAR(';');
+    startlinex(g);
+    CHAR('}');
+    if (n->flags & EX_RVALUE)
+      CHAR(')');
   }
 }
 
@@ -901,7 +1108,7 @@ static void expr(cgen_t* g, const expr_t* n) {
   case EXPR_FLOATLIT:  return floatlit(g, (const floatlit_t*)n);
   case EXPR_ID:        return idexpr(g, (const idexpr_t*)n);
   case EXPR_PARAM:     return param(g, (const local_t*)n);
-  case EXPR_BLOCK:     return block(g, (const block_t*)n, BLOCKFLAG_EXPR);
+  case EXPR_BLOCK:     return block(g, (const block_t*)n, 0);
   case EXPR_CALL:      return call(g, (const call_t*)n);
   case EXPR_MEMBER:    return member(g, (const member_t*)n);
   case EXPR_IF:        return ifexpr(g, (const ifexpr_t*)n);

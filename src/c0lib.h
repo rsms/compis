@@ -278,6 +278,7 @@ typedef double             f64;
 // bool IS_ALIGN2(T x, anyuint a) returns true if x is aligned to a
 #define IS_ALIGN2(x, a)  ( !((x) & ((__typeof__(x))(a) - 1)) )
 
+
 //—————————————————————————————————————————————————————————————————————————————————————
 // debugging
 #include <stdio.h>
