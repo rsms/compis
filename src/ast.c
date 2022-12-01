@@ -401,7 +401,6 @@ static void repr(RPARAMS, const node_t* n) {
     if (type_isptr(var->type)) switch ((enum ownership)var->ownership) {
       case OW_LIVE: PRINT(" {live}"); break;
       case OW_DEAD: PRINT(" {dead}"); break;
-      case OW_UNKN: PRINT(" {unkn}"); break;
     }
     if (var->init) {
       CHAR(' ');

@@ -290,6 +290,56 @@ static bool expect2(parser_t* p, tok_t tok, const char* errmsg) {
 }
 
 
+#define mknode(p, TYPE, kind)      ( (TYPE*)_mknode((p), sizeof(TYPE), (kind)) )
+#define mkexpr(p, TYPE, kind, fl)  ( (TYPE*)_mkexpr((p), sizeof(TYPE), (kind), (fl)) )
+
+// T* CLONE_NODE(T* node)
+#define CLONE_NODE(nptr) ( \
+  (__typeof__(nptr))memcpy( \
+    mknode(p, __typeof__(*(nptr)), ((node_t*)(nptr))->kind), \
+    (nptr), \
+    sizeof(*(nptr))) \
+)
+
+static node_t* _mknode(parser_t* p, usize size, nodekind_t kind) {
+  mem_t m = mem_alloc_zeroed(p->ast_ma, size);
+  if UNLIKELY(m.p == NULL)
+    return out_of_mem(p), last_resort_node;
+  node_t* n = m.p;
+  n->kind = kind;
+  n->loc = currloc(p);
+  return n;
+}
+
+
+static expr_t* _mkexpr(parser_t* p, usize size, nodekind_t kind, exprflag_t fl) {
+  assertf(nodekind_isexpr(kind), "%s", nodekind_name(kind));
+  expr_t* n = (expr_t*)_mknode(p, size, kind);
+  n->flags = fl;
+  n->type = type_void;
+  return n;
+}
+
+
+static void* mkbad(parser_t* p) {
+  expr_t* n = (expr_t*)mknode(p, __typeof__(_last_resort_node), NODE_BAD);
+  n->type = type_void;
+  return n;
+}
+
+
+static reftype_t* mkreftype(parser_t* p, bool ismut) {
+  reftype_t* t = mknode(p, reftype_t, TYPE_REF);
+  t->size = p->scanner.compiler->ptrsize;
+  t->align = t->size;
+  t->ismut = ismut;
+  return t;
+}
+
+
+// —————————————————————————————————————————————————————————————————————————————————————
+
+
 static void ownership_drop(parser_t* p, ptrarray_t* drops, expr_t* owner);
 
 
@@ -299,8 +349,12 @@ static void enter_scope(parser_t* p) {
 }
 
 
-static void leave_scope(parser_t* p, ptrarray_t* nullable drops) {
-  for (u32 i = p->scope.base + 1; i < p->scope.len; i++) {
+static void leave_scope(parser_t* p, ptrarray_t* nullable drops, bool exits) {
+  u32 len = p->scope.len;
+  u32 base = p->scope.base;
+  scope_pop(&p->scope);
+
+  for (u32 i = base + 1; i < len; i++) {
     node_t* n = p->scope.ptr[i++];
     sym_t name = p->scope.ptr[i];
 
@@ -308,25 +362,44 @@ static void leave_scope(parser_t* p, ptrarray_t* nullable drops) {
       continue;
 
     switch (n->kind) {
-      case EXPR_FUN:
-      case EXPR_ID:
-        continue;
-      case EXPR_LET:
-      case EXPR_VAR:
-      case EXPR_PARAM: {
-        local_t* var = (local_t*)n;
-        if (var->type->kind == TYPE_PTR && var->ownership != OW_DEAD && drops)
-          ownership_drop(p, drops, (expr_t*)var);
-        if (var->isthis)
-          continue;
-        break;
+    case EXPR_FUN:
+    case EXPR_ID:
+      continue;
+    case EXPR_LET:
+    case EXPR_VAR:
+    case EXPR_PARAM: {
+      local_t* var = (local_t*)n;
+
+      if (var->type->kind == TYPE_PTR && (var->flags & EX_SHADOWS_OWNER) && !exits) {
+        // the var shadows a var in the outer scope
+        //dlog("%s shadow found: %s", __FUNCTION__, name);
+        local_t* prev = scope_lookup(&p->scope, name, 0);
+        if (prev) {
+          // what is being shadowed is defined in this (the outer) scope
+          //dlog("  mark %s %s OW_DEAD", nodekind_fmt(prev->kind), name);
+          assertnotnull(prev);
+          assert(prev->kind == var->kind);
+          prev->ownership = OW_DEAD;
+        } else {
+          // what var shadows is defined further out; carry over the shadowing
+          // var into this (the outer) scope
+          //dlog("  propagate %s %s to outer scope", nodekind_fmt(var->kind), name);
+          if UNLIKELY(!scope_def(&p->scope, p->scanner.compiler->ma, name, var))
+            out_of_mem(p);
+        }
       }
+
+      if (var->type->kind == TYPE_PTR && var->ownership != OW_DEAD && drops)
+        ownership_drop(p, drops, (expr_t*)var);
+      if (var->isthis)
+        continue;
+      break;
+    }
     }
 
     if (((const expr_t*)n)->nrefs == 0)
       warning(p, n, "unused %s \"%s\"", nodekind_fmt(n->kind), name);
   }
-  scope_pop(&p->scope);
 }
 
 
@@ -351,11 +424,11 @@ static node_t* nullable lookup_definition(parser_t* p, sym_t name) {
 
 static void define_replace(parser_t* p, sym_t name, node_t* n) {
   assert(name != sym__);
-  if (!scope_def(&p->scope, p->scanner.compiler->ma, name, n))
+  if UNLIKELY(!scope_def(&p->scope, p->scanner.compiler->ma, name, n))
     out_of_mem(p);
   if (scope_istoplevel(&p->scope)) {
     void** vp = map_assign(&p->pkgdefs, p->scanner.compiler->ma, name, strlen(name));
-    if (!vp)
+    if UNLIKELY(!vp)
       return out_of_mem(p);
     *vp = n;
   }
@@ -386,6 +459,7 @@ static void define(parser_t* p, sym_t name, node_t* n) {
 err_duplicate:
   error(p, n, "redefinition of \"%s\"", name);
 }
+
 
 // —————————————————————————————————————————————————————————————————————————————————————
 
@@ -434,14 +508,24 @@ static bool ownership_transfer(parser_t* p, expr_t* dstx, expr_t* src) {
     dlog("ownership_transfer: %s -> %s", srcs, dsts);
   #endif
 
-  // mark source local (if any) as dead
-  local_t* src_local = find_local(src);
-  if (src_local) {
-    // TODO: if src_local is defined in an outer scope and we are on a conditional path,
-    // mark ownership as UNKN
-    // e.g. "var x *int; if cond { let y = x; return y }; return x"
-    src_local->ownership = OW_DEAD;
-  }
+  #if 1
+    local_t* src_local = find_local(src);
+    if (src_local) {
+      local_t* src_local2 = CLONE_NODE(src_local);
+      src_local2->ownership = OW_DEAD;
+      src_local2->flags |= EX_SHADOWS_OWNER;
+      define_replace(p, src_local2->name, (node_t*)src_local2);
+    }
+  #else
+    // mark source-local (if any) as dead
+    local_t* src_local = find_local(src);
+    if (src_local) {
+      // TODO: if src_local is defined in an outer scope and we are on a conditional path,
+      // mark ownership as UNKN
+      // e.g. "var x *int; if cond { let y = x; return y }; return x"
+      src_local->ownership = OW_DEAD;
+    }
+  #endif
 
   // mark destination as alive
   dst->ownership = OW_LIVE;
@@ -451,45 +535,6 @@ static bool ownership_transfer(parser_t* p, expr_t* dstx, expr_t* src) {
 
 
 // —————————————————————————————————————————————————————————————————————————————————————
-
-
-#define mknode(p, TYPE, kind)      ( (TYPE*)_mknode((p), sizeof(TYPE), (kind)) )
-#define mkexpr(p, TYPE, kind, fl)  ( (TYPE*)_mkexpr((p), sizeof(TYPE), (kind), (fl)) )
-
-static node_t* _mknode(parser_t* p, usize size, nodekind_t kind) {
-  mem_t m = mem_alloc_zeroed(p->ast_ma, size);
-  if UNLIKELY(m.p == NULL)
-    return out_of_mem(p), last_resort_node;
-  node_t* n = m.p;
-  n->kind = kind;
-  n->loc = currloc(p);
-  return n;
-}
-
-
-static expr_t* _mkexpr(parser_t* p, usize size, nodekind_t kind, exprflag_t fl) {
-  assertf(nodekind_isexpr(kind), "%s", nodekind_name(kind));
-  expr_t* n = (expr_t*)_mknode(p, size, kind);
-  n->flags = fl;
-  n->type = type_void;
-  return n;
-}
-
-
-static void* mkbad(parser_t* p) {
-  expr_t* n = (expr_t*)mknode(p, __typeof__(_last_resort_node), NODE_BAD);
-  n->type = type_void;
-  return n;
-}
-
-
-static reftype_t* mkreftype(parser_t* p, bool ismut) {
-  reftype_t* t = mknode(p, reftype_t, TYPE_REF);
-  t->size = p->scanner.compiler->ptrsize;
-  t->align = t->size;
-  t->ismut = ismut;
-  return t;
-}
 
 
 static void push(parser_t* p, ptrarray_t* children, void* child) {
@@ -871,8 +916,8 @@ static bool check_rvalue_id(parser_t* p, idexpr_t* n) {
     if (nodekind_islocal(n->ref->kind)) {
       local_t* src = (local_t*)n->ref;
       if UNLIKELY(src->ownership != OW_LIVE) {
-        const char* s = fmtnode(p, 0, (const node_t*)src, 1);
-        error(p, (node_t*)n, "attempt to use dead %s", s);
+        error(p, (node_t*)n, "attempt to use dead %s \"%s\"",
+          nodekind_fmt(src->kind), src->name);
         return false;
       }
     } else {
@@ -1019,15 +1064,6 @@ static expr_t* expr_var(parser_t* p, exprflag_t fl) {
 }
 
 
-// T* CLONE_NODE(T* node)
-#define CLONE_NODE(nptr) ( \
-  (__typeof__(nptr))memcpy( \
-    mknode(p, __typeof__(*(nptr)), ((node_t*)(nptr))->kind), \
-    (nptr), \
-    sizeof(*(nptr))) \
-)
-
-
 static expr_t* nullable check_if_cond(parser_t* p, expr_t* cond) {
   if (cond->type->kind == TYPE_BOOL)
     return NULL;
@@ -1086,7 +1122,7 @@ static expr_t* expr_if(parser_t* p, exprflag_t fl) {
     n->elseb = expr(p, PREC_COMMA, fl);
   }
 
-  leave_scope(p, &n->drops);
+  leave_scope(p, &n->drops, /*exits*/false);
 
   if (type_narrowed_binding) {
     expr_t* dst = n->cond;
@@ -1910,6 +1946,8 @@ static expr_t* expr_block(parser_t* p, exprflag_t fl) {
   next(p);
   enter_scope(p);
   bool isrvalue = fl & EX_RVALUE;
+  // exits is true if block contains a return or calls a function that doesn't return
+  bool exits = false;
   fl &= ~EX_RVALUE;
   if (currtok(p) != TRBRACE && currtok(p) != TEOF) {
     for (;;) {
@@ -1918,6 +1956,9 @@ static expr_t* expr_block(parser_t* p, exprflag_t fl) {
 
       // treat _all_ block-level expressions as rvalues, with some exceptions
       switch (cn->kind) {
+        case EXPR_RETURN:
+          exits = true;
+          break;
         case EXPR_FUN:
         case EXPR_BLOCK:
         case EXPR_CALL:
@@ -1925,7 +1966,6 @@ static expr_t* expr_block(parser_t* p, exprflag_t fl) {
         case EXPR_LET:
         case EXPR_IF:
         case EXPR_FOR:
-        case EXPR_RETURN:
         case EXPR_BOOLLIT:
         case EXPR_INTLIT:
         case EXPR_FLOATLIT:
@@ -1946,7 +1986,7 @@ static expr_t* expr_block(parser_t* p, exprflag_t fl) {
     }
   }
   expect2(p, TRBRACE, ", expected '}' or ';'");
-  leave_scope(p, &n->drops);
+  leave_scope(p, &n->drops, exits);
   if (isrvalue) {
     check_rvalue(p, (expr_t*)n);
   } else if (n->children.len > 0) {
@@ -2359,7 +2399,7 @@ static expr_t* expr_fun(parser_t* p, exprflag_t fl) {
       // register parameter drops in body when possible
       drops = &((block_t*)n->body)->drops;
     }
-    leave_scope(p, drops);
+    leave_scope(p, drops, /*exits*/false);
   }
 
   return (expr_t*)n;
@@ -2393,7 +2433,7 @@ unit_t* parser_parse(parser_t* p, memalloc_t ast_ma, input_t* input) {
     }
   }
 
-  leave_scope(p, NULL);
+  leave_scope(p, NULL, /*exits*/false);
 
   return unit;
 }

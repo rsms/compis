@@ -165,13 +165,13 @@ enum exprflag {
   EX_RVALUE         = 1 << 0, // expression is used as an rvalue
   EX_RVALUE_CHECKED = 1 << 1, // rvalue of this node has been checked
   EX_OPTIONAL       = 1 << 2, // type-narrowed from optional
+  EX_SHADOWS_OWNER  = 1 << 3, // shadows the original owner of a value (TYPE_PTR)
 };
 
 typedef u8 ownership_t;
 enum ownership {
   OW_LIVE, // definitely have ownership
   OW_DEAD, // definitely does NOT have ownership
-  OW_UNKN, // probably does NOT have ownership
 };
 
 typedef struct {
