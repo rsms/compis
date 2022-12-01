@@ -1,4 +1,5 @@
 // growable byte buffer (specialization of array)
+// SPDX-License-Identifier: Apache-2.0
 // 
 // Example
 //   buf_t b;

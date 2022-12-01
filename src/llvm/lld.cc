@@ -1,3 +1,5 @@
+// lld api
+// SPDX-License-Identifier: Apache-2.0
 #include "llvm-includes.hh"
 #include "llvmimpl.h"
 #include <sstream>

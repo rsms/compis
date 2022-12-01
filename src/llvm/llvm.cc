@@ -1,8 +1,5 @@
 // LLVM routines that must be implemented in C++
-//
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2022 Rasmus Andersson. See accompanying LICENSE file for details.
-//
 #include "llvm-includes.hh"
 #include "llvmimpl.h"
 

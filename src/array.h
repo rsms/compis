@@ -1,4 +1,5 @@
 // growable typed array
+// SPDX-License-Identifier: Apache-2.0
 //
 // Example
 //   array_t a;

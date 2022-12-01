@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 // scope_t is used for tracking identifiers during parsing.
 // This is a simple stack which we do a linear search on when looking up identifiers.
 // It is faster than using chained hash maps in most cases because of cache locality

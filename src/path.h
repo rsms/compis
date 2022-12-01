@@ -1,4 +1,5 @@
 // file paths
+// SPDX-License-Identifier: Apache-2.0
 #pragma once
 ASSUME_NONNULL_BEGIN
 
