@@ -22,6 +22,10 @@ sym_t _typeid(type_t* t) {
     case TYPE_FUN:
       assertf(0,"funtype should have precomputed typeid");
       break;
+    case TYPE_PTR:
+      if (!typeid_append(&buf, ((ptrtype_t*)t)->elem))
+        goto oom;
+      break;
     case TYPE_REF:
       if (!typeid_append(&buf, ((reftype_t*)t)->elem))
         goto oom;
@@ -36,7 +40,7 @@ sym_t _typeid(type_t* t) {
         goto oom;
       for (u32 i = 0; i < st->fields.len; i++) {
         local_t* field = st->fields.v[i];
-        assert(field->kind == NODE_FIELD);
+        assert(field->kind == EXPR_FIELD);
         if UNLIKELY(!typeid_append(&buf, assertnotnull(field->type)))
           goto oom;
       }

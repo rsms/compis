@@ -100,7 +100,7 @@ static void add_srclines(compiler_t* c, srcrange_t origin, abuf_t* s) {
 
   srcloc_t loc = origin.focus; // TODO: use start & end
 
-  u32 nlinesbefore = 1;
+  u32 nlinesbefore = 0;
   u32 nlinesafter = 0;
   u32 startline = loc.line - MIN(loc.line - 1, nlinesbefore);
   u32 endline = loc.line + nlinesafter + 1;

@@ -56,8 +56,9 @@ static void _error(cgen_t* g, srcrange_t srcrange, const char* fmt, ...) {
 }
 
 
-#define ANON_PREFIX "_·"
-#define ANON_FMT    ANON_PREFIX "%x"
+#define INTERNAL_PREFIX "_c0·"
+#define ANON_PREFIX     "_·"
+#define ANON_FMT        ANON_PREFIX "%x"
 
 #define CHAR(ch)             ( buf_push(&g->outbuf, (ch)), ((void)0) )
 #define PRINT(cstr)          ( buf_print(&g->outbuf, (cstr)), ((void)0) )
@@ -326,6 +327,12 @@ static void reftype(cgen_t* g, const reftype_t* t) {
 }
 
 
+static void ptrtype(cgen_t* g, const ptrtype_t* t) {
+  type(g, t->elem);
+  CHAR('*');
+}
+
+
 static sym_t gen_opttypedef(cgen_t* g, const type_t* tp) {
   char namebuf[64];
   sym_t name = sym_snprintf(namebuf, sizeof(namebuf),
@@ -337,7 +344,7 @@ static sym_t gen_opttypedef(cgen_t* g, const type_t* tp) {
 
 
 static void opttype(cgen_t* g, const opttype_t* t) {
-  if (type_isptr(t->elem)) {
+  if (type_isptrlike(t->elem)) {
     // NULL used for "no value"
     type(g, t->elem);
   } else {
@@ -349,7 +356,7 @@ static void opttype(cgen_t* g, const opttype_t* t) {
 
 
 static void optinit(cgen_t* g, const expr_t* init, bool isshort) {
-  if (type_isptr(init->type))
+  if (type_isptrlike(init->type))
     return expr_as_value(g, init);
   assert(init->type->kind != TYPE_OPTIONAL);
   if (!isshort) {
@@ -362,7 +369,7 @@ static void optinit(cgen_t* g, const expr_t* init, bool isshort) {
 
 static void optzero(cgen_t* g, const type_t* elem, bool isshort) {
   assert(elem->kind != TYPE_OPTIONAL);
-  if (type_isptr(elem)) {
+  if (type_isptrlike(elem)) {
     PRINT("NULL");
   } else {
     if (!isshort) {
@@ -387,6 +394,7 @@ static void type(cgen_t* g, const type_t* t) {
   case TYPE_F64:  PRINT("double"); break;
   case TYPE_STRUCT:   return structtype(g, (const structtype_t*)t);
   case TYPE_FUN:      return funtype(g, (const funtype_t*)t, NULL);
+  case TYPE_PTR:      return ptrtype(g, (const ptrtype_t*)t);
   case TYPE_REF:      return reftype(g, (const reftype_t*)t);
   case TYPE_OPTIONAL: return opttype(g, (const opttype_t*)t);
   default:
@@ -437,9 +445,11 @@ static void zeroinit(cgen_t* g, const type_t* t) {
   case TYPE_OPTIONAL:
     PRINT("{0}");
     break;
+  case TYPE_PTR:
+    PRINT("NULL");
+    break;
   default:
-    dlog("unexpected type %s", nodekind_name(t->kind));
-    error(g, t, "unexpected type %s", nodekind_name(t->kind));
+    debugdie(g, t, "unexpected type %s", nodekind_name(t->kind));
   }
   // PRINTF(";memset(&%s,0,%zu)", n->name, n->type->size);
 }
@@ -462,10 +472,24 @@ static void print_tmp_id(cgen_t* g, const void* n) {
 }
 
 
-static void block(cgen_t* g, const block_t* n, blockflag_t fl) {
+static bool has_drop_param(const ptrarray_t* nullable params) {
+  if (!params || params->len == 0)
+    return false;
+  for (u32 i = 0; i < params->len; i++) {
+    local_t* param = params->v[i];
+    if (type_isptr(param->type) && param->ownership != OW_DEAD)
+      return true;
+  }
+  return false;
+}
+
+
+static void block(
+  cgen_t* g, const block_t* n, blockflag_t fl, const ptrarray_t* nullable params)
+{
   g->scopenest++;
 
-  if (n->children.len == 1 && (n->flags & EX_RVALUE)) {
+  if (n->children.len == 1 && (n->flags & EX_RVALUE) && !has_drop_param(params)) {
     expr_as_value(g, n->children.v[0]);
     g->scopenest--;
     return;
@@ -487,8 +511,27 @@ static void block(cgen_t* g, const block_t* n, blockflag_t fl) {
 
   u32 start_lineno = g->lineno;
 
+  g->indent++;
+
+  // register drops of parameters
+  if (params && params->len) {
+    for (u32 i = 0; i < params->len; i++) {
+      local_t* param = params->v[i];
+      if (type_isptr(param->type) && param->ownership != OW_DEAD) {
+        if (param->ownership == OW_LIVE) {
+          startline(g, param->loc);
+          type(g, param->type);
+          PRINTF(
+            " __attribute__((__cleanup__(" INTERNAL_PREFIX "drop),__unused__)) "
+            ANON_FMT ";", g->anon_idgen++);
+        } else {
+          dlog("TODO ownership == UNKN");
+        }
+      }
+    }
+  }
+
   if (n->children.len > 0) {
-    g->indent++;
     for (u32 i = 0, last = n->children.len - 1; i < n->children.len; i++) {
       const expr_t* cn = n->children.v[i];
       if (cn->loc.line != g->lineno && cn->loc.line) {
@@ -515,6 +558,8 @@ static void block(cgen_t* g, const block_t* n, blockflag_t fl) {
     } else {
       CHAR(' ');
     }
+  } else {
+    g->indent--;
   }
 
   g->scopenest--;
@@ -531,7 +576,7 @@ static void block(cgen_t* g, const block_t* n, blockflag_t fl) {
 
 
 static void structinit_field(cgen_t* g, const type_t* t, const expr_t* value) {
-  if (t->kind == TYPE_OPTIONAL && !type_isptr(((const opttype_t*)t)->elem)) {
+  if (t->kind == TYPE_OPTIONAL && !type_isptrlike(((const opttype_t*)t)->elem)) {
     PRINT("{.ok=1,.v="); expr(g, value); CHAR('}');
   } else {
     expr(g, value);
@@ -721,9 +766,10 @@ static void fun(cgen_t* g, const fun_t* fun) {
     if (((funtype_t*)fun->type)->result != type_void)
       fl |= BLOCKFLAG_RET; // return last expression
     CHAR(' ');
-    block(g, (block_t*)fun->body, fl);
+    block(g, (block_t*)fun->body, fl, &fun->params);
   } else {
     PRINT(" { return ");
+    dlog("TODO: drops");
     expr(g, fun->body);
     PRINT("}");
   }
@@ -734,7 +780,7 @@ static void binop(cgen_t* g, const binop_t* n) {
   expr_as_value(g, n->left);
   if (n->op == TASSIGN && type_isopt(n->type) && !type_isopt(n->right->type)) {
     // if (n->left->kind == EXPR_ID || n->left->kind == EXPR_MEMBER) {
-    //   PRINT(type_isptr(n->left->type) ? "->v = " : ".v = ");
+    //   PRINT(type_isptrlike(n->left->type) ? "->v = " : ".v = ");
     // } else {
       PRINT(" = ");
       return optinit(g, n->right, /*isshort*/false);
@@ -793,6 +839,11 @@ static void floatlit(cgen_t* g, const floatlit_t* n) {
 }
 
 
+static void boollit(cgen_t* g, const boollit_t* n) {
+  PRINT(n->val ? "true" : "false");
+}
+
+
 static void idexpr(cgen_t* g, const idexpr_t* n) {
   id(g, n->name);
 }
@@ -844,6 +895,16 @@ static void vardef1(cgen_t* g, const local_t* n, const char* name, bool wrap_rva
   CHAR(' ');
   if (name == sym__)
     PRINT("__attribute__((__unused__)) ");
+
+  // is this to be dropped when its scope ends?
+  if (type_isptr(n->type) && n->ownership != OW_DEAD) {
+    if (n->ownership == OW_LIVE) {
+      PRINT("__attribute__((__cleanup__(" INTERNAL_PREFIX "drop))) ");
+    } else {
+      dlog("TODO ownership == UNKN");
+    }
+  }
+
   id(g, name);
   PRINT(" = ");
   if (n->init) {
@@ -905,14 +966,14 @@ static void ifexpr(cgen_t* g, const ifexpr_t* n) {
 
     if ((var->flags & EX_OPTIONAL) == 0 ||
         expr_no_sideeffects(var->init) ||
-        type_isptr(var->type))
+        type_isptrlike(var->type))
     {
       // avoid tmp var when var->init is guaranteed to not have side effects
       startline(g, var->loc);
 
       // "T x = init;" | "T x = init.v;"
       vardef1(g, var, var->name, false);
-      if ((var->flags & EX_OPTIONAL) && !type_isptr(var->type))
+      if ((var->flags & EX_OPTIONAL) && !type_isptrlike(var->type))
         PRINT(".v");
       PRINT("; ");
 
@@ -924,7 +985,7 @@ static void ifexpr(cgen_t* g, const ifexpr_t* n) {
       } else {
         PRINT("if ");
       }
-      if ((var->flags & EX_OPTIONAL) && !type_isptr(var->type)) {
+      if ((var->flags & EX_OPTIONAL) && !type_isptrlike(var->type)) {
         CHAR('('), expr_as_value(g, var->init), PRINT(".ok)");
       } else {
         PRINTF("(%s)", var->name);
@@ -964,7 +1025,7 @@ static void ifexpr(cgen_t* g, const ifexpr_t* n) {
     has_tmp_opt = (
       n->cond->kind == EXPR_ID &&
       type_isopt(n->cond->type) &&
-      !type_isptr(((const opttype_t*)n->cond->type)->elem)
+      !type_isptrlike(((const opttype_t*)n->cond->type)->elem)
     );
     const idexpr_t* id = NULL;
 
@@ -994,7 +1055,7 @@ static void ifexpr(cgen_t* g, const ifexpr_t* n) {
       } else {
         CHAR('('), expr_as_value(g, n->cond);
         if (n->cond->type->kind == TYPE_OPTIONAL &&
-          !type_isptr(((const opttype_t*)n->cond->type)->elem))
+          !type_isptrlike(((const opttype_t*)n->cond->type)->elem))
         {
           PRINT(".ok");
         }
@@ -1106,9 +1167,10 @@ static void expr(cgen_t* g, const expr_t* n) {
   case EXPR_FUN:       return fun(g, (const fun_t*)n);
   case EXPR_INTLIT:    return intlit(g, (const intlit_t*)n);
   case EXPR_FLOATLIT:  return floatlit(g, (const floatlit_t*)n);
+  case EXPR_BOOLLIT:   return boollit(g, (const boollit_t*)n);
   case EXPR_ID:        return idexpr(g, (const idexpr_t*)n);
   case EXPR_PARAM:     return param(g, (const local_t*)n);
-  case EXPR_BLOCK:     return block(g, (const block_t*)n, 0);
+  case EXPR_BLOCK:     return block(g, (const block_t*)n, 0, NULL);
   case EXPR_CALL:      return call(g, (const call_t*)n);
   case EXPR_MEMBER:    return member(g, (const member_t*)n);
   case EXPR_IF:        return ifexpr(g, (const ifexpr_t*)n);
@@ -1128,8 +1190,8 @@ static void expr(cgen_t* g, const expr_t* n) {
   case NODE_BAD:
   case NODE_COMMENT:
   case NODE_UNIT:
-  case NODE_FIELD:
   case STMT_TYPEDEF:
+  case EXPR_FIELD:
   case TYPE_VOID:
   case TYPE_BOOL:
   case TYPE_INT:
@@ -1142,7 +1204,9 @@ static void expr(cgen_t* g, const expr_t* n) {
   case TYPE_ARRAY:
   case TYPE_ENUM:
   case TYPE_FUN:
+  case TYPE_PTR:
   case TYPE_REF:
+  case TYPE_OPTIONAL:
   case TYPE_STRUCT:
     break;
   }

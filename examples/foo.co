@@ -1,133 +1,76 @@
-type Thing {
-  a ?int
-  b int
-}
 
-fun make_thing() ?Thing {
-  let v ?Thing = Thing()
-  v
-}
+// fun owning_var_no_init() {
+//   var a *int  // initialized as "dead"
+// }
 
-fun make_thing_ptr() ?&Thing {
-  let v Thing = Thing()
-  let p ?&Thing = &v
-  p
-}
+// fun owning_var_err_dead() {
+//   var a *int
+//   let b *int = a  // error: a is dead
+// }
 
-fun opt_if_let_tmp() int {
-  // call may have side effects; generated code uses a temporary
-  if let t = make_thing() {
-    return t.b
-  }
-  0
-}
+// fun owning_var_err_dead(x *int) {
+//   let a *int = x
+//   let b *int = x  // error: x is dead
+// }
 
-fun opt_if_expr_no_tmp1() int {
-  if make_thing() {
-    1
-  } else {
-    0
-  }
-}
 
-fun opt_if_expr_no_tmp2() int {
-  if make_thing_ptr() {
-    1
-  } else {
-    0
-  }
-}
+// fun owning_param_drop(x *int) {
+//   // drop(x)
+// }
 
-fun opt_if_let_no_tmp1(thing ?Thing) int {
-  // no side effects from expression "thing" since its a local
-  if let t = thing {
-    return t.b
-  }
-  0
-}
 
-fun opt_if_let_no_tmp2() int {
-  // call may have side effects but returns a pointer; no temporary needed
-  if let t = make_thing_ptr() {
-    return t.b
-  }
-  0
-}
+// fun ownership_branch(x bool, y *int) *int {
+//   if x {
+//     let a = y
+//     a
+//   } else {
+//     y
+//   }
+// }
 
-fun takes_opt_ref(thing ?&Thing) int {
-  if thing {
-    // type of thing is "&Thing"
-    if let a = thing.a {
-      // type of a is "int"
-      return a
-    }
-  }
-  0
-}
+// fun ownership_branch1(x bool, y *int) *int {
+//   if x {
+//     let a = y
+//     return a
+//   }
+//   y // ok since "if" branch does not flow to this branch
+// }
 
-fun foo(x, y int) int {
-  let t = Thing(a: x)
-  t.a = x
-  if let a = t.a {
-    return x * y * a
+// fun ownership_branch2(x bool, y *int) *int {
+//   if x {
+//     let a = y
+//   }
+//   y // error
+// }
+
+
+// fun owning_param_no_drop(x *int) *int {
+//   x
+// }
+
+// fun owning_var_transfer_ownership(x *int) {
+//   let a *int = x
+//   // drop(a)
+// }
+
+// fun ref_var_err_no_init() {
+//   var a &int
+// }
+
+// type Account {
+//   id int
+// }
+// fun Account.drop(mut this) void {}
+// fun bar(x, y *Account) {
+//   var a *Account = x // ownership transfers x -> a
+//   var b *Account = y // ownership transfers y -> b
+//   a = b // drop(a), ownership transfers b -> a
+// }
+
+
+fun foo(x, y int, z *int) int {
+  if x > 0 {
+    var a = z
   }
   x * y
-}
-
-// ------------------------
-
-fun if_expr_optional1(x ?int, y int) ?int {
-  var a ?int = x
-  if a {
-    a
-  }
-}
-
-fun if_expr_optional1b(x ?int, y int) int {
-  var a ?int = x
-  if a {
-    a
-  }
-  0
-}
-
-fun if_expr_optional2(x ?int, y int) ?int {
-  let a ?int = x
-  if a {
-    x
-  }
-}
-
-fun if_expr_optional2b(x ?int, y int) int {
-  let a ?int = x
-  if a {
-    x
-  }
-  0
-}
-
-fun if_expr_optional3(x ?int, y int) ?int {
-  let a ?int = x
-  if a {
-    x
-  }
-  x
-}
-
-fun nothing() void {}
-fun if_expr_optional4(x ?int, y int) ?int {
-  let a ?int = x
-  if a {
-    x
-  } else {
-    nothing()
-  }
-}
-
-fun if_expr_optional5(x ?int, y int) ?int {
-  // var a ?int = x
-  var a = x
-  if let z = a {
-    z
-  }
 }

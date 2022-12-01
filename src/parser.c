@@ -290,35 +290,42 @@ static bool expect2(parser_t* p, tok_t tok, const char* errmsg) {
 }
 
 
+static void ownership_drop(parser_t* p, ptrarray_t* drops, expr_t* owner);
+
+
 static void enter_scope(parser_t* p) {
   if (!scope_push(&p->scope, p->scanner.compiler->ma))
     out_of_mem(p);
 }
 
 
-static void check_unused(parser_t* p) {
+static void leave_scope(parser_t* p, ptrarray_t* nullable drops) {
   for (u32 i = p->scope.base + 1; i < p->scope.len; i++) {
-    const node_t* n = p->scope.ptr[i++];
+    node_t* n = p->scope.ptr[i++];
     sym_t name = p->scope.ptr[i];
-    if (name != sym__ && node_isexpr(n) && ((const expr_t*)n)->nrefs == 0) {
-      switch (n->kind) {
+
+    if (name == sym__ || !node_isexpr(n))
+      continue;
+
+    switch (n->kind) {
       case EXPR_FUN:
       case EXPR_ID:
         continue;
-      case EXPR_PARAM:
-        if (((local_t*)n)->isthis)
+      case EXPR_LET:
+      case EXPR_VAR:
+      case EXPR_PARAM: {
+        local_t* var = (local_t*)n;
+        if (var->type->kind == TYPE_PTR && var->ownership != OW_DEAD && drops)
+          ownership_drop(p, drops, (expr_t*)var);
+        if (var->isthis)
           continue;
         break;
       }
-      dlog("%p", n);
-      warning(p, n, "unused %s \"%s\"", nodekind_fmt(n->kind), name);
     }
+
+    if (((const expr_t*)n)->nrefs == 0)
+      warning(p, n, "unused %s \"%s\"", nodekind_fmt(n->kind), name);
   }
-}
-
-
-static void leave_scope(parser_t* p) {
-  check_unused(p);
   scope_pop(&p->scope);
 }
 
@@ -379,6 +386,71 @@ static void define(parser_t* p, sym_t name, node_t* n) {
 err_duplicate:
   error(p, n, "redefinition of \"%s\"", name);
 }
+
+// —————————————————————————————————————————————————————————————————————————————————————
+
+
+static local_t* nullable find_local(expr_t* n) {
+  for (;;) switch (n->kind) {
+    case EXPR_FIELD:
+    case EXPR_PARAM:
+    case EXPR_LET:
+    case EXPR_VAR:
+      return (local_t*)n;
+    case EXPR_ID:
+      if (((idexpr_t*)n)->ref && node_isexpr(((idexpr_t*)n)->ref)) {
+        n = (expr_t*)((idexpr_t*)n)->ref;
+        continue;
+      }
+      return NULL;
+    default:
+      return NULL;
+  }
+}
+
+
+static void ownership_drop(parser_t* p, ptrarray_t* drops, expr_t* owner) {
+  dlog("ownership_drop: %s", fmtnode(p, 0, (node_t*)owner, 1));
+  if UNLIKELY(!ptrarray_push(drops, p->ast_ma, owner))
+    out_of_mem(p);
+}
+
+
+static bool ownership_transfer(parser_t* p, expr_t* dstx, expr_t* src) {
+  assert(type_isptr(dstx->type));
+  assert(type_isptr(src->type));
+
+  // find destination local
+  local_t* dst = find_local(dstx);
+  if UNLIKELY(!dst) {
+    dlog("%s: dst is not a storage location", __FUNCTION__);
+    return false;
+  }
+
+  // trace
+  #if 1
+    const char* dsts = fmtnode(p, 0, (const node_t*)dst, 1);
+    const char* srcs = fmtnode(p, 1, (const node_t*)src, 1);
+    dlog("ownership_transfer: %s -> %s", srcs, dsts);
+  #endif
+
+  // mark source local (if any) as dead
+  local_t* src_local = find_local(src);
+  if (src_local) {
+    // TODO: if src_local is defined in an outer scope and we are on a conditional path,
+    // mark ownership as UNKN
+    // e.g. "var x *int; if cond { let y = x; return y }; return x"
+    src_local->ownership = OW_DEAD;
+  }
+
+  // mark destination as alive
+  dst->ownership = OW_LIVE;
+
+  return true;
+}
+
+
+// —————————————————————————————————————————————————————————————————————————————————————
 
 
 #define mknode(p, TYPE, kind)      ( (TYPE*)_mknode((p), sizeof(TYPE), (kind)) )
@@ -471,21 +543,21 @@ static bool types_iscompat(const type_t* dst, const type_t* src) {
     case TYPE_I32:
     case TYPE_I64:
       return (dst == src) && (dst->isunsigned == src->isunsigned);
+    case TYPE_PTR:
+      return (
+        src->kind == TYPE_PTR &&
+        types_iscompat(((const ptrtype_t*)dst)->elem, ((const ptrtype_t*)src)->elem) );
     case TYPE_REF: {
       // &T    <= &T
       // mut&T <= &T
       // mut&T <= mut&T
       // &T    x= mut&T
-      if (src->kind != TYPE_REF)
-        return false;
       const reftype_t* d = (const reftype_t*)dst;
       const reftype_t* s = (const reftype_t*)src;
-      if (types_iscompat(d->elem, s->elem) &&
-          (s->ismut == d->ismut || s->ismut || !d->ismut))
-      {
-        return true;
-      }
-      return false;
+      return (
+        src->kind == TYPE_REF &&
+        (s->ismut == d->ismut || s->ismut || !d->ismut) &&
+        types_iscompat(d->elem, s->elem) );
     }
     case TYPE_OPTIONAL: {
       // ?T <= T
@@ -500,7 +572,7 @@ static bool types_iscompat(const type_t* dst, const type_t* src) {
 }
 
 
-static void check_types_compat(
+static bool check_types_compat(
   parser_t* p,
   const type_t* nullable x,
   const type_t* nullable y,
@@ -510,7 +582,9 @@ static void check_types_compat(
     const char* xs = fmtnode(p, 0, (const node_t*)x, 1);
     const char* ys = fmtnode(p, 1, (const node_t*)y, 1);
     error(p, origin, "incompatible types, %s and %s", xs, ys);
+    return false;
   }
+  return true;
 }
 
 
@@ -638,7 +712,7 @@ static fun_t* nullable find_method(parser_t* p, type_t* t, sym_t name) {
 static bool fieldset(parser_t* p, ptrarray_t* fields) {
   u32 fields_start = fields->len;
   for (;;) {
-    local_t* f = mknode(p, local_t, NODE_FIELD);
+    local_t* f = mknode(p, local_t, EXPR_FIELD);
     f->name = p->scanner.sym;
     if (find_field(fields, f->name))
       error(p, NULL, "duplicate field %s", f->name);
@@ -707,6 +781,17 @@ static type_t* type_struct(parser_t* p) {
 }
 
 
+// ptr_type = "*" type
+static type_t* type_ptr(parser_t* p) {
+  ptrtype_t* t = mknode(p, ptrtype_t, TYPE_PTR);
+  next(p);
+  t->size = p->scanner.compiler->ptrsize;
+  t->align = t->size;
+  t->elem = type(p, PREC_UNARY_PREFIX);
+  return (type_t*)t;
+}
+
+
 static type_t* type_ref1(parser_t* p, bool ismut) {
   reftype_t* t = mkreftype(p, ismut);
   next(p);
@@ -758,10 +843,11 @@ static stmt_t* stmt_typedef(parser_t* p) {
 }
 
 
-static idexpr_t* resolve_id(parser_t* p, idexpr_t* n) {
+static bool resolve_id(parser_t* p, idexpr_t* n) {
   n->ref = lookup_definition(p, n->name);
   if UNLIKELY(!n->ref) {
     error(p, (node_t*)n, "undeclared identifier \"%s\"", n->name);
+    return false;
   } else if (node_isexpr(n->ref)) {
     n->type = ((expr_t*)n->ref)->type;
   } else if (nodekind_istype(n->ref->kind)) {
@@ -769,8 +855,103 @@ static idexpr_t* resolve_id(parser_t* p, idexpr_t* n) {
   } else {
     error(p, (node_t*)n, "cannot use %s \"%s\" as an expression",
       nodekind_fmt(n->ref->kind), n->name);
+    return false;
   }
-  return n;
+  return true;
+}
+
+
+static bool check_rvalue(parser_t* p, expr_t* n);
+
+
+static bool check_rvalue_id(parser_t* p, idexpr_t* n) {
+  // check if id is a valid value
+  if (type_isptr(n->type)) {
+    // source is owner, check that it's alive
+    if (nodekind_islocal(n->ref->kind)) {
+      local_t* src = (local_t*)n->ref;
+      if UNLIKELY(src->ownership != OW_LIVE) {
+        const char* s = fmtnode(p, 0, (const node_t*)src, 1);
+        error(p, (node_t*)n, "attempt to use dead %s", s);
+        return false;
+      }
+    } else {
+      // (is this even possible?)
+      const char* s = fmtnode(p, 0, (const node_t*)n->ref, 1);
+      error(p, (node_t*)n, "cannot use owning %s here", s);
+      return false;
+    }
+  }
+  return true;
+}
+
+
+static bool check_rvalue_block(parser_t* p, block_t* b) {
+  if (b->children.len == 0) {
+    b->type = type_void;
+    return true;
+  }
+  expr_t* expr = b->children.v[b->children.len-1];
+  expr->flags |= EX_RVALUE;
+  bool ok = check_rvalue(p, expr);
+  b->type = expr->type;
+  return ok;
+}
+
+
+static bool check_rvalue_if(parser_t* p, ifexpr_t* n) {
+  if ( (n->elseb != NULL && !check_rvalue(p, n->elseb)) ||
+       !check_rvalue(p, n->thenb) ||
+       !check_rvalue(p, n->cond) )
+  {
+    return false;
+  }
+
+  if (n->elseb && n->elseb->type != type_void) {
+    n->type = n->thenb->type;
+    if UNLIKELY(!types_iscompat(n->thenb->type, n->elseb->type)) {
+      // TODO: type union
+      const char* a = fmtnode(p, 0, (const node_t*)n->thenb->type, 1);
+      const char* b = fmtnode(p, 1, (const node_t*)n->elseb->type, 1);
+      error(p, (node_t*)n->elseb,
+        "incompatible types %s and %s in \"if\" branches", a, b);
+      return false;
+    }
+  } else {
+    n->type = n->thenb->type;
+    if (n->type->kind != TYPE_OPTIONAL) {
+      opttype_t* t = mknode(p, opttype_t, TYPE_OPTIONAL);
+      t->elem = n->type;
+      n->type = (type_t*)t;
+    }
+  }
+
+  return true;
+}
+
+
+static bool check_rvalue(parser_t* p, expr_t* n) {
+  if (n->flags & EX_RVALUE_CHECKED)
+    return true;
+  n->flags |= EX_RVALUE_CHECKED;
+  switch (n->kind) {
+    case EXPR_ID:    return check_rvalue_id(p, (idexpr_t*)n);
+    case EXPR_BLOCK: return check_rvalue_block(p, (block_t*)n);
+    case EXPR_IF:    return check_rvalue_if(p, (ifexpr_t*)n);
+
+    case EXPR_BINOP:
+      return check_rvalue(p, ((binop_t*)n)->left) &&
+             check_rvalue(p, ((binop_t*)n)->right) ;
+
+    case EXPR_POSTFIXOP:
+    case EXPR_PREFIXOP:
+    case EXPR_DEREF:
+      return check_rvalue(p, ((unaryop_t*)n)->expr);
+
+    default:
+      panic("TODO %s %s", __FUNCTION__, nodekind_name(n->kind));
+      return false;
+  }
 }
 
 
@@ -778,7 +959,9 @@ static expr_t* expr_id(parser_t* p, exprflag_t fl) {
   idexpr_t* n = mkexpr(p, idexpr_t, EXPR_ID, fl);
   n->name = p->scanner.sym;
   next(p);
-  return (expr_t*)resolve_id(p, n);
+  if (resolve_id(p, n) && (fl & EX_RVALUE))
+    check_rvalue(p, (expr_t*)n);
+  return (expr_t*)n;
 }
 
 
@@ -792,6 +975,7 @@ static expr_t* expr_var(parser_t* p, exprflag_t fl) {
     n->name = p->scanner.sym;
     next(p);
   }
+  bool ok = true;
   if (currtok(p) == TASSIGN) {
     next(p);
     typectx_push(p, type_void);
@@ -805,10 +989,32 @@ static expr_t* expr_var(parser_t* p, exprflag_t fl) {
       typectx_push(p, n->type);
       n->init = expr(p, PREC_ASSIGN, fl | EX_RVALUE);
       typectx_pop(p);
-      check_types_compat(p, n->type, n->init->type, (node_t*)n->init);
+      ok = check_types_compat(p, n->type, n->init->type, (node_t*)n->init);
     }
   }
+
   define(p, n->name, (node_t*)n);
+
+  // check for required initializer expression
+  if (!n->init && ok) {
+    if UNLIKELY(n->kind == EXPR_LET) {
+      error(p, NULL, "missing value for let binding, expecting '='");
+      ok = false;
+    } else if UNLIKELY(n->type->kind == TYPE_REF) {
+      error(p, NULL, "missing initial value for reference variable, expecting '='");
+      ok = false;
+    }
+  }
+
+  // manage ownership of owning variables
+  if (ok && n->type->kind == TYPE_PTR) {
+    if (n->init) {
+      ok = ownership_transfer(p, (expr_t*)n, n->init);
+    } else {
+      n->ownership = OW_DEAD;
+    }
+  }
+
   return (expr_t*)n;
 }
 
@@ -870,8 +1076,7 @@ static expr_t* expr_if(parser_t* p, exprflag_t fl) {
 
   enter_scope(p);
 
-  fl |= EX_RVALUE;
-  n->cond = expr(p, PREC_COMMA, fl);
+  n->cond = expr(p, PREC_COMMA, fl | EX_RVALUE);
   expr_t* type_narrowed_binding = check_if_cond(p, n->cond);
 
   n->thenb = expr(p, PREC_COMMA, fl);
@@ -881,25 +1086,7 @@ static expr_t* expr_if(parser_t* p, exprflag_t fl) {
     n->elseb = expr(p, PREC_COMMA, fl);
   }
 
-  if (n->elseb && n->elseb->type != type_void) {
-    n->type = n->thenb->type;
-    if UNLIKELY(!types_iscompat(n->thenb->type, n->elseb->type)) {
-      // TODO: type union
-      const char* a = fmtnode(p, 0, (const node_t*)n->thenb->type, 1);
-      const char* b = fmtnode(p, 1, (const node_t*)n->elseb->type, 1);
-      error(p, (node_t*)n->elseb,
-        "incompatible types %s and %s in \"if\" branches", a, b);
-    }
-  } else {
-    n->type = n->thenb->type;
-    if (n->type->kind != TYPE_OPTIONAL) {
-      opttype_t* t = mknode(p, opttype_t, TYPE_OPTIONAL);
-      t->elem = n->type;
-      n->type = (type_t*)t;
-    }
-  }
-
-  leave_scope(p);
+  leave_scope(p, &n->drops);
 
   if (type_narrowed_binding) {
     expr_t* dst = n->cond;
@@ -949,7 +1136,7 @@ static expr_t* expr_for(parser_t* p, exprflag_t fl) {
 
 // return = "return" (expr ("," expr)*)?
 static expr_t* expr_return(parser_t* p, exprflag_t fl) {
-  retexpr_t* n = mkexpr(p, retexpr_t, EXPR_RETURN, fl);
+  retexpr_t* n = mkexpr(p, retexpr_t, EXPR_RETURN, fl | EX_RVALUE_CHECKED);
   next(p);
   if (currtok(p) == TSEMI)
     return (expr_t*)n;
@@ -1009,7 +1196,7 @@ static type_t* select_int_type(parser_t* p, const intlit_t* n, u64 isneg) {
 
 
 static expr_t* intlit(parser_t* p, exprflag_t fl, bool isneg) {
-  intlit_t* n = mkexpr(p, intlit_t, EXPR_INTLIT, fl);
+  intlit_t* n = mkexpr(p, intlit_t, EXPR_INTLIT, fl | EX_RVALUE_CHECKED);
   n->intval = p->scanner.litint;
   n->type = select_int_type(p, n, (u64)isneg);
   next(p);
@@ -1018,7 +1205,7 @@ static expr_t* intlit(parser_t* p, exprflag_t fl, bool isneg) {
 
 
 static expr_t* floatlit(parser_t* p, exprflag_t fl, bool isneg) {
-  floatlit_t* n = mkexpr(p, floatlit_t, EXPR_FLOATLIT, fl);
+  floatlit_t* n = mkexpr(p, floatlit_t, EXPR_FLOATLIT, fl | EX_RVALUE_CHECKED);
   char* endptr = NULL;
 
   // note: scanner always starts float litbuf with '+'
@@ -1142,7 +1329,7 @@ static bool expr_ismut(const expr_t* n) {
 }
 
 
-static void check_assign_to_member(parser_t* p, member_t* m) {
+static bool check_assign_to_member(parser_t* p, member_t* m) {
   // check mutability of receiver
   assertnotnull(m->recv->type);
   switch (m->recv->type->kind) {
@@ -1156,44 +1343,49 @@ static void check_assign_to_member(parser_t* p, member_t* m) {
     {
       const char* s = fmtnode(p, 0, (node_t*)m->recv, 1);
       error(p, (node_t*)m->recv, "assignment to immutable struct %s", s);
-      return;
+      return false;
     }
-    break;
+    return true;
 
   case TYPE_REF:
-    if (!((reftype_t*)m->recv->type)->ismut) {
+    if UNLIKELY(!((reftype_t*)m->recv->type)->ismut) {
       const char* s = fmtnode(p, 0, (node_t*)m->recv, 1);
       error(p, (node_t*)m->recv, "assignment to immutable reference %s", s);
-      return;
+      return false;
     }
-    break;
+    return true;
 
+  default:
+    return true;
   }
 }
 
 
-static void check_assign_to_id(parser_t* p, idexpr_t* id) {
-  node_t* target = id->ref; // target is NULL when "id" is undefined
-  if (target) switch (target->kind) {
+static bool check_assign_to_id(parser_t* p, idexpr_t* id) {
+  node_t* target = id->ref;
+  if (!target) // target is NULL when "id" is undefined
+    return false;
+  switch (target->kind) {
   case EXPR_ID:
     // this happens when trying to assign to a type-narrowed local
     // e.g. "var a ?int; if a { a = 3 }"
     error(p, (node_t*)id, "cannot assign to type-narrowed binding \"%s\"", id->name);
-    break;
+    return true;
   case EXPR_VAR:
-    break;
+    return true;
   case EXPR_PARAM:
     if (!((local_t*)target)->isthis)
-      break;
+      return true;
     FALLTHROUGH;
   default:
     error(p, (node_t*)id, "cannot assign to %s \"%s\"",
       nodekind_fmt(target->kind), id->name);
+    return false;
   }
 }
 
 
-static void check_assign(parser_t* p, expr_t* target) {
+static bool check_assign(parser_t* p, expr_t* target) {
   switch (target->kind) {
   case EXPR_ID:
     return check_assign_to_id(p, (idexpr_t*)target);
@@ -1207,28 +1399,35 @@ static void check_assign(parser_t* p, expr_t* target) {
     if UNLIKELY(!((reftype_t*)t)->ismut) {
       const char* s = fmtnode(p, 0, (node_t*)t, 1);
       error(p, (node_t*)target, "cannot assign via immutable reference of type %s", s);
+      return false;
     }
-    return;
+    return true;
   }
   }
 err:
   error(p, (node_t*)target, "cannot assign to %s", nodekind_fmt(target->kind));
+  return false;
 }
 
 
 static expr_t* expr_infix_assign(parser_t* p, prec_t prec, expr_t* left, exprflag_t fl) {
   binop_t* n = (binop_t*)expr_infix_op(p, prec, left, fl);
-  check_assign(p, n->left);
+  if (check_assign(p, n->left)) {
+    if (n->left->type->kind == TYPE_PTR)
+      ownership_transfer(p, n->left, n->right);
+  }
   return (expr_t*)n;
 }
 
 
+// postfix_op = expr ("++" | "--")
 static expr_t* postfix_op(parser_t* p, prec_t prec, expr_t* left, exprflag_t fl) {
   unaryop_t* n = mkexpr(p, unaryop_t, EXPR_POSTFIXOP, fl);
   n->op = currtok(p);
   next(p);
   n->expr = left;
   n->type = left->type;
+  // TODO: specialized check here since it's not actually assignment (ownership et al)
   check_assign(p, left);
   return (expr_t*)n;
 }
@@ -1688,19 +1887,6 @@ static expr_t* expr_dotmember(parser_t* p, exprflag_t fl) {
 }
 
 
-static void typecheck_rvalue_block(parser_t* p, block_t* b) {
-  if (b->children.len == 0) {
-    b->type = type_void;
-    return;
-  }
-  expr_t* expr = b->children.v[b->children.len-1];
-  expr->flags |= EX_RVALUE;
-  if (expr->kind == EXPR_BLOCK)
-    typecheck_rvalue_block(p, (block_t*)expr);
-  b->type = expr->type;
-}
-
-
 static void clear_rvalue(parser_t* p, expr_t* n) {
   n->flags &= ~EX_RVALUE;
   switch (n->kind) {
@@ -1729,18 +1915,40 @@ static expr_t* expr_block(parser_t* p, exprflag_t fl) {
     for (;;) {
       expr_t* cn = expr(p, PREC_LOWEST, fl);
       push(p, &n->children, (node_t*)cn);
+
+      // treat _all_ block-level expressions as rvalues, with some exceptions
+      switch (cn->kind) {
+        case EXPR_FUN:
+        case EXPR_BLOCK:
+        case EXPR_CALL:
+        case EXPR_VAR:
+        case EXPR_LET:
+        case EXPR_IF:
+        case EXPR_FOR:
+        case EXPR_RETURN:
+        case EXPR_BOOLLIT:
+        case EXPR_INTLIT:
+        case EXPR_FLOATLIT:
+          break;
+        default:
+          // e.g. "z" in "{ z; 3 }"
+          check_rvalue(p, cn);
+      }
+
       if (currtok(p) != TSEMI)
         break;
-      next(p);
+      next(p); // consume ";"
+
       if (currtok(p) == TRBRACE || currtok(p) == TEOF)
         break;
+
       clear_rvalue(p, cn);
     }
   }
   expect2(p, TRBRACE, ", expected '}' or ';'");
-  leave_scope(p);
+  leave_scope(p, &n->drops);
   if (isrvalue) {
-    typecheck_rvalue_block(p, n);
+    check_rvalue(p, (expr_t*)n);
   } else if (n->children.len > 0) {
     clear_rvalue(p, n->children.v[n->children.len-1]);
   }
@@ -2145,8 +2353,14 @@ static expr_t* expr_fun(parser_t* p, exprflag_t fl) {
     fun_body(p, n, fl);
   }
 
-  if (has_named_params)
-    leave_scope(p);
+  if (has_named_params) {
+    ptrarray_t* drops = &n->drops;
+    if (n->body->kind == EXPR_BLOCK) {
+      // register parameter drops in body when possible
+      drops = &((block_t*)n->body)->drops;
+    }
+    leave_scope(p, drops);
+  }
 
   return (expr_t*)n;
 }
@@ -2179,7 +2393,7 @@ unit_t* parser_parse(parser_t* p, memalloc_t ast_ma, input_t* input) {
     }
   }
 
-  leave_scope(p);
+  leave_scope(p, NULL);
 
   return unit;
 }
@@ -2344,6 +2558,7 @@ static const type_parselet_t type_parsetab[TOK_COUNT] = {
   [TID]       = {type_id, NULL, 0},
   [TLBRACE]   = {type_struct, NULL, 0},
   [TFUN]      = {type_fun, NULL, 0},
+  [TSTAR]     = {type_ptr, NULL, 0},
   [TAND]      = {type_ref, NULL, 0},
   [TMUT]      = {type_mut, NULL, 0},
   [TQUESTION] = {type_optional, NULL, 0},

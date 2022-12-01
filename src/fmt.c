@@ -62,7 +62,7 @@ static void local(abuf_t* s, const local_t* nullable n, u32 indent, u32 maxdepth
   abuf_str(s, n->name);
   abuf_c(s, ' ');
   fmt(s, (node_t*)n->type, indent, maxdepth);
-  if (n->init) {
+  if (n->init && maxdepth > 1) {
     abuf_str(s, " = ");
     fmt(s, (node_t*)n->init, indent, maxdepth);
   }
@@ -114,6 +114,16 @@ static void structtype(
 }
 
 
+static void fmt_nodelist(
+  abuf_t* s, const ptrarray_t* nodes, const char* sep, u32 indent, u32 maxdepth)
+{
+  for (u32 i = 0; i < nodes->len; i++) {
+    if (i) abuf_str(s, sep);
+    fmt(s, nodes->v[i], indent, maxdepth);
+  }
+}
+
+
 static void fmt(abuf_t* s, const node_t* nullable n, u32 indent, u32 maxdepth) {
   if (maxdepth == 0)
     return;
@@ -140,10 +150,7 @@ static void fmt(abuf_t* s, const node_t* nullable n, u32 indent, u32 maxdepth) {
   case EXPR_FUN: {
     fun_t* fn = (fun_t*)n;
     abuf_fmt(s, "fun %s(", fn->name);
-    for (u32 i = 0; i < fn->params.len; i++) {
-      if (i > 0) abuf_str(s, ", ");
-      fmt(s, fn->params.v[i], indent, maxdepth);
-    }
+    fmt_nodelist(s, &fn->params, ", ", indent, maxdepth);
     abuf_str(s, ") ");
     fmt(s, (node_t*)((funtype_t*)fn->type)->result, indent, maxdepth);
     if (fn->body) {
@@ -177,10 +184,7 @@ static void fmt(abuf_t* s, const node_t* nullable n, u32 indent, u32 maxdepth) {
     const call_t* call = (const call_t*)n;
     fmt(s, (const node_t*)call->recv, indent, maxdepth);
     abuf_c(s, '(');
-    for (u32 i = 0; i < call->args.len; i++) {
-      if (i) abuf_str(s, ", ");
-      fmt(s, (const node_t*)call->args.v[i], indent, maxdepth);
-    }
+    fmt_nodelist(s, &call->args, ", ", indent, maxdepth);
     abuf_c(s, ')');
     break;
   }
@@ -226,6 +230,11 @@ static void fmt(abuf_t* s, const node_t* nullable n, u32 indent, u32 maxdepth) {
 
   case EXPR_ID:
     abuf_str(s, ((idexpr_t*)n)->name);
+    break;
+
+  case EXPR_RETURN:
+    abuf_str(s, "return ");
+    fmt_nodelist(s, &((const retexpr_t*)n)->values, ", ", indent, maxdepth);
     break;
 
   case EXPR_DEREF:
@@ -284,6 +293,12 @@ static void fmt(abuf_t* s, const node_t* nullable n, u32 indent, u32 maxdepth) {
     fmt(s, (node_t*)a->elem, indent, maxdepth);
     break;
   }
+  case TYPE_PTR: {
+    const ptrtype_t* pt = (const ptrtype_t*)n;
+    abuf_c(s, '*');
+    fmt(s, (node_t*)pt->elem, indent, maxdepth);
+    break;
+  }
   case TYPE_REF: {
     const reftype_t* pt = (const reftype_t*)n;
     abuf_str(s, pt->ismut ? "mut&" : "&");
@@ -298,7 +313,7 @@ static void fmt(abuf_t* s, const node_t* nullable n, u32 indent, u32 maxdepth) {
 
   case TYPE_ENUM:
   case STMT_TYPEDEF:
-  case NODE_FIELD:
+  case EXPR_FIELD:
     dlog("TODO %s", nodekind_name(n->kind));
     abuf_str(s, "/* TODO fmt ");
     abuf_str(s, nodekind_name(n->kind));

@@ -128,6 +128,14 @@ static bool seen(repr_t* r, const void* n) {
 }
 
 
+static void repr_nodearray(RPARAMS, const ptrarray_t* nodes) {
+  for (usize i = 0; i < nodes->len; i++) {
+    CHAR(' ');
+    repr(RARGS, nodes->v[i]);
+  }
+}
+
+
 static void repr_typedef(RPARAMS, const typedef_t* n) {
   CHAR(' ');
   PRINT(n->name);
@@ -166,6 +174,11 @@ static void repr_fun(RPARAMS, const fun_t* n) {
 
   if (n->body)
     CHAR(' '), repr(RARGS, (node_t*)n->body);
+  if (n->drops.len) {
+    REPR_BEGIN('(', "drops");
+    repr_nodearray(RARGS, &n->drops);
+    REPR_END(')');
+  }
 }
 
 
@@ -193,14 +206,6 @@ static void repr_call(RPARAMS, const call_t* n) {
 }
 
 
-static void repr_nodearray(RPARAMS, const ptrarray_t* nodes) {
-  for (usize i = 0; i < nodes->len; i++) {
-    CHAR(' ');
-    repr(RARGS, nodes->v[i]);
-  }
-}
-
-
 static void repr_type(RPARAMS, const type_t* t) {
   REPR_BEGIN('<', nodekind_name(t->kind));
   bool isnew = !seen(r, t);
@@ -221,6 +226,10 @@ static void repr_type(RPARAMS, const type_t* t) {
     } else {
       CHAR('\'');
     }
+    break;
+  case TYPE_PTR:
+    CHAR(' ');
+    repr_type(RARGSFL(fl | REPRFLAG_HEAD), ((const ptrtype_t*)t)->elem);
     break;
   case TYPE_REF:
     CHAR(' ');
@@ -245,19 +254,31 @@ static void repr(RPARAMS, const node_t* n) {
   const char* kindname = STRTAB_GET(nodekind_strtab, n->kind);
   REPR_BEGIN('(', kindname);
 
-  if (node_isexpr(n) || n->kind == NODE_FIELD) {
-    expr_t* expr = (expr_t*)n;
+  // name up front, even if seen
+  if (node_isexpr(n)) {
     if (n->kind == EXPR_FUN && ((fun_t*)n)->name) {
       CHAR(' '), PRINT(((fun_t*)n)->name);
       NEWLINE();
       indent += INDENT;
+    } else if (node_islocal(n)) {
+      CHAR(' '), PRINT(((local_t*)n)->name), CHAR(' ');
     } else {
       CHAR(' ');
     }
-    CHAR('{');
-    if (expr->flags & EX_RVALUE)   CHAR('r');
-    if (expr->flags & EX_OPTIONAL) CHAR('o');
-    PRINT("} ");
+  }
+
+  if (seen(r, n))
+    goto end;
+
+  // {flags} and <type>
+  if (node_isexpr(n)) {
+    expr_t* expr = (expr_t*)n;
+    if (expr->flags) {
+      CHAR('{');
+      if (expr->flags & EX_RVALUE)   CHAR('r');
+      if (expr->flags & EX_OPTIONAL) CHAR('o');
+      PRINT("} ");
+    }
     if (expr->type) {
       repr_type(RARGSFL(fl | REPRFLAG_HEAD), expr->type);
     } else {
@@ -267,17 +288,22 @@ static void repr(RPARAMS, const node_t* n) {
       indent -= INDENT;
   }
 
-  if (seen(r, n))
-    goto end;
-
   switch (n->kind) {
 
   case NODE_UNIT:    repr_nodearray(RARGS, &((unit_t*)n)->children); break;
   case STMT_TYPEDEF: repr_typedef(RARGS, (typedef_t*)n); break;
   case EXPR_FUN:     repr_fun(RARGS, (fun_t*)n); break;
-  case EXPR_BLOCK:   repr_nodearray(RARGS, &((block_t*)n)->children); break;
   case EXPR_CALL:    repr_call(RARGS, (call_t*)n); break;
   case EXPR_RETURN:  repr_nodearray(RARGS, &((retexpr_t*)n)->values); break;
+
+  case EXPR_BLOCK:
+    repr_nodearray(RARGS, &((block_t*)n)->children);
+    if (((block_t*)n)->drops.len) {
+      REPR_BEGIN('(', "drops");
+      repr_nodearray(RARGS, &((block_t*)n)->drops);
+      REPR_END(')');
+    }
+    break;
 
   case EXPR_BOOLLIT:
     CHAR(' '), PRINT(((const boollit_t*)n)->val ? "true" : "false");
@@ -330,6 +356,11 @@ static void repr(RPARAMS, const node_t* n) {
     repr(RARGS, (const node_t*)e->thenb);
     if (e->elseb)
       repr(RARGS, (const node_t*)e->elseb);
+    if (e->drops.len) {
+      REPR_BEGIN('(', "drops");
+      repr_nodearray(RARGS, &e->drops);
+      REPR_END(')');
+    }
     break;
   }
 
@@ -361,16 +392,23 @@ static void repr(RPARAMS, const node_t* n) {
     break;
   }
 
-  case NODE_FIELD:
+  case EXPR_FIELD:
   case EXPR_PARAM:
   case EXPR_LET:
-  case EXPR_VAR:
-    CHAR(' '); PRINT(((const local_t*)n)->name);
-    if (((const local_t*)n)->init) {
+  case EXPR_VAR: {
+    const local_t* var = (const local_t*)n;
+    CHAR(' '); PRINT(var->name);
+    if (type_isptr(var->type)) switch ((enum ownership)var->ownership) {
+      case OW_LIVE: PRINT(" {live}"); break;
+      case OW_DEAD: PRINT(" {dead}"); break;
+      case OW_UNKN: PRINT(" {unkn}"); break;
+    }
+    if (var->init) {
       CHAR(' ');
-      repr(RARGS, (const node_t*)((const local_t*)n)->init);
+      repr(RARGS, (const node_t*)var->init);
     }
     break;
+  }
 
   }
 

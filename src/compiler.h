@@ -8,12 +8,12 @@
   _( NODE_BAD )/* invalid node; parse error */ \
   _( NODE_COMMENT )\
   _( NODE_UNIT )\
-  _( NODE_FIELD )\
   _( STMT_TYPEDEF )\
   _( EXPR_FUN )/* nodekind_isexpr assumes this is first expr kind */\
   _( EXPR_BLOCK )\
   _( EXPR_CALL )\
   _( EXPR_ID )\
+  _( EXPR_FIELD )\
   _( EXPR_PARAM )\
   _( EXPR_VAR )\
   _( EXPR_LET )\
@@ -42,6 +42,7 @@
   _( TYPE_ARRAY ) /* nodekind_isusertype assumes this is first user type */\
   _( TYPE_ENUM )\
   _( TYPE_FUN )\
+  _( TYPE_PTR )\
   _( TYPE_REF )\
   _( TYPE_OPTIONAL )\
   _( TYPE_STRUCT )\
@@ -161,8 +162,16 @@ enum nodekind {
 
 typedef u8 exprflag_t;
 enum exprflag {
-  EX_RVALUE   = 1 << 0, // expression is used as an rvalue
-  EX_OPTIONAL = 1 << 1, // type-narrowed from optional
+  EX_RVALUE         = 1 << 0, // expression is used as an rvalue
+  EX_RVALUE_CHECKED = 1 << 1, // rvalue of this node has been checked
+  EX_OPTIONAL       = 1 << 2, // type-narrowed from optional
+};
+
+typedef u8 ownership_t;
+enum ownership {
+  OW_LIVE, // definitely have ownership
+  OW_DEAD, // definitely does NOT have ownership
+  OW_UNKN, // probably does NOT have ownership
 };
 
 typedef struct {
@@ -214,7 +223,11 @@ typedef struct {
 typedef struct {
   usertype_t;
   type_t* elem;
-  bool    ismut;
+} ptrtype_t;
+
+typedef struct {
+  ptrtype_t;
+  bool ismut;
 } reftype_t;
 
 typedef struct {
@@ -246,16 +259,17 @@ typedef struct { expr_t; ptrarray_t values; } retexpr_t;
 
 typedef struct {
   expr_t;
-  expr_t* cond;
-  expr_t* thenb;
+  expr_t*          cond;
+  expr_t*          thenb;
   expr_t* nullable elseb;
+  ptrarray_t       drops;
 } ifexpr_t;
 
 typedef struct {
   expr_t;
   expr_t* nullable start;
-  expr_t* cond;
-  expr_t* body;
+  expr_t*          cond;
+  expr_t*          body;
   expr_t* nullable end;
 } forexpr_t;
 
@@ -268,14 +282,16 @@ typedef struct {
 
 typedef struct { // PARAM, VAR, LET
   expr_t;
-  sym_t   nullable name; // may be NULL for PARAM
-  expr_t* nullable init;
-  bool    isthis; // [PARAM only] it's the special "this" parameter
+  sym_t   nullable name;      // may be NULL for PARAM
+  expr_t* nullable init;      // may be NULL for VAR and PARAM
+  bool             isthis;    // [PARAM only] it's the special "this" parameter
+  ownership_t      ownership; // [type==TYPE_PTR only] ownership status
 } local_t;
 
 typedef struct { // block is a declaration (stmt) or an expression depending on use
   expr_t;
   ptrarray_t children;
+  ptrarray_t drops; // live owning locals that drop after this block
 } block_t;
 
 typedef struct { // fun is a declaration (stmt) or an expression depending on use
@@ -284,6 +300,7 @@ typedef struct { // fun is a declaration (stmt) or an expression depending on us
   sym_t nullable   name;     // NULL if anonymous
   expr_t* nullable body;     // NULL if function is a prototype
   type_t*          methodof; // non-NULL for methods: type "this" is a method of
+  ptrarray_t       drops;
 } fun_t;
 
 // ———————— END AST ————————
@@ -382,15 +399,18 @@ inline static bool nodekind_istype(nodekind_t kind) { return kind >= TYPE_VOID; 
 inline static bool nodekind_isexpr(nodekind_t kind) {
   return EXPR_FUN <= kind && kind < TYPE_VOID; }
 inline static bool nodekind_islocal(nodekind_t kind) {
-  return kind == EXPR_PARAM || kind == EXPR_VAR || kind == EXPR_LET; }
+  return kind == EXPR_FIELD || kind == EXPR_PARAM
+      || kind == EXPR_LET   || kind == EXPR_VAR; }
   inline static bool nodekind_isbasictype(nodekind_t kind) {
   return TYPE_VOID <= kind && kind < TYPE_ARRAY; }
 inline static bool nodekind_isprimtype(nodekind_t kind) {
   return TYPE_VOID <= kind && kind < TYPE_ARRAY; }
 inline static bool nodekind_isusertype(nodekind_t kind) {
   return TYPE_ARRAY <= kind && kind < NODEKIND_COUNT; }
-inline static bool nodekind_isptrtype(nodekind_t kind) {
-  return kind == TYPE_REF; }
+inline static bool nodekind_isptrtype(nodekind_t kind) { return kind == TYPE_PTR; }
+inline static bool nodekind_isreftype(nodekind_t kind) { return kind == TYPE_REF; }
+inline static bool nodekind_isptrliketype(nodekind_t kind) {
+  return kind == TYPE_PTR || kind == TYPE_REF; }
 inline static bool nodekind_isvar(nodekind_t kind) {
   return kind == EXPR_VAR || kind == EXPR_LET; }
 
@@ -402,6 +422,10 @@ inline static bool node_isusertype(const node_t* n) {
   return nodekind_isusertype(n->kind); }
 inline static bool type_isptr(const type_t* nullable t) {
   return nodekind_isptrtype(assertnotnull(t)->kind); }
+inline static bool type_isref(const type_t* nullable t) {
+  return nodekind_isreftype(assertnotnull(t)->kind); }
+inline static bool type_isptrlike(const type_t* nullable t) {
+  return nodekind_isptrliketype(assertnotnull(t)->kind); }
 inline static bool type_isprim(const type_t* nullable t) {
   return nodekind_isprimtype(assertnotnull(t)->kind); }
 inline static bool type_isopt(const type_t* nullable t) {
