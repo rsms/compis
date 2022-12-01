@@ -1,4 +1,8 @@
-LLVM & Clang tools wrapped up in one portable executable
+A little programming language.
+
+It has the LLVM & Clang tools wrapped up in one portable executable.
+
+You can mix .c and .co source files.
 
 First time setup:
 
