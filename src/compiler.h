@@ -163,10 +163,12 @@ enum nodekind {
 
 typedef u8 exprflag_t;
 enum exprflag {
-  EX_RVALUE         = 1 << 0, // expression is used as an rvalue
-  EX_RVALUE_CHECKED = 1 << 1, // rvalue of this node has been checked
-  EX_OPTIONAL       = 1 << 2, // type-narrowed from optional
-  EX_SHADOWS_OWNER  = 1 << 3, // shadows the original owner of a value (TYPE_PTR)
+  EX_RVALUE           = 1 << 0, // expression is used as an rvalue
+  EX_RVALUE_CHECKED   = 1 << 1, // rvalue of this node has been checked
+  EX_OPTIONAL         = 1 << 2, // type-narrowed from optional
+  EX_SHADOWS_OWNER    = 1 << 3, // shadows the original owner of a value (TYPE_PTR)
+  EX_EXITS            = 1 << 4, // block exits the function (ie has "return")
+  EX_SHADOWS_OPTIONAL = 1 << 5, // type-narrowed "if" check on optional
 };
 
 typedef u8 ownership_t;
@@ -263,7 +265,6 @@ typedef struct {
   expr_t*          cond;
   expr_t*          thenb;
   expr_t* nullable elseb;
-  ptrarray_t       drops;
 } ifexpr_t;
 
 typedef struct {
@@ -292,7 +293,6 @@ typedef struct { // PARAM, VAR, LET
 typedef struct { // block is a declaration (stmt) or an expression depending on use
   expr_t;
   ptrarray_t children;
-  ptrarray_t drops; // live owning locals that drop after this block
 } block_t;
 
 typedef struct { // fun is a declaration (stmt) or an expression depending on use
@@ -301,7 +301,6 @@ typedef struct { // fun is a declaration (stmt) or an expression depending on us
   sym_t nullable   name;     // NULL if anonymous
   expr_t* nullable body;     // NULL if function is a prototype
   type_t*          methodof; // non-NULL for methods: type "this" is a method of
-  ptrarray_t       drops;
 } fun_t;
 
 // ———————— END AST ————————
@@ -465,6 +464,7 @@ extern sym_t sym_this; // "this"
 // scope
 void scope_clear(scope_t* s);
 void scope_dispose(scope_t* s, memalloc_t ma);
+bool scope_copy(scope_t* dst, const scope_t* src, memalloc_t ma);
 bool scope_push(scope_t* s, memalloc_t ma);
 void scope_pop(scope_t* s);
 bool scope_def(scope_t* s, memalloc_t ma, const void* key, void* value);

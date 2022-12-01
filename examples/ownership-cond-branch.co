@@ -1,0 +1,71 @@
+// syntax:
+//   *T means "owner of value of type T"
+//   x = y where y is *T transfers ownership to x
+
+fun ownership_branch_error(x bool, y *int) *int {
+  if x {
+    // ownership transfer y -> a introduces shadow definition:
+    //   shadow = clone(y)
+    //   shadow.flags |= SHADOW
+    //   shadow.ownership = DEAD
+    //   scope_define("y", shadow)
+    let a = y
+    // when scope ends, iterate over owning definitions:
+    //   for local in scope where is_owner(local):
+    //     if (local.flags & SHADOW) && (block.flags & EXITS) == 0:
+    //       prev = scope_lookup(parent_scope, local.name)
+    //       if prev:
+    //         // mark original storage of local.name as being dead
+    //         prev.ownership = DEAD
+    //       else:
+    //         // propagate shadowing definition to the parent block
+    //         scope_define(parent_scope, local.name, local)
+  }
+  // lookup "y" in current scope yields the shadow (ownership=DEAD)
+  y // error: y is dead
+}
+
+fun ownership_branch_exits(x bool, y *int) *int {
+  if x {
+    // ownership transfer y -> a introduces shadow definition
+    //   [see ownership_branch2]
+    let a = y
+    // return statement marks the block as exiting the function
+    //   block.flags |= EXITS
+    return a
+    // when scope ends, iterate over owning definitions:
+    //   [see ownership_branch2]
+  }
+  // lookup "y" in current scope yields the original LIVE definition,
+  // not the shadow, since the "then" block of "if" exits the function.
+  y
+}
+
+fun ownership_branch_fork(x bool, y *int) *int {
+  if x {
+    let a = y
+    a
+  } else {
+    y
+  }
+}
+
+fun ownership_branch_fork_err(x bool, y *int) *int {
+  if x {
+    let a = y
+    a
+  } else {
+    y
+  }
+  y // error: y is dead
+}
+
+fun ownership_branch_fork_optional(x ?*int, y *int) *int {
+  if let a = x {
+    y
+  } else if x {
+    x // okay; a=x only causes ownership transfer on success
+  } else {
+    y
+  }
+}

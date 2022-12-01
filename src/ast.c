@@ -175,11 +175,6 @@ static void repr_fun(RPARAMS, const fun_t* n) {
 
   if (n->body)
     CHAR(' '), repr(RARGS, (node_t*)n->body);
-  if (n->drops.len) {
-    REPR_BEGIN('(', "drops");
-    repr_nodearray(RARGS, &n->drops);
-    REPR_END(')');
-  }
 }
 
 
@@ -299,11 +294,6 @@ static void repr(RPARAMS, const node_t* n) {
 
   case EXPR_BLOCK:
     repr_nodearray(RARGS, &((block_t*)n)->children);
-    if (((block_t*)n)->drops.len) {
-      REPR_BEGIN('(', "drops");
-      repr_nodearray(RARGS, &((block_t*)n)->drops);
-      REPR_END(')');
-    }
     break;
 
   case EXPR_BOOLLIT:
@@ -357,11 +347,6 @@ static void repr(RPARAMS, const node_t* n) {
     repr(RARGS, (const node_t*)e->thenb);
     if (e->elseb)
       repr(RARGS, (const node_t*)e->elseb);
-    if (e->drops.len) {
-      REPR_BEGIN('(', "drops");
-      repr_nodearray(RARGS, &e->drops);
-      REPR_END(')');
-    }
     break;
   }
 

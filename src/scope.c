@@ -46,6 +46,17 @@ void scope_dispose(scope_t* s, memalloc_t ma) {
 }
 
 
+bool scope_copy(scope_t* dst, const scope_t* src, memalloc_t ma) {
+  void* ptr = mem_allocv(ma, src->cap, sizeof(void*));
+  if (!ptr)
+    return false;
+  memcpy(ptr, src->ptr, src->cap * sizeof(void*));
+  *dst = *src;
+  dst->ptr = ptr;
+  return true;
+}
+
+
 static bool scope_grow(scope_t* s, memalloc_t ma) {
   u32 initcap = 4;
   u32 newcap = (s->cap + ((initcap/2) * !s->cap)) * 2;

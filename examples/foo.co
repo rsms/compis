@@ -32,28 +32,49 @@
 //   *T means "owner of value of type T"
 //   x = y where y is *T transfers ownership to x
 
-fun ownership_branch1(x bool, y *int) *int {
+// fun ownership_branch_err(x bool, y *int) *int {
+//   if x {
+//     let a = y
+//   }
+//   y // error: y is dead
+// }
+
+// fun ownership_branch_exits(x bool, y *int) *int {
+//   if x {
+//     let a = y
+//     return a
+//   }
+//   y
+// }
+
+fun ownership_branch_fork(x bool, y *int) *int {
   if x {
-    if x {
-      // loss of ownership (in this case to a) introduces a shadow of a:
-      //   a_shadow = clone(a)
-      //   a_shadow.flags |= SHADOW
-      //   scope_define("a", a_shadow)
-      let a = y
-      return a
-    }
+    let a = y
+    a
+  } else {
+    y
   }
-  y // ok since "if" branch does not flow to this branch
 }
 
-fun ownership_branch2(x bool, y *int) *int {
-  if x {
-    if x {
-      let a = y
-    }
-  }
-  y // error: y is dead
-}
+// fun ownership_branch_fork_err(x bool, y *int) *int {
+//   if x {
+//     let a = y
+//     a
+//   } else {
+//     y
+//   }
+//   y // error: y is dead
+// }
+
+// fun ownership_branch_fork_optional(x ?*int, y *int) *int {
+//   if let a = x {
+//     y
+//   } else if x {
+//     x // okay; a=x only causes ownership transfer on success
+//   } else {
+//     y
+//   }
+// }
 
 
 // fun owning_param_no_drop(x *int) *int {

@@ -295,13 +295,6 @@ static bool expect2(parser_t* p, tok_t tok, const char* errmsg) {
 #define mknode(p, TYPE, kind)      ( (TYPE*)_mknode((p), sizeof(TYPE), (kind)) )
 #define mkexpr(p, TYPE, kind, fl)  ( (TYPE*)_mkexpr((p), sizeof(TYPE), (kind), (fl)) )
 
-// T* CLONE_NODE(T* node)
-#define CLONE_NODE(nptr) ( \
-  (__typeof__(nptr))memcpy( \
-    mknode(p, __typeof__(*(nptr)), ((node_t*)(nptr))->kind), \
-    (nptr), \
-    sizeof(*(nptr))) \
-)
 
 static node_t* _mknode(parser_t* p, usize size, nodekind_t kind) {
   mem_t m = mem_alloc_zeroed(p->ast_ma, size);
@@ -339,10 +332,29 @@ static reftype_t* mkreftype(parser_t* p, bool ismut) {
 }
 
 
+// T* CLONE_NODE(T* node)
+#define CLONE_NODE(p, nptr) ( \
+  (__typeof__(nptr))memcpy( \
+    mknode(p, __typeof__(*(nptr)), ((node_t*)(nptr))->kind), \
+    (nptr), \
+    sizeof(*(nptr))) \
+)
+
+
+static node_t* clone_node(parser_t* p, const node_t* n) {
+  switch (n->kind) {
+  case EXPR_FIELD:
+  case EXPR_PARAM:
+  case EXPR_LET:
+  case EXPR_VAR:
+    return (node_t*)CLONE_NODE(p, (local_t*)n);
+  default:
+    panic("TODO %s %s", __FUNCTION__, nodekind_name(n->kind));
+  }
+}
+
+
 // —————————————————————————————————————————————————————————————————————————————————————
-
-
-static void ownership_drop(parser_t* p, ptrarray_t* drops, expr_t* owner);
 
 
 static void enter_scope(parser_t* p) {
@@ -351,14 +363,14 @@ static void enter_scope(parser_t* p) {
 }
 
 
-static void leave_scope(parser_t* p, ptrarray_t* nullable drops, bool exits) {
-  u32 len = p->scope.len;
-  u32 base = p->scope.base;
-  scope_pop(&p->scope);
+static void unwind_scope(parser_t* p, scope_t* scope, bool exits) {
+  u32 len = scope->len;
+  u32 base = scope->base;
+  //scope_pop(&p->scope);
 
   for (u32 i = base + 1; i < len; i++) {
-    node_t* n = p->scope.ptr[i++];
-    sym_t name = p->scope.ptr[i];
+    node_t* n = assertnotnull(scope->ptr[i++]);
+    sym_t name = assertnotnull(scope->ptr[i]);
 
     if (name == sym__ || !node_isexpr(n))
       continue;
@@ -372,27 +384,32 @@ static void leave_scope(parser_t* p, ptrarray_t* nullable drops, bool exits) {
     case EXPR_PARAM: {
       local_t* var = (local_t*)n;
 
+      // ignore type-narrowed shadow
+      if (var->flags & EX_SHADOWS_OPTIONAL)
+        continue;
+
       if (var->type->kind == TYPE_PTR && (var->flags & EX_SHADOWS_OWNER) && !exits) {
         // the var shadows a var in the outer scope
-        //dlog("%s shadow found: %s", __FUNCTION__, name);
+        dlog("%s shadow found: %s", __FUNCTION__, name);
         local_t* prev = scope_lookup(&p->scope, name, 0);
         if (prev) {
           // what is being shadowed is defined in this (the outer) scope
-          //dlog("  mark %s %s OW_DEAD", nodekind_fmt(prev->kind), name);
+          dlog("  mark %s %s OW_DEAD", nodekind_fmt(prev->kind), name);
           assertnotnull(prev);
           assert(prev->kind == var->kind);
           prev->ownership = OW_DEAD;
         } else {
           // what var shadows is defined further out; carry over the shadowing
           // var into this (the outer) scope
-          //dlog("  propagate %s %s to outer scope", nodekind_fmt(var->kind), name);
+          dlog("  propagate %s %s to outer scope", nodekind_fmt(var->kind), name);
           if UNLIKELY(!scope_def(&p->scope, p->scanner.compiler->ma, name, var))
             out_of_mem(p);
         }
       }
 
-      if (var->type->kind == TYPE_PTR && var->ownership != OW_DEAD && drops)
-        ownership_drop(p, drops, (expr_t*)var);
+      // if (var->type->kind == TYPE_PTR && var->ownership != OW_DEAD && drops)
+      //   ownership_drop(p, drops, (expr_t*)var);
+
       if (var->isthis)
         continue;
       break;
@@ -402,6 +419,13 @@ static void leave_scope(parser_t* p, ptrarray_t* nullable drops, bool exits) {
     if (((const expr_t*)n)->nrefs == 0)
       warning(p, n, "unused %s \"%s\"", nodekind_fmt(n->kind), name);
   }
+}
+
+
+static void leave_scope(parser_t* p, bool exits) {
+  scope_t s = p->scope; // copy len & base before scope_pop
+  scope_pop(&p->scope);
+  unwind_scope(p, &s, exits);
 }
 
 
@@ -425,6 +449,8 @@ static node_t* nullable lookup_definition(parser_t* p, sym_t name) {
 
 
 static void define_replace(parser_t* p, sym_t name, node_t* n) {
+  //dlog("define_replace %s %s", name, nodekind_name(n->kind));
+  assert(n->kind != EXPR_ID);
   assert(name != sym__);
   if UNLIKELY(!scope_def(&p->scope, p->scanner.compiler->ma, name, n))
     out_of_mem(p);
@@ -440,6 +466,7 @@ static void define_replace(parser_t* p, sym_t name, node_t* n) {
 static void define(parser_t* p, sym_t name, node_t* n) {
   if (name == sym__)
     return;
+  //dlog("define %s %s", name, nodekind_name(n->kind));
 
   node_t* existing = scope_lookup(&p->scope, name, 0);
   if (existing)
@@ -485,13 +512,6 @@ static local_t* nullable find_local(expr_t* n) {
 }
 
 
-static void ownership_drop(parser_t* p, ptrarray_t* drops, expr_t* owner) {
-  dlog("ownership_drop: %s", fmtnode(p, 0, (node_t*)owner, 1));
-  if UNLIKELY(!ptrarray_push(drops, p->ast_ma, owner))
-    out_of_mem(p);
-}
-
-
 static bool ownership_transfer(parser_t* p, expr_t* dstx, expr_t* src) {
   assert(type_isptr(dstx->type));
   assert(type_isptr(src->type));
@@ -510,24 +530,13 @@ static bool ownership_transfer(parser_t* p, expr_t* dstx, expr_t* src) {
     dlog("ownership_transfer: %s -> %s", srcs, dsts);
   #endif
 
-  #if 1
-    local_t* src_local = find_local(src);
-    if (src_local) {
-      local_t* src_local2 = CLONE_NODE(src_local);
-      src_local2->ownership = OW_DEAD;
-      src_local2->flags |= EX_SHADOWS_OWNER;
-      define_replace(p, src_local2->name, (node_t*)src_local2);
-    }
-  #else
-    // mark source-local (if any) as dead
-    local_t* src_local = find_local(src);
-    if (src_local) {
-      // TODO: if src_local is defined in an outer scope and we are on a conditional path,
-      // mark ownership as UNKN
-      // e.g. "var x *int; if cond { let y = x; return y }; return x"
-      src_local->ownership = OW_DEAD;
-    }
-  #endif
+  local_t* src_local = find_local(src);
+  if (src_local) {
+    local_t* src_local2 = CLONE_NODE(p, src_local);
+    src_local2->ownership = OW_DEAD;
+    src_local2->flags |= EX_SHADOWS_OWNER;
+    define_replace(p, src_local2->name, (node_t*)src_local2);
+  }
 
   // mark destination as alive
   dst->ownership = OW_LIVE;
@@ -915,8 +924,12 @@ static bool check_rvalue_id(parser_t* p, idexpr_t* n) {
   // check if id is a valid value
   if (type_isptr(n->type)) {
     // source is owner, check that it's alive
-    if (nodekind_islocal(n->ref->kind)) {
-      local_t* src = (local_t*)n->ref;
+    node_t* ref = n->ref;
+    // while (ref->kind == EXPR_ID)
+    //   ref = ((idexpr_t*)n)->ref;
+
+    if (nodekind_islocal(ref->kind)) {
+      local_t* src = (local_t*)ref;
       if UNLIKELY(src->ownership != OW_LIVE) {
         error(p, (node_t*)n, "attempt to use dead %s \"%s\"",
           nodekind_fmt(src->kind), src->name);
@@ -924,7 +937,8 @@ static bool check_rvalue_id(parser_t* p, idexpr_t* n) {
       }
     } else {
       // (is this even possible?)
-      const char* s = fmtnode(p, 0, (const node_t*)n->ref, 1);
+      dlog("%s: %s", __FUNCTION__, nodekind_name(ref->kind));
+      const char* s = fmtnode(p, 0, (const node_t*)ref, 1);
       error(p, (node_t*)n, "cannot use owning %s here", s);
       return false;
     }
@@ -978,9 +992,12 @@ static bool check_rvalue_if(parser_t* p, ifexpr_t* n) {
 
 
 static bool check_rvalue(parser_t* p, expr_t* n) {
-  if (n->flags & EX_RVALUE_CHECKED)
+  if (n->flags & EX_RVALUE_CHECKED) {
+    //dlog("%s %s already checked", __FUNCTION__, nodekind_name(n->kind));
     return true;
-  n->flags |= EX_RVALUE_CHECKED;
+  }
+  //dlog("%s %s", __FUNCTION__, nodekind_name(n->kind));
+  n->flags |= EX_RVALUE | EX_RVALUE_CHECKED;
   switch (n->kind) {
     case EXPR_ID:    return check_rvalue_id(p, (idexpr_t*)n);
     case EXPR_BLOCK: return check_rvalue_block(p, (block_t*)n);
@@ -994,6 +1011,14 @@ static bool check_rvalue(parser_t* p, expr_t* n) {
     case EXPR_PREFIXOP:
     case EXPR_DEREF:
       return check_rvalue(p, ((unaryop_t*)n)->expr);
+
+    case EXPR_FIELD:
+    case EXPR_PARAM:
+    case EXPR_LET:
+    case EXPR_VAR:
+      if (((local_t*)n)->init)
+        return check_rvalue(p, ((local_t*)n)->init);
+      return true;
 
     default:
       panic("TODO %s %s", __FUNCTION__, nodekind_name(n->kind));
@@ -1066,6 +1091,86 @@ static expr_t* expr_var(parser_t* p, exprflag_t fl) {
 }
 
 
+static void clear_rvalue(parser_t* p, expr_t* n) {
+  n->flags &= ~EX_RVALUE;
+  switch (n->kind) {
+    case EXPR_IF:
+      clear_rvalue(p, ((ifexpr_t*)n)->thenb);
+      if (((ifexpr_t*)n)->elseb)
+        clear_rvalue(p, ((ifexpr_t*)n)->elseb);
+      break;
+    case EXPR_BLOCK: {
+      block_t* b = (block_t*)n;
+      for (u32 i = 0; i < b->children.len; i++)
+        clear_rvalue(p, b->children.v[i]);
+      break;
+    }
+  }
+}
+
+
+static block_t* block(parser_t* p, exprflag_t fl) {
+  block_t* n = mkexpr(p, block_t, EXPR_BLOCK, fl);
+  next(p);
+  //enter_scope(p);
+  bool isrvalue = fl & EX_RVALUE;
+  // exits is true if block contains a return or calls a function that doesn't return
+  fl &= ~EX_RVALUE;
+  if (currtok(p) != TRBRACE && currtok(p) != TEOF) {
+    for (;;) {
+      expr_t* cn = expr(p, PREC_LOWEST, fl);
+      push(p, &n->children, (node_t*)cn);
+
+      // treat _all_ block-level expressions as rvalues, with some exceptions
+      switch (cn->kind) {
+        case EXPR_RETURN:
+          n->flags |= EX_EXITS;
+          break;
+        case EXPR_FUN:
+        case EXPR_BLOCK:
+        case EXPR_CALL:
+        case EXPR_VAR:
+        case EXPR_LET:
+        case EXPR_IF:
+        case EXPR_FOR:
+        case EXPR_BOOLLIT:
+        case EXPR_INTLIT:
+        case EXPR_FLOATLIT:
+          break;
+        default:
+          // e.g. "z" in "{ z; 3 }"
+          check_rvalue(p, cn);
+      }
+
+      if (currtok(p) != TSEMI)
+        break;
+      next(p); // consume ";"
+
+      if (currtok(p) == TRBRACE || currtok(p) == TEOF)
+        break;
+
+      clear_rvalue(p, cn);
+    }
+  }
+  expect2(p, TRBRACE, ", expected '}' or ';'");
+  //leave_scope(p, &n->drops, exits);
+  if (isrvalue) {
+    check_rvalue(p, (expr_t*)n);
+  } else if (n->children.len > 0) {
+    clear_rvalue(p, n->children.v[n->children.len-1]);
+  }
+  return n;
+}
+
+
+static expr_t* expr_block(parser_t* p, exprflag_t fl) {
+  enter_scope(p);
+  block_t* n = block(p, fl);
+  leave_scope(p, n->flags & EX_EXITS);
+  return (expr_t*)n;
+}
+
+
 static expr_t* nullable check_if_cond(parser_t* p, expr_t* cond) {
   if (cond->type->kind == TYPE_BOOL)
     return NULL;
@@ -1075,32 +1180,36 @@ static expr_t* nullable check_if_cond(parser_t* p, expr_t* cond) {
     return NULL;
   }
 
+  opttype_t* opt_type = (opttype_t*)cond->type;
+
   // redefine as non-optional
   switch (cond->kind) {
     case EXPR_ID: {
       // e.g. "if x { ... }"
-      idexpr_t* v1 = (idexpr_t*)cond;
-      idexpr_t* v2 = CLONE_NODE(v1);
-      v2->type = ((opttype_t*)v2->type)->elem;
-      define_replace(p, v2->name, (node_t*)v2);
-      return (expr_t*)v2;
+      idexpr_t* id = (idexpr_t*)cond;
+      if (!node_isexpr(id->ref)) {
+        error(p, (node_t*)cond, "conditional is not an expression");
+        return NULL;
+      }
+
+      idexpr_t* id2 = CLONE_NODE(p, id);
+      id2->type = opt_type->elem;
+      // id2->flags &= ~EX_RVALUE_CHECKED;
+
+      expr_t* ref2 = (expr_t*)clone_node(p, id->ref);
+      ref2->flags |= EX_SHADOWS_OPTIONAL;
+      // ref2->flags &= ~EX_RVALUE_CHECKED;
+      ref2->type = opt_type->elem;
+      define_replace(p, id->name, (node_t*)ref2);
+
+      return (expr_t*)id2;
     }
     case EXPR_LET:
     case EXPR_VAR: {
       // e.g. "if let x = expr { ... }"
-      #if 0
-        // note that we must copy the local even though it is only used within
-        // the "then" branch to retain the information about the optional check.
-        local_t* v1 = (local_t*)cond;
-        local_t* v2 = CLONE_NODE(v1);
-        v2->type = ((opttype_t*)v2->type)->elem;
-        define_replace(p, v2->name, (node_t*)v2);
-        return (expr_t*)v2;
-      #else
-        ((local_t*)cond)->type = ((opttype_t*)cond->type)->elem;
-        cond->flags |= EX_OPTIONAL;
-        break;
-      #endif
+      ((local_t*)cond)->type = opt_type->elem;
+      cond->flags |= EX_OPTIONAL;
+      break;
     }
   }
 
@@ -1112,19 +1221,45 @@ static expr_t* expr_if(parser_t* p, exprflag_t fl) {
   ifexpr_t* n = mkexpr(p, ifexpr_t, EXPR_IF, fl);
   next(p);
 
+  // enter "cond" scope
   enter_scope(p);
 
   n->cond = expr(p, PREC_COMMA, fl | EX_RVALUE);
   expr_t* type_narrowed_binding = check_if_cond(p, n->cond);
 
-  n->thenb = expr(p, PREC_COMMA, fl);
+  // scope for "then" branch
+  enter_scope(p);
+  if (currtok(p) == TLBRACE) {
+    n->thenb = (expr_t*)block(p, fl);
+  } else {
+    n->thenb = expr(p, PREC_COMMA, fl);
+  }
+  // make a copy of "then" scope before we call scope_pop(&p->scope)
+  scope_t then_scope;
+  if UNLIKELY(!scope_copy(&then_scope, &p->scope, p->scanner.compiler->ma))
+    out_of_mem(p);
+  // undo "then" scope without unwinding (unwinding done later)
+  scope_pop(&p->scope);
 
   if (currtok(p) == TELSE) {
     next(p);
-    n->elseb = expr(p, PREC_COMMA, fl);
+    // enter "else" scope
+    enter_scope(p);
+    if (currtok(p) == TLBRACE) {
+      n->elseb = (expr_t*)block(p, fl);
+    } else {
+      n->elseb = expr(p, PREC_COMMA, fl);
+    }
+    // leave "else" scope
+    leave_scope(p, n->elseb->flags & EX_EXITS);
   }
 
-  leave_scope(p, &n->drops, /*exits*/false);
+  // unwind "then" scope
+  unwind_scope(p, &then_scope, n->thenb->flags & EX_EXITS);
+  scope_dispose(&then_scope, p->scanner.compiler->ma);
+
+  // leave "cond" scope
+  leave_scope(p, /*exits*/false);
 
   if (type_narrowed_binding) {
     expr_t* dst = n->cond;
@@ -1925,79 +2060,6 @@ static expr_t* expr_dotmember(parser_t* p, exprflag_t fl) {
 }
 
 
-static void clear_rvalue(parser_t* p, expr_t* n) {
-  n->flags &= ~EX_RVALUE;
-  switch (n->kind) {
-    case EXPR_IF:
-      clear_rvalue(p, ((ifexpr_t*)n)->thenb);
-      if (((ifexpr_t*)n)->elseb)
-        clear_rvalue(p, ((ifexpr_t*)n)->elseb);
-      break;
-    case EXPR_BLOCK: {
-      block_t* b = (block_t*)n;
-      for (u32 i = 0; i < b->children.len; i++)
-        clear_rvalue(p, b->children.v[i]);
-      break;
-    }
-  }
-}
-
-
-static expr_t* expr_block(parser_t* p, exprflag_t fl) {
-  block_t* n = mkexpr(p, block_t, EXPR_BLOCK, fl);
-  next(p);
-  enter_scope(p);
-  bool isrvalue = fl & EX_RVALUE;
-  // exits is true if block contains a return or calls a function that doesn't return
-  bool exits = false;
-  fl &= ~EX_RVALUE;
-  if (currtok(p) != TRBRACE && currtok(p) != TEOF) {
-    for (;;) {
-      expr_t* cn = expr(p, PREC_LOWEST, fl);
-      push(p, &n->children, (node_t*)cn);
-
-      // treat _all_ block-level expressions as rvalues, with some exceptions
-      switch (cn->kind) {
-        case EXPR_RETURN:
-          exits = true;
-          break;
-        case EXPR_FUN:
-        case EXPR_BLOCK:
-        case EXPR_CALL:
-        case EXPR_VAR:
-        case EXPR_LET:
-        case EXPR_IF:
-        case EXPR_FOR:
-        case EXPR_BOOLLIT:
-        case EXPR_INTLIT:
-        case EXPR_FLOATLIT:
-          break;
-        default:
-          // e.g. "z" in "{ z; 3 }"
-          check_rvalue(p, cn);
-      }
-
-      if (currtok(p) != TSEMI)
-        break;
-      next(p); // consume ";"
-
-      if (currtok(p) == TRBRACE || currtok(p) == TEOF)
-        break;
-
-      clear_rvalue(p, cn);
-    }
-  }
-  expect2(p, TRBRACE, ", expected '}' or ';'");
-  leave_scope(p, &n->drops, exits);
-  if (isrvalue) {
-    check_rvalue(p, (expr_t*)n);
-  } else if (n->children.len > 0) {
-    clear_rvalue(p, n->children.v[n->children.len-1]);
-  }
-  return (expr_t*)n;
-}
-
-
 static type_t* this_param_type(parser_t* p, type_t* recvt, bool ismut) {
   if (!ismut) {
     // pass certain types as value instead of pointer when access is read-only
@@ -2395,14 +2457,8 @@ static expr_t* expr_fun(parser_t* p, exprflag_t fl) {
     fun_body(p, n, fl);
   }
 
-  if (has_named_params) {
-    ptrarray_t* drops = &n->drops;
-    if (n->body->kind == EXPR_BLOCK) {
-      // register parameter drops in body when possible
-      drops = &((block_t*)n->body)->drops;
-    }
-    leave_scope(p, drops, /*exits*/false);
-  }
+  if (has_named_params)
+    leave_scope(p, /*exits*/false);
 
   return (expr_t*)n;
 }
@@ -2435,7 +2491,7 @@ unit_t* parser_parse(parser_t* p, memalloc_t ast_ma, input_t* input) {
     }
   }
 
-  leave_scope(p, NULL, /*exits*/false);
+  leave_scope(p, /*exits*/false);
 
   return unit;
 }
