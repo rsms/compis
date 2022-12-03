@@ -3,6 +3,9 @@
 #include "compiler.h"
 
 
+typedef struct { usize v[2]; } sizetuple_t;
+
+
 bool cgen_init(cgen_t* g, compiler_t* c, memalloc_t out_ma) {
   memset(g, 0, sizeof(*g));
   g->compiler = c;
@@ -107,6 +110,34 @@ static void startline(cgen_t* g, srcloc_t loc) {
 
 static void startlinex(cgen_t* g) {
   startline(g, (srcloc_t){.line=g->lineno+1});
+}
+
+
+static sizetuple_t x_semi_begin_char(cgen_t* g, char c) {
+  CHAR(c);
+  return (sizetuple_t){{ g->outbuf.len - 1, g->outbuf.len }};
+}
+
+
+static sizetuple_t x_semi_begin_startline(cgen_t* g, const void* n) {
+  usize len0 = g->outbuf.len;
+  startline(g, ((node_t*)n)->loc);
+  return (sizetuple_t){{ len0, g->outbuf.len }};
+}
+
+
+static void x_semi_cancel(sizetuple_t* startlens) {
+  startlens->v[1] = 0;
+}
+
+
+static void x_semi_end(cgen_t* g, sizetuple_t startlens) {
+  if (g->outbuf.len == startlens.v[1]) {
+    // undo startline
+    g->outbuf.len = startlens.v[0];
+  } else if (startlens.v[1] != 0) {
+    CHAR(';');
+  }
 }
 
 
@@ -605,13 +636,14 @@ static void block(
   cleanuparray_t cleanup2 = {0};
 
   if (n->children.len > 0) {
+    sizetuple_t startlens;
     for (u32 i = 0, last = n->children.len - 1; i < n->children.len; i++) {
       const expr_t* cn = n->children.v[i];
 
       if (cn->loc.line != g->lineno && cn->loc.line) {
-        startline(g, cn->loc);
+        startlens = x_semi_begin_startline(g, n);
       } else {
-        CHAR(' ');
+        startlens = x_semi_begin_char(g, ' ');
       }
 
       if (cn->kind == EXPR_RETURN) {
@@ -639,8 +671,9 @@ static void block(
 
       expr(g, (const expr_t*)cn);
 
-      if ((cn->kind != EXPR_BLOCK && cn->kind != EXPR_IF) || lastchar(g) != '}')
-        CHAR(';');
+      if ((cn->kind == EXPR_BLOCK || cn->kind == EXPR_IF) && lastchar(g) == '}')
+        x_semi_cancel(&startlens);
+      x_semi_end(g, startlens);
     }
     g->indent--;
     if (start_lineno != g->lineno) {
@@ -851,9 +884,7 @@ static void fun(cgen_t* g, const fun_t* fun) {
     PRINT("void");
   }
   CHAR(')');
-  if (fun->body == NULL) {
-    PRINT(";\n");
-  } else {
+  if (fun->body) {
     blockflag_t fl = 0;
     if (((funtype_t*)fun->type)->result != type_void)
       fl |= BLOCKFLAG_RET; // return last expression
@@ -971,6 +1002,11 @@ static void expr_in_block(cgen_t* g, const expr_t* n) {
 
 
 static void vardef1(cgen_t* g, const local_t* n, const char* name, bool wrap_rvalue) {
+
+  // elide unused variable (unless it has side effects)
+  if (n->nrefs == 0 && expr_no_side_effects((expr_t*)n))
+    return;
+
   if ((n->flags & EX_RVALUE) && wrap_rvalue)
     PRINT("({");
   type(g, n->type);
@@ -980,17 +1016,9 @@ static void vardef1(cgen_t* g, const local_t* n, const char* name, bool wrap_rva
     PRINT(" const");
   }
   CHAR(' ');
-  if (name == sym__)
-    PRINT("__attribute__((__unused__)) ");
 
-  // // is this to be dropped when its scope ends?
-  // if (type_isptr(n->type) && n->ownership != OW_DEAD) {
-  //   if (n->ownership == OW_LIVE) {
-  //     PRINT("__attribute__((__cleanup__(" INTERNAL_PREFIX "drop))) ");
-  //   } else {
-  //     dlog("TODO ownership == UNKN");
-  //   }
-  // }
+  if (n->nrefs == 0)
+    PRINT("__attribute__((__unused__)) ");
 
   id(g, name);
   PRINT(" = ");
@@ -1011,19 +1039,6 @@ static void vardef1(cgen_t* g, const local_t* n, const char* name, bool wrap_rva
 
 static void vardef(cgen_t* g, const local_t* n) {
   vardef1(g, n, n->name, true);
-}
-
-
-// expr_no_sideeffects returns true if materializing n has no side effects
-static bool expr_no_sideeffects(const expr_t* n) {
-  switch (n->kind) {
-  case EXPR_ID:
-    return true;
-  case EXPR_MEMBER:
-    return expr_no_sideeffects(((const member_t*)n)->recv);
-  default:
-    return false;
-  }
 }
 
 
@@ -1052,7 +1067,7 @@ static void ifexpr(cgen_t* g, const ifexpr_t* n) {
     g->indent++;
 
     if ((var->flags & EX_OPTIONAL) == 0 ||
-        expr_no_sideeffects(var->init) ||
+        expr_no_side_effects(var->init) ||
         type_isptrlike(var->type))
     {
       // avoid tmp var when var->init is guaranteed to not have side effects
@@ -1289,14 +1304,15 @@ static void expr(cgen_t* g, const expr_t* n) {
 
 
 static void stmt(cgen_t* g, const stmt_t* n) {
-  bool semi = true;
-  usize outbuf_len1 = g->outbuf.len;
-  startline(g, n->loc);
-  usize outbuf_len2 = g->outbuf.len;
+  sizetuple_t startlens = x_semi_begin_startline(g, n);
 
   switch (n->kind) {
   case EXPR_FUN:
-    fun(g, (const fun_t*)n); semi = false;
+    fun(g, (const fun_t*)n);
+    if (((const fun_t*)n)->body) {
+      // no semicolon after function body
+      x_semi_cancel(&startlens);
+    }
     break;
   case STMT_TYPEDEF:
     typedef_(g, (const typedef_t*)n);
@@ -1308,12 +1324,7 @@ static void stmt(cgen_t* g, const stmt_t* n) {
     }
     debugdie(g, n, "unexpected stmt node %s", nodekind_name(n->kind));
   }
-  if (g->outbuf.len == outbuf_len2) {
-    // undo startline
-    g->outbuf.len = outbuf_len1;
-  } else if (semi) {
-    CHAR(';');
-  }
+  x_semi_end(g, startlens);
 }
 
 

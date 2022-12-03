@@ -3,6 +3,56 @@
 #include "compiler.h"
 
 
+bool types_isconvertible(const type_t* dst, const type_t* src) {
+  assertnotnull(dst);
+  assertnotnull(src);
+  if (dst == src)
+    return true;
+  if (type_isprim(dst) && type_isprim(src))
+    return true;
+  return false;
+}
+
+
+bool types_iscompat(const type_t* dst, const type_t* src) {
+  assertnotnull(dst);
+  assertnotnull(src);
+  switch (dst->kind) {
+    case TYPE_INT:
+    case TYPE_I8:
+    case TYPE_I16:
+    case TYPE_I32:
+    case TYPE_I64:
+      return (dst == src) && (dst->isunsigned == src->isunsigned);
+    case TYPE_PTR:
+      return (
+        src->kind == TYPE_PTR &&
+        types_iscompat(((const ptrtype_t*)dst)->elem, ((const ptrtype_t*)src)->elem) );
+    case TYPE_REF: {
+      // &T    <= &T
+      // mut&T <= &T
+      // mut&T <= mut&T
+      // &T    x= mut&T
+      const reftype_t* d = (const reftype_t*)dst;
+      const reftype_t* s = (const reftype_t*)src;
+      return (
+        src->kind == TYPE_REF &&
+        (s->ismut == d->ismut || s->ismut || !d->ismut) &&
+        types_iscompat(d->elem, s->elem) );
+    }
+    case TYPE_OPTIONAL: {
+      // ?T <= T
+      // ?T <= ?T
+      const opttype_t* d = (const opttype_t*)dst;
+      if (src->kind == TYPE_OPTIONAL)
+        src = ((const opttype_t*)src)->elem;
+      return types_iscompat(d->elem, src);
+    }
+  }
+  return dst == src;
+}
+
+
 bool typeid_append(buf_t* buf, type_t* t) {
   if (type_isprim(t))
     return buf_push(buf, (u8)t->tid[0]);

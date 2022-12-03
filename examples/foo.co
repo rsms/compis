@@ -59,15 +59,19 @@
 //   y
 // }
 
-fun ownership_branch_fork(x bool, y *int) *int {
-  let m = 123
-  if x {
-    let a = y
-    a
-  } else {
-    y
-  }
-}
+
+
+// fun ownership_branch_fork(x bool, y *int) *int {
+//   let m = 123
+//   if x {
+//     let a = y
+//     a
+//   } else {
+//     y
+//   }
+// }
+
+
 
 // fun ownership_branch_fork_err(x bool, y *int) *int {
 //   if x {
@@ -103,10 +107,18 @@ fun ownership_branch_fork(x bool, y *int) *int {
 //   var a &int
 // }
 
-// type Account {
-//   id int
-// }
-// fun Account.drop(mut this) void {}
+type Account {
+  x, y, id int
+}
+fun Account.drop(mut this) void {}
+fun bar(x, y int) int {
+  x + y
+}
+fun foo(x, y int) int {
+  x = bar(x, y: 3)
+  let a = Account(1, id: x, y: y)
+  a.id * y
+}
 // fun bar(x, y *Account) {
 //   var a *Account = x // ownership transfers x -> a
 //   var b *Account = y // ownership transfers y -> b

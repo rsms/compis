@@ -17,8 +17,6 @@ static bool log_iscolor() {
   return colors;
 }
 
-// fprintf(stderr, "\e[1;34m▍AZ⟩ \e[22;39m" fmt "\n", ##va)
-
 
 void _dlog(
   int color, const char* nullable prefix,

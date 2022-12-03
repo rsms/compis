@@ -145,41 +145,32 @@ static err_t compile_co_to_c(compiler_t* c, input_t* input, const char* cfile) {
   unit_t* unit = parser_parse(&parser, ast_ma, input);
   dlog("————————— AST —————————");
   if ((err = dump_ast((node_t*)unit)))
-    goto end;
-
-  // analyze
-  dlog("————————— analyze —————————");
-  err = analyze(&parser, unit);
-  parser_dispose(&parser);
-  if (err)
-    goto end;
-
-  // print AST
-  #if DEBUG && 1
-  {
-    dlog("————————— AST —————————");
-    if ((err = dump_ast((node_t*)unit)))
-      goto end;
-
-    // // print formatted co code
-    // if (c->errcount == errcount) {
-    //   buf_clear(&buf);
-    //   node_fmt(&buf, (const node_t*)unit, U32_MAX);
-    //   dlog("fmt:\n%.*s\n", (int)buf.len, buf.chars);
-    // }
-  }
-  #endif
+    goto end_parser;
 
   // bail on parse error
   if (c->errcount > errcount) {
     err = ErrCanceled;
-    goto end;
+    goto end_parser;
+  }
+
+  // analyze
+  dlog("————————— analyze —————————");
+  if (( err = analyze(&parser, unit) ))
+    goto end_parser;
+  dlog("————————— AST —————————");
+  if ((err = dump_ast((node_t*)unit)))
+    goto end_parser;
+
+  // bail on analysis error
+  if (c->errcount > errcount) {
+    err = ErrCanceled;
+    goto end_parser;
   }
 
   // generate C code
   cgen_t g;
   if (!cgen_init(&g, c, c->ma))
-    goto end;
+    goto end_parser;
   err = cgen_generate(&g, unit);
   if (!err) {
     dlog("—————————\n%.*s\n—————————", (int)g.outbuf.len, g.outbuf.chars);
@@ -188,6 +179,8 @@ static err_t compile_co_to_c(compiler_t* c, input_t* input, const char* cfile) {
   }
   cgen_dispose(&g);
 
+end_parser:
+  parser_dispose(&parser);
 end:
   mem_free(c->ma, &ast_mem);
   if (c->errcount > errcount && !err)

@@ -403,6 +403,15 @@ const char* nodekind_name(nodekind_t); // e.g. "EXPR_INTLIT"
 const char* nodekind_fmt(nodekind_t); // e.g. "variable"
 err_t node_fmt(buf_t* buf, const node_t* nullable n, u32 depth); // e.g. i32, x, "foo"
 err_t node_repr(buf_t* buf, const node_t* n); // S-expr AST tree
+srcrange_t node_srcrange(const node_t* n); // computes the source range for an AST
+node_t* _mknode(parser_t* p, usize size, nodekind_t kind); // parser.c
+node_t* clone_node(parser_t* p, const node_t* n);
+// T* CLONE_NODE(T* node)
+#define CLONE_NODE(p, nptr) ( \
+  (__typeof__(nptr))memcpy( \
+    _mknode((p), sizeof(__typeof__(*(nptr))), ((node_t*)(nptr))->kind), \
+    (nptr), \
+    sizeof(*(nptr))) )
 
 inline static bool nodekind_istype(nodekind_t kind) { return kind >= TYPE_VOID; }
 inline static bool nodekind_isexpr(nodekind_t kind) {
@@ -440,11 +449,16 @@ inline static bool type_isprim(const type_t* nullable t) {
 inline static bool type_isopt(const type_t* nullable t) {
   return assertnotnull(t)->kind == TYPE_OPTIONAL; }
 
-#define TYPEID_PREFIX(typekind)  ('A'+(typekind)-TYPE_VOID)
-
+// types
+bool types_isconvertible(const type_t* dst, const type_t* src);
+bool types_iscompat(const type_t* dst, const type_t* src);
 sym_t nullable _typeid(type_t*);
 inline static sym_t nullable typeid(type_t* t) { return t->tid ? t->tid : _typeid(t); }
 bool typeid_append(buf_t* buf, type_t* t);
+#define TYPEID_PREFIX(typekind)  ('A'+(typekind)-TYPE_VOID)
+
+// expr_no_side_effects returns true if materializing n has no side effects
+bool expr_no_side_effects(const expr_t* n);
 
 // asexpr(void* ptr) -> expr_t*
 // asexpr(const void* ptr) -> const expr_t*

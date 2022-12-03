@@ -71,6 +71,7 @@ static void local(abuf_t* s, const local_t* nullable n, u32 indent, u32 maxdepth
 
 
 static void funtype(abuf_t* s, const funtype_t* nullable n, u32 indent, u32 maxdepth) {
+  assert(maxdepth > 0);
   abuf_c(s, '(');
   for (u32 i = 0; i < n->params.len; i++) {
     if (i) abuf_str(s, ", ");
@@ -91,8 +92,11 @@ static void structtype(
 {
   if (t->name)
     abuf_str(s, t->name);
-  if (maxdepth == 0)
+  if (maxdepth <= 1) {
+    if (!t->name)
+      abuf_str(s, "struct");
     return;
+  }
   if (t->name)
     abuf_c(s, ' ');
   abuf_c(s, '{');
@@ -140,6 +144,14 @@ static void fmt(abuf_t* s, const node_t* nullable n, u32 indent, u32 maxdepth) {
     }
     break;
   }
+
+  case STMT_TYPEDEF:
+    abuf_fmt(s, "type %s", ((typedef_t*)n)->name);
+    if (maxdepth > 1) {
+      abuf_c(s, ' ');
+      fmt(s, (node_t*)((typedef_t*)n)->type, indent, maxdepth - 1);
+    }
+    break;
 
   case EXPR_VAR:
   case EXPR_LET:
@@ -289,8 +301,8 @@ static void fmt(abuf_t* s, const node_t* nullable n, u32 indent, u32 maxdepth) {
   case TYPE_I64:  abuf_str(s, ((type_t*)n)->isunsigned ? "u64" : "i64"); break;
   case TYPE_F32:  abuf_str(s, "f32"); break;
   case TYPE_F64:  abuf_str(s, "f64"); break;
-  case TYPE_FUN:  return funtype(s, (const funtype_t*)n, indent, maxdepth - 1);
-  case TYPE_STRUCT: return structtype(s, (const structtype_t*)n, indent, maxdepth - 1);
+  case TYPE_FUN:  return funtype(s, (const funtype_t*)n, indent, maxdepth);
+  case TYPE_STRUCT: return structtype(s, (const structtype_t*)n, indent, maxdepth);
   case TYPE_ARRAY: {
     arraytype_t* a = (arraytype_t*)n;
     abuf_fmt(s, "[%zu]", a->size);
@@ -316,7 +328,6 @@ static void fmt(abuf_t* s, const node_t* nullable n, u32 indent, u32 maxdepth) {
   }
 
   case TYPE_ENUM:
-  case STMT_TYPEDEF:
   case EXPR_FIELD:
     dlog("TODO %s", nodekind_name(n->kind));
     abuf_str(s, "/* TODO fmt ");
