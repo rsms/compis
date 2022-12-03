@@ -16,6 +16,9 @@ ASSUME_NONNULL_BEGIN
 typedef struct {
   u8* nullable ptr;
   u32 cap, len; // count of T items (not bytes)
+#if DEBUG
+  memalloc_t ma;
+#endif
 } array_t;
 
 #if C0_API_DOC

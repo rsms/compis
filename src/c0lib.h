@@ -48,6 +48,13 @@ typedef double             f64;
 #else
   #define USIZE_MAX (__LONG_MAX__ *2UL+1UL)
 #endif
+#ifndef UINTPTR_MAX
+  #ifdef __UINTPTR_MAX__
+    #define UINTPTR_MAX __UINTPTR_MAX__
+  #else
+    #define UINTPTR_MAX USIZE_MAX
+  #endif
+#endif
 
 //—————————————————————————————————————————————————————————————————————————————————————
 // va_args et al
@@ -280,6 +287,15 @@ typedef double             f64;
 #define IS_ALIGN2(x, a)  ( !((x) & ((__typeof__(x))(a) - 1)) )
 
 
+// COND_FLAG(T flags, T flag, bool on) -> T
+// branchless ( on ? (flags | flag) : (flags & ~flag) )
+#define COND_FLAG(flags, flag, on) ({ \
+  __typeof__(flags) flags__ = (flags); \
+  (flags__ ^ (( (__typeof__(flags))-(!!(on)) ^ flags__ ) & (__typeof__(flags))(flag)));\
+})
+#define COND_FLAG_X(flags, flag, on) \
+  ((flags) ^ (( (__typeof__(flags))-(!!(on)) ^ (flags) ) & (__typeof__(flags))(flag)))
+
 //—————————————————————————————————————————————————————————————————————————————————————
 // debugging
 #include <stdio.h>
@@ -445,7 +461,7 @@ typedef double             f64;
 
 // void dlog(const char* fmt, ...)
 #ifdef DEBUG
-  #define dlog(fmt, args...) _dlog(__FILE__, __LINE__, fmt, ##args)
+  #define dlog(fmt, args...) _dlog(-1, NULL, __FILE__, __LINE__, fmt, ##args)
 #else
   #define dlog(fmt, ...) ((void)0)
 #endif
@@ -462,7 +478,9 @@ EXTERN_C _Noreturn void _panic(
   ATTR_FORMAT(printf, 4, 5);
 
 EXTERN_C void _dlog(
-  const char* file, int line, const char* fmt, ...) ATTR_FORMAT(printf, 3, 4);
+  int color, const char* nullable prefix,
+  const char* file, int line,
+  const char* fmt, ...) ATTR_FORMAT(printf, 5, 6);
 
 //—————————————————————————————————————————————————————————————————————————————————————
 // overflow checking

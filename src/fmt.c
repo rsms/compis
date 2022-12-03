@@ -174,9 +174,9 @@ static void fmt(abuf_t* s, const node_t* nullable n, u32 indent, u32 maxdepth) {
           fmt(s, a->v[i], indent, maxdepth - 1);
         }
         indent--;
+        startline(s, indent);
       }
     }
-    startline(s, indent);
     abuf_c(s, '}');
     break;
   }
@@ -234,8 +234,11 @@ static void fmt(abuf_t* s, const node_t* nullable n, u32 indent, u32 maxdepth) {
     break;
 
   case EXPR_RETURN:
-    abuf_str(s, "return ");
-    fmt_nodelist(s, &((const retexpr_t*)n)->values, ", ", indent, maxdepth);
+    abuf_str(s, "return");
+    if (((const retexpr_t*)n)->value) {
+      abuf_c(s, ' ');
+      fmt(s, (node_t*)((const retexpr_t*)n)->value, indent, maxdepth);
+    }
     break;
 
   case EXPR_DEREF:

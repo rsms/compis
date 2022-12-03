@@ -47,7 +47,20 @@
 //   y
 // }
 
+// fun ownership_branch_exits(x bool, y *int, z *int) *int {
+//   let b = z
+//   let c = b
+
+//   // let b2 = z2
+//   if x {
+//     let a = y
+//     return a
+//   }
+//   y
+// }
+
 fun ownership_branch_fork(x bool, y *int) *int {
+  let m = 123
   if x {
     let a = y
     a
@@ -102,8 +115,9 @@ fun ownership_branch_fork(x bool, y *int) *int {
 
 
 // fun foo(x, y int, z *int) int {
-//   if x > 0 {
-//     var a = z
-//   }
+//   ownership_branch_exits(true, z)
+//   // if x > 0 {
+//   //   var a = z
+//   // }
 //   x * y
 // }

@@ -462,26 +462,109 @@ typedef enum {
 } blockflag_t;
 
 
-#define TMP_ID_SIZE (sizeof(ANON_PREFIX "tmp") + sizeof(uintptr)*8 + 1)
+#define ID_SIZE(key) (sizeof(ANON_PREFIX key) + sizeof(uintptr)*8 + 1)
+#define TMP_ID_SIZE  ID_SIZE("tmp")
+
+#define FMT_ID(buf, bufcap, key, ptr) ( \
+  assert((bufcap) >= ID_SIZE(key)), \
+  snprintf((buf), (bufcap), ANON_PREFIX key "%zx", (uintptr)(ptr)) )
 
 static usize fmt_tmp_id(char* buf, usize bufcap, const void* n) {
-  return snprintf(buf, bufcap, ANON_PREFIX "tmp%zx", (uintptr)n);
+  return FMT_ID(buf, bufcap, "tmp", n);
 }
 
-static void print_tmp_id(cgen_t* g, const void* n) {
-  PRINTF(ANON_PREFIX "tmp%zx", (uintptr)n);
-}
+// static void print_tmp_id(cgen_t* g, const void* n) {
+//   PRINTF(ANON_PREFIX "tmp%zx", (uintptr)n);
+// }
 
 
-static bool has_drop_param(const ptrarray_t* nullable params) {
-  if (!params || params->len == 0)
-    return false;
-  for (u32 i = 0; i < params->len; i++) {
-    local_t* param = params->v[i];
-    if (type_isptr(param->type) && param->ownership != OW_DEAD)
-      return true;
+//—————————————————————————————————————————————————————————————————————————————————————
+
+
+static void retexpr(cgen_t* g, const retexpr_t* n, const char* nullable tmp) {
+  if (tmp) {
+    type(g, n->type), PRINT(" const "), PRINT(tmp);
+    if (!n->value && n->type == type_void)
+      return;
+    PRINT(" = ");
+    if (!n->value) {
+      zeroinit(g, n->type);
+    } else {
+      expr(g, n->value);
+    }
+  } else if (!n->value) {
+    PRINT("return");
+  } else {
+    PRINT("return "), expr(g, n->value);
   }
-  return false;
+}
+
+
+/*static u32 cleanups(cgen_t* g, const ptrarray_t* cleanup) {
+  u32 ncleanups = 0;
+  // char tmpname[ID_SIZE("drop")];
+  for (u32 i = 0; i < cleanup->len; i++) {
+    local_t* local = cleanup->v[i];
+    assert(nodekind_islocal(local->kind));
+    assert(local->ownership == OW_LIVE);
+    assert(type_isptr(local->type));
+    FMT_ID(tmpname, sizeof(tmpname), "drop", local);
+    ncleanups++;
+    startlinex(g);
+    type(g, local->type);
+    PRINTF(
+      " __attribute__((__cleanup__(" INTERNAL_PREFIX "drop),__unused__)) "
+      "%s = %s;", tmpname, local->name);
+  }
+  return ncleanups;
+}*/
+
+
+static u32 cleanups(cgen_t* g, const cleanuparray_t* cleanup) {
+  u32 ncleanups = 0;
+  for (u32 i = 0; i < cleanup->len; i++) {
+    const cleanup_t* c = &cleanup->v[i];
+    ncleanups++;
+    startlinex(g);
+    PRINTF(INTERNAL_PREFIX "drop(%s);", c->name);
+  }
+  return ncleanups;
+}
+
+
+static void ret_and_cleanup(
+  cgen_t* g, const cleanuparray_t* cleanup, const retexpr_t* ret)
+{
+  assert(ret->kind == EXPR_RETURN);
+
+  if (!ret->value) {
+    cleanups(g, cleanup);
+    PRINT("return;");
+    return;
+  }
+
+  // put return value into a temporary, cleanup, return. e.g.
+  //   T* tmp = x * y;
+  //   _c0·drop(y);
+  //   _c0·drop(x);
+  //   return tmp
+  char tmp[TMP_ID_SIZE];
+  fmt_tmp_id(tmp, sizeof(tmp), ret);
+  retexpr(g, ret, tmp);
+  CHAR(';');
+
+  cleanups(g, cleanup);
+
+  startline(g, ret->loc);
+  PRINT("return "), PRINT(tmp), CHAR(';');
+}
+
+
+static void implicit_ret_and_cleanup(
+  cgen_t* g, const cleanuparray_t* cleanup, const expr_t* val)
+{
+  retexpr_t ret = { .kind = EXPR_RETURN, .type = val->type, .value = (expr_t*)val };
+  ret_and_cleanup(g, cleanup, &ret);
 }
 
 
@@ -490,64 +573,70 @@ static void block(
 {
   g->scopenest++;
 
-  if (n->children.len == 1 && (n->flags & EX_RVALUE) && !has_drop_param(params)) {
-    expr_as_value(g, n->children.v[0]);
-    g->scopenest--;
-    return;
-  }
-
   if (n->flags & EX_RVALUE) {
-    if (n->children.len == 0) {
-      PRINT("((void)0)");
-      return;
+    if (n->cleanup.len == 0) {
+      // simplify empty expression block
+      if (n->children.len == 0) {
+        PRINT("((void)0)");
+        g->scopenest--;
+        return;
+      }
+      // simplify expression block with a single sub expression
+      if (n->children.len == 1) {
+        expr_as_value(g, n->children.v[0]);
+        g->scopenest--;
+        return;
+      }
     }
     CHAR('(');
   }
 
   CHAR('{');
 
-  u32 hasval = n->type != type_void && (n->flags & EX_RVALUE);
-  if (hasval)
-    type(g, n->type), CHAR(' '), print_tmp_id(g, n), CHAR(';');
+  bool block_isrvalue = n->type != type_void && (n->flags & EX_RVALUE);
+  char block_resvar[ID_SIZE("block")];
+  if (block_isrvalue) {
+    FMT_ID(block_resvar, sizeof(block_resvar), "block", n);
+    type(g, n->type), CHAR(' '), PRINT(block_resvar), CHAR(';');
+  }
 
   u32 start_lineno = g->lineno;
-
   g->indent++;
-
-  // register drops of parameters
-  if (params && params->len) {
-    for (u32 i = 0; i < params->len; i++) {
-      local_t* param = params->v[i];
-      if (type_isptr(param->type) && param->ownership != OW_DEAD) {
-        if (param->ownership == OW_LIVE) {
-          startline(g, param->loc);
-          type(g, param->type);
-          PRINTF(
-            " __attribute__((__cleanup__(" INTERNAL_PREFIX "drop),__unused__)) "
-            ANON_FMT ";", g->anon_idgen++);
-        } else {
-          dlog("TODO ownership == UNKN");
-        }
-      }
-    }
-  }
+  cleanuparray_t cleanup2 = {0};
 
   if (n->children.len > 0) {
     for (u32 i = 0, last = n->children.len - 1; i < n->children.len; i++) {
       const expr_t* cn = n->children.v[i];
+
       if (cn->loc.line != g->lineno && cn->loc.line) {
         startline(g, cn->loc);
       } else {
         CHAR(' ');
       }
-      if (i == last) {
-        if (hasval) {
-          print_tmp_id(g, n);
-          PRINT(" = ");
+
+      if (cn->kind == EXPR_RETURN) {
+        // return with cleanup needs special handling
+        if (n->cleanup.len > 0) {
+          ret_and_cleanup(g, &n->cleanup, (const retexpr_t*)cn);
+          break;
+        }
+      } else if (i == last) {
+        if (block_isrvalue) {
+          // last expression is implicitly returned
+          PRINT("/*implicit return*/");
+          PRINT(block_resvar), PRINT(" = "), expr(g, (const expr_t*)cn), CHAR(';');
+          cleanups(g, &n->cleanup);
+          break;
         } else if (fl & BLOCKFLAG_RET) {
-          PRINT("return ");
+          // function-level block
+          if (n->cleanup.len > 0) {
+            implicit_ret_and_cleanup(g, &n->cleanup, cn);
+            break;
+          }
+          PRINT("/*implicit*/return ");
         }
       }
+
       expr(g, (const expr_t*)cn);
 
       if ((cn->kind != EXPR_BLOCK && cn->kind != EXPR_IF) || lastchar(g) != '}')
@@ -565,8 +654,10 @@ static void block(
 
   g->scopenest--;
 
-  if (hasval)
-    print_tmp_id(g, n), CHAR(';');
+  if (block_isrvalue)
+    PRINT(block_resvar), CHAR(';');
+
+  cleanuparray_dispose(&cleanup2, g->compiler->ma);
 
   if (n->flags & EX_RVALUE) {
     PRINT("})");
@@ -762,17 +853,12 @@ static void fun(cgen_t* g, const fun_t* fun) {
   CHAR(')');
   if (fun->body == NULL) {
     PRINT(";\n");
-  } else if (fun->body->kind == EXPR_BLOCK) {
+  } else {
     blockflag_t fl = 0;
     if (((funtype_t*)fun->type)->result != type_void)
       fl |= BLOCKFLAG_RET; // return last expression
     CHAR(' ');
-    block(g, (block_t*)fun->body, fl, &fun->params);
-  } else {
-    PRINT(" { return ");
-    dlog("TODO: drops");
-    expr(g, fun->body);
-    PRINT("}");
+    block(g, fun->body, fl, &fun->params);
   }
 }
 
@@ -897,14 +983,14 @@ static void vardef1(cgen_t* g, const local_t* n, const char* name, bool wrap_rva
   if (name == sym__)
     PRINT("__attribute__((__unused__)) ");
 
-  // is this to be dropped when its scope ends?
-  if (type_isptr(n->type) && n->ownership != OW_DEAD) {
-    if (n->ownership == OW_LIVE) {
-      PRINT("__attribute__((__cleanup__(" INTERNAL_PREFIX "drop))) ");
-    } else {
-      dlog("TODO ownership == UNKN");
-    }
-  }
+  // // is this to be dropped when its scope ends?
+  // if (type_isptr(n->type) && n->ownership != OW_DEAD) {
+  //   if (n->ownership == OW_LIVE) {
+  //     PRINT("__attribute__((__cleanup__(" INTERNAL_PREFIX "drop))) ");
+  //   } else {
+  //     dlog("TODO ownership == UNKN");
+  //   }
+  // }
 
   id(g, name);
   PRINT(" = ");
@@ -1075,15 +1161,15 @@ static void ifexpr(cgen_t* g, const ifexpr_t* n) {
     startline(g, n->thenb->loc);
 
     if ((!n->elseb || n->elseb->type == type_void) && !type_isopt(n->thenb->type)) {
-      optinit(g, n->thenb, /*isshort*/false);
+      optinit(g, (expr_t*)n->thenb, /*isshort*/false);
     } else {
-      expr_as_value(g, n->thenb);
+      block(g, n->thenb, 0, NULL); // expr_as_value(g, n->thenb);
     }
     PRINT(" : (");
     if (n->elseb) {
       if (n->elseb->loc.line != g->lineno)
         startline(g, n->elseb->loc);
-      expr_as_value(g, n->elseb);
+      block(g, n->elseb, 0, NULL);
       if (n->elseb->type == type_void)
         PRINT(", ");
     } else {
@@ -1097,12 +1183,12 @@ static void ifexpr(cgen_t* g, const ifexpr_t* n) {
     }
     PRINT("))");
   } else {
-    expr_in_block(g, n->thenb);
+    block(g, n->thenb, 0, NULL);
     if (n->elseb) {
       if (lastchar(g) != '}')
         CHAR(';'); // terminate non-block "then" body
       PRINT(" else ");
-      expr_as_value(g, n->elseb);
+      block(g, n->elseb, 0, NULL);
     }
   }
 
@@ -1136,19 +1222,6 @@ static void forexpr(cgen_t* g, const forexpr_t* n) {
 }
 
 
-static void retexpr(cgen_t* g, const retexpr_t* n) {
-  PRINT("return");
-  if (n->values.len == 0)
-    return;
-  if (n->values.len == 1) {
-    CHAR(' ');
-    expr(g, n->values.v[0]);
-    return;
-  }
-  panic("TODO multiple return values (tuple)");
-}
-
-
 static void typedef_(cgen_t* g, const typedef_t* n) {
   if (type_is_struct_impl(n->type)) {
     usize outbuf_len = g->outbuf.len;
@@ -1176,7 +1249,7 @@ static void expr(cgen_t* g, const expr_t* n) {
   case EXPR_MEMBER:    return member(g, (const member_t*)n);
   case EXPR_IF:        return ifexpr(g, (const ifexpr_t*)n);
   case EXPR_FOR:       return forexpr(g, (const forexpr_t*)n);
-  case EXPR_RETURN:    return retexpr(g, (const retexpr_t*)n);
+  case EXPR_RETURN:    return retexpr(g, (const retexpr_t*)n, NULL);
   case EXPR_DEREF:
   case EXPR_PREFIXOP:  return prefixop(g, (const unaryop_t*)n);
   case EXPR_POSTFIXOP: return postfixop(g, (const unaryop_t*)n);
@@ -1276,7 +1349,6 @@ err_t cgen_generate(cgen_t* g, const unit_t* n) {
   unit(g, n);
 
   if (g->headbuf.len > 0) {
-
     if (!buf_insert(&g->outbuf, headstart, g->headbuf.p, g->headbuf.len))
       seterr(g, ErrNoMem);
   }

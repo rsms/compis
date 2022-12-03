@@ -246,6 +246,18 @@ static void repr_type(RPARAMS, const type_t* t) {
 }
 
 
+static void cleanup(RPARAMS, const cleanuparray_t* cleanup) {
+  if (cleanup->len == 0)
+    return;
+  REPR_BEGIN('(', "cleanup");
+  for (u32 i = 0; i < cleanup->len; i++) {
+    CHAR(' ');
+    PRINT(cleanup->v[i].name);
+  }
+  REPR_END(')');
+}
+
+
 static void repr(RPARAMS, const node_t* n) {
   const char* kindname = STRTAB_GET(nodekind_strtab, n->kind);
   REPR_BEGIN('(', kindname);
@@ -269,7 +281,7 @@ static void repr(RPARAMS, const node_t* n) {
   // {flags} and <type>
   if (node_isexpr(n)) {
     expr_t* expr = (expr_t*)n;
-    if (expr->flags) {
+    if (expr->flags & (EX_RVALUE | EX_OPTIONAL)) {
       CHAR('{');
       if (expr->flags & EX_RVALUE)   CHAR('r');
       if (expr->flags & EX_OPTIONAL) CHAR('o');
@@ -290,11 +302,17 @@ static void repr(RPARAMS, const node_t* n) {
   case STMT_TYPEDEF: repr_typedef(RARGS, (typedef_t*)n); break;
   case EXPR_FUN:     repr_fun(RARGS, (fun_t*)n); break;
   case EXPR_CALL:    repr_call(RARGS, (call_t*)n); break;
-  case EXPR_RETURN:  repr_nodearray(RARGS, &((retexpr_t*)n)->values); break;
 
-  case EXPR_BLOCK:
-    repr_nodearray(RARGS, &((block_t*)n)->children);
+  case EXPR_RETURN:
+    CHAR(' '), repr(RARGS, (node_t*)((const retexpr_t*)n)->value);
     break;
+
+  case EXPR_BLOCK: {
+    const block_t* b = (const block_t*)n;
+    repr_nodearray(RARGS, &b->children);
+    cleanup(RARGS, &b->cleanup);
+    break;
+  }
 
   case EXPR_BOOLLIT:
     CHAR(' '), PRINT(((const boollit_t*)n)->val ? "true" : "false");
@@ -384,10 +402,8 @@ static void repr(RPARAMS, const node_t* n) {
   case EXPR_VAR: {
     const local_t* var = (const local_t*)n;
     CHAR(' '); PRINT(var->name);
-    if (type_isptr(var->type)) switch ((enum ownership)var->ownership) {
-      case OW_LIVE: PRINT(" {live}"); break;
-      case OW_DEAD: PRINT(" {dead}"); break;
-    }
+    if (type_isptr(var->type))
+      PRINT(owner_islive(var) ? " {live}" : " {dead}");
     if (var->init) {
       CHAR(' ');
       repr(RARGS, (const node_t*)var->init);

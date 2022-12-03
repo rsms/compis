@@ -111,6 +111,18 @@ static err_t compile_c_async(
 }
 
 
+static err_t dump_ast(const node_t* ast) {
+  buf_t buf = buf_make(memalloc_ctx());
+  err_t err = node_repr(&buf, ast);
+  if (!err) {
+    fwrite(buf.chars, buf.len, 1, stderr);
+    fputc('\n', stderr);
+  }
+  buf_dispose(&buf);
+  return err;
+}
+
+
 static err_t compile_co_to_c(compiler_t* c, input_t* input, const char* cfile) {
   // format intermediate C filename cfile
   dlog("[compile_co_to_c] cfile: %s", cfile);
@@ -124,23 +136,32 @@ static err_t compile_co_to_c(compiler_t* c, input_t* input, const char* cfile) {
   memalloc_t ast_ma = memalloc_bump(ast_mem.p, ast_mem.size, MEMALLOC_STORAGE_ZEROED);
 
   // parse
+  dlog("————————— parse —————————");
   parser_t parser;
   if (!parser_init(&parser, c)) {
     err = ErrNoMem;
     goto end;
   }
   unit_t* unit = parser_parse(&parser, ast_ma, input);
+  dlog("————————— AST —————————");
+  if ((err = dump_ast((node_t*)unit)))
+    goto end;
+
+  // analyze
+  dlog("————————— analyze —————————");
+  err = analyze(&parser, unit);
   parser_dispose(&parser);
+  if (err)
+    goto end;
 
   // print AST
   #if DEBUG && 1
   {
-    buf_t buf = buf_make(c->ma);
-    if (( err = node_repr(&buf, (node_t*)unit) ))
+    dlog("————————— AST —————————");
+    if ((err = dump_ast((node_t*)unit)))
       goto end;
-    dlog("AST:\n%.*s\n", (int)buf.len, buf.chars);
 
-    // // print formatted c0 code
+    // // print formatted co code
     // if (c->errcount == errcount) {
     //   buf_clear(&buf);
     //   node_fmt(&buf, (const node_t*)unit, U32_MAX);

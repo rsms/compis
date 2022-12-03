@@ -3,6 +3,16 @@
 #include "array.h"
 
 
+#if DEBUG
+  #define assert_memalloc(a, ma) ( \
+    ((a)->ma == NULL) ? (a)->ma = ma : \
+    assertf((a)->ma == ma, "mixed memory allocators used with array %p", (a)) \
+  )
+#else
+  #define assert_memalloc(a, ma) ((void)0)
+#endif
+
+
 void array_init(array_t* a) {
   a->ptr = NULL;
   a->cap = 0;
@@ -11,6 +21,7 @@ void array_init(array_t* a) {
 
 
 void _array_dispose(array_t* a, memalloc_t ma, u32 elemsize) {
+  assert_memalloc(a, ma);
   mem_t m = { .p = a->ptr, .size = a->cap * elemsize };
   mem_free(ma, &m);
   a->ptr = NULL;
@@ -20,6 +31,7 @@ void _array_dispose(array_t* a, memalloc_t ma, u32 elemsize) {
 
 
 bool _array_grow(array_t* a, memalloc_t ma, u32 elemsize, u32 extracap) {
+  assert_memalloc(a, ma);
   u32 newcap;
   if (a->cap == 0) {
     newcap = MAX(extracap, 32u);

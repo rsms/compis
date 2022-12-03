@@ -161,20 +161,17 @@ enum nodekind {
   NODEKIND_COUNT,
 };
 
-typedef u8 exprflag_t;
+typedef u32 exprflag_t;
 enum exprflag {
-  EX_RVALUE           = 1 << 0, // expression is used as an rvalue
-  EX_RVALUE_CHECKED   = 1 << 1, // rvalue of this node has been checked
-  EX_OPTIONAL         = 1 << 2, // type-narrowed from optional
-  EX_SHADOWS_OWNER    = 1 << 3, // shadows the original owner of a value (TYPE_PTR)
-  EX_EXITS            = 1 << 4, // block exits the function (ie has "return")
-  EX_SHADOWS_OPTIONAL = 1 << 5, // type-narrowed "if" check on optional
-};
-
-typedef u8 ownership_t;
-enum ownership {
-  OW_LIVE, // definitely have ownership
-  OW_DEAD, // definitely does NOT have ownership
+  EX_RVALUE           = (u8)1 << 0, // expression is used as an rvalue
+  EX_RVALUE_CHECKED   = (u8)1 << 1, // rvalue of this node has been checked
+  EX_OPTIONAL         = (u8)1 << 2, // type-narrowed from optional
+  EX_SHADOWS_OWNER    = (u8)1 << 3, // shadows the original owner of a value (TYPE_PTR)
+  EX_EXITS            = (u8)1 << 4, // block exits the function (ie has "return")
+  EX_SHADOWS_OPTIONAL = (u8)1 << 5, // type-narrowed "if" check on optional
+  EX_DEAD_OWNER       = (u8)1 << 6, // node _was_ owner of TYPE_PTR (is no longer owner)
+  EX_OWNER_MOVED      = (u8)1 << 7, // owner moved
+  EX_ANALYZED         = (u8)1 << 8, // has been checked by the analyzer
 };
 
 typedef struct {
@@ -245,6 +242,12 @@ typedef struct {
 } typedef_t;
 
 typedef struct {
+  sym_t name;
+} cleanup_t;
+
+DEF_ARRAY_TYPE(cleanup_t, cleanuparray);
+
+typedef struct {
   stmt_t;
   type_t* nullable type;
   u32              nrefs;
@@ -258,13 +261,20 @@ typedef struct { expr_t; sym_t name; node_t* nullable ref; } idexpr_t;
 typedef struct { expr_t; tok_t op; expr_t* expr; } unaryop_t;
 typedef struct { expr_t; tok_t op; expr_t* left; expr_t* right; } binop_t;
 typedef struct { expr_t; expr_t* recv; ptrarray_t args; } call_t;
-typedef struct { expr_t; ptrarray_t values; } retexpr_t;
+typedef struct { expr_t; expr_t* nullable value; } retexpr_t;
+
+typedef struct { // block is a declaration (stmt) or an expression depending on use
+  expr_t;
+  ptrarray_t        children;
+  cleanuparray_t    cleanup; // cleanup_t[]
+  scope_t           scope;
+} block_t;
 
 typedef struct {
   expr_t;
-  expr_t*          cond;
-  expr_t*          thenb;
-  expr_t* nullable elseb;
+  expr_t*           cond;
+  block_t*          thenb;
+  block_t* nullable elseb;
 } ifexpr_t;
 
 typedef struct {
@@ -287,26 +297,22 @@ typedef struct { // PARAM, VAR, LET
   sym_t   nullable name;      // may be NULL for PARAM
   expr_t* nullable init;      // may be NULL for VAR and PARAM
   bool             isthis;    // [PARAM only] it's the special "this" parameter
-  ownership_t      ownership; // [type==TYPE_PTR only] ownership status
+  //ownership_t      ownership; // [type==TYPE_PTR only] ownership status
 } local_t;
-
-typedef struct { // block is a declaration (stmt) or an expression depending on use
-  expr_t;
-  ptrarray_t children;
-} block_t;
 
 typedef struct { // fun is a declaration (stmt) or an expression depending on use
   expr_t;
-  ptrarray_t       params;   // local_t*[]
-  sym_t nullable   name;     // NULL if anonymous
-  expr_t* nullable body;     // NULL if function is a prototype
-  type_t*          methodof; // non-NULL for methods: type "this" is a method of
+  ptrarray_t        params;   // local_t*[]
+  sym_t nullable    name;     // NULL if anonymous
+  block_t* nullable body;     // NULL if function is a prototype
+  type_t*           methodof; // non-NULL for methods: type "this" is a method of
 } fun_t;
 
 // ———————— END AST ————————
 
 typedef struct {
   scanner_t        scanner;
+  memalloc_t       ma; // general allocator (== scanner.compiler->ma)
   memalloc_t       ast_ma; // AST allocator
   scope_t          scope;
   map_t            pkgdefs;
@@ -384,6 +390,9 @@ bool parser_init(parser_t* p, compiler_t* c);
 void parser_dispose(parser_t* p);
 unit_t* parser_parse(parser_t* p, memalloc_t ast_ma, input_t*);
 
+// analysis
+err_t analyze(parser_t* p, unit_t* unit);
+
 // C code generator
 bool cgen_init(cgen_t* g, compiler_t* c, memalloc_t out_ma);
 void cgen_dispose(cgen_t* g);
@@ -437,6 +446,23 @@ sym_t nullable _typeid(type_t*);
 inline static sym_t nullable typeid(type_t* t) { return t->tid ? t->tid : _typeid(t); }
 bool typeid_append(buf_t* buf, type_t* t);
 
+// asexpr(void* ptr) -> expr_t*
+// asexpr(const void* ptr) -> const expr_t*
+#define asexpr(ptr) ( \
+  assert(node_isexpr((const node_t*)ptr)), \
+  _Generic((ptr), \
+    const void*: (const expr_t*)ptr, \
+    void*: (expr_t*)ptr ) )
+
+// ownership
+inline static bool owner_islive(const void* expr) {
+  return (asexpr(expr)->flags & EX_DEAD_OWNER) == 0;
+}
+inline static void owner_setlive(void* expr, bool live) {
+  expr_t* n = asexpr(expr);
+  n->flags = COND_FLAG(n->flags, EX_DEAD_OWNER, !live);
+}
+
 // tokens
 const char* tok_name(tok_t); // e.g. (TEQ) => "TEQ"
 const char* tok_repr(tok_t); // e.g. (TEQ) => "="
@@ -464,10 +490,11 @@ extern sym_t sym_this; // "this"
 // scope
 void scope_clear(scope_t* s);
 void scope_dispose(scope_t* s, memalloc_t ma);
-bool scope_copy(scope_t* dst, const scope_t* src, memalloc_t ma);
 bool scope_push(scope_t* s, memalloc_t ma);
 void scope_pop(scope_t* s);
-bool scope_def(scope_t* s, memalloc_t ma, const void* key, void* value);
+bool scope_stash(scope_t* s, memalloc_t ma);
+void scope_unstash(scope_t* s);
+bool scope_define(scope_t* s, memalloc_t ma, const void* key, void* value);
 void* nullable scope_lookup(scope_t* s, const void* key, u32 maxdepth);
 inline static bool scope_istoplevel(const scope_t* s) { return s->base == 0; }
 
