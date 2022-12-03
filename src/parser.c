@@ -2511,6 +2511,7 @@ static void fun_body(parser_t* p, fun_t* n, exprflag_t fl) {
   if UNLIKELY(ft->result != type_void && !types_iscompat(ft->result, n->body->type) &&
               ft->kind == TYPE_FUN)
   {
+    dlog("TODO: move function result type check to analyzer");
     const char* restype = fmtnode(p, 0, (const node_t*)ft->result, 1);
     const char* bodytype = fmtnode(p, 1, (const node_t*)n->body->type, 1);
     node_t* origin = (node_t*)n->body;
