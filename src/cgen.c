@@ -119,9 +119,9 @@ static sizetuple_t x_semi_begin_char(cgen_t* g, char c) {
 }
 
 
-static sizetuple_t x_semi_begin_startline(cgen_t* g, const void* n) {
+static sizetuple_t x_semi_begin_startline(cgen_t* g, srcloc_t loc) {
   usize len0 = g->outbuf.len;
-  startline(g, ((node_t*)n)->loc);
+  startline(g, loc);
   return (sizetuple_t){{ len0, g->outbuf.len }};
 }
 
@@ -641,7 +641,7 @@ static void block(
       const expr_t* cn = n->children.v[i];
 
       if (cn->loc.line != g->lineno && cn->loc.line) {
-        startlens = x_semi_begin_startline(g, n);
+        startlens = x_semi_begin_startline(g, cn->loc);
       } else {
         startlens = x_semi_begin_char(g, ' ');
       }
@@ -1304,7 +1304,7 @@ static void expr(cgen_t* g, const expr_t* n) {
 
 
 static void stmt(cgen_t* g, const stmt_t* n) {
-  sizetuple_t startlens = x_semi_begin_startline(g, n);
+  sizetuple_t startlens = x_semi_begin_startline(g, n->loc);
 
   switch (n->kind) {
   case EXPR_FUN:

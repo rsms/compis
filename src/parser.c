@@ -1293,40 +1293,30 @@ static expr_t* expr_group(parser_t* p, exprflag_t fl) {
 }
 
 
-// namedargs = id ":" expr ("," id ":" expr)*
-static void namedargs(
-  parser_t* p, ptrarray_t* args, local_t** paramv, u32 paramc, exprflag_t fl)
-{
-  for (u32 paramidx = 0; ;paramidx++) {
-    local_t* namedarg = mkexpr(p, local_t, EXPR_PARAM, fl);
-    namedarg->name = p->scanner.sym;
-    if (currtok(p) != TID) {
-      unexpected(p, ", expecting field name");
-      break;
-    }
+// named_param_or_id = id ":" expr | id
+static expr_t* named_param_or_id(parser_t* p, exprflag_t fl) {
+  assert(currtok(p) == TID);
+  idexpr_t* n = (idexpr_t*)_mkexpr(
+    p, MAX(sizeof(idexpr_t),sizeof(local_t)), EXPR_ID, fl);
+  n->name = p->scanner.sym;
+  next(p);
+  if (currtok(p) == TCOLON) {
     next(p);
-    if (currtok(p) != TCOLON) {
-      unexpected(p, ", expecting ':' after field name");
-      break;
-    }
-    next(p);
-    if (paramidx < paramc)
-      typectx_push(p, paramv[paramidx]->type);
-    namedarg->init = expr(p, PREC_COMMA, fl);
-    if (paramidx < paramc)
-      typectx_pop(p);
-    namedarg->type = namedarg->init->type;
-    push(p, args, namedarg);
-    if (currtok(p) != TSEMI && currtok(p) != TCOMMA)
-      break;
-    next(p);
+    sym_t name = n->name;
+    local_t* local = (local_t*)n;
+    local->kind = EXPR_PARAM;
+    local->name = name;
+    local->init = expr(p, PREC_COMMA, fl);
+    local->type = local->init->type;
+  } else {
+    resolve_id(p, n);
   }
+  return (expr_t*)n;
 }
 
 
-// args      = posargs ("," namedargs)
-//           | namedargs
-// posargs   = expr ("," expr)*
+// args = arg (("," | ";") arg) ("," | ";")?
+// arg  = expr | id ":" expr
 static void args(parser_t* p, ptrarray_t* args, type_t* recvtype, exprflag_t fl) {
   local_t param0 = { {{EXPR_PARAM}}, .type = recvtype };
   local_t** paramv = (local_t*[]){ &param0 };
@@ -1349,21 +1339,17 @@ static void args(parser_t* p, ptrarray_t* args, type_t* recvtype, exprflag_t fl)
   typectx_push(p, type_void);
 
   for (u32 paramidx = 0; ;paramidx++) {
-    if (currtok(p) == TID && lookahead(p, 1) == TCOLON) {
-      if (paramidx >= paramc) {
-        paramc = 0;
-      } else {
-        paramv += paramidx;
-        paramc -= paramidx;
-      }
-      return namedargs(p, args, paramv, paramc, fl);
+    type_t* t = (paramidx < paramc) ? paramv[paramidx]->type : type_void;
+    typectx_push(p, t);
+
+    expr_t* arg;
+    if (currtok(p) == TID) {
+      arg = named_param_or_id(p, fl);
+    } else {
+      arg = expr(p, PREC_COMMA, fl);
     }
 
-    if (paramidx < paramc)
-      typectx_push(p, paramv[paramidx]->type);
-    expr_t* arg = expr(p, PREC_COMMA, fl);
-    if (paramidx < paramc)
-      typectx_pop(p);
+    typectx_pop(p);
 
     push(p, args, arg);
 
@@ -1397,6 +1383,15 @@ static expr_t* expr_postfix_call(parser_t* p, prec_t prec, expr_t* left, exprfla
   if (currtok(p) != TRPAREN)
     args(p, &n->args, recvtype ? recvtype : type_void, fl);
   expect(p, TRPAREN, "to end function call");
+
+  // eliminate type casts of same type, e.g. "(TYPE i8 (INTLIT 3)) => (INTLIT 3)"
+  if (recvtype->kind != TYPE_FUN &&
+      n->args.len == 1 &&
+      types_iscompat(((expr_t*)n->args.v[0])->type, n->type))
+  {
+    return n->args.v[0];
+  }
+
   return (expr_t*)n;
 }
 
@@ -1421,42 +1416,7 @@ static expr_t* expr_postfix_member(
   left->flags |= EX_RVALUE;
   n->recv = left;
   n->name = p->scanner.sym;
-  if (!expect(p, TID, ""))
-    return (expr_t*)n;
-
-  // get struct type, unwrapping optional and ref
-  structtype_t* st = assertnotnull((structtype_t*)n->recv->type);
-  if (st->kind == TYPE_OPTIONAL) {
-    opttype_t* opt = (opttype_t*)st;
-    st = assertnotnull((structtype_t*)opt->elem);
-  }
-  if (st->kind == TYPE_REF) {
-    reftype_t* pt = (reftype_t*)st;
-    st = assertnotnull((structtype_t*)pt->elem);
-  }
-
-  if UNLIKELY(st->kind != TYPE_STRUCT) {
-    const char* s = fmtnode(p, 0, (const node_t*)st, 1);
-    error(p, (node_t*)n, "%s has no member \"%s\"", s, n->name);
-    return (expr_t*)n;
-  }
-
-  // search for field
-  for (local_t* f = find_field(&st->fields, n->name); f; ) {
-    n->target = (expr_t*)f;
-    n->type = f->type;
-    return (expr_t*)n;
-  }
-
-  // search for method
-  for (fun_t* f = find_method(p, (type_t*)st, n->name); f; ) {
-    n->target = (expr_t*)f;
-    n->type = f->type;
-    return (expr_t*)n;
-  }
-
-  const char* s = fmtnode(p, 0, (const node_t*)n->recv, 1);
-  error(p, (node_t*)n, "%s has no field \"%s\"", s, n->name);
+  expect(p, TID, "");
   return (expr_t*)n;
 }
 

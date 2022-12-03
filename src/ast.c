@@ -266,8 +266,11 @@ static void repr(RPARAMS, const node_t* n) {
   if (node_isexpr(n)) {
     if (n->kind == EXPR_FUN && ((fun_t*)n)->name) {
       CHAR(' '), PRINT(((fun_t*)n)->name);
+      if (seen(r, n))
+        goto end;
       NEWLINE();
       indent += INDENT;
+      goto meta; // avoid second call to seen()
     } else if (node_islocal(n)) {
       CHAR(' '), PRINT(((local_t*)n)->name), CHAR(' ');
     } else {
@@ -277,6 +280,8 @@ static void repr(RPARAMS, const node_t* n) {
 
   if (seen(r, n))
     goto end;
+
+meta:
 
   // {flags} and <type>
   if (node_isexpr(n)) {

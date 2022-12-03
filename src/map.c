@@ -140,10 +140,18 @@ inline static bool keyeq(const mapent_t* ent, const void* key, usize keysize) {
 }
 
 
+static u32 idealcap(u32 lenhint) {
+  // lenhint + 1: must always have one free slot
+  double f = (double)(lenhint + 1u)*LOAD_FACTOR_MUL + 0.5;
+  if UNLIKELY(f > (double)U32_MAX)
+    return U32_MAX;
+  return CEIL_POW2(lenhint + 1u + (u32)f);
+}
+
+
 bool map_init(map_t* m, memalloc_t ma, u32 lenhint) {
   assert(lenhint > 0);
-  lenhint++; // must always have one free slot
-  u32 cap = CEIL_POW2(lenhint + (u32)( (double)lenhint*LOAD_FACTOR_MUL + 0.5 ));
+  u32 cap = idealcap(lenhint);
   m->len = 0;
   m->cap = cap;
   m->seed = fastrand();
@@ -170,11 +178,8 @@ static void map_relocate(u64 seed, mapent_t* entries, u32 cap, mapent_t* ent) {
 }
 
 
-static bool map_grow(map_t* m, memalloc_t ma) {
-  u32 newcap;
-  if (check_mul_overflow(m->cap, (u32)2u, &newcap))
-    return false;
-  // dlog("grow cap %u => %u (%zu B)", m->cap, newcap, (usize)newcap*sizeof(mapent_t));
+static bool map_grow1(map_t* m, memalloc_t ma, u32 newcap) {
+  //dlog("grow cap %u => %u (%zu B)", m->cap, newcap, (usize)newcap*sizeof(mapent_t));
   mapent_t* newentries = mem_alloctv(ma, mapent_t, newcap);
   if UNLIKELY(!newentries)
     return false;
@@ -188,6 +193,25 @@ static bool map_grow(map_t* m, memalloc_t ma) {
   m->entries = newentries;
   m->cap = newcap;
   return true;
+}
+
+
+static bool map_grow(map_t* m, memalloc_t ma) {
+  u32 newcap;
+  if (check_mul_overflow(m->cap, (u32)2u, &newcap))
+    return false;
+  return map_grow1(m, ma, newcap);
+}
+
+
+bool map_reserve(map_t* m, memalloc_t ma, u32 addlen) {
+  u32 newlen;
+  if (check_add_overflow(m->len, addlen, &newlen))
+    return false;
+  u32 newcap = idealcap(newlen);
+  if (newcap <= m->cap)
+    return true;
+  return map_grow1(m, ma, newcap);
 }
 
 

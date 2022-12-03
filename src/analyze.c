@@ -36,12 +36,16 @@ typedef struct nref {
 } nref_t;
 
 
-static const char* fmtnode(analysis_t* a, u32 bufindex, const void* n) {
+static const char* fmtnodex(analysis_t* a, u32 bufindex, const void* n, u32 depth) {
   buf_t* buf = &a->p->tmpbuf[bufindex];
   buf_clear(buf);
-  u32 depth = 0;
   node_fmt(buf, n, depth);
   return buf->chars;
+}
+
+
+static const char* fmtnode(analysis_t* a, u32 bufindex, const void* n) {
+  return fmtnodex(a, bufindex, n, 0);
 }
 
 
@@ -728,6 +732,76 @@ static void unaryop(analysis_t* a, unaryop_t* n, nref_t parent) {
 }
 
 
+static type_t* basetype(type_t* t) {
+  // unwrap optional and ref
+  assertnotnull(t);
+  if (t->kind == TYPE_OPTIONAL)
+    t = assertnotnull(((opttype_t*)t)->elem);
+  if (t->kind == TYPE_REF)
+    t = assertnotnull(((reftype_t*)t)->elem);
+  return t;
+}
+
+
+static expr_t* nullable lookup_own_struct_member(structtype_t* st, sym_t name) {
+  ptrarray_t fields = st->fields;
+  for (u32 i = 0; i < fields.len; i++) {
+    local_t* f = (local_t*)fields.v[i];
+    if (f->name == name)
+      return (expr_t*)f;
+  }
+  ptrarray_t methods = st->methods;
+  for (u32 i = 0; i < methods.len; i++) {
+    fun_t* f = methods.v[i];
+    if (f->name == name)
+      return (expr_t*)f;
+  }
+  return NULL;
+}
+
+
+static expr_t* lookup_member(analysis_t* a, type_t* recv, sym_t name) {
+  if (recv->kind == TYPE_STRUCT) {
+    expr_t* expr = lookup_own_struct_member((structtype_t*)recv, name);
+    if (expr)
+      return expr;
+  }
+
+  // find method map for recv
+  void** mmp = map_lookup_ptr(&a->p->methodmap, recv);
+  if (!mmp)
+    return NULL; // no methods on recv
+  map_t* mm = assertnotnull(*mmp);
+
+  // find method of name
+  void** mp = map_lookup_ptr(mm, name);
+  return mp ? assertnotnull(*mp) : NULL;
+}
+
+
+static void member(analysis_t* a, member_t* n, nref_t parent) {
+  DEF_SELF(n);
+
+  expr(a, n->recv, self);
+
+  if UNLIKELY(a->compiler->errcount)
+    return;
+
+  // get receiver type without ref or optional
+  type_t* t = basetype(n->recv->type);
+
+  expr_t* target = lookup_member(a, t, n->name);
+  if UNLIKELY(!target) {
+    n->type = a->typectx; // avoid cascading errors
+    error(a, n, "%s has no field or method \"%s\"", fmtnode(a, 0, t), n->name);
+    return;
+  }
+
+  n->target = target;
+  n->type = n->target->type;
+}
+
+
 // —————————————————————————————————————————————————————————————————————————————————
 // call
 
@@ -743,114 +817,94 @@ static void error_field_type(analysis_t* a, const expr_t* arg, const local_t* f)
 }
 
 
-static bool reg_struct_args(
-  analysis_t* a, ptrarray_t args, structtype_t* t, map_t* fieldmap)
-{
-  map_clear(fieldmap);
-  u32 pos_i = 0;
-  for (; pos_i < args.len; pos_i++) {
-    if (((expr_t*)args.v[pos_i])->kind == EXPR_PARAM)
-      goto populate_map;
-  }
-  return true;
-populate_map:
-  for (u32 i = 0; i < t->fields.len; i++) {
-    const local_t* f = t->fields.v[i];
-    void** vp = map_assign_ptr(fieldmap, a->ma, f->name);
-    if UNLIKELY(!vp) {
-      out_of_mem(a);
-      return false;
-    }
-    if (i < pos_i) {
-      *vp = args.v[i];
-    } else {
-      *vp = (void*)f;
-    }
-  }
-  return true;
-}
-
-
 static void check_call_type_struct(
   analysis_t* a, call_t* call, structtype_t* t, nref_t self)
 {
   assert(call->args.len <= t->fields.len); // checked by validate_typecall_args
 
   u32 i = 0;
-  map_t fieldmap = a->p->tmpmap;
   ptrarray_t args = call->args;
 
-  if UNLIKELY(!reg_struct_args(a, args, t, &fieldmap))
-    goto end;
+  // build field map
+  map_t fieldmap = a->p->tmpmap;
+  map_clear(&fieldmap);
+  if UNLIKELY(!map_reserve(&fieldmap, a->ma, t->fields.len))
+    return out_of_mem(a);
+  for (u32 i = 0; i < t->fields.len; i++) {
+    const local_t* f = t->fields.v[i];
+    void** vp = map_assign_ptr(&fieldmap, a->ma, f->name);
+    assertnotnull(vp); // map_reserve
+    *vp = (void*)f;
+  }
 
-  // positional arguments
+  // map arguments
   for (; i < args.len; i++) {
     expr_t* arg = args.v[i];
-    if (arg->kind == EXPR_PARAM) {
-      assert(fieldmap.len > 0);
+    sym_t name = NULL;
+
+    switch (arg->kind) {
+    case EXPR_PARAM:
+      name = ((local_t*)arg)->name;
       break;
+    case EXPR_ID:
+      name = ((idexpr_t*)arg)->name;
+      break;
+    default:
+      error(a, arg,
+        "positional argument in struct constructor; use either name:value"
+        " or an identifier with the same name as the intended struct field");
+      continue;
     }
-    const local_t* f = t->fields.v[i];
+
+    // lookup field
+    void** vp = map_lookup_ptr(&fieldmap, name);
+    if UNLIKELY(!vp || ((node_t*)*vp)->kind != EXPR_FIELD) {
+      const char* s = fmtnode(a, 0, t);
+      if (!vp) {
+        error(a, arg, "no \"%s\" field in struct %s", name, s);
+      } else {
+        error(a, arg, "duplicate value for field \"%s\" of struct %s", name, s);
+        warning(a, *vp, "value for field \"%s\" already provided here", name);
+      }
+      continue;
+    }
+
+    local_t* f = *vp; // load field
+    *vp = arg; // mark field name as defined, used for detecting duplicate args
+    arg->flags |= EX_RVALUE;
 
     typectx_push(a, f->type);
-    expr(a, arg, self);
+
+    if (arg->kind == EXPR_PARAM) {
+      local_t* namedarg = (local_t*)arg;
+      assertnotnull(namedarg->init); // checked by parser
+      expr(a, namedarg->init, self);
+      namedarg->type = namedarg->init->type;
+    } else {
+      assert(arg->kind == EXPR_ID); // for future dumb me
+      idexpr(a, (idexpr_t*)arg, self);
+    }
+
     typectx_pop(a);
 
     if UNLIKELY(!types_iscompat(f->type, arg->type))
       error_field_type(a, arg, f);
   }
 
-  dlog("fieldmap.len %u", fieldmap.len);
-  for (const mapent_t* e = map_it(&fieldmap); map_itnext(&fieldmap, &e); ) {
-    const node_t* n = e->value;
-    dlog("  %s => %s", (const char*)e->key, nodekind_name(n->kind));
-  }
-
-  if (fieldmap.len == 0) {
-    // only positional arguments
-    return;
-  }
-
-  // named arguments
-  for (; i < args.len; i++) {
-    local_t* arg = args.v[i];
-    assert(arg->kind == EXPR_PARAM); // checked by parser
-
-    void** vp = map_lookup_ptr(&fieldmap, arg->name);
-
-    if UNLIKELY(!vp || ((node_t*)*vp)->kind != EXPR_FIELD) {
-      const char* s = fmtnode(a, 0, t);
-      if (!vp) {
-        error(a, arg, "no \"%s\" field in struct %s", arg->name, s);
-      } else {
-        error(a, arg, "duplicate value for field \"%s\" of struct %s", arg->name, s);
-        warning(a, *vp, "value for field \"%s\" already provided here", arg->name);
-      }
-      continue;
-    }
-
-    local_t* f = *vp;
-    *vp = arg;
-
-    typectx_push(a, f->type);
-    assertnotnull(arg->init); // checked by parser
-    expr(a, arg->init, self);
-    arg->type = arg->init->type;
-    typectx_pop(a);
-
-    if UNLIKELY(!types_iscompat(f->type, arg->type))
-      error_field_type(a, (expr_t*)arg, f);
-  }
-
-end:
-  a->p->tmpmap = fieldmap;
+  a->p->tmpmap = fieldmap; // in case map grew
 }
 
 
 static void call_type_prim(analysis_t* a, call_t* call, type_t* dst, nref_t self) {
   expr_t* arg = call->args.v[0];
+
   if UNLIKELY(!nodekind_isexpr(arg->kind))
     return error(a, arg, "invalid value");
+
+  if UNLIKELY(arg->kind == EXPR_PARAM) {
+    return error(a, arg, "%s type constructor does not accept named arguments",
+      fmtnode(a, 0, dst));
+  }
 
   typectx_push(a, dst);
   expr(a, arg, self);
@@ -904,6 +958,7 @@ static bool check_call_type_arity(
 
 
 static void call_type(analysis_t* a, call_t* call, type_t* t, nref_t self) {
+  call->type = t;
   switch (t->kind) {
   case TYPE_VOID:
     // no arguments
@@ -948,6 +1003,8 @@ static void call_type(analysis_t* a, call_t* call, type_t* t, nref_t self) {
 
 
 static void call_fun(analysis_t* a, call_t* call, funtype_t* ft, nref_t self) {
+  call->type = ft->result;
+
   u32 paramsc = ft->params.len;
   local_t** paramsv = (local_t**)ft->params.v;
   if (paramsc > 0 && paramsv[0]->isthis) {
@@ -961,25 +1018,41 @@ static void call_fun(analysis_t* a, call_t* call, funtype_t* ft, nref_t self) {
     return;
   }
 
+  bool seen_named_arg = false;
+
   for (u32 i = 0; i < paramsc; i++) {
     expr_t* arg = call->args.v[i];
     local_t* param = paramsv[i];
 
     typectx_push(a, param->type);
-    expr(a, arg, self);
-    typectx_pop(a);
 
-    // check name
-    if UNLIKELY(arg->kind == EXPR_PARAM && ((local_t*)arg)->name != param->name) {
-      for (i = 0; i < paramsc; i++) {
-        if (paramsv[i]->name == ((local_t*)arg)->name)
-          break;
+    if (arg->kind == EXPR_PARAM) {
+      // named argument
+      assertnotnull(((local_t*)arg)->init); // checked by parser
+      expr(a, ((local_t*)arg)->init, self);
+      arg->type = ((local_t*)arg)->init->type;
+      seen_named_arg = true;
+      if UNLIKELY(((local_t*)arg)->name != param->name) {
+        u32 j = i;
+        for (j = 0; j < paramsc; j++) {
+          if (paramsv[j]->name == ((local_t*)arg)->name)
+            break;
+        }
+        const char* condition = (j == paramsc) ? "unknown" : "invalid position of";
+        error(a, arg, "%s named argument \"%s\", in function call %s", condition,
+          ((local_t*)arg)->name, fmtnode(a, 0, ft));
       }
-      const char* condition = (i == paramsc) ? "unknown" : "invalid position for";
-      error(a, arg, "%s named argument \"%s\", in function call %s", condition,
-        ((local_t*)arg)->name, fmtnode(a, 0, ft));
-      return;
+    } else {
+      // positional argument
+      if UNLIKELY(seen_named_arg) {
+        error(a, arg, "positional argument after named argument(s)");
+        typectx_pop(a);
+        break;
+      }
+      expr(a, arg, self);
     }
+
+    typectx_pop(a);
 
     // check type
     if UNLIKELY(!types_iscompat(param->type, arg->type)) {
@@ -1009,6 +1082,7 @@ static void call(analysis_t* a, call_t* n, nref_t parent) {
   }
 
   // error: bad recv
+  n->type = a->typectx; // avoid cascading errors
   if (node_isexpr(recv)) {
     error(a, n->recv, "calling an expression of type %s, expected function or type",
       fmtnode(a, 0, ((expr_t*)recv)->type));
@@ -1051,6 +1125,7 @@ static void expr(analysis_t* a, expr_t* n, nref_t parent) {
   case EXPR_BINOP:     return binop(a, (binop_t*)n, parent);
   case EXPR_BLOCK:     return block(a, (block_t*)n, parent);
   case EXPR_CALL:      return call(a, (call_t*)n, parent);
+  case EXPR_MEMBER:    return member(a, (member_t*)n, parent);
 
   case EXPR_PREFIXOP:
   case EXPR_POSTFIXOP:
@@ -1064,7 +1139,6 @@ static void expr(analysis_t* a, expr_t* n, nref_t parent) {
     return local_var(a, (local_t*)n, parent);
 
   // TODO
-  case EXPR_MEMBER:
   case EXPR_FOR:
   case EXPR_DEREF:
     panic("TODO %s", nodekind_name(n->kind));

@@ -158,6 +158,7 @@ static void fmt(abuf_t* s, const node_t* nullable n, u32 indent, u32 maxdepth) {
     abuf_str(s, n->kind == EXPR_VAR ? "var " : "let ");
     FALLTHROUGH;
   case EXPR_PARAM:
+  case EXPR_FIELD:
     return local(s, (const local_t*)n, indent, maxdepth);
 
   case EXPR_FUN: {
@@ -328,7 +329,6 @@ static void fmt(abuf_t* s, const node_t* nullable n, u32 indent, u32 maxdepth) {
   }
 
   case TYPE_ENUM:
-  case EXPR_FIELD:
     dlog("TODO %s", nodekind_name(n->kind));
     abuf_str(s, "/* TODO fmt ");
     abuf_str(s, nodekind_name(n->kind));

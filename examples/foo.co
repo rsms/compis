@@ -108,16 +108,18 @@
 // }
 
 type Account {
-  x, y, id int
+  x, z, id int
 }
-fun Account.drop(mut this) void {}
+fun Account.foo(this, x int) int {
+  .x + x
+}
 fun bar(x, y int) int {
   x + y
 }
 fun foo(x, y int) int {
   x = bar(x, y: 3)
-  let a = Account(1, id: x, y: y)
-  a.id * y
+  let a = Account(x, id: y)
+  a.id * a.foo(y)
 }
 // fun bar(x, y *Account) {
 //   var a *Account = x // ownership transfers x -> a

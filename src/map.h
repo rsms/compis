@@ -21,6 +21,10 @@ inline static void map_dispose(map_t* m, memalloc_t ma) {
 }
 void map_clear(map_t* m); // remove all items (m remains valid)
 
+// map_reserve makes sure there is space for at least additional_space without
+// rehashing on assignment.
+bool map_reserve(map_t* m, memalloc_t ma, u32 additional_space);
+
 mapent_t* nullable map_assign_ent(
   map_t* m, memalloc_t ma, const void* key, usize keysize);
 
