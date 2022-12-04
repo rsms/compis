@@ -148,9 +148,19 @@ static void repr_typedef(RPARAMS, const typedef_t* n) {
 static void repr_struct(RPARAMS, const structtype_t* n, bool isnew) {
   if (n->name)
     CHAR(' '), PRINT(n->name);
-  if (isnew) for (u32 i = 0; i < n->fields.len; i++) {
+  if (!isnew)
+    return;
+  for (u32 i = 0; i < n->fields.len; i++) {
     CHAR(' ');
     repr(RARGS, n->fields.v[i]);
+  }
+  if (n->methods.len) {
+    REPR_BEGIN('(', "methods");
+    for (u32 i = 0; i < n->methods.len; i++) {
+      if (i) CHAR(' ');
+      repr(RARGS, n->methods.v[i]);
+    }
+    REPR_END(')');
   }
 }
 

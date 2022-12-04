@@ -109,6 +109,9 @@
 
 type Account {
   x, z, id int
+  // foo1 int
+
+  fun foo1(this, x int) int { .x + x }
 }
 fun Account.foo(this, x int) int {
   .x + x
@@ -121,6 +124,7 @@ fun foo(x, y int) int {
   let a = Account(x, id: y)
   a.id * a.foo(y)
 }
+
 // fun bar(x, y *Account) {
 //   var a *Account = x // ownership transfers x -> a
 //   var b *Account = y // ownership transfers y -> b

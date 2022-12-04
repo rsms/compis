@@ -29,7 +29,9 @@ const char* nodekind_fmt(nodekind_t kind) {
     case EXPR_INTLIT:
       return "literal constant";
     case EXPR_MEMBER:
-      return "struct field";
+      return "member";
+    case EXPR_FIELD:
+      return "field";
     case TYPE_STRUCT:
       return "struct type";
     default:

@@ -436,7 +436,7 @@ static void block(analysis_t* a, block_t* n, nref_t parent) {
 static void fun(analysis_t* a, fun_t* n, nref_t parent) {
   DEF_SELF(n);
 
-  if (n->name)
+  if (n->name && !n->methodof)
     define(a, n->name, n);
 
   // parameters
@@ -743,42 +743,6 @@ static type_t* basetype(type_t* t) {
 }
 
 
-static expr_t* nullable lookup_own_struct_member(structtype_t* st, sym_t name) {
-  ptrarray_t fields = st->fields;
-  for (u32 i = 0; i < fields.len; i++) {
-    local_t* f = (local_t*)fields.v[i];
-    if (f->name == name)
-      return (expr_t*)f;
-  }
-  ptrarray_t methods = st->methods;
-  for (u32 i = 0; i < methods.len; i++) {
-    fun_t* f = methods.v[i];
-    if (f->name == name)
-      return (expr_t*)f;
-  }
-  return NULL;
-}
-
-
-static expr_t* lookup_member(analysis_t* a, type_t* recv, sym_t name) {
-  if (recv->kind == TYPE_STRUCT) {
-    expr_t* expr = lookup_own_struct_member((structtype_t*)recv, name);
-    if (expr)
-      return expr;
-  }
-
-  // find method map for recv
-  void** mmp = map_lookup_ptr(&a->p->methodmap, recv);
-  if (!mmp)
-    return NULL; // no methods on recv
-  map_t* mm = assertnotnull(*mmp);
-
-  // find method of name
-  void** mp = map_lookup_ptr(mm, name);
-  return mp ? assertnotnull(*mp) : NULL;
-}
-
-
 static void member(analysis_t* a, member_t* n, nref_t parent) {
   DEF_SELF(n);
 
@@ -790,7 +754,7 @@ static void member(analysis_t* a, member_t* n, nref_t parent) {
   // get receiver type without ref or optional
   type_t* t = basetype(n->recv->type);
 
-  expr_t* target = lookup_member(a, t, n->name);
+  expr_t* target = lookup_member(a->p, t, n->name);
   if UNLIKELY(!target) {
     n->type = a->typectx; // avoid cascading errors
     error(a, n, "%s has no field or method \"%s\"", fmtnode(a, 0, t), n->name);

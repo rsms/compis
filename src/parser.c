@@ -112,14 +112,14 @@ static void next(parser_t* p) {
 }
 
 
-static tok_t lookahead(parser_t* p, u32 distance) {
-  scanstate_t scanstate = save_scanstate(p);
-  while (distance--)
-    next(p);
-  tok_t tok = currtok(p);
-  restore_scanstate(p, scanstate);
-  return tok;
-}
+// static tok_t lookahead(parser_t* p, u32 distance) {
+//   scanstate_t scanstate = save_scanstate(p);
+//   while (distance--)
+//     next(p);
+//   tok_t tok = currtok(p);
+//   restore_scanstate(p, scanstate);
+//   return tok;
+// }
 
 
 static bool lookahead_issym(parser_t* p, sym_t sym) {
@@ -199,6 +199,17 @@ srcrange_t node_srcrange(const node_t* n) {
 
 
 ATTR_FORMAT(printf,3,4)
+static void error1(parser_t* p, srcrange_t srcrange, const char* fmt, ...) {
+  if (p->scanner.inp == p->scanner.inend && p->scanner.tok.t == TEOF)
+    return;
+  va_list ap;
+  va_start(ap, fmt);
+  report_diagv(p->scanner.compiler, srcrange, DIAG_ERR, fmt, ap);
+  va_end(ap);
+}
+
+
+ATTR_FORMAT(printf,3,4)
 static void error(parser_t* p, const node_t* nullable n, const char* fmt, ...) {
   if (p->scanner.inp == p->scanner.inend && p->scanner.tok.t == TEOF)
     return;
@@ -236,7 +247,7 @@ static const char* fmttok(parser_t* p, usize bufindex, tok_t tok, slice_t lit) {
 }
 
 
-static const char* fmtnode(parser_t* p, u32 bufindex, const node_t* n, u32 depth) {
+static const char* fmtnode(parser_t* p, u32 bufindex, const void* n, u32 depth) {
   buf_t* buf = &p->tmpbuf[bufindex];
   buf_clear(buf);
   node_fmt(buf, n, depth);
@@ -459,8 +470,8 @@ static bool check_types_compat(
   const node_t* nullable origin)
 {
   if UNLIKELY(!!x * !!y && !types_iscompat(x, y)) { // "!!x * !!y": ignore NULL
-    const char* xs = fmtnode(p, 0, (const node_t*)x, 1);
-    const char* ys = fmtnode(p, 1, (const node_t*)y, 1);
+    const char* xs = fmtnode(p, 0, x, 1);
+    const char* ys = fmtnode(p, 1, y, 1);
     error(p, origin, "incompatible types, %s and %s", xs, ys);
     return false;
   }
@@ -551,62 +562,63 @@ static type_t* type_id(parser_t* p) {
 }
 
 
-static local_t* nullable find_field(ptrarray_t* fields, sym_t name) {
-  for (u32 i = 0; i < fields->len; i++) {
-    local_t* f = fields->v[i];
-    if (f->name == name)
-      return f;
-  }
-  return NULL;
-}
-
-
-static fun_t* nullable find_methodv(ptrarray_t* methods, sym_t name) {
-  for (u32 i = 0; i < methods->len; i++) {
-    fun_t* f = methods->v[i];
-    if (f->name == name)
-      return f;
-  }
-  return NULL;
-}
-
-
-static fun_t* nullable find_method(parser_t* p, type_t* t, sym_t name) {
-  if (t->kind == TYPE_STRUCT) {
-    fun_t* f = find_methodv(&((structtype_t*)t)->methods, name);
-    if (f)
-      return f;
-  }
-  void** mmp = map_lookup_ptr(&p->methodmap, t);
+fun_t* nullable lookup_method(parser_t* p, type_t* recv, sym_t name) {
+  // find method map for recv
+  void** mmp = map_lookup_ptr(&p->methodmap, recv);
   if (!mmp)
-    return NULL;
+    return NULL; // no methods on recv
   map_t* mm = assertnotnull(*mmp);
+
+  // find method of name
   void** mp = map_lookup_ptr(mm, name);
-  if (!mp)
-    return NULL;
-  return assertnotnull(*mp);
+  return mp ? assertnotnull(*mp) : NULL;
+}
+
+
+local_t* nullable lookup_struct_field(structtype_t* st, sym_t name) {
+  ptrarray_t fields = st->fields;
+  for (u32 i = 0; i < fields.len; i++) {
+    local_t* f = (local_t*)fields.v[i];
+    if (f->name == name)
+      return f;
+  }
+  return NULL;
+}
+
+
+expr_t* nullable lookup_member(parser_t* p, type_t* recv, sym_t name) {
+  if (recv->kind == TYPE_STRUCT) {
+    local_t* field = lookup_struct_field((structtype_t*)recv, name);
+    if (field)
+      return (expr_t*)field;
+  }
+  return (expr_t*)lookup_method(p, recv, name);
 }
 
 
 // field = id ("," id)* type ("=" expr ("," expr))
-static bool fieldset(parser_t* p, ptrarray_t* fields) {
-  u32 fields_start = fields->len;
+static bool struct_fieldset(parser_t* p, structtype_t* st) {
+  u32 fields_start = st->fields.len;
   for (;;) {
     local_t* f = mknode(p, local_t, EXPR_FIELD);
     f->name = p->scanner.sym;
-    if (find_field(fields, f->name))
-      error(p, NULL, "duplicate field %s", f->name);
-    // TODO: check for own methods with find_methodv
     expect(p, TID, "");
-    push(p, fields, f);
+
+    if UNLIKELY(lookup_struct_field(st, f->name)) {
+      error(p, NULL, "duplicate field %s", f->name);
+    } else if UNLIKELY(lookup_method(p, (type_t*)st, f->name)) {
+      error(p, NULL, "field %s conflicts with method of same name", f->name);
+    }
+
+    push(p, &st->fields, f);
     if (currtok(p) != TCOMMA)
       break;
     next(p);
   }
 
   type_t* t = type(p, PREC_MEMBER);
-  for (u32 i = fields_start; i < fields->len; i++)
-    ((local_t*)fields->v[i])->type = t;
+  for (u32 i = fields_start; i < st->fields.len; i++)
+    ((local_t*)st->fields.v[i])->type = t;
 
   if (currtok(p) != TASSIGN)
     return false;
@@ -614,12 +626,12 @@ static bool fieldset(parser_t* p, ptrarray_t* fields) {
   next(p);
   u32 i = fields_start;
   for (;;) {
-    if (i == fields->len) {
+    if (i == st->fields.len) {
       error(p, NULL, "excess field initializer");
       expr(p, PREC_COMMA, EX_RVALUE);
       break;
     }
-    local_t* f = fields->v[i++];
+    local_t* f = st->fields.v[i++];
     typectx_push(p, f->type);
     f->init = expr(p, PREC_COMMA, EX_RVALUE);
     typectx_pop(p);
@@ -627,37 +639,44 @@ static bool fieldset(parser_t* p, ptrarray_t* fields) {
       break;
     next(p);
     if UNLIKELY(!types_iscompat(f->type, f->init->type)) {
-      const char* got = fmtnode(p, 0, (const node_t*)f->init->type, 1);
-      const char* expect = fmtnode(p, 1, (const node_t*)f->type, 1);
+      const char* got = fmtnode(p, 0, f->init->type, 1);
+      const char* expect = fmtnode(p, 1, f->type, 1);
       error(p, (node_t*)f->init,
         "field initializer of type %s where type %s is expected", got, expect);
     }
   }
-  if (i < fields->len)
+  if (i < st->fields.len)
     error(p, NULL, "missing field initializer");
   return true;
 }
 
 
+static fun_t* fun(parser_t*, exprflag_t, type_t* nullable methodof, bool requirename);
+
+
 static type_t* type_struct(parser_t* p) {
-  structtype_t* t = mknode(p, structtype_t, TYPE_STRUCT);
+  structtype_t* st = mknode(p, structtype_t, TYPE_STRUCT);
   next(p);
   while (currtok(p) != TRBRACE) {
-    t->hasinit |= fieldset(p, &t->fields);
+    if (currtok(p) == TFUN) {
+      fun_t* f = fun(p, 0, (type_t*)st, /*requirename*/true);
+      push(p, &st->methods, f);
+    } else {
+      st->hasinit |= struct_fieldset(p, st);
+    }
     if (currtok(p) != TSEMI)
       break;
     next(p);
   }
   expect(p, TRBRACE, "to end struct");
-  for (u32 i = 0; i < t->fields.len; i++) {
-    local_t* f = t->fields.v[i];
+  for (u32 i = 0; i < st->fields.len; i++) {
+    local_t* f = st->fields.v[i];
     type_t* ft = assertnotnull(f->type);
-    t->align = MAX(t->align, ft->align);
-    t->size += ft->size;
+    st->align = MAX(st->align, ft->align);
+    st->size += ft->size;
   }
-  t->size = ALIGN2(t->size, t->align);
-  //dlog("struct size %zu, align %u", t->size, t->align);
-  return (type_t*)t;
+  st->size = ALIGN2(st->size, st->align);
+  return (type_t*)st;
 }
 
 
@@ -1069,7 +1088,7 @@ static type_t* select_int_type(parser_t* p, const intlit_t* n, u64 isneg) {
   }
 
   if UNLIKELY(uintval > maxval) {
-    const char* ts = fmtnode(p, 0, (const node_t*)type, 1);
+    const char* ts = fmtnode(p, 0, type, 1);
     slice_t lit = scanner_lit(&p->scanner);
     error(p, (node_t*)n, "integer constant %s%.*s overflows %s",
       isneg ? "-" : "", (int)lit.len, lit.chars, ts);
@@ -1231,7 +1250,7 @@ static expr_t* expr_deref(parser_t* p, exprflag_t fl) {
   reftype_t* t = (reftype_t*)n->expr->type;
 
   if UNLIKELY(t->kind != TYPE_REF) {
-    const char* ts = fmtnode(p, 0, (node_t*)t, 1);
+    const char* ts = fmtnode(p, 0, t, 1);
     error(p, (node_t*)n, "dereferencing non-reference value of type %s", ts);
   } else {
     n->type = t->elem;
@@ -1249,13 +1268,13 @@ static expr_t* expr_ref1(parser_t* p, bool ismut, exprflag_t fl) {
   n->expr = expr(p, PREC_UNARY_PREFIX, fl | EX_RVALUE);
 
   if UNLIKELY(n->expr->type->kind == TYPE_REF) {
-    const char* ts = fmtnode(p, 0, (node_t*)n->expr->type, 1);
+    const char* ts = fmtnode(p, 0, n->expr->type, 1);
     error(p, (node_t*)n, "referencing reference type %s", ts);
   } else if UNLIKELY(!expr_isstorage(n->expr)) {
-    const char* ts = fmtnode(p, 0, (node_t*)n->expr->type, 1);
+    const char* ts = fmtnode(p, 0, n->expr->type, 1);
     error(p, (node_t*)n, "referencing ephemeral value of type %s", ts);
   } else if UNLIKELY(ismut && !expr_ismut(n->expr)) {
-    const char* s = fmtnode(p, 0, (node_t*)n->expr, 1);
+    const char* s = fmtnode(p, 0, n->expr, 1);
     nodekind_t k = n->expr->kind;
     if (k == EXPR_ID)
       k = ((idexpr_t*)n->expr)->ref->kind;
@@ -1364,7 +1383,6 @@ static void args(parser_t* p, ptrarray_t* args, type_t* recvtype, exprflag_t fl)
 
 // call = expr "(" args? ")"
 static expr_t* expr_postfix_call(parser_t* p, prec_t prec, expr_t* left, exprflag_t fl) {
-  u32 errcount = p->scanner.compiler->errcount;
   call_t* n = mkexpr(p, call_t, EXPR_CALL, fl);
   next(p);
   type_t* recvtype = left->type;
@@ -1661,73 +1679,89 @@ static map_t* nullable get_or_create_methodmap(parser_t* p, const type_t* t) {
 }
 
 
-static void fun_name(parser_t* p, fun_t* fun) {
-  fun->name = p->scanner.sym;
-  srcloc_t recv_loc = currloc(p);
-  next(p);
-  if (currtok(p) != TDOT) // plain function name, e.g. "foo"
+static void add_method(parser_t* p, fun_t* fun, srcloc_t name_loc) {
+  assertnotnull(fun->methodof);
+  assertnotnull(fun->name);
+  assert(fun->name != sym__);
+  map_t* mm = get_or_create_methodmap(p, fun->methodof);
+  if UNLIKELY(!mm)
     return;
-  next(p);
-
-  // method function name, e.g. "Foo.bar"
-
-  sym_t recv_name = fun->name;
-  fun->name = sym__; // in case of error
-
-  // method name, e.g. "bar" in "Foo.bar"
-  sym_t method_name = p->scanner.sym;
-  srcloc_t method_name_loc = currloc(p);
-  if (!expect(p, TID, "after '.'"))
-    return;
-
-  // resolve receiver, e.g. "Foo" in "Foo.bar"
-  idexpr_t recvid = {0};
-  recvid.kind = EXPR_ID;
-  recvid.name = recv_name;
-  recvid.loc = recv_loc;
-  resolve_id(p, &recvid);
-  if UNLIKELY(!recvid.ref)
-    return;
-
-  // check receiver
-  type_t* recv = (type_t*)recvid.ref;
-  if UNLIKELY(!nodekind_istype(recv->kind)) {
-    const char* s = fmtnode(p, 0, (node_t*)recv, 1);
-    error(p, (node_t*)&recvid, "%s is not a type", s);
-  }
-  fun->methodof = recv;
-
-  // add method_name => fun to recv's method map
-  map_t* mm = get_or_create_methodmap(p, recv);
-  if (!mm)
-    return;
-  void** mp = map_assign_ptr(mm, p->ma, method_name);
+  void** mp = map_assign_ptr(mm, p->ma, fun->name);
   if UNLIKELY(!mp)
     return out_of_mem(p);
-  if UNLIKELY(*mp) {
-    const char* s = fmtnode(p, 0, (node_t*)recv, 1);
-    recvid.loc = method_name_loc;
-    return error(p, (node_t*)&recvid,
-      "duplicate definition of method %s for type %s", method_name, s);
-  }
-  *mp = fun;
 
-  // make canonical name
-  buf_t* buf = &p->tmpbuf[0];
-  buf_clear(buf);
-  buf_print(buf, recv_name);
-  buf_print(buf, "·"); // U+00B7 MIDDLE DOT (UTF8: "\xC2\xB7")
-  if UNLIKELY(!buf_print(buf, method_name)) {
-    out_of_mem(p);
-  } else {
-    fun->name = sym_intern(buf->p, buf->len);
+  expr_t* existing = *mp;
+  if (!existing && fun->methodof->kind == TYPE_STRUCT)
+    existing = (expr_t*)lookup_struct_field((structtype_t*)fun->methodof, fun->name);
+
+  if UNLIKELY(existing) {
+    const char* s = fmtnode(p, 0, fun->methodof, 0);
+    srcrange_t srcrange = { .focus = name_loc };
+    if (existing->kind == EXPR_FUN) {
+      error1(p, srcrange, "duplicate method \"%s\" for type %s", fun->name, s);
+    } else {
+      error1(p, srcrange, "duplicate member \"%s\" for type %s, conflicts with %s",
+        fun->name, s, nodekind_fmt(existing->kind));
+    }
+    if (existing->loc.line)
+      warning(p, (node_t*)existing, "previously defined here");
+    return;
   }
+
+  *mp = fun;
 }
 
 
-static bool fun_prototype(parser_t* p, fun_t* n) {
-  if (currtok(p) == TID)
-    fun_name(p, n);
+static void fun_name(parser_t* p, fun_t* fun, type_t* nullable recv) {
+  fun->name = p->scanner.sym;
+  srcloc_t name_loc = currloc(p);
+  next(p);
+
+  if (recv) {
+    // function defined inside type context, e.g. "type Foo { fun bar(){} }"
+    fun->methodof = recv;
+  } else {
+    if (currtok(p) != TDOT) {
+      // plain function name, e.g. "foo"
+      return;
+    }
+    // method function name, e.g. "Foo.bar"
+    next(p);
+
+    // resolve receiver, e.g. "Foo" in "Foo.bar"
+    recv = (type_t*)lookup(p, fun->name);
+    if UNLIKELY(!recv) {
+      error1(p, (srcrange_t){ .focus = name_loc },
+        "undeclared identifier \"%s\"", fun->name);
+      return;
+    }
+    if UNLIKELY(!nodekind_istype(recv->kind)) {
+      const char* s = fmtnode(p, 0, recv, 1);
+      error1(p, (srcrange_t){ .focus = name_loc }, "%s is not a type", s);
+      return;
+    }
+    fun->methodof = recv;
+
+    // method name, e.g. "bar" in "Foo.bar"
+    fun->name = p->scanner.sym;
+    name_loc = currloc(p);
+    if (!expect(p, TID, "after '.'"))
+      return;
+  }
+
+  // add name => fun to recv's method map
+  add_method(p, fun, name_loc);
+}
+
+
+static bool fun_prototype(
+  parser_t* p, fun_t* n, type_t* nullable methodof, bool requirename)
+{
+  if (currtok(p) == TID) {
+    fun_name(p, n, methodof);
+  } else if (requirename) {
+    error(p, NULL, "missing function name");
+  }
 
   // parameters
   bool has_named_params = false;
@@ -1755,7 +1789,7 @@ static bool fun_prototype(parser_t* p, fun_t* n) {
 static type_t* type_fun(parser_t* p) {
   fun_t f = { .kind = EXPR_FUN, .loc = currloc(p) };
   next(p);
-  fun_prototype(p, &f);
+  fun_prototype(p, &f, NULL, /*requirename*/false);
   return (type_t*)f.type;
 }
 
@@ -1798,13 +1832,15 @@ static void fun_body(parser_t* p, fun_t* n, exprflag_t fl) {
 // fundef = "fun" name "(" params? ")" result ( ";" | "{" body "}")
 // result = params
 // body   = (stmt ";")*
-static expr_t* expr_fun(parser_t* p, exprflag_t fl) {
+static fun_t* fun(
+  parser_t* p, exprflag_t fl, type_t* nullable methodof, bool requirename)
+{
   fun_t* n = mkexpr(p, fun_t, EXPR_FUN, fl);
   next(p);
-  bool has_named_params = fun_prototype(p, n);
+  bool has_named_params = fun_prototype(p, n, methodof, requirename);
 
   // define named function
-  if (n->name && n->type->kind != NODE_BAD)
+  if (n->name && n->type->kind != NODE_BAD && !n->methodof)
     define(p, n->name, (node_t*)n);
 
   // define named parameters
@@ -1824,15 +1860,15 @@ static expr_t* expr_fun(parser_t* p, exprflag_t fl) {
   if (has_named_params)
     leave_scope(p);
 
-  return (expr_t*)n;
+  return n;
 }
 
+static expr_t* expr_fun(parser_t* p, exprflag_t fl) {
+  return (expr_t*)fun(p, fl, NULL, /*requirename*/false);
+}
 
 static stmt_t* stmt_fun(parser_t* p) {
-  fun_t* n = (fun_t*)expr_fun(p, 0);
-  if UNLIKELY(n->kind == EXPR_FUN && !n->name)
-    error(p, (node_t*)n, "anonymous function at top level");
-  return (stmt_t*)n;
+  return (stmt_t*)fun(p, 0, NULL, /*requirename*/true);
 }
 
 

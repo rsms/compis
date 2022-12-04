@@ -412,6 +412,9 @@ node_t* clone_node(parser_t* p, const node_t* n);
     _mknode((p), sizeof(__typeof__(*(nptr))), ((node_t*)(nptr))->kind), \
     (nptr), \
     sizeof(*(nptr))) )
+local_t* nullable lookup_struct_field(structtype_t* st, sym_t name);
+fun_t* nullable lookup_method(parser_t* p, type_t* recv, sym_t name);
+expr_t* nullable lookup_member(parser_t* p, type_t* recv, sym_t name);
 
 inline static bool nodekind_istype(nodekind_t kind) { return kind >= TYPE_VOID; }
 inline static bool nodekind_isexpr(nodekind_t kind) {
