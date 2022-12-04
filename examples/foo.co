@@ -110,7 +110,6 @@
 type Account {
   x, z, id int
   // foo1 int
-
   fun foo1(this, x int) int { .x + x }
 }
 fun Account.foo(this, x int) int {

@@ -210,7 +210,7 @@ static void error1(parser_t* p, srcrange_t srcrange, const char* fmt, ...) {
 
 
 ATTR_FORMAT(printf,3,4)
-static void error(parser_t* p, const node_t* nullable n, const char* fmt, ...) {
+static void error(parser_t* p, const void* nullable n, const char* fmt, ...) {
   if (p->scanner.inp == p->scanner.inend && p->scanner.tok.t == TEOF)
     return;
   srcrange_t srcrange = n ? node_srcrange(n) : (srcrange_t){ .focus = currloc(p), };
@@ -222,7 +222,7 @@ static void error(parser_t* p, const node_t* nullable n, const char* fmt, ...) {
 
 
 ATTR_FORMAT(printf,3,4)
-static void warning(parser_t* p, const node_t* nullable n, const char* fmt, ...) {
+static void warning(parser_t* p, const void* nullable n, const char* fmt, ...) {
   srcrange_t srcrange = n ? node_srcrange(n) : (srcrange_t){ .focus = currloc(p), };
   va_list ap;
   va_start(ap, fmt);
@@ -604,10 +604,15 @@ static bool struct_fieldset(parser_t* p, structtype_t* st) {
     f->name = p->scanner.sym;
     expect(p, TID, "");
 
-    if UNLIKELY(lookup_struct_field(st, f->name)) {
-      error(p, NULL, "duplicate field %s", f->name);
-    } else if UNLIKELY(lookup_method(p, (type_t*)st, f->name)) {
-      error(p, NULL, "field %s conflicts with method of same name", f->name);
+    node_t* existing = (node_t*)lookup_struct_field(st, f->name);
+    if LIKELY(!existing)
+      existing = (node_t*)lookup_method(p, (type_t*)st, f->name);
+    if UNLIKELY(existing) {
+      const char* s = fmtnode(p, 0, st, 0);
+      error(p, f, "duplicate %s \"%s\" for type %s",
+        (existing->kind == EXPR_FIELD) ? "field" : "member", f->name, s);
+      if (existing->loc.line)
+        warning(p, (node_t*)existing, "previously defined here");
     }
 
     push(p, &st->fields, f);
@@ -1697,12 +1702,8 @@ static void add_method(parser_t* p, fun_t* fun, srcloc_t name_loc) {
   if UNLIKELY(existing) {
     const char* s = fmtnode(p, 0, fun->methodof, 0);
     srcrange_t srcrange = { .focus = name_loc };
-    if (existing->kind == EXPR_FUN) {
-      error1(p, srcrange, "duplicate method \"%s\" for type %s", fun->name, s);
-    } else {
-      error1(p, srcrange, "duplicate member \"%s\" for type %s, conflicts with %s",
-        fun->name, s, nodekind_fmt(existing->kind));
-    }
+    error1(p, srcrange, "duplicate %s \"%s\" for type %s",
+      (existing->kind == EXPR_FUN) ? "method" : "member", fun->name, s);
     if (existing->loc.line)
       warning(p, (node_t*)existing, "previously defined here");
     return;
