@@ -164,7 +164,6 @@ enum nodekind {
 typedef u32 exprflag_t;
 enum exprflag {
   EX_RVALUE           = (u8)1 << 0, // expression is used as an rvalue
-  EX_RVALUE_CHECKED   = (u8)1 << 1, // rvalue of this node has been checked
   EX_OPTIONAL         = (u8)1 << 2, // type-narrowed from optional
   EX_SHADOWS_OWNER    = (u8)1 << 3, // shadows the original owner of a value (TYPE_PTR)
   EX_EXITS            = (u8)1 << 4, // block exits the function (ie has "return")
@@ -216,7 +215,6 @@ typedef struct {
   usertype_t;
   sym_t nullable name;    // NULL if anonymous
   ptrarray_t     fields;  // field_t*[]
-  ptrarray_t     methods; // fun_t*[]
   bool           hasinit; // true if at least one field has an initializer
 } structtype_t;
 
@@ -242,12 +240,6 @@ typedef struct {
 } typedef_t;
 
 typedef struct {
-  sym_t name;
-} cleanup_t;
-
-DEF_ARRAY_TYPE(cleanup_t, cleanuparray);
-
-typedef struct {
   stmt_t;
   type_t* nullable type;
   u32              nrefs;
@@ -265,9 +257,9 @@ typedef struct { expr_t; expr_t* nullable value; } retexpr_t;
 
 typedef struct { // block is a declaration (stmt) or an expression depending on use
   expr_t;
-  ptrarray_t        children;
-  cleanuparray_t    cleanup; // cleanup_t[]
-  scope_t           scope;
+  ptrarray_t children;
+  ptrarray_t cleanup; // cleanup_t[]
+  scope_t    scope;
 } block_t;
 
 typedef struct {
@@ -319,7 +311,8 @@ typedef struct {
   buf_t            tmpbuf[2];
   map_t            tmpmap;
   map_t            methodmap; // maps type_t* -> ptrarray_t of methods (fun_t*[])
-  fun_t* nullable  fun; // current function
+  fun_t* nullable  fun;  // current function
+  unit_t* nullable unit; // current unit
   type_t*          typectx;
   ptrarray_t       typectxstack;
   expr_t* nullable dotctx; // for ".name" shorthand
@@ -451,6 +444,9 @@ inline static bool type_isprim(const type_t* nullable t) {
   return nodekind_isprimtype(assertnotnull(t)->kind); }
 inline static bool type_isopt(const type_t* nullable t) {
   return assertnotnull(t)->kind == TYPE_OPTIONAL; }
+inline static bool type_isowner(const type_t* t) { // true for "*T" and "?*T"
+  return type_isptr(type_isopt(t) ? ((opttype_t*)t)->elem : t);
+}
 
 // types
 bool types_isconvertible(const type_t* dst, const type_t* src);

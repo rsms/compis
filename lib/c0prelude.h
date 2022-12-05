@@ -16,6 +16,9 @@ __attribute__((noreturn)) void abort(void);
 
 // ——————————————————— internal ———————————————————————
 
-static void _c0·drop(void* p) {
+inline static void _c0·drop(void* p) {
   printf("drop %p\n", p);
+}
+inline static void _c0·drop_opt(void* p) {
+  if (p) _c0·drop(p);
 }

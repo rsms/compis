@@ -75,20 +75,6 @@ static struct { node_t; u8 opaque[64]; } _last_resort_node = { .kind=NODE_BAD };
 node_t* last_resort_node = (node_t*)&_last_resort_node;
 
 
-static u32 u64log10(u64 u) {
-  // U64_MAX 18446744073709551615
-  u32 w = 20;
-  u64 x = 10000000000000000000llu;
-  while (w > 1) {
-    if (u >= x)
-      break;
-    x /= 10;
-    w--;
-  }
-  return w;
-}
-
-
 inline static scanstate_t save_scanstate(parser_t* p) {
   return *(scanstate_t*)&p->scanner;
 }
@@ -180,21 +166,6 @@ static void fastforward(parser_t* p, const tok_t* stoplist) {
 
 static void fastforward_semi(parser_t* p) {
   fastforward(p, (const tok_t[]){ TSEMI, 0 });
-}
-
-
-srcrange_t node_srcrange(const node_t* n) {
-  srcrange_t r = { .start = n->loc, .focus = n->loc };
-  switch (n->kind) {
-    case EXPR_INTLIT:
-      r.end.line = r.focus.line;
-      r.end.col = r.focus.col + u64log10( ((intlit_t*)n)->intval);
-      break;
-    case EXPR_ID:
-      r.end.line = r.focus.line;
-      r.end.col = r.focus.col + strlen(((idexpr_t*)n)->name);
-  }
-  return r;
 }
 
 
@@ -665,7 +636,9 @@ static type_t* type_struct(parser_t* p) {
   while (currtok(p) != TRBRACE) {
     if (currtok(p) == TFUN) {
       fun_t* f = fun(p, 0, (type_t*)st, /*requirename*/true);
-      push(p, &st->methods, f);
+      // Append the function to the unit, not to the structtype.
+      // This simplifies both the general implementation and code generation.
+      push(p, &p->unit->children, f);
     } else {
       st->hasinit |= struct_fieldset(p, st);
     }
@@ -956,11 +929,9 @@ static expr_t* nullable check_if_cond(parser_t* p, expr_t* cond) {
 
       idexpr_t* id2 = CLONE_NODE(p, id);
       id2->type = opt_type->elem;
-      // id2->flags &= ~EX_RVALUE_CHECKED;
 
       expr_t* ref2 = (expr_t*)clone_node(p, id->ref);
       ref2->flags |= EX_SHADOWS_OPTIONAL;
-      // ref2->flags &= ~EX_RVALUE_CHECKED;
       ref2->type = opt_type->elem;
       define_replace(p, id->name, (node_t*)ref2);
 
@@ -1053,7 +1024,7 @@ static expr_t* expr_for(parser_t* p, exprflag_t fl) {
 
 // return = "return" (expr ("," expr)*)?
 static expr_t* expr_return(parser_t* p, exprflag_t fl) {
-  retexpr_t* n = mkexpr(p, retexpr_t, EXPR_RETURN, fl | EX_RVALUE_CHECKED);
+  retexpr_t* n = mkexpr(p, retexpr_t, EXPR_RETURN, fl);
   next(p);
   if (currtok(p) == TSEMI)
     return (expr_t*)n;
@@ -1103,7 +1074,7 @@ static type_t* select_int_type(parser_t* p, const intlit_t* n, u64 isneg) {
 
 
 static expr_t* intlit(parser_t* p, exprflag_t fl, bool isneg) {
-  intlit_t* n = mkexpr(p, intlit_t, EXPR_INTLIT, fl | EX_RVALUE_CHECKED | EX_ANALYZED);
+  intlit_t* n = mkexpr(p, intlit_t, EXPR_INTLIT, fl | EX_ANALYZED);
   n->intval = p->scanner.litint;
   n->type = select_int_type(p, n, (u64)isneg);
   next(p);
@@ -1112,8 +1083,7 @@ static expr_t* intlit(parser_t* p, exprflag_t fl, bool isneg) {
 
 
 static expr_t* floatlit(parser_t* p, exprflag_t fl, bool isneg) {
-  floatlit_t* n = mkexpr(p, floatlit_t, EXPR_FLOATLIT,
-    fl | EX_RVALUE_CHECKED | EX_ANALYZED);
+  floatlit_t* n = mkexpr(p, floatlit_t, EXPR_FLOATLIT, fl | EX_ANALYZED);
   char* endptr = NULL;
 
   // note: scanner always starts float litbuf with '+'
@@ -1252,9 +1222,10 @@ static expr_t* expr_deref(parser_t* p, exprflag_t fl) {
   n->op = currtok(p);
   next(p);
   n->expr = expr(p, PREC_UNARY_PREFIX, fl);
-  reftype_t* t = (reftype_t*)n->expr->type;
 
-  if UNLIKELY(t->kind != TYPE_REF) {
+  ptrtype_t* t = (ptrtype_t*)n->expr->type;
+
+  if UNLIKELY(t->kind != TYPE_REF && t->kind != TYPE_PTR) {
     const char* ts = fmtnode(p, 0, t, 1);
     error(p, (node_t*)n, "dereferencing non-reference value of type %s", ts);
   } else {
@@ -1361,6 +1332,7 @@ static void args(parser_t* p, ptrarray_t* args, type_t* recvtype, exprflag_t fl)
   }
 
   typectx_push(p, type_void);
+  fl |= EX_RVALUE;
 
   for (u32 paramidx = 0; ;paramidx++) {
     type_t* t = (paramidx < paramc) ? paramv[paramidx]->type : type_void;
@@ -1878,6 +1850,7 @@ unit_t* parser_parse(parser_t* p, memalloc_t ast_ma, input_t* input) {
   scope_clear(&p->scope);
   scanner_set_input(&p->scanner, input);
   unit_t* unit = mknode(p, unit_t, NODE_UNIT);
+  p->unit = unit;
   next(p);
 
   enter_scope(p);
@@ -1893,6 +1866,8 @@ unit_t* parser_parse(parser_t* p, memalloc_t ast_ma, input_t* input) {
   }
 
   leave_scope(p);
+
+  p->unit = NULL;
 
   return unit;
 }

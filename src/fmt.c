@@ -338,7 +338,13 @@ static void fmt(abuf_t* s, const node_t* nullable n, u32 indent, u32 maxdepth) {
     break;
 
   case NODE_BAD:
+    abuf_fmt(s, "/*NODE_BAD*/");
+    break;
+
   case NODE_COMMENT:
+    abuf_fmt(s, "/*comment*/");
+    break;
+
   case NODEKIND_COUNT:
     assertf(0, "unexpected node %s", nodekind_name(n->kind));
   }

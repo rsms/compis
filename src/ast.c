@@ -110,7 +110,7 @@ static void seterr(repr_t* r, err_t err) {
 #define RARGS       r, indent, fl
 #define RARGSFL(fl) r, indent, fl
 
-static void repr(RPARAMS, const node_t* n);
+static void repr(RPARAMS, const node_t* nullable n);
 static void repr_type(RPARAMS, const type_t* t);
 
 
@@ -154,35 +154,10 @@ static void repr_struct(RPARAMS, const structtype_t* n, bool isnew) {
     CHAR(' ');
     repr(RARGS, n->fields.v[i]);
   }
-  if (n->methods.len) {
-    REPR_BEGIN('(', "methods");
-    for (u32 i = 0; i < n->methods.len; i++) {
-      if (i) CHAR(' ');
-      repr(RARGS, n->methods.v[i]);
-    }
-    REPR_END(')');
-  }
 }
 
 
 static void repr_fun(RPARAMS, const fun_t* n) {
-
-  // REPR_BEGIN('(', "params");
-  // for (u32 i = 0; i < n->params.len; i++) {
-  //   if (i) CHAR(' ');
-  //   repr(RARGS, n->params.v[i]);
-  // }
-  // REPR_END(')');
-
-  // REPR_BEGIN('(', "result");
-  // CHAR(' ');
-  // if (n->type->kind == TYPE_FUN) {
-  //   repr_type(RARGS, ((funtype_t*)n->type)->result);
-  // } else {
-  //   CHAR('?');
-  // }
-  // REPR_END(')');
-
   if (n->body)
     CHAR(' '), repr(RARGS, (node_t*)n->body);
 }
@@ -256,19 +231,26 @@ static void repr_type(RPARAMS, const type_t* t) {
 }
 
 
-static void cleanup(RPARAMS, const cleanuparray_t* cleanup) {
+static void cleanup(RPARAMS, const ptrarray_t* cleanup) {
   if (cleanup->len == 0)
     return;
   REPR_BEGIN('(', "cleanup");
   for (u32 i = 0; i < cleanup->len; i++) {
+    const local_t* owner = cleanup->v[i];
     CHAR(' ');
-    PRINT(cleanup->v[i].name);
+    PRINT(owner->name);
   }
   REPR_END(')');
 }
 
 
-static void repr(RPARAMS, const node_t* n) {
+static void repr(RPARAMS, const node_t* nullable n) {
+  if (n == NULL) {
+    REPR_BEGIN('(', "null");
+    REPR_END(')');
+    return;
+  }
+
   const char* kindname = STRTAB_GET(nodekind_strtab, n->kind);
   REPR_BEGIN('(', kindname);
 
@@ -319,7 +301,8 @@ meta:
   case EXPR_CALL:    repr_call(RARGS, (call_t*)n); break;
 
   case EXPR_RETURN:
-    CHAR(' '), repr(RARGS, (node_t*)((const retexpr_t*)n)->value);
+    if (((const retexpr_t*)n)->value)
+      CHAR(' '), repr(RARGS, (node_t*)((const retexpr_t*)n)->value);
     break;
 
   case EXPR_BLOCK: {
@@ -417,7 +400,7 @@ meta:
   case EXPR_VAR: {
     const local_t* var = (const local_t*)n;
     CHAR(' '); PRINT(var->name);
-    if (type_isptr(var->type))
+    if (type_isowner(var->type))
       PRINT(owner_islive(var) ? " {live}" : " {dead}");
     if (var->init) {
       CHAR(' ');
@@ -443,4 +426,48 @@ err_t node_repr(buf_t* buf, const node_t* n) {
   *buf = r.outbuf;
   map_dispose(&r.seen, buf->ma);
   return r.err;
+}
+
+
+static u32 u64log10(u64 u) {
+  // U64_MAX 18446744073709551615
+  u32 w = 20;
+  u64 x = 10000000000000000000llu;
+  while (w > 1) {
+    if (u >= x)
+      break;
+    x /= 10;
+    w--;
+  }
+  return w;
+}
+
+
+srcrange_t node_srcrange(const node_t* n) {
+  srcrange_t r = { .start = n->loc, .focus = n->loc };
+  switch (n->kind) {
+    case EXPR_INTLIT:
+      r.end = r.focus;
+      r.end.col += u64log10(((intlit_t*)n)->intval); // FIXME e.g. 0xbeef
+      break;
+    case EXPR_ID:
+      r.end = r.focus;
+      r.end.col += strlen(((idexpr_t*)n)->name);
+      break;
+    case EXPR_CALL: {
+      const call_t* call = (const call_t*)n;
+      if (call->recv)
+        r.start = node_srcrange((node_t*)call->recv).start;
+      if (call->args.len > 0) {
+        r.end = node_srcrange(call->args.v[call->args.len-1]).end;
+      } else {
+        r.end = r.focus;
+      }
+      r.end.col++; // ")"
+      break;
+    }
+    default:
+      dlog("TODO %s %s", __FUNCTION__, nodekind_name(n->kind));
+  }
+  return r;
 }

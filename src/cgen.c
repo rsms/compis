@@ -250,7 +250,7 @@ static sym_t intern_typedef(
   headbuf = g->outbuf; // reload
   g->outbuf = outbuf;
 
-  // in case this is a nested call to intern_typedef, instert into parent headbuf
+  // in case this is a nested call to intern_typedef, insert into parent headbuf
   if (g->headnest) {
     if (headoffs > 0 && g->outbuf.chars[headoffs - 1] != '\n') {
       CHAR('\n');
@@ -261,15 +261,15 @@ static sym_t intern_typedef(
     g->headoffs = g->outbuf.len;
     buf_dispose(&g->headbuf);
   } else if (g->lineno != lineno) {
-    // write "#line N" if it is not already in outbuf
-    char tmp[24];
-    usize len = snprintf(tmp, sizeof(tmp), "\n#line %u\n", lineno);
-    if (g->outbuf.len <= len ||
-      g->outbuf.chars[g->outbuf.len - len - 1] != '\n' ||
-      memcmp(&g->outbuf.chars[g->outbuf.len - len], tmp, len) != 0)
-    {
-      PRINT(tmp);
-    }
+    // // write "#line N" if it is not already in outbuf
+    // char tmp[24];
+    // usize len = snprintf(tmp, sizeof(tmp), "\n#line %u /*x*/\n", lineno);
+    // if (g->outbuf.len <= len ||
+    //   g->outbuf.chars[g->outbuf.len - len - 1] != '\n' ||
+    //   memcmp(&g->outbuf.chars[g->outbuf.len - len], tmp, len) != 0)
+    // {
+    //   PRINT(tmp);
+    // }
     g->lineno = lineno;
   }
 
@@ -358,16 +358,6 @@ static void gen_struct_typedef(cgen_t* g, const type_t* tp, sym_t typename) {
   PRINT("} ");
   PRINT(typename);
   CHAR(';');
-
-  if (n->methods.len == 0)
-    return;
-
-  for (u32 i = 0; i < n->methods.len; i++) {
-    const fun_t* f = n->methods.v[i];
-    assert(f->kind == EXPR_FUN);
-    startline(g, f->loc);
-    fun(g, f);
-  }
 }
 
 
@@ -513,6 +503,15 @@ static void zeroinit(cgen_t* g, const type_t* t) {
 }
 
 
+static void expr_or_zeroinit(cgen_t* g, const type_t* t, const expr_t* nullable n) {
+  if (n) {
+    assert(types_iscompat(t, n->type));
+    return expr(g, n);
+  }
+  zeroinit(g, t);
+}
+
+
 typedef enum {
   BLOCKFLAG_NONE,
   BLOCKFLAG_RET,
@@ -531,7 +530,9 @@ static usize fmt_tmp_id(char* buf, usize bufcap, const void* n) {
 }
 
 // static void print_tmp_id(cgen_t* g, const void* n) {
-//   PRINTF(ANON_PREFIX "tmp%zx", (uintptr)n);
+//   char tmp[TMP_ID_SIZE];
+//   usize len = fmt_tmp_id(tmp, sizeof(tmp), n);
+//   buf_append(&g->outbuf, tmp, len);
 // }
 
 
@@ -540,8 +541,9 @@ static usize fmt_tmp_id(char* buf, usize bufcap, const void* n) {
 
 static void retexpr(cgen_t* g, const retexpr_t* n, const char* nullable tmp) {
   if (tmp) {
+    assert(n->type != type_void);
     type(g, n->type), PRINT(" const "), PRINT(tmp);
-    if (!n->value && n->type == type_void)
+    if (!n->value)
       return;
     PRINT(" = ");
     if (!n->value) {
@@ -557,77 +559,131 @@ static void retexpr(cgen_t* g, const retexpr_t* n, const char* nullable tmp) {
 }
 
 
-/*static u32 cleanups(cgen_t* g, const ptrarray_t* cleanup) {
-  u32 ncleanups = 0;
-  // char tmpname[ID_SIZE("drop")];
-  for (u32 i = 0; i < cleanup->len; i++) {
-    local_t* local = cleanup->v[i];
-    assert(nodekind_islocal(local->kind));
-    assert(local->ownership == OW_LIVE);
-    assert(type_isptr(local->type));
-    FMT_ID(tmpname, sizeof(tmpname), "drop", local);
-    ncleanups++;
-    startlinex(g);
-    type(g, local->type);
-    PRINTF(
-      " __attribute__((__cleanup__(" INTERNAL_PREFIX "drop),__unused__)) "
-      "%s = %s;", tmpname, local->name);
-  }
-  return ncleanups;
-}*/
-
-
-static u32 cleanups(cgen_t* g, const cleanuparray_t* cleanup) {
-  u32 ncleanups = 0;
-  for (u32 i = 0; i < cleanup->len; i++) {
-    const cleanup_t* c = &cleanup->v[i];
-    ncleanups++;
-    startlinex(g);
-    PRINTF(INTERNAL_PREFIX "drop(%s);", c->name);
-  }
-  return ncleanups;
+static void drop_begin(cgen_t* g, const expr_t* owner) {
+  PRINT(type_isopt(owner->type) ?
+    INTERNAL_PREFIX "drop_opt(" :
+    INTERNAL_PREFIX "drop(");
 }
 
 
-static void ret_and_cleanup(
-  cgen_t* g, const cleanuparray_t* cleanup, const retexpr_t* ret)
-{
-  assert(ret->kind == EXPR_RETURN);
+static void drop_end(cgen_t* g) {
+  CHAR(')');
+}
 
-  if (!ret->value) {
+
+static void cleanups(cgen_t* g, const ptrarray_t* cleanup) {
+  for (u32 i = 0; i < cleanup->len; i++) {
+    const expr_t* owner = cleanup->v[i];
+
+    if (owner->kind == EXPR_CALL)
+      continue;
+
+    assert(nodekind_islocal(owner->kind));
+    const local_t* local = (const local_t*)owner;
+
+    startlinex(g);
+    drop_begin(g, owner);
+    PRINT(local->name);
+    drop_end(g);
+    CHAR(';');
+  }
+}
+
+
+static sizetuple_t x_semi_begin(cgen_t* g, srcloc_t loc) {
+  if (loc.line != g->lineno && loc.line)
+    return x_semi_begin_startline(g, loc);
+  return x_semi_begin_char(g, ' ');
+}
+
+
+static void startline_if_needed(cgen_t* g, srcloc_t loc) {
+  if (loc.line != g->lineno && loc.line)
+    startline(g, loc);
+}
+
+
+static bool expr_contains_owners(const expr_t* n) {
+  if (type_isowner(n->type))
+    return true;
+  switch (n->kind) {
+    case EXPR_FIELD:
+    case EXPR_PARAM:
+    case EXPR_VAR:
+    case EXPR_LET:
+      if (((local_t*)n)->init)
+        return expr_contains_owners(((local_t*)n)->init);
+      return false;
+
+    case EXPR_ID:
+      if (((idexpr_t*)n)->ref && node_isexpr(((idexpr_t*)n)->ref))
+        return expr_contains_owners((expr_t*)((idexpr_t*)n)->ref);
+      return false;
+
+    case EXPR_RETURN:
+      if (((retexpr_t*)n)->value)
+        return expr_contains_owners(((retexpr_t*)n)->value);
+      return false;
+
+    case EXPR_PREFIXOP:
+    case EXPR_POSTFIXOP:
+      return expr_contains_owners(((unaryop_t*)n)->expr);
+
+    case EXPR_BINOP:
+      return expr_contains_owners(((binop_t*)n)->left) &&
+             expr_contains_owners(((binop_t*)n)->right);
+
+    case EXPR_BLOCK: {
+      const block_t* b = (const block_t*)n;
+      for (u32 i = 0; i < b->children.len; i++) {
+        if (expr_contains_owners(b->children.v[i]))
+          return true;
+      }
+      return false;
+    }
+
+    case EXPR_CALL: {
+      const call_t* call = (const call_t*)n;
+      if (expr_contains_owners(call->recv))
+        return true;
+      for (u32 i = 0; i < call->args.len; i++) {
+        if (expr_contains_owners(call->args.v[i]))
+          return true;
+      }
+      return false;
+    }
+
+    case EXPR_FUN:
+      return false;
+
+    case EXPR_BOOLLIT:
+    case EXPR_INTLIT:
+    case EXPR_FLOATLIT:
+      return false;
+
+    default:
+      if (!node_isexpr((const node_t*)n))
+        return false;
+      // FIXME until we cover all expression types, assume n contains owners
+      dlog("TODO %s %s", __FUNCTION__, nodekind_name(n->kind));
+      return true;
+  }
+}
+
+
+static void cleanups_before_stmt(
+  cgen_t* g, const ptrarray_t* cleanup, const void* node)
+{
+  if (cleanup->len) {
     cleanups(g, cleanup);
-    PRINT("return;");
-    return;
+    startline(g, ((const node_t*)node)->loc);
+  } else {
+    startline_if_needed(g, ((const node_t*)node)->loc);
   }
-
-  // put return value into a temporary, cleanup, return. e.g.
-  //   T* tmp = x * y;
-  //   _c0·drop(y);
-  //   _c0·drop(x);
-  //   return tmp
-  char tmp[TMP_ID_SIZE];
-  fmt_tmp_id(tmp, sizeof(tmp), ret);
-  retexpr(g, ret, tmp);
-  CHAR(';');
-
-  cleanups(g, cleanup);
-
-  startline(g, ret->loc);
-  PRINT("return "), PRINT(tmp), CHAR(';');
 }
 
 
-static void implicit_ret_and_cleanup(
-  cgen_t* g, const cleanuparray_t* cleanup, const expr_t* val)
-{
-  retexpr_t ret = { .kind = EXPR_RETURN, .type = val->type, .value = (expr_t*)val };
-  ret_and_cleanup(g, cleanup, &ret);
-}
-
-
-static void block(
-  cgen_t* g, const block_t* n, blockflag_t fl, const ptrarray_t* nullable params)
-{
+static void block(cgen_t* g, const block_t* n, blockflag_t fl) {
   g->scopenest++;
 
   if (n->flags & EX_RVALUE) {
@@ -659,64 +715,118 @@ static void block(
 
   u32 start_lineno = g->lineno;
   g->indent++;
-  cleanuparray_t cleanup2 = {0};
+  char tmp[TMP_ID_SIZE];
 
   if (n->children.len > 0) {
     sizetuple_t startlens;
-    for (u32 i = 0, last = n->children.len - 1; i < n->children.len; i++) {
+    for (u32 i = 0, last = n->children.len - 1; i <= last; i++) {
       const expr_t* cn = n->children.v[i];
 
-      if (cn->loc.line != g->lineno && cn->loc.line) {
-        startlens = x_semi_begin_startline(g, cn->loc);
-      } else {
-        startlens = x_semi_begin_char(g, ' ');
-      }
+      // before returning we need to generate cleanups, however the return value
+      // might use a local that is cleaned up, so we must generate cleanups _after_
+      // the return expression but _before_ returning.
+      // To solve this we store the result of the return expression in a temporary.
+      // Example:
+      //   fun dothing(ref &int) int
+      //   fun stuff(x *int) int {
+      //     return dothing(x)
+      //   }
+      // Becomes:
+      //   fun dothing(ref &int) int
+      //   fun stuff(x *int) int {
+      //     int tmp = dothing(x)
+      //     drop(x)
+      //     return tmp
+      //   }
+      //
 
       if (cn->kind == EXPR_RETURN) {
-        // return with cleanup needs special handling
-        if (n->cleanup.len > 0) {
-          ret_and_cleanup(g, &n->cleanup, (const retexpr_t*)cn);
+        // explicit return from function (any block)
+        // e.g. "fun foo(x int) int { return x }"
+        const retexpr_t* ret = (const retexpr_t*)cn;
+        if (ret->type == type_void) {
+          startline_if_needed(g, cn->loc);
+          if (ret->value)
+            expr(g, ret->value), CHAR(';');
+          cleanups(g, &n->cleanup);
+        } else if (n->cleanup.len && expr_contains_owners(cn)) {
+          startline_if_needed(g, cn->loc);
+          fmt_tmp_id(tmp, sizeof(tmp), ret);
+          // "T tmp = expr;"
+          type(g, ret->type), PRINT(" const "), PRINT(tmp), PRINT(" = ");
+          expr_or_zeroinit(g, ret->type, ret->value), CHAR(';');
+          cleanups(g, &n->cleanup);
+          startlinex(g);
+          PRINT("return "), PRINT(tmp), CHAR(';');
+        } else {
+          cleanups_before_stmt(g, &n->cleanup, cn);
+          retexpr(g, (const retexpr_t*)cn, NULL), CHAR(';');
+        }
+        break;
+      }
+
+      if (i == last) {
+        if (fl & BLOCKFLAG_RET) {
+          // implicit return from function body block
+          // e.g. "fun foo(x int) int { x }"
+          assertf(!block_isrvalue, "function block flagged EX_RVALUE");
+          x_semi_begin(g, cn->loc);
+          if (cn->type == type_void) {
+            expr(g, cn), CHAR(';');
+            cleanups(g, &n->cleanup);
+          } else if (n->cleanup.len && expr_contains_owners(cn)) {
+            fmt_tmp_id(tmp, sizeof(tmp), cn);
+            // "T tmp = expr;"
+            type(g, cn->type), PRINTF(" %s = ", tmp), expr(g, cn), CHAR(';');
+            cleanups(g, &n->cleanup);
+            startlinex(g);
+            PRINT("return "), PRINT(tmp), CHAR(';');
+          } else {
+            cleanups_before_stmt(g, &n->cleanup, cn);
+            PRINT("return "), expr(g, cn), CHAR(';');
+          }
           break;
         }
-      } else if (i == last) {
         if (block_isrvalue) {
-          // last expression is implicitly returned
-          PRINT("/*implicit return*/");
-          PRINT(block_resvar), PRINT(" = "), expr(g, (const expr_t*)cn), CHAR(';');
+          // implicit return from non function-body block
+          // e.g. "fun foo(x int) int { { x } }"
+          x_semi_begin(g, cn->loc);
+          PRINT(block_resvar), PRINT(" = "), expr(g, cn), CHAR(';');
           cleanups(g, &n->cleanup);
           break;
-        } else if (fl & BLOCKFLAG_RET) {
-          // function-level block
-          if (n->cleanup.len > 0) {
-            implicit_ret_and_cleanup(g, &n->cleanup, cn);
-            break;
-          }
-          PRINT("/*implicit*/return ");
         }
       }
 
-      expr(g, (const expr_t*)cn);
-
+      // regular statement or expression
+      startlens = x_semi_begin(g, cn->loc);
+      expr(g, cn);
       if ((cn->kind == EXPR_BLOCK || cn->kind == EXPR_IF) && lastchar(g) == '}')
         x_semi_cancel(&startlens);
       x_semi_end(g, startlens);
-    }
+
+      if (i == last)
+        cleanups(g, &n->cleanup);
+    } // for
     g->indent--;
     if (start_lineno != g->lineno) {
       startline(g, (srcloc_t){0});
     } else {
       CHAR(' ');
     }
-  } else {
-    g->indent--;
+  } else { // empty block
+    if (n->cleanup.len > 0) {
+      cleanups(g, &n->cleanup);
+      g->indent--;
+      startlinex(g);
+    } else {
+      g->indent--;
+    }
   }
 
   g->scopenest--;
 
   if (block_isrvalue)
     PRINT(block_resvar), CHAR(';');
-
-  cleanuparray_dispose(&cleanup2, g->compiler->ma);
 
   if (n->flags & EX_RVALUE) {
     PRINT("})");
@@ -764,6 +874,9 @@ static void fun_name(cgen_t* g, const fun_t* fun) {
 
 
 static void fun(cgen_t* g, const fun_t* fun) {
+  // if (type_isowner(((funtype_t*)fun->type)->result))
+  //   PRINT("__attribute__((__return_typestate__(unconsumed))) ");
+
   type(g, ((funtype_t*)fun->type)->result);
   CHAR(' ');
   fun_name(g, fun);
@@ -791,7 +904,7 @@ static void fun(cgen_t* g, const fun_t* fun) {
     if (((funtype_t*)fun->type)->result != type_void)
       fl |= BLOCKFLAG_RET; // return last expression
     CHAR(' ');
-    block(g, fun->body, fl, &fun->params);
+    block(g, fun->body, fl);
   }
 }
 
@@ -916,6 +1029,12 @@ static void call(cgen_t* g, const call_t* n) {
   // okay, then it must be a function call
   assert(n->recv->type->kind == TYPE_FUN);
 
+  // owner sink? (i.e. return value is unused but must be dropped)
+  bool owner_sink = (n->flags & EX_RVALUE) == 0 && type_isowner(n->type);
+  if (owner_sink)
+    drop_begin(g, (expr_t*)n);
+
+  // recv
   expr_t* self = NULL;
   bool isselfref = false;
   if (n->recv->kind == EXPR_MEMBER && ((member_t*)n->recv)->target->kind == EXPR_FUN) {
@@ -931,6 +1050,8 @@ static void call(cgen_t* g, const call_t* n) {
   } else {
     expr(g, n->recv);
   }
+
+  // args
   CHAR('(');
   if (self) {
     if (isselfref && self->type->kind != TYPE_REF)
@@ -947,6 +1068,9 @@ static void call(cgen_t* g, const call_t* n) {
     expr(g, arg);
   }
   CHAR(')');
+
+  if (owner_sink)
+    drop_end(g);
 }
 
 
@@ -1073,10 +1197,16 @@ static void vardef1(cgen_t* g, const local_t* n, const char* name, bool wrap_rva
   }
   CHAR(' ');
 
-  if (n->nrefs == 0)
-    PRINT("__attribute__((__unused__)) ");
-
   id(g, name);
+
+  if (n->nrefs == 0)
+    PRINT(" __attribute__((__unused__))");
+
+  // if (type_isptr(n->type)) {
+  //   PRINTF(" __attribute__((__consumable__(%s)))",
+  //     owner_islive(n) ? "unconsumed" : "consumed");
+  // }
+
   PRINT(" = ");
   if (n->init) {
     if (n->type->kind == TYPE_OPTIONAL && n->init->type->kind != TYPE_OPTIONAL) {
@@ -1234,13 +1364,13 @@ static void ifexpr(cgen_t* g, const ifexpr_t* n) {
     if ((!n->elseb || n->elseb->type == type_void) && !type_isopt(n->thenb->type)) {
       optinit(g, (expr_t*)n->thenb, /*isshort*/false);
     } else {
-      block(g, n->thenb, 0, NULL); // expr_as_value(g, n->thenb);
+      block(g, n->thenb, 0); // expr_as_value(g, n->thenb);
     }
     PRINT(" : (");
     if (n->elseb) {
       if (n->elseb->loc.line != g->lineno)
         startline(g, n->elseb->loc);
-      block(g, n->elseb, 0, NULL);
+      block(g, n->elseb, 0);
       if (n->elseb->type == type_void)
         PRINT(", ");
     } else {
@@ -1254,12 +1384,12 @@ static void ifexpr(cgen_t* g, const ifexpr_t* n) {
     }
     PRINT("))");
   } else {
-    block(g, n->thenb, 0, NULL);
+    block(g, n->thenb, 0);
     if (n->elseb) {
       if (lastchar(g) != '}')
         CHAR(';'); // terminate non-block "then" body
       PRINT(" else ");
-      block(g, n->elseb, 0, NULL);
+      block(g, n->elseb, 0);
     }
   }
 
@@ -1315,7 +1445,7 @@ static void expr(cgen_t* g, const expr_t* n) {
   case EXPR_BOOLLIT:   return boollit(g, (const boollit_t*)n);
   case EXPR_ID:        return idexpr(g, (const idexpr_t*)n);
   case EXPR_PARAM:     return param(g, (const local_t*)n);
-  case EXPR_BLOCK:     return block(g, (const block_t*)n, 0, NULL);
+  case EXPR_BLOCK:     return block(g, (const block_t*)n, 0);
   case EXPR_CALL:      return call(g, (const call_t*)n);
   case EXPR_MEMBER:    return member(g, (const member_t*)n);
   case EXPR_IF:        return ifexpr(g, (const ifexpr_t*)n);

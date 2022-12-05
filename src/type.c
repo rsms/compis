@@ -25,15 +25,21 @@ bool types_iscompat(const type_t* dst, const type_t* src) {
     case TYPE_I64:
       return (dst == src) && (dst->isunsigned == src->isunsigned);
     case TYPE_PTR:
+      // *T <= *T
+      // &T <= *T
       return (
-        src->kind == TYPE_PTR &&
+        (src->kind == TYPE_PTR || src->kind == TYPE_REF) &&
         types_iscompat(((const ptrtype_t*)dst)->elem, ((const ptrtype_t*)src)->elem) );
     case TYPE_REF: {
       // &T    <= &T
       // mut&T <= &T
       // mut&T <= mut&T
       // &T    x= mut&T
+      // &T    <= *T
+      // mut&T <= *T
       const reftype_t* d = (const reftype_t*)dst;
+      if (src->kind == TYPE_PTR)
+        return types_iscompat(d->elem, ((const ptrtype_t*)src)->elem);
       const reftype_t* s = (const reftype_t*)src;
       return (
         src->kind == TYPE_REF &&
