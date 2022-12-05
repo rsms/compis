@@ -1536,6 +1536,7 @@ err_t cgen_generate(cgen_t* g, const unit_t* n) {
   PRINT("#include <c0prelude.h>\n");
   if (n->loc.input) {
     g->input = n->loc.input;
+    g->lineno = 1;
     PRINTF("\n#line 1 \"%s\"\n", n->loc.input->name);
   }
 
