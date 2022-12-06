@@ -22,6 +22,7 @@
   _( EXPR_PREFIXOP )\
   _( EXPR_POSTFIXOP )\
   _( EXPR_BINOP )\
+  _( EXPR_ASSIGN )\
   _( EXPR_DEREF )\
   _( EXPR_IF )\
   _( EXPR_FOR )\
@@ -58,6 +59,19 @@ enum tok {
   #undef KEYWORD
   TOK_COUNT,
 };
+
+typedef u8 op_t;
+enum op {
+  #define _(NAME, ...) NAME,
+  #include "ops.h"
+  #undef _
+};
+// enum _op_count {
+//   #define _(NAME, ...) _x##NAME,
+//   #include "ops.h"
+//   #undef _
+//   OP_COUNT_
+// };
 
 typedef u8 filetype_t;
 enum filetype {
@@ -164,13 +178,13 @@ enum nodekind {
 typedef u32 exprflag_t;
 enum exprflag {
   EX_RVALUE           = (u8)1 << 0, // expression is used as an rvalue
-  EX_OPTIONAL         = (u8)1 << 2, // type-narrowed from optional
-  EX_SHADOWS_OWNER    = (u8)1 << 3, // shadows the original owner of a value (TYPE_PTR)
-  EX_EXITS            = (u8)1 << 4, // block exits the function (ie has "return")
-  EX_SHADOWS_OPTIONAL = (u8)1 << 5, // type-narrowed "if" check on optional
-  EX_DEAD_OWNER       = (u8)1 << 6, // node _was_ owner of TYPE_PTR (is no longer owner)
-  EX_OWNER_MOVED      = (u8)1 << 7, // owner moved
-  EX_ANALYZED         = (u8)1 << 8, // has been checked by the analyzer
+  EX_OPTIONAL         = (u8)1 << 1, // type-narrowed from optional
+  EX_SHADOWS_OWNER    = (u8)1 << 2, // shadows the original owner of a value (TYPE_PTR)
+  EX_EXITS            = (u8)1 << 3, // block exits the function (ie has "return")
+  EX_SHADOWS_OPTIONAL = (u8)1 << 4, // type-narrowed "if" check on optional
+  EX_DEAD_OWNER       = (u8)1 << 5, // node _was_ owner of TYPE_PTR (is no longer owner)
+  EX_OWNER_MOVED      = (u8)1 << 6, // owner moved
+  EX_ANALYZED         = (u8)1 << 7, // has been checked by the analyzer
 };
 
 typedef struct {
@@ -250,8 +264,8 @@ typedef struct { expr_t; bool val; } boollit_t;
 typedef struct { expr_t; u64 intval; } intlit_t;
 typedef struct { expr_t; union { double f64val; float f32val; }; } floatlit_t;
 typedef struct { expr_t; sym_t name; node_t* nullable ref; } idexpr_t;
-typedef struct { expr_t; tok_t op; expr_t* expr; } unaryop_t;
-typedef struct { expr_t; tok_t op; expr_t* left; expr_t* right; } binop_t;
+typedef struct { expr_t; op_t op; expr_t* expr; } unaryop_t;
+typedef struct { expr_t; op_t op; expr_t* left; expr_t* right; } binop_t;
 typedef struct { expr_t; expr_t* recv; ptrarray_t args; } call_t;
 typedef struct { expr_t; expr_t* nullable value; } retexpr_t;
 
@@ -297,10 +311,80 @@ typedef struct { // fun is a declaration (stmt) or an expression depending on us
   ptrarray_t        params;   // local_t*[]
   sym_t nullable    name;     // NULL if anonymous
   block_t* nullable body;     // NULL if function is a prototype
-  type_t*           methodof; // non-NULL for methods: type "this" is a method of
+  type_t* nullable  methodof; // non-NULL for methods: type "this" is a method of
 } fun_t;
 
 // ———————— END AST ————————
+// ———————— BEGIN IR ————————
+
+typedef u8 irflag_t;
+enum irflag {
+  IR_SEALED = (u8)1 << 0, // block is sealed
+};
+
+typedef u8 irblockkind_t;
+enum irblockkind {
+  IR_BLOCK_CONT = 0, // plain block with a single successor
+  IR_BLOCK_RET,      // no successors, control value is memory result
+  IR_BLOCK_FIRST,    // 2 successors, always takes the first one (second is dead)
+  IR_BLOCK_IF,       // 2 successors, if control goto succs[0] else goto succs[1]
+};
+
+typedef struct irval_ irval_t;
+typedef struct irval_ {
+  u32      id;
+  u32      nuse;
+  irflag_t flags;
+  op_t     op;
+  srcloc_t loc;
+  type_t*  type;
+  irval_t* argv[3];
+  u32      argc;
+  union {
+    u32 int32;
+    u64 int64;
+  } aux;
+  const char* nullable comment;
+} irval_t;
+
+typedef struct irblock_ irblock_t;
+typedef struct irblock_ {
+  u32               id;
+  irflag_t          flags;
+  irblockkind_t     kind;
+  srcloc_t          loc;
+  irblock_t*        succs[2]; // successors (CFG)
+  irblock_t*        preds[2]; // predecessors (CFG)
+  ptrarray_t        values;
+  irval_t* nullable control;
+    // control is a value that determines how the block is exited.
+    // Its value depends on the kind of the block.
+    // I.e. a IR_BLOCK_IF has a boolean control value
+    // while a IR_BLOCK_RET has a memory control value.
+  const char* nullable comment;
+} irblock_t;
+
+typedef struct {
+  map_t* nullable maps[7];
+} irconstants_t;
+
+typedef struct {
+  fun_t*        ast;
+  const char*   name;
+  ptrarray_t    blocks;
+  irconstants_t constants;  // interned constants
+  u32           bidgen;     // block id generator
+  u32           vidgen;     // value id generator
+  u32           ncalls;     // # function calls that this function makes
+  u32           npurecalls; // # function calls to functions marked as "pure"
+  u32           nglobalw;   // # writes to globals
+} irfun_t;
+
+typedef struct {
+  ptrarray_t functions;
+} irunit_t;
+
+// ———————— END IR ————————
 
 typedef struct {
   scanner_t        scanner;
@@ -384,7 +468,11 @@ void parser_dispose(parser_t* p);
 unit_t* parser_parse(parser_t* p, memalloc_t ast_ma, input_t*);
 
 // analysis
-err_t analyze(parser_t* p, unit_t* unit);
+err_t analyze(parser_t*, unit_t* unit);
+err_t analyze2(compiler_t*, memalloc_t ir_ma, unit_t* unit);
+
+// ir
+bool irfmt(buf_t*, const irunit_t*);
 
 // C code generator
 bool cgen_init(cgen_t* g, compiler_t* c, memalloc_t out_ma);
@@ -477,10 +565,14 @@ inline static void owner_setlive(void* expr, bool live) {
 }
 
 // tokens
-const char* tok_name(tok_t); // e.g. (TEQ) => "TEQ"
-const char* tok_repr(tok_t); // e.g. (TEQ) => "="
+const char* tok_name(tok_t); // e.g. TEQ => "TEQ"
+const char* tok_repr(tok_t); // e.g. TEQ => "="
 usize tok_descr(char* buf, usize bufcap, tok_t, slice_t lit); // e.g. "number 3"
 inline static bool tok_isassign(tok_t t) { return TASSIGN <= t && t <= TORASSIGN; }
+
+// operations
+const char* op_name(op_t); // e.g. OP_ADD => "OP_ADD"
+int op_name_maxlen();
 
 // diagnostics
 void report_diagv(compiler_t*, srcrange_t origin, diagkind_t, const char* fmt, va_list);

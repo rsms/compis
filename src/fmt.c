@@ -24,6 +24,8 @@ const char* nodekind_fmt(nodekind_t kind) {
     case EXPR_POSTFIXOP:
     case EXPR_BINOP:
       return "operation";
+    case EXPR_ASSIGN:
+      return "assignment";
     case EXPR_DEREF:
       return "dereference";
     case EXPR_INTLIT:
@@ -258,19 +260,20 @@ static void fmt(abuf_t* s, const node_t* nullable n, u32 indent, u32 maxdepth) {
 
   case EXPR_DEREF:
   case EXPR_PREFIXOP:
-    abuf_str(s, tok_repr(((unaryop_t*)n)->op));
+    abuf_str(s, op_name(((unaryop_t*)n)->op));
     fmt(s, (node_t*)((unaryop_t*)n)->expr, indent, maxdepth);
     break;
 
   case EXPR_POSTFIXOP:
     fmt(s, (node_t*)((unaryop_t*)n)->expr, indent, maxdepth);
-    abuf_str(s, tok_repr(((unaryop_t*)n)->op));
+    abuf_str(s, op_name(((unaryop_t*)n)->op));
     break;
 
+  case EXPR_ASSIGN:
   case EXPR_BINOP:
     fmt(s, (node_t*)((binop_t*)n)->left, indent, maxdepth - 1);
     abuf_c(s, ' ');
-    abuf_str(s, tok_repr(((binop_t*)n)->op));
+    abuf_str(s, op_name(((binop_t*)n)->op));
     abuf_c(s, ' ');
     fmt(s, (node_t*)((binop_t*)n)->right, indent, maxdepth - 1);
     break;
@@ -356,7 +359,7 @@ err_t node_fmt(buf_t* buf, const node_t* n, u32 maxdepth) {
   maxdepth = MAX(maxdepth, 1);
   for (;;) {
     buf_reserve(buf, needavail);
-    abuf_t s = abuf_make(buf->p, buf->cap);
+    abuf_t s = abuf_make(buf->chars + buf->len, buf->cap - buf->len);
     fmt(&s, n, 0, maxdepth);
     usize len = abuf_terminate(&s);
     if (len < needavail) {

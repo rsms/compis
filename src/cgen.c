@@ -150,49 +150,68 @@ static void expr(cgen_t* g, const expr_t*);
 static void expr_as_value(cgen_t* g, const expr_t* n);
 
 
-static const char* operator(tok_t tok) {
-  switch (tok) {
-  case TCOMMA: return ",";
+static const char* operator(op_t op) {
+  switch ((enum op)op) {
+  case OP_NOOP:
+  case OP_PHI:
+  case OP_CALL:
+  case OP_CONST_BOOL:
+  case OP_CONST_I8:
+  case OP_CONST_I16:
+  case OP_CONST_I32:
+  case OP_CONST_I64:
+  case OP_CONST_F32:
+  case OP_CONST_F64:
+    break;
 
-  case TASSIGN:    return "=";
-  case TMULASSIGN: return "*=";
-  case TDIVASSIGN: return "/=";
-  case TMODASSIGN: return "%=";
-  case TADDASSIGN: return "+=";
-  case TSUBASSIGN: return "-=";
-  case TSHLASSIGN: return "<<=";
-  case TSHRASSIGN: return ">>=";
-  case TANDASSIGN: return "&=";
-  case TXORASSIGN: return "^=";
-  case TORASSIGN:  return "|=";
+  // unary
+  case OP_INC:    return "++";
+  case OP_DEC:    return "--";
+  case OP_INVERT: return "~";
+  case OP_NOT:    return "!";
+  //case OP_DEREF:  return "*";
 
-  case TEQ:   return "==";
-  case TNEQ:  return "!=";
+  // binary, arithmetic
+  case OP_ADD: return "+";
+  case OP_SUB: return "-";
+  case OP_MUL: return "*";
+  case OP_DIV: return "/";
+  case OP_MOD: return "%";
 
-  case TLT:   return "<";
-  case TGT:   return ">";
-  case TLTEQ: return "<=";
-  case TGTEQ: return ">=";
+  // binary, bitwise
+  case OP_AND: return "&";
+  case OP_OR:  return "|";
+  case OP_XOR: return "^";
+  case OP_SHL: return "<<";
+  case OP_SHR: return ">>";
 
-  case TPLUS:       return "+";
-  case TPLUSPLUS:   return "++";
-  case TMINUS:      return "-";
-  case TMINUSMINUS: return "--";
-  case TSTAR:       return "*";
-  case TSLASH:      return "/";
-  case TPERCENT:    return "%";
-  case TTILDE:      return "~";
-  case TNOT:        return "!";
-  case TAND:        return "&";
-  case TANDAND:     return "&&";
-  case TOR:         return "|";
-  case TOROR:       return "||";
-  case TXOR:        return "^";
-  case TSHL:        return "<<";
-  case TSHR:        return ">>";
+  // binary, logical
+  case OP_LAND: return "&&";
+  case OP_LOR:  return "||";
 
-  default: assertf(0,"bad op %u", tok); return "?";
+  // binary, comparison
+  case OP_EQ:   return "==";
+  case OP_NEQ:  return "!=";
+  case OP_LT:   return "<";
+  case OP_GT:   return ">";
+  case OP_LTEQ: return "<=";
+  case OP_GTEQ: return ">=";
+
+  // binary, assignment
+  case OP_ASSIGN:     return "=";
+  case OP_ADD_ASSIGN: return "+=";
+  case OP_AND_ASSIGN: return "&=";
+  case OP_DIV_ASSIGN: return "/=";
+  case OP_MOD_ASSIGN: return "%=";
+  case OP_MUL_ASSIGN: return "*=";
+  case OP_OR_ASSIGN:  return "|=";
+  case OP_SHL_ASSIGN: return "<<=";
+  case OP_SHR_ASSIGN: return ">>=";
+  case OP_SUB_ASSIGN: return "-=";
+  case OP_XOR_ASSIGN: return "^=";
   }
+  assertf(0,"bad op %u", op);
+  return "?";
 }
 
 
@@ -629,6 +648,7 @@ static bool expr_contains_owners(const expr_t* n) {
     case EXPR_POSTFIXOP:
       return expr_contains_owners(((unaryop_t*)n)->expr);
 
+    case EXPR_ASSIGN:
     case EXPR_BINOP:
       return expr_contains_owners(((binop_t*)n)->left) &&
              expr_contains_owners(((binop_t*)n)->right);
@@ -1076,19 +1096,20 @@ static void call(cgen_t* g, const call_t* n) {
 
 static void binop(cgen_t* g, const binop_t* n) {
   expr_as_value(g, n->left);
-  if (n->op == TASSIGN && type_isopt(n->type) && !type_isopt(n->right->type)) {
-    // if (n->left->kind == EXPR_ID || n->left->kind == EXPR_MEMBER) {
-    //   PRINT(type_isptrlike(n->left->type) ? "->v = " : ".v = ");
-    // } else {
-      PRINT(" = ");
-      return optinit(g, n->right, /*isshort*/false);
-      // return optinit(g, ((const opttype_t*)n->type)->elem, n->right, false);
-    // }
-  } else {
-    CHAR(' ');
-    PRINT(operator(n->op));
-    CHAR(' ');
-  }
+  CHAR(' ');
+  PRINT(operator(n->op));
+  CHAR(' ');
+  expr_as_value(g, n->right);
+}
+
+
+static void assign(cgen_t* g, const binop_t* n) {
+  expr_as_value(g, n->left);
+  CHAR(' ');
+  PRINT(operator(n->op));
+  CHAR(' ');
+  if (type_isopt(n->type) && !type_isopt(n->right->type))
+    return optinit(g, n->right, /*isshort*/false);
   expr_as_value(g, n->right);
 }
 
@@ -1455,6 +1476,7 @@ static void expr(cgen_t* g, const expr_t* n) {
   case EXPR_PREFIXOP:  return prefixop(g, (const unaryop_t*)n);
   case EXPR_POSTFIXOP: return postfixop(g, (const unaryop_t*)n);
   case EXPR_BINOP:     return binop(g, (const binop_t*)n);
+  case EXPR_ASSIGN:    return assign(g, (const binop_t*)n);
 
   case EXPR_VAR:
   case EXPR_LET:

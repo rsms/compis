@@ -35,14 +35,15 @@ typedef enum {
 } prec_t;
 
 
-//#define PPARAMS parser_t* p, prec_t prec
-#define PARGS   p, prec
+#define PARGS   p, pl
+
+typedef struct parselet parselet_t;
 
 typedef stmt_t*(*prefix_stmt_parselet_t)(parser_t* p);
 typedef stmt_t*(*infix_stmt_parselet_t)(parser_t* p, prec_t prec, stmt_t* left);
 
-typedef expr_t*(*prefix_expr_parselet_t)(parser_t*, exprflag_t);
-typedef expr_t*(*infix_expr_parselet_t)(parser_t*, prec_t, expr_t*, exprflag_t);
+typedef expr_t*(*prefix_parselet_t)(parser_t*, const parselet_t* pl, exprflag_t);
+typedef expr_t*(*infix_parselet_t)(parser_t*, const parselet_t* pl, expr_t*, exprflag_t);
 
 typedef type_t*(*prefix_type_parselet_t)(parser_t* p);
 typedef type_t*(*infix_type_parselet_t)(parser_t* p, prec_t prec, type_t* left);
@@ -50,24 +51,25 @@ typedef type_t*(*infix_type_parselet_t)(parser_t* p, prec_t prec, type_t* left);
 typedef struct {
   prefix_stmt_parselet_t nullable prefix;
   infix_stmt_parselet_t  nullable infix;
-  prec_t                    prec;
+  prec_t                          prec;
 } stmt_parselet_t;
 
-typedef struct {
-  prefix_expr_parselet_t nullable prefix;
-  infix_expr_parselet_t  nullable infix;
-  prec_t                    prec;
-} expr_parselet_t;
+typedef struct parselet {
+  prefix_parselet_t nullable prefix;
+  infix_parselet_t  nullable infix;
+  prec_t                     prec;
+  op_t                       op;
+} parselet_t;
 
 typedef struct {
   prefix_type_parselet_t nullable prefix;
   infix_type_parselet_t  nullable infix;
-  prec_t                    prec;
+  prec_t                          prec;
 } type_parselet_t;
 
 // parselet table (defined towards end of file)
 static const stmt_parselet_t stmt_parsetab[TOK_COUNT];
-static const expr_parselet_t expr_parsetab[TOK_COUNT];
+static const parselet_t expr_parsetab[TOK_COUNT];
 static const type_parselet_t type_parsetab[TOK_COUNT];
 
 // last_resort_node is returned by mknode when memory allocation fails
@@ -466,28 +468,28 @@ static stmt_t* stmt(parser_t* p, prec_t prec) {
     log_pratt_infix(p, "stmt", parselet->infix, parselet->prec, prec);
     if (parselet->infix == NULL || parselet->prec < prec)
       return n;
-    n = parselet->infix(PARGS, n);
+    n = parselet->infix(p, prec, n);
   }
 }
 
 
 static expr_t* expr(parser_t* p, prec_t prec, exprflag_t fl) {
   tok_t tok = currtok(p);
-  const expr_parselet_t* parselet = &expr_parsetab[tok];
+  const parselet_t* parselet = &expr_parsetab[tok];
   log_pratt(p, "prefix expr");
   if UNLIKELY(!parselet->prefix) {
     unexpected(p, "where an expression is expected");
     fastforward_semi(p);
     return mkbad(p);
   }
-  expr_t* n = parselet->prefix(p, fl);
+  expr_t* n = parselet->prefix(p, parselet, fl);
   for (;;) {
     tok = currtok(p);
     parselet = &expr_parsetab[tok];
     log_pratt_infix(p, "expr", parselet->infix, parselet->prec, prec);
     if (parselet->infix == NULL || parselet->prec < prec)
       return n;
-    n = parselet->infix(PARGS, n, fl);
+    n = parselet->infix(p, parselet, n, fl);
   }
 }
 
@@ -508,7 +510,7 @@ static type_t* type(parser_t* p, prec_t prec) {
     log_pratt_infix(p, "type", parselet->infix, parselet->prec, prec);
     if (parselet->infix == NULL || parselet->prec < prec)
       return t;
-    t = parselet->infix(PARGS, t);
+    t = parselet->infix(p, prec, t);
   }
 }
 
@@ -738,7 +740,7 @@ static bool resolve_id(parser_t* p, idexpr_t* n) {
 }
 
 
-static expr_t* expr_id(parser_t* p, exprflag_t fl) {
+static expr_t* expr_id(parser_t* p, const parselet_t* pl, exprflag_t fl) {
   idexpr_t* n = mkexpr(p, idexpr_t, EXPR_ID, fl);
   n->name = p->scanner.sym;
   next(p);
@@ -747,7 +749,7 @@ static expr_t* expr_id(parser_t* p, exprflag_t fl) {
 }
 
 
-static expr_t* expr_var(parser_t* p, exprflag_t fl) {
+static expr_t* expr_var(parser_t* p, const parselet_t* pl, exprflag_t fl) {
   local_t* n = mkexpr(p, local_t, currtok(p) == TLET ? EXPR_LET : EXPR_VAR, fl);
   next(p);
   if (currtok(p) != TID) {
@@ -898,7 +900,7 @@ static block_t* any_as_block(parser_t* p, exprflag_t fl) {
 }
 
 
-static expr_t* expr_block(parser_t* p, exprflag_t fl) {
+static expr_t* expr_block(parser_t* p, const parselet_t* pl, exprflag_t fl) {
   enter_scope(p);
   block_t* n = block(p, fl);
   leave_scope(p);
@@ -950,7 +952,7 @@ static expr_t* nullable check_if_cond(parser_t* p, expr_t* cond) {
 }
 
 
-static expr_t* expr_if(parser_t* p, exprflag_t fl) {
+static expr_t* expr_if(parser_t* p, const parselet_t* pl, exprflag_t fl) {
   ifexpr_t* n = mkexpr(p, ifexpr_t, EXPR_IF, fl);
   next(p);
 
@@ -990,7 +992,7 @@ static expr_t* expr_if(parser_t* p, exprflag_t fl) {
 // for       = "for" ( for_head | for_phead ) expr
 // for_head  = ( expr | expr? ";" expr ";" expr? )
 // for_phead = "(" for_head ")"
-static expr_t* expr_for(parser_t* p, exprflag_t fl) {
+static expr_t* expr_for(parser_t* p, const parselet_t* pl, exprflag_t fl) {
   forexpr_t* n = mkexpr(p, forexpr_t, EXPR_FOR, fl);
   next(p);
   bool paren = currtok(p) == TLPAREN;
@@ -1023,7 +1025,7 @@ static expr_t* expr_for(parser_t* p, exprflag_t fl) {
 
 
 // return = "return" (expr ("," expr)*)?
-static expr_t* expr_return(parser_t* p, exprflag_t fl) {
+static expr_t* expr_return(parser_t* p, const parselet_t* pl, exprflag_t fl) {
   retexpr_t* n = mkexpr(p, retexpr_t, EXPR_RETURN, fl);
   next(p);
   if (currtok(p) == TSEMI)
@@ -1114,25 +1116,25 @@ static expr_t* floatlit(parser_t* p, exprflag_t fl, bool isneg) {
 }
 
 
-static expr_t* expr_intlit(parser_t* p, exprflag_t fl) {
+static expr_t* expr_intlit(parser_t* p, const parselet_t* pl, exprflag_t fl) {
   return intlit(p, fl, /*isneg*/false);
 }
 
 
-static expr_t* expr_floatlit(parser_t* p, exprflag_t fl) {
+static expr_t* expr_floatlit(parser_t* p, const parselet_t* pl, exprflag_t fl) {
   return floatlit(p, fl, /*isneg*/false);
 }
 
 
-static expr_t* expr_prefix_op(parser_t* p, exprflag_t fl) {
+static expr_t* expr_prefix_op(parser_t* p, const parselet_t* pl, exprflag_t fl) {
   unaryop_t* n = mkexpr(p, unaryop_t, EXPR_PREFIXOP, fl);
-  n->op = currtok(p);
+  n->op = pl->op;
   next(p);
   fl |= EX_RVALUE;
   switch (currtok(p)) {
     // special case for negative number constants
-    case TINTLIT:   n->expr = intlit(p, /*isneg*/n->op == TMINUS, fl); break;
-    case TFLOATLIT: n->expr = floatlit(p, /*isneg*/n->op == TMINUS, fl); break;
+    case TINTLIT:   n->expr = intlit(p, /*isneg*/n->op == OP_SUB, fl); break;
+    case TFLOATLIT: n->expr = floatlit(p, /*isneg*/n->op == OP_SUB, fl); break;
     default:        n->expr = expr(p, PREC_UNARY_PREFIX, fl);
   }
   n->type = n->expr->type;
@@ -1140,16 +1142,31 @@ static expr_t* expr_prefix_op(parser_t* p, exprflag_t fl) {
 }
 
 
-static expr_t* expr_infix_op(parser_t* p, prec_t prec, expr_t* left, exprflag_t fl) {
+// expr_postfix_op = expr ("++" | "--")
+static expr_t* expr_postfix_op(
+  parser_t* p, const parselet_t* pl, expr_t* left, exprflag_t fl)
+{
+  unaryop_t* n = mkexpr(p, unaryop_t, EXPR_POSTFIXOP, fl);
+  n->op = pl->op;
+  next(p);
+  n->expr = left;
+  n->type = left->type;
+  return (expr_t*)n;
+}
+
+
+static expr_t* expr_infix_op(
+  parser_t* p, const parselet_t* pl, expr_t* left, exprflag_t fl)
+{
   binop_t* n = mkexpr(p, binop_t, EXPR_BINOP, fl);
-  n->op = currtok(p);
+  n->op = pl->op;
   next(p);
 
   left->flags |= EX_RVALUE;
   n->left = left;
 
   typectx_push(p, left->type);
-  n->right = expr(p, prec, fl | EX_RVALUE);
+  n->right = expr(p, pl->prec, fl | EX_RVALUE);
   typectx_pop(p);
 
   n->type = left->type;
@@ -1157,8 +1174,19 @@ static expr_t* expr_infix_op(parser_t* p, prec_t prec, expr_t* left, exprflag_t 
 }
 
 
-static expr_t* expr_cmp_op(parser_t* p, prec_t prec, expr_t* left, exprflag_t fl) {
-  expr_t* n = expr_infix_op(p, prec, left, fl);
+static expr_t* expr_assign_op(
+  parser_t* p, const parselet_t* pl, expr_t* left, exprflag_t fl)
+{
+  expr_t* n = expr_infix_op(p, pl, left, fl);
+  n->kind = EXPR_ASSIGN;
+  return n;
+}
+
+
+static expr_t* expr_cmp_op(
+  parser_t* p, const parselet_t* pl, expr_t* left, exprflag_t fl)
+{
+  expr_t* n = expr_infix_op(p, pl, left, fl);
   n->type = type_bool;
   return n;
 }
@@ -1205,21 +1233,10 @@ static bool expr_ismut(const expr_t* n) {
 }
 
 
-// postfix_op = expr ("++" | "--")
-static expr_t* postfix_op(parser_t* p, prec_t prec, expr_t* left, exprflag_t fl) {
-  unaryop_t* n = mkexpr(p, unaryop_t, EXPR_POSTFIXOP, fl);
-  n->op = currtok(p);
-  next(p);
-  n->expr = left;
-  n->type = left->type;
-  return (expr_t*)n;
-}
-
-
 // deref_expr = "*" expr
-static expr_t* expr_deref(parser_t* p, exprflag_t fl) {
+static expr_t* expr_deref(parser_t* p, const parselet_t* pl, exprflag_t fl) {
   unaryop_t* n = mkexpr(p, unaryop_t, EXPR_DEREF, fl);
-  n->op = currtok(p);
+  n->op = pl->op;
   next(p);
   n->expr = expr(p, PREC_UNARY_PREFIX, fl);
 
@@ -1263,13 +1280,13 @@ static expr_t* expr_ref1(parser_t* p, bool ismut, exprflag_t fl) {
   return (expr_t*)n;
 }
 
-static expr_t* expr_ref(parser_t* p, exprflag_t fl) {
+static expr_t* expr_ref(parser_t* p, const parselet_t* pl, exprflag_t fl) {
   return expr_ref1(p, /*ismut*/false, fl);
 }
 
 
 // mut_expr = "mut" ref_expr
-static expr_t* expr_mut(parser_t* p, exprflag_t fl) {
+static expr_t* expr_mut(parser_t* p, const parselet_t* pl, exprflag_t fl) {
   next(p);
   if UNLIKELY(currtok(p) != TAND) {
     unexpected(p, "expecting '&'");
@@ -1280,7 +1297,7 @@ static expr_t* expr_mut(parser_t* p, exprflag_t fl) {
 
 
 // group = "(" expr ")"
-static expr_t* expr_group(parser_t* p, exprflag_t fl) {
+static expr_t* expr_group(parser_t* p, const parselet_t* pl, exprflag_t fl) {
   next(p);
   expr_t* n = expr(p, PREC_COMMA, fl);
   expect(p, TRPAREN, "");
@@ -1359,7 +1376,9 @@ static void args(parser_t* p, ptrarray_t* args, type_t* recvtype, exprflag_t fl)
 
 
 // call = expr "(" args? ")"
-static expr_t* expr_postfix_call(parser_t* p, prec_t prec, expr_t* left, exprflag_t fl) {
+static expr_t* expr_postfix_call(
+  parser_t* p, const parselet_t* pl, expr_t* left, exprflag_t fl)
+{
   call_t* n = mkexpr(p, call_t, EXPR_CALL, fl);
   next(p);
   type_t* recvtype = left->type;
@@ -1393,7 +1412,7 @@ static expr_t* expr_postfix_call(parser_t* p, prec_t prec, expr_t* left, exprfla
 
 // subscript = expr "[" expr "]"
 static expr_t* expr_postfix_subscript(
-  parser_t* p, prec_t prec, expr_t* left, exprflag_t fl)
+  parser_t* p, const parselet_t* pl, expr_t* left, exprflag_t fl)
 {
   unaryop_t* n = mkexpr(p, unaryop_t, EXPR_POSTFIXOP, fl);
   next(p);
@@ -1404,7 +1423,7 @@ static expr_t* expr_postfix_subscript(
 
 // member = expr "." id
 static expr_t* expr_postfix_member(
-  parser_t* p, prec_t prec, expr_t* left, exprflag_t fl)
+  parser_t* p, const parselet_t* pl, expr_t* left, exprflag_t fl)
 {
   member_t* n = mkexpr(p, member_t, EXPR_MEMBER, fl);
   next(p);
@@ -1417,14 +1436,14 @@ static expr_t* expr_postfix_member(
 
 
 // dotmember = "." id
-static expr_t* expr_dotmember(parser_t* p, exprflag_t fl) {
+static expr_t* expr_dotmember(parser_t* p, const parselet_t* pl, exprflag_t fl) {
   if UNLIKELY(!p->dotctx) {
     error(p, NULL, "\".\" shorthand outside of context");
     expr_t* n = mkbad(p);
     fastforward_semi(p);
     return n;
   }
-  return expr_postfix_member(p, PREC_MEMBER, p->dotctx, fl);
+  return expr_postfix_member(p, pl, p->dotctx, fl);
 }
 
 
@@ -1836,7 +1855,7 @@ static fun_t* fun(
   return n;
 }
 
-static expr_t* expr_fun(parser_t* p, exprflag_t fl) {
+static expr_t* expr_fun(parser_t* p, const parselet_t* pl, exprflag_t fl) {
   return (expr_t*)fun(p, fl, NULL, /*requirename*/false);
 }
 
@@ -1964,67 +1983,61 @@ void parser_dispose(parser_t* p) {
 // parselet tables
 
 
-static const expr_parselet_t expr_parsetab[TOK_COUNT] = {
+static const parselet_t expr_parsetab[TOK_COUNT] = {
   // infix ops (in order of precedence from weakest to strongest)
-  [TASSIGN]    = {NULL, expr_infix_op, PREC_ASSIGN}, // =
-  [TMULASSIGN] = {NULL, expr_infix_op, PREC_ASSIGN}, // *=
-  [TDIVASSIGN] = {NULL, expr_infix_op, PREC_ASSIGN}, // /=
-  [TMODASSIGN] = {NULL, expr_infix_op, PREC_ASSIGN}, // %=
-  [TADDASSIGN] = {NULL, expr_infix_op, PREC_ASSIGN}, // +=
-  [TSUBASSIGN] = {NULL, expr_infix_op, PREC_ASSIGN}, // -=
-  [TSHLASSIGN] = {NULL, expr_infix_op, PREC_ASSIGN}, // <<=
-  [TSHRASSIGN] = {NULL, expr_infix_op, PREC_ASSIGN}, // >>=
-  [TANDASSIGN] = {NULL, expr_infix_op, PREC_ASSIGN}, // &=
-  [TXORASSIGN] = {NULL, expr_infix_op, PREC_ASSIGN}, // ^=
-  [TORASSIGN]  = {NULL, expr_infix_op, PREC_ASSIGN}, // |=
-  [TOROR]      = {NULL, expr_cmp_op, PREC_LOGICAL_OR}, // ||
-  [TANDAND]    = {NULL, expr_cmp_op, PREC_LOGICAL_AND}, // &&
-  [TOR]        = {NULL, expr_infix_op, PREC_BITWISE_OR}, // |
-  [TXOR]       = {NULL, expr_infix_op, PREC_BITWISE_XOR}, // ^
-  [TAND]       = {expr_ref, expr_infix_op, PREC_BITWISE_AND}, // &
-  [TEQ]        = {NULL, expr_cmp_op, PREC_EQUAL}, // ==
-  [TNEQ]       = {NULL, expr_cmp_op, PREC_EQUAL}, // !=
-  [TLT]        = {NULL, expr_cmp_op, PREC_COMPARE},   // <
-  [TGT]        = {NULL, expr_cmp_op, PREC_COMPARE},   // >
-  [TLTEQ]      = {NULL, expr_cmp_op, PREC_COMPARE}, // <=
-  [TGTEQ]      = {NULL, expr_cmp_op, PREC_COMPARE}, // >=
-  [TSHL]       = {NULL, expr_infix_op, PREC_SHIFT}, // >>
-  [TSHR]       = {NULL, expr_infix_op, PREC_SHIFT}, // <<
-  [TPLUS]      = {expr_prefix_op, expr_infix_op, PREC_ADD}, // +
-  [TMINUS]     = {expr_prefix_op, expr_infix_op, PREC_ADD}, // -
-  [TSTAR]      = {expr_deref, expr_infix_op, PREC_MUL}, // *
-  [TSLASH]     = {NULL, expr_infix_op, PREC_MUL}, // /
-  [TPERCENT]   = {NULL, expr_infix_op, PREC_MUL}, // %
+  [TASSIGN]    = {NULL, expr_assign_op,          PREC_ASSIGN, OP_ASSIGN},     // =
+  [TADDASSIGN] = {NULL, expr_assign_op,          PREC_ASSIGN, OP_ADD_ASSIGN}, // +=
+  [TSUBASSIGN] = {NULL, expr_assign_op,          PREC_ASSIGN, OP_SUB_ASSIGN}, // -=
+  [TMULASSIGN] = {NULL, expr_assign_op,          PREC_ASSIGN, OP_MUL_ASSIGN}, // *=
+  [TDIVASSIGN] = {NULL, expr_assign_op,          PREC_ASSIGN, OP_DIV_ASSIGN}, // /=
+  [TMODASSIGN] = {NULL, expr_assign_op,          PREC_ASSIGN, OP_MOD_ASSIGN}, // %=
+  [TSHLASSIGN] = {NULL, expr_assign_op,          PREC_ASSIGN, OP_SHL_ASSIGN}, // <<=
+  [TSHRASSIGN] = {NULL, expr_assign_op,          PREC_ASSIGN, OP_SHR_ASSIGN}, // >>=
+  [TANDASSIGN] = {NULL, expr_assign_op,          PREC_ASSIGN, OP_AND_ASSIGN}, // &=
+  [TORASSIGN]  = {NULL, expr_assign_op,          PREC_ASSIGN, OP_OR_ASSIGN},  // |=
+  [TXORASSIGN] = {NULL, expr_assign_op,          PREC_ASSIGN, OP_XOR_ASSIGN}, // ^=
+  [TOROR]      = {NULL, expr_cmp_op,             PREC_LOGICAL_OR, OP_LOR},    // ||
+  [TANDAND]    = {NULL, expr_cmp_op,             PREC_LOGICAL_AND, OP_LAND},  // &&
+  [TAND]       = {expr_ref, expr_infix_op,       PREC_BITWISE_AND, OP_AND},   // &
+  [TOR]        = {NULL, expr_infix_op,           PREC_BITWISE_OR, OP_OR},     // |
+  [TXOR]       = {NULL, expr_infix_op,           PREC_BITWISE_XOR, OP_XOR},   // ^
+  [TEQ]        = {NULL, expr_cmp_op,             PREC_EQUAL, OP_EQ},          // ==
+  [TNEQ]       = {NULL, expr_cmp_op,             PREC_EQUAL, OP_NEQ},         // !=
+  [TLT]        = {NULL, expr_cmp_op,             PREC_COMPARE, OP_LT},        // <
+  [TGT]        = {NULL, expr_cmp_op,             PREC_COMPARE, OP_GT},        // >
+  [TLTEQ]      = {NULL, expr_cmp_op,             PREC_COMPARE, OP_LTEQ},      // <=
+  [TGTEQ]      = {NULL, expr_cmp_op,             PREC_COMPARE, OP_GTEQ},      // >=
+  [TSHL]       = {NULL, expr_infix_op,           PREC_SHIFT, OP_SHL},         // <<
+  [TSHR]       = {NULL, expr_infix_op,           PREC_SHIFT, OP_SHR},         // >>
+  [TPLUS]      = {expr_prefix_op, expr_infix_op, PREC_ADD, OP_ADD},           // +
+  [TMINUS]     = {expr_prefix_op, expr_infix_op, PREC_ADD, OP_SUB},           // -
+  [TSTAR]      = {expr_deref, expr_infix_op,     PREC_MUL, OP_MUL},           // *
+  [TSLASH]     = {NULL, expr_infix_op,           PREC_MUL, OP_DIV},           // /
+  [TPERCENT]   = {NULL, expr_infix_op,           PREC_MUL, OP_MOD},           // %
 
   // prefix and postfix ops (in addition to the ones above)
-  [TPLUSPLUS]   = {expr_prefix_op, postfix_op, PREC_UNARY_PREFIX}, // ++
-  [TMINUSMINUS] = {expr_prefix_op, postfix_op, PREC_UNARY_PREFIX}, // --
-  [TNOT]        = {expr_prefix_op, NULL, PREC_UNARY_PREFIX}, // !
-  [TTILDE]      = {expr_prefix_op, NULL, PREC_UNARY_PREFIX}, // ~
-  [TMUT]        = {expr_mut, NULL, PREC_UNARY_PREFIX},
-  [TLPAREN]     = {expr_group, expr_postfix_call, PREC_UNARY_POSTFIX}, // (
+  [TPLUSPLUS]   = {expr_prefix_op, expr_postfix_op, PREC_UNARY_PREFIX, OP_INC}, // ++
+  [TMINUSMINUS] = {expr_prefix_op, expr_postfix_op, PREC_UNARY_PREFIX, OP_DEC}, // --
+  [TNOT]        = {expr_prefix_op, NULL,            0, OP_NOT},                 // !
+  [TTILDE]      = {expr_prefix_op, NULL,            0, OP_INVERT},              // ~
 
-  // postfix ops
-  [TLBRACK] = {NULL, expr_postfix_subscript, PREC_UNARY_POSTFIX}, // [
+  // constants
+  [TINTLIT]   = {expr_intlit},
+  [TFLOATLIT] = {expr_floatlit},
 
-  // member ops
-  [TDOT] = {expr_dotmember, expr_postfix_member, PREC_MEMBER}, // .
-
-  // keywords & identifiers
-  [TID]  = {expr_id, NULL, 0},
-  [TFUN] = {expr_fun, NULL, 0},
-  [TLET] = {expr_var, NULL, 0},
-  [TVAR] = {expr_var, NULL, 0},
-  [TIF]  = {expr_if, NULL, 0},
-  [TFOR] = {expr_for, NULL, 0},
-  [TRETURN] = {expr_return, NULL, 0},
-
-  // constant literals
-  [TINTLIT]   = {expr_intlit, NULL, 0},
-  [TFLOATLIT] = {expr_floatlit, NULL, 0},
-
-  // block
-  [TLBRACE] = {expr_block, NULL, 0},
+  // punctuation, keywords, identifiers etc
+  [TLPAREN] = {expr_group, expr_postfix_call, PREC_UNARY_POSTFIX}, // (
+  [TLBRACK] = {NULL, expr_postfix_subscript, PREC_UNARY_POSTFIX},  // [
+  [TLBRACE] = {expr_block},                                        // {
+  [TDOT]    = {expr_dotmember, expr_postfix_member, PREC_MEMBER},  // .
+  [TMUT]    = {expr_mut},
+  [TID]     = {expr_id},
+  [TFUN]    = {expr_fun},
+  [TLET]    = {expr_var},
+  [TVAR]    = {expr_var},
+  [TIF]     = {expr_if},
+  [TFOR]    = {expr_for},
+  [TRETURN] = {expr_return},
 };
 
 

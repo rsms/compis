@@ -72,7 +72,7 @@ void* nullable _array_alloc(array_t* a, memalloc_t ma, u32 elemsize, u32 len) {
 }
 
 
-void _rarray_remove(array_t* a, u32 elemsize, u32 start, u32 len) {
+void _array_remove(array_t* a, u32 elemsize, u32 start, u32 len) {
   if (len == 0)
     return;
   safecheckf(start+len <= a->len, "end=%u > len=%u", start+len, a->len);
@@ -108,8 +108,8 @@ void _arotatemem(usize stride, void* v, usize first, usize mid, usize last) {
 
 #define DEF_AROTATE(NAME, T)                                   \
   void NAME(T* const v, usize first, usize mid, usize last) {  \
-    assert(first <= mid);                                      \
-    assert(mid < last);                                        \
+    assertf(first <= mid, "%zu <= %zu", first, mid);           \
+    assertf(mid < last, "%zu < %zu", mid, last);               \
     usize next = mid;                                          \
     while (first != next) {                                    \
       T tmp = v[first]; v[first++] = v[next]; v[next++] = tmp; \

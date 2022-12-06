@@ -283,6 +283,8 @@ static void transfer_value(
   expr_t* dst = dstp; assert(dst == NULL || nodekind_isexpr(dst->kind));
   expr_t* src = srcp; assert(src == NULL || nodekind_isexpr(src->kind));
 
+  return; // XXX IR
+
   if (a->compiler->errcount)
     return; // avoid reporting cascading errors
 
@@ -375,6 +377,8 @@ static bool abandon_owner(
 static void unwind_scope(
   analysis_t* a, scope_t* scope, ptrarray_t* cleanup, bool exits)
 {
+  return; // XXX IR
+
   // TODO: iterate in reverse order
   for (u32 i = scope->base + 1; i < scope->len; i++) {
     node_t* n = assertnotnull(scope->ptr[i++]);
@@ -415,10 +419,8 @@ static void leave_scope(analysis_t* a, ptrarray_t* cleanup, bool exits) {
 static void leave_scope_TODO_cleanup(analysis_t* a, bool exits) {
   ptrarray_t cleanup = {0};
   leave_scope(a, &cleanup, exits);
-  if (cleanup.len) {
-    ptrarray_dispose(&cleanup, a->ast_ma);
+  if (cleanup.len)
     panic("TODO cleanup");
-  }
 }
 
 
@@ -629,22 +631,24 @@ static void ifexpr(analysis_t* a, ifexpr_t* n, nref_t parent) {
   leave_scope_TODO_cleanup(a, /*exits*/false);
 
   // type check
-  if (n->elseb && n->elseb->type != type_void) {
-    // "if ... else" => T
-    n->type = n->thenb->type;
-    if UNLIKELY(!types_iscompat(n->thenb->type, n->elseb->type)) {
-      // TODO: type union
-      const char* t1 = fmtnode(a, 0, n->thenb->type);
-      const char* t2 = fmtnode(a, 1, n->elseb->type);
-      error(a, n->elseb, "incompatible types %s and %s in \"if\" branches", t1, t2);
-    }
-  } else {
-    // "if" => ?T
-    n->type = n->thenb->type;
-    if (n->type->kind != TYPE_OPTIONAL) {
-      opttype_t* t = mknode(a, opttype_t, TYPE_OPTIONAL);
-      t->elem = n->type;
-      n->type = (type_t*)t;
+  if (n->flags & EX_RVALUE) {
+    if (n->elseb && n->elseb->type != type_void) {
+      // "if ... else" => T
+      n->type = n->thenb->type;
+      if UNLIKELY(!types_iscompat(n->thenb->type, n->elseb->type)) {
+        // TODO: type union
+        const char* t1 = fmtnode(a, 0, n->thenb->type);
+        const char* t2 = fmtnode(a, 1, n->elseb->type);
+        error(a, n->elseb, "incompatible types %s and %s in \"if\" branches", t1, t2);
+      }
+    } else {
+      // "if" => ?T
+      n->type = n->thenb->type;
+      if (n->type->kind != TYPE_OPTIONAL) {
+        opttype_t* t = mknode(a, opttype_t, TYPE_OPTIONAL);
+        t->elem = n->type;
+        n->type = (type_t*)t;
+      }
     }
   }
 }
@@ -784,26 +788,27 @@ static void binop(analysis_t* a, binop_t* n, nref_t parent) {
   expr(a, n->right, self);
   typectx_pop(a);
 
-  n->type = n->left->type;
+  switch (n->op) {
+    case OP_EQ:
+    case OP_NEQ:
+    case OP_LT:
+    case OP_GT:
+    case OP_LTEQ:
+    case OP_GTEQ:
+      n->type = type_bool;
+      break;
+    default:
+      n->type = n->left->type;
+  }
 
   check_types_iscompat(a, n, n->left->type, n->right->type);
+}
 
-  switch (n->op) {
-    case TASSIGN:
-    case TMULASSIGN:
-    case TDIVASSIGN:
-    case TMODASSIGN:
-    case TADDASSIGN:
-    case TSUBASSIGN:
-    case TSHLASSIGN:
-    case TSHRASSIGN:
-    case TANDASSIGN:
-    case TXORASSIGN:
-    case TORASSIGN:
-      if (check_assign(a, n->left))
-        transfer_value(a, n, n->left, n->right);
-      break;
-  }
+
+static void assign(analysis_t* a, binop_t* n, nref_t parent) {
+  binop(a, n, parent);
+  if (check_assign(a, n->left))
+    transfer_value(a, n, n->left, n->right);
 }
 
 
@@ -1199,6 +1204,7 @@ static void expr(analysis_t* a, expr_t* n, nref_t parent) {
   case EXPR_ID:        return idexpr(a, (idexpr_t*)n, parent);
   case EXPR_RETURN:    return retexpr(a, (retexpr_t*)n, parent);
   case EXPR_BINOP:     return binop(a, (binop_t*)n, parent);
+  case EXPR_ASSIGN:    return assign(a, (binop_t*)n, parent);
   case EXPR_BLOCK:     return block(a, (block_t*)n, parent);
   case EXPR_CALL:      return call(a, (call_t*)n, parent);
   case EXPR_MEMBER:    return member(a, (member_t*)n, parent);
@@ -1278,7 +1284,6 @@ err_t analyze(parser_t* p, unit_t* unit) {
   ptrarray_t cleanup = {0};
   leave_scope(&a, &cleanup, /*exits*/true);
   if UNLIKELY(cleanup.len) {
-    ptrarray_dispose(&cleanup, a.ast_ma);
     dlog("unexpected top-level cleanup");
     seterr(&a, ErrInvalid);
   }

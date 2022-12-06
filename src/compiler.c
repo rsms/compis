@@ -160,20 +160,28 @@ static err_t compile_co_to_c(compiler_t* c, input_t* input, const char* cfile) {
   dlog("————————— AST —————————");
   if ((err = dump_ast((node_t*)unit)))
     goto end_parser;
-
-  // bail on analysis error
   if (c->errcount > errcount) {
     err = ErrCanceled;
     goto end_parser;
   }
 
+  // analyze2 (ir)
+  dlog("————————— analyze2 —————————");
+  memalloc_t ir_ma = ast_ma;
+  if (( err = analyze2(c, ir_ma, unit) ))
+    goto end_parser;
+
   // generate C code
+  dlog("————————— cgen —————————");
   cgen_t g;
   if (!cgen_init(&g, c, c->ma))
     goto end_parser;
   err = cgen_generate(&g, unit);
   if (!err) {
-    dlog("—————————\n%.*s\n—————————", (int)g.outbuf.len, g.outbuf.chars);
+    #if DEBUG
+      fprintf(stderr, "——————————\n%.*s\n——————————\n",
+        (int)g.outbuf.len, g.outbuf.chars);
+    #endif
     dlog("cgen %s -> %s", input->name, cfile);
     err = writefile(cfile, 0660, buf_slice(g.outbuf));
   }

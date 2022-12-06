@@ -352,7 +352,7 @@ meta:
   case EXPR_PREFIXOP:
   case EXPR_POSTFIXOP: {
     unaryop_t* op = (unaryop_t*)n;
-    CHAR(' '), PRINT(tok_repr(op->op));
+    CHAR(' '), PRINT(op_name(op->op));
     CHAR(' '), repr(RARGS, (node_t*)op->expr);
     break;
   }
@@ -386,9 +386,10 @@ meta:
     CHAR(' '), repr(RARGS, (node_t*)((unaryop_t*)n)->expr);
     break;
 
+  case EXPR_ASSIGN:
   case EXPR_BINOP: {
     binop_t* op = (binop_t*)n;
-    CHAR(' '), PRINT(tok_repr(op->op));
+    CHAR(' '), PRINT(op_name(op->op));
     CHAR(' '), repr(RARGS, (node_t*)op->left);
     CHAR(' '), repr(RARGS, (node_t*)op->right);
     break;
