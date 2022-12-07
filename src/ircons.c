@@ -44,6 +44,11 @@ static irfun_t   bad_irfun = { .ast = &bad_astfun };
 static irunit_t  bad_irunit = { 0 };
 
 
+#define ID_CHAR(v_or_b) _Generic((v_or_b), \
+  irval_t*:   'v', \
+  irblock_t*: 'b' )
+
+
 ATTR_FORMAT(printf, 3, 4)
 static const char* fmttmp(ircons_t* c, u32 bufidx, const char* fmt, ...) {
   buf_t* buf = &c->tmpbuf[bufidx];
@@ -227,6 +232,19 @@ inline static u32 npreds(const irblock_t* b) {
 }
 
 
+// transfer(ircons_t* c, irval_t*   dst, irval_t*   src)  v <- v
+// transfer(ircons_t* c, irblock_t* dst, irval_t*   src)  b <- v
+// transfer(ircons_t* c, irblock_t* dst, irblock_t* src)  b <- b
+// transfer(ircons_t* c, irval_t*   dst, irblock_t* src)  v <- b
+#define transfer(c, dst, src) ( \
+  ((src)->flags & IR_OWNER) ? ( \
+    trace("transfer ownership of %c%u -> %c%u", \
+      ID_CHAR(src), (src)->id, ID_CHAR(dst), (dst)->id), \
+    ((src)->flags &= ~IR_OWNER), \
+    ((dst)->flags |= IR_OWNER) ) : \
+  ((void)0) )
+
+
 //—————————————————————————————————————————————————————————————————————————————————————
 
 
@@ -238,6 +256,7 @@ static void var_write_map(ircons_t* c, map_t* vars, sym_t name, irval_t* v) {
   if UNLIKELY(!vp)
     return out_of_mem(c);
   if (*vp) trace("  replacing v%u", (*vp)->id);
+  trace("TODO ownership transfer v%u", v->id);
   *vp = v;
 }
 
@@ -345,7 +364,7 @@ static irval_t* var_read_recursive(
 //—————————————————————————————————————————————————————————————————————————————————————
 
 
-static void set_control(irblock_t* b, irval_t* nullable v) {
+static void set_control(ircons_t* c, irblock_t* b, irval_t* nullable v) {
   if (v)
     v->nuse++;
   if (b->control)
@@ -423,6 +442,18 @@ static irblock_t* end_block(ircons_t* c) {
   }
 
   return b;
+}
+
+
+static void finalize_block(ircons_t* c, irblock_t* b, irblock_t* frontier_succ) {
+  for (u32 i = 0; i < b->values.len; i++) {
+    irval_t* v = b->values.v[i];
+    if (v->flags & IR_OWNER) {
+      trace("drop v%u", v->id);
+      irval_t* drop = pushval(c, frontier_succ, OP_DROP, v->loc, v->type);
+      pusharg(drop, v);
+    }
+  }
 }
 
 
@@ -509,7 +540,7 @@ static irval_t* assign(ircons_t* c, binop_t* n) {
   if (id->name == sym__)
     return value;
 
-  if (!node_islocal(id->ref))
+  if (!node_islocal(id->ref)) // TODO member
     return push_TODO_val(c, c->b, "%s", nodekind_name(id->ref->kind));
 
   local_t* local = (local_t*)id->ref;
@@ -583,7 +614,7 @@ static irval_t* floatlit(ircons_t* c, floatlit_t* n) {
 static irval_t* retexpr(ircons_t* c, retexpr_t* n) {
   irval_t* v = n->value ? expr(c, n->value) : NULL;
   c->b->kind = IR_BLOCK_RET;
-  set_control(c->b, v);
+  set_control(c, c->b, v);
   return v ? v : &bad_irval;
 }
 
@@ -637,7 +668,7 @@ static irval_t* ifexpr(ircons_t* c, ifexpr_t* n) {
   // end predecessor block (leading up to and including "if")
   irblock_t* ifb = end_block(c);
   ifb->kind = IR_BLOCK_IF;
-  set_control(ifb, control);
+  set_control(c, ifb, control);
 
   // create blocks for then and else branches
   irblock_t* thenb = mkblock(c, f, IR_BLOCK_CONT, n->thenb->loc);
@@ -654,6 +685,8 @@ static irval_t* ifexpr(ircons_t* c, ifexpr_t* n) {
   seal_block(c, thenb);
   irval_t* thenv = blockexpr1(c, n->thenb);
   thenb = end_block(c);
+  if (thenb->kind == IR_BLOCK_RET)
+    finalize_block(c, thenb, thenb);
 
   irval_t* elsev;
 
@@ -758,6 +791,8 @@ static irval_t* ifexpr(ircons_t* c, ifexpr_t* n) {
       elsev = thenv;
     }
 
+    finalize_block(c, ifb, c->b);
+
     // if "then" block returns, no PHI is needed
     if (thenb->kind == IR_BLOCK_RET)
       return elsev;
@@ -828,15 +863,16 @@ static irfun_t* fun(ircons_t* c, fun_t* n) {
     //
     // This approach would save us from this complicated state saving stuff.
     //
-    fstate_t* fstate = fstatearray_alloc(&c->fstack, c->ma, 1);
-    if UNLIKELY(!fstate) {
-      out_of_mem(c);
-      goto end;
-    }
-    fstate->f = c->f;
-    fstate->b = c->b;
-    c->b = &bad_irblock; // satisfy assertion in start_block
-    panic("TODO save vars, defvars and pendingphis");
+    panic("TODO implement queue of functions");
+    // fstate_t* fstate = fstatearray_alloc(&c->fstack, c->ma, 1);
+    // if UNLIKELY(!fstate) {
+    //   out_of_mem(c);
+    //   goto end;
+    // }
+    // fstate->f = c->f;
+    // fstate->b = c->b;
+    // c->b = &bad_irblock; // satisfy assertion in start_block
+    // TODO save vars, defvars and pendingphis
   }
 
   c->f = f;
@@ -854,6 +890,8 @@ static irfun_t* fun(ircons_t* c, fun_t* n) {
     irval_t* v = pushval(c, c->b, OP_ARG, param->loc, param->type);
     v->aux.i32val = i;
     comment(c, v, param->name);
+    if (type_isptr(param->type))
+      v->flags |= IR_OWNER;
     var_write(c, param->name, v);
   }
 
@@ -863,7 +901,7 @@ static irfun_t* fun(ircons_t* c, fun_t* n) {
   // end last block, if not already ended
   c->b->kind = IR_BLOCK_RET;
   if (((funtype_t*)n->type)->result != type_void)
-    set_control(c->b, body);
+    set_control(c, c->b, body);
   end_block(c);
 
   // reset

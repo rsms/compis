@@ -318,7 +318,8 @@ typedef struct { // fun is a declaration (stmt) or an expression depending on us
 
 typedef u8 irflag_t;
 enum irflag {
-  IR_SEALED = (u8)1 << 0, // block is sealed
+  IR_SEALED = (u8)1 << 0, // [block] is sealed
+  IR_OWNER  = (u8)1 << 1, // [value|block] is owner of live ptrtype
 };
 
 typedef u8 irblockkind_t;

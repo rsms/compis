@@ -15,16 +15,16 @@
 //   x + y
 // }
 
-fun ir_cond_assign(x, y int) int {
-  var a = x
-  if x > y {
-    a = y
-    if x < y {
-      a = x
-    }
-  }
-  a
-}
+// fun ir_cond_assign(x, y int) int {
+//   var a = x
+//   if x > y {
+//     a = y
+//     if x < y {
+//       a = x
+//     }
+//   }
+//   a
+// }
 
 // fun ir_if_else_result(x, y int) int {
 //   if x > y {
@@ -41,3 +41,13 @@ fun ir_cond_assign(x, y int) int {
 //     x + y + 2 + 4 + 1
 //   }
 // }
+
+// fun ownership_drop_param(x *int) {
+// }
+
+fun ownership_drop_one(x, y *int) *int {
+  if true {
+    return x
+  }
+  y
+}

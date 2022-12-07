@@ -6,6 +6,7 @@ _( OP_PHI )
 _( OP_ARG )
 _( OP_CALL )
 _( OP_ZERO ) // zero initializer
+_( OP_DROP ) // zero initializer
 
 // constants
 _( OP_ICONST )

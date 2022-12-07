@@ -157,6 +157,7 @@ static const char* operator(op_t op) {
   case OP_ARG:
   case OP_CALL:
   case OP_ZERO:
+  case OP_DROP:
   case OP_ICONST:
   case OP_FCONST:
   case OP_LOCAL:
