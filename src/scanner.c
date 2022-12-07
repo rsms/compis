@@ -91,6 +91,7 @@ static void newline(scanner_t* s) {
 
 static void floatnumber(scanner_t* s, int base) {
   s->tok.t = TFLOATLIT;
+  s->insertsemi = true;
   bool allowsign = false;
   buf_clear(&s->litbuf);
   if UNLIKELY(!buf_reserve(&s->litbuf, 128))

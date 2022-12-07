@@ -260,7 +260,6 @@ typedef struct {
   exprflag_t       flags;
 } expr_t;
 
-typedef struct { expr_t; bool val; } boollit_t;
 typedef struct { expr_t; u64 intval; } intlit_t;
 typedef struct { expr_t; union { double f64val; float f32val; }; } floatlit_t;
 typedef struct { expr_t; sym_t name; node_t* nullable ref; } idexpr_t;
@@ -341,8 +340,11 @@ typedef struct irval_ {
   irval_t* argv[3];
   u32      argc;
   union {
-    u32 int32;
-    u64 int64;
+    u32   i32val;
+    u64   i64val;
+    f32   f32val;
+    f64   f64val;
+    void* ptr;
   } aux;
   const char* nullable comment;
 } irval_t;
@@ -365,19 +367,14 @@ typedef struct irblock_ {
 } irblock_t;
 
 typedef struct {
-  map_t* nullable maps[7];
-} irconstants_t;
-
-typedef struct {
-  fun_t*        ast;
-  const char*   name;
-  ptrarray_t    blocks;
-  irconstants_t constants;  // interned constants
-  u32           bidgen;     // block id generator
-  u32           vidgen;     // value id generator
-  u32           ncalls;     // # function calls that this function makes
-  u32           npurecalls; // # function calls to functions marked as "pure"
-  u32           nglobalw;   // # writes to globals
+  fun_t*      ast;
+  const char* name;
+  ptrarray_t  blocks;
+  u32         bidgen;     // block id generator
+  u32         vidgen;     // value id generator
+  u32         ncalls;     // # function calls that this function makes
+  u32         npurecalls; // # function calls to functions marked as "pure"
+  u32         nglobalw;   // # writes to globals
 } irfun_t;
 
 typedef struct {
@@ -437,8 +434,6 @@ extern type_t* type_u32;
 extern type_t* type_u64;
 extern type_t* type_f32;
 extern type_t* type_f64;
-extern boollit_t* const_true;
-extern boollit_t* const_false;
 
 
 // input

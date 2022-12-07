@@ -8,13 +8,8 @@ _( OP_CALL )
 _( OP_ZERO ) // zero initializer
 
 // constants
-_( OP_CONST_BOOL )
-_( OP_CONST_I8 )
-_( OP_CONST_I16 )
-_( OP_CONST_I32 )
-_( OP_CONST_I64 )
-_( OP_CONST_F32 )
-_( OP_CONST_F64 )
+_( OP_ICONST )
+_( OP_FCONST )
 
 // memory
 _( OP_LOCAL ) // stack memory
@@ -23,7 +18,7 @@ _( OP_STORE )
 // unary
 _( OP_INC )    // ++
 _( OP_DEC )    // --
-_( OP_INVERT ) // ~
+_( OP_INV ) // ~
 _( OP_NOT )    // !
 // _( OP_DEREF )  // *
 

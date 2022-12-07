@@ -29,9 +29,3 @@ type_t* type_u64 = DEFTYPE(TYPE_I64, 8, true);
 
 type_t* type_f32 = DEFTYPE(TYPE_F32, 4, false);
 type_t* type_f64 = DEFTYPE(TYPE_F64, 8, false);
-
-boollit_t* const_true = (boollit_t*)&(const boollit_t){
-  {{EXPR_BOOLLIT}}, .type = (type_t*)&_type_bool, .val = true, .flags = EX_ANALYZED };
-
-boollit_t* const_false = (boollit_t*)&(const boollit_t){
-  {{EXPR_BOOLLIT}}, .type = (type_t*)&_type_bool, .val = false, .flags = EX_ANALYZED };

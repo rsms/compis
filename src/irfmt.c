@@ -14,39 +14,54 @@ typedef struct {
 #define PRINT(cstr)          buf_print(&ctx->out, (cstr))
 #define PRINTF(fmt, args...) buf_printf(&ctx->out, (fmt), ##args)
 #define FILL(byte, len)      buf_fill(&ctx->out, (byte), (len))
+#define TABULATE(start, dstcol)   \
+  FILL(' ', (usize)(MAX(1, (int)(dstcol) - (int)(ctx->out.len - (start)))));
+
+#define COMMENT_COL  32
 
 
 static void val(fmtctx_t* ctx, const irval_t* v) {
+  u32 start = ctx->out.len + 1;
   PRINTF("\n    v%-2u ", v->id);
-  node_fmt(&ctx->out, (node_t*)v->type, 0);
-  PRINT("\t= ");
 
-  int name_len_sub = (int)strlen("OP_");
-  PRINTF("%-*s", op_name_maxlen() - name_len_sub, op_name(v->op) + name_len_sub);
+  u32 tstart = ctx->out.len;
+  node_fmt(&ctx->out, (node_t*)v->type, 0);
+  PRINTF("%*s = %-*s",
+    MAX(0, 4 - (int)(ctx->out.len - tstart)), "",
+    6, op_name(v->op) + 3/*"OP_"*/);
 
   for (u32 i = 0; i < v->argc; i++)
     PRINTF(" v%-2u", v->argv[i]->id);
 
-  FILL(' ', (countof(v->argv) - v->argc) * 4);
-  PRINTF("&%u", v->nuse);
-
   switch (v->op) {
   case OP_ARG:
-    PRINTF(" {%u}", v->aux.int32);
+    PRINTF(" %u", v->aux.i32val);
+    break;
+  case OP_ICONST:
+    PRINTF(" 0x%llu", v->aux.i64val);
+    break;
+  case OP_FCONST:
+    PRINTF(" %g", v->aux.f64val);
     break;
   }
 
-  if ((v->comment && *v->comment) || v->loc.line) {
-    PRINT("\t#");
-    if (v->comment && *v->comment)
-      CHAR(' '), PRINT(v->comment);
-    if (v->loc.line)
-      PRINTF("\t(%u:%u)", v->loc.line, v->loc.col);
+  TABULATE(start, COMMENT_COL);
+  PRINTF("# [%u]", v->nuse);
+  if (v->comment && *v->comment)
+    CHAR(' '), PRINT(v->comment);
+  if (v->loc.line) {
+    TABULATE(start, COMMENT_COL + 10);
+    if (v->loc.input) {
+      PRINTF(" %s:%u:%u", v->loc.input->name, v->loc.line, v->loc.col);
+    } else {
+      PRINTF(" %u:%u", v->loc.line, v->loc.col);
+    }
   }
 }
 
 
 static void block(fmtctx_t* ctx, const irblock_t* b) {
+  u32 start = ctx->out.len + 1;
   PRINTF("\n  b%u:", b->id);
 
   if (b->preds[1]) {
@@ -55,8 +70,10 @@ static void block(fmtctx_t* ctx, const irblock_t* b) {
     PRINTF(" <- b%u", b->preds[0]->id);
   }
 
-  if (b->comment)
-    PRINTF("\t # %s", b->comment);
+  if (b->comment) {
+    TABULATE(start, COMMENT_COL);
+    PRINTF("# %s", b->comment);
+  }
 
   for (u32 i = 0; i < b->values.len; i++)
     val(ctx, b->values.v[i]);

@@ -29,7 +29,9 @@ const char* nodekind_fmt(nodekind_t kind) {
     case EXPR_DEREF:
       return "dereference";
     case EXPR_INTLIT:
-      return "literal constant";
+    case EXPR_FLOATLIT:
+    case EXPR_BOOLLIT:
+      return "constant";
     case EXPR_MEMBER:
       return "member";
     case EXPR_FIELD:
@@ -279,7 +281,7 @@ static void fmt(abuf_t* s, const node_t* nullable n, u32 indent, u32 maxdepth) {
     break;
 
   case EXPR_BOOLLIT:
-    abuf_str(s, ((const boollit_t*)n)->val ? "true" : "false");
+    abuf_str(s, ((const intlit_t*)n)->intval ? "true" : "false");
     break;
 
   case EXPR_INTLIT: {

@@ -1126,6 +1126,15 @@ static expr_t* expr_floatlit(parser_t* p, const parselet_t* pl, exprflag_t fl) {
 }
 
 
+static expr_t* expr_boollit(parser_t* p, const parselet_t* pl, exprflag_t fl) {
+  intlit_t* n = mkexpr(p, intlit_t, EXPR_BOOLLIT, fl | EX_ANALYZED);
+  n->intval = currtok(p) == TTRUE;
+  n->type = type_bool;
+  next(p);
+  return (expr_t*)n;
+}
+
+
 static expr_t* expr_prefix_op(parser_t* p, const parselet_t* pl, exprflag_t fl) {
   unaryop_t* n = mkexpr(p, unaryop_t, EXPR_PREFIXOP, fl);
   n->op = pl->op;
@@ -1917,9 +1926,6 @@ static const map_t* universe() {
     {"u64",  type_u64},
     {"f32",  type_f32},
     {"f64",  type_f64},
-    // constants
-    {"true",  const_true},
-    {"false", const_false},
   };
   static void* storage[
     (MEMALLOC_BUMP_OVERHEAD + MAP_STORAGE_X(countof(entries))) / sizeof(void*)] = {0};
@@ -2019,11 +2025,13 @@ static const parselet_t expr_parsetab[TOK_COUNT] = {
   [TPLUSPLUS]   = {expr_prefix_op, expr_postfix_op, PREC_UNARY_PREFIX, OP_INC}, // ++
   [TMINUSMINUS] = {expr_prefix_op, expr_postfix_op, PREC_UNARY_PREFIX, OP_DEC}, // --
   [TNOT]        = {expr_prefix_op, NULL,            0, OP_NOT},                 // !
-  [TTILDE]      = {expr_prefix_op, NULL,            0, OP_INVERT},              // ~
+  [TTILDE]      = {expr_prefix_op, NULL,            0, OP_INV},                 // ~
 
   // constants
   [TINTLIT]   = {expr_intlit},
   [TFLOATLIT] = {expr_floatlit},
+  [TTRUE]     = {expr_boollit},
+  [TFALSE]    = {expr_boollit},
 
   // punctuation, keywords, identifiers etc
   [TLPAREN] = {expr_group, expr_postfix_call, PREC_UNARY_POSTFIX}, // (

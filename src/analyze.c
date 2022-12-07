@@ -478,6 +478,14 @@ static fun_t* nullable parent_fun(nref_t parent) {
 }
 
 
+static void check_unused(analysis_t* a, const void* expr_node) {
+  assert(node_isexpr(expr_node));
+  const expr_t* expr = expr_node;
+  if UNLIKELY(expr->nrefs == 0)
+    warning(a, expr, "unused %s %s", nodekind_fmt(expr->kind), fmtnode(a, 0, expr));
+}
+
+
 static void block_noscope(analysis_t* a, block_t* n, nref_t parent) {
   trace_node(a, "analyze ", (node_t*)n);
 
@@ -493,6 +501,7 @@ static void block_noscope(analysis_t* a, block_t* n, nref_t parent) {
   for (u32 i = 0; i < stmt_end; i++) {
     stmt_t* cn = n->children.v[i];
     stmt(a, cn, self);
+
     if (cn->kind == EXPR_RETURN) {
       // mark remaining expressions as unused
       // note: parser reports diagnostics about unreachable code
@@ -517,6 +526,9 @@ static void block_noscope(analysis_t* a, block_t* n, nref_t parent) {
 
       break;
     }
+
+    if (nodekind_isexpr(cn->kind))
+      check_unused(a, cn);
   }
 
   // if the block is rvalue, treat last entry as implicitly-returned expression
@@ -526,6 +538,7 @@ static void block_noscope(analysis_t* a, block_t* n, nref_t parent) {
     assert(nodekind_isexpr(lastexpr->kind));
     lastexpr->flags |= EX_RVALUE;
     expr(a, lastexpr, self);
+    lastexpr->nrefs = MAX(n->nrefs, lastexpr->nrefs);
     n->type = lastexpr->type;
     transfer_value(a, n, n, lastexpr);
   }

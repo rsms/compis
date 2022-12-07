@@ -154,21 +154,20 @@ static const char* operator(op_t op) {
   switch ((enum op)op) {
   case OP_NOOP:
   case OP_PHI:
+  case OP_ARG:
   case OP_CALL:
-  case OP_CONST_BOOL:
-  case OP_CONST_I8:
-  case OP_CONST_I16:
-  case OP_CONST_I32:
-  case OP_CONST_I64:
-  case OP_CONST_F32:
-  case OP_CONST_F64:
+  case OP_ZERO:
+  case OP_ICONST:
+  case OP_FCONST:
+  case OP_LOCAL:
+  case OP_STORE:
     break;
 
   // unary
-  case OP_INC:    return "++";
-  case OP_DEC:    return "--";
-  case OP_INVERT: return "~";
-  case OP_NOT:    return "!";
+  case OP_INC: return "++";
+  case OP_DEC: return "--";
+  case OP_INV: return "~";
+  case OP_NOT: return "!";
   //case OP_DEREF:  return "*";
 
   // binary, arithmetic
@@ -1158,8 +1157,8 @@ static void floatlit(cgen_t* g, const floatlit_t* n) {
 }
 
 
-static void boollit(cgen_t* g, const boollit_t* n) {
-  PRINT(n->val ? "true" : "false");
+static void boollit(cgen_t* g, const intlit_t* n) {
+  PRINT(n->intval ? "true" : "false");
 }
 
 
@@ -1463,7 +1462,7 @@ static void expr(cgen_t* g, const expr_t* n) {
   case EXPR_FUN:       return fun(g, (const fun_t*)n);
   case EXPR_INTLIT:    return intlit(g, (const intlit_t*)n);
   case EXPR_FLOATLIT:  return floatlit(g, (const floatlit_t*)n);
-  case EXPR_BOOLLIT:   return boollit(g, (const boollit_t*)n);
+  case EXPR_BOOLLIT:   return boollit(g, (const intlit_t*)n);
   case EXPR_ID:        return idexpr(g, (const idexpr_t*)n);
   case EXPR_PARAM:     return param(g, (const local_t*)n);
   case EXPR_BLOCK:     return block(g, (const block_t*)n, 0);

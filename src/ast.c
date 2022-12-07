@@ -313,7 +313,7 @@ meta:
   }
 
   case EXPR_BOOLLIT:
-    CHAR(' '), PRINT(((const boollit_t*)n)->val ? "true" : "false");
+    CHAR(' '), PRINT(((const intlit_t*)n)->intval ? "true" : "false");
     break;
 
   case EXPR_INTLIT: {
