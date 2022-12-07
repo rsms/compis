@@ -71,6 +71,23 @@ void* nullable _array_alloc(array_t* a, memalloc_t ma, u32 elemsize, u32 len) {
   return p;
 }
 
+void* nullable _array_allocat(array_t* a, memalloc_t ma, u32 elemsize, u32 i, u32 len) {
+  assert(i <= a->len);
+  if UNLIKELY(i > a->len || !_array_reserve(a, ma, elemsize, len))
+    return NULL;
+  void* p = a->ptr + i*elemsize;
+  if (i < a->len) {
+    // examples:
+    //   allocat [ 0 1 2 3 4 ] 5, 2 => [ 0 1 2 3 4 _ _ ]
+    //   allocat [ 0 1 2 3 4 ] 1, 2 => [ 0 _ _ 1 2 3 4 ]
+    //   allocat [ 0 1 2 3 4 ] 4, 2 => [ 0 1 2 3 _ _ 4 ]
+    void* dst = a->ptr + (i + len)*elemsize;
+    memmove(dst, p, (usize)((a->len - i) * elemsize));
+  }
+  a->len += len;
+  return p;
+}
+
 
 void _array_remove(array_t* a, u32 elemsize, u32 start, u32 len) {
   if (len == 0)
@@ -106,16 +123,19 @@ void _arotatemem(usize stride, void* v, usize first, usize mid, usize last) {
 }
 
 
-#define DEF_AROTATE(NAME, T)                                   \
-  void NAME(T* const v, usize first, usize mid, usize last) {  \
-    assertf(first <= mid, "%zu <= %zu", first, mid);           \
-    assertf(mid < last, "%zu < %zu", mid, last);               \
-    usize next = mid;                                          \
-    while (first != next) {                                    \
-      T tmp = v[first]; v[first++] = v[next]; v[next++] = tmp; \
-      if (next == last) next = mid;                            \
-      else if (first == mid) mid = next;                       \
-    }                                                          \
+#define DEF_AROTATE(NAME, T)                                  \
+  void NAME(T* const v, usize first, usize mid, usize last) { \
+    assertf(first <= mid, "%zu <= %zu", first, mid);          \
+    assertf(mid < last, "%zu < %zu", mid, last);              \
+    usize next = mid;                                         \
+    while (first != next) {                                   \
+      /* [first, first+1] = [next+1, next] */                 \
+      T tmp = v[first];                                       \
+      v[first++] = v[next];                                   \
+      v[next++] = tmp;                                        \
+      if (next == last) next = mid;                           \
+      else if (first == mid) mid = next;                      \
+    }                                                         \
   }
 
 DEF_AROTATE(_arotate32, u32)
