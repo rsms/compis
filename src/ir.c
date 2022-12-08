@@ -251,10 +251,22 @@ inline static u32 npreds(const irblock_t* b) {
 static irval_t* var_read_recursive(ircons_t*, irblock_t*, sym_t, type_t*, srcloc_t);
 
 
+// typedef struct {
+//   irval_t* v;
+//   irflag_t flags;
+// } var_t;
+
 static void var_write_map(ircons_t* c, map_t* vars, sym_t name, irval_t* v) {
   irval_t** vp = (irval_t**)map_assign_ptr(vars, c->ma, name);
   if UNLIKELY(!vp)
     return out_of_mem(c);
+
+  // var_t* var = mem_alloct(c->ma, var_t);
+  // if UNLIKELY(!var)
+  //   return out_of_mem(c);
+  // var->v = v;
+  // var->flags =
+
   if (*vp) trace("  replacing v%u", (*vp)->id);
   trace("TODO ownership transfer v%u", v->id);
   *vp = v;
@@ -403,15 +415,54 @@ static void start_block(ircons_t* c, irblock_t* b) {
 }
 
 
+static void terminate_block(ircons_t* c, irblock_t* b, irblock_t* frontier_succ) {
+  dlog("terminate_block b%u", b->id);
+  dlog("  defvars");
+  for (u32 bi = 0; bi < c->defvars.len; bi++) {
+    map_t* vars = &c->defvars.v[bi];
+    if (vars->len == 0)
+      continue;
+    dlog("    b%u", bi);
+    for (const mapent_t* e = map_it(vars); map_itnext(vars, &e); ) {
+      sym_t name = e->key;
+      irval_t* v = e->value;
+      dlog("      %s %s = v%u", name, fmtnode(0, v->type), v->id);
+    }
+  }
+
+  dlog("  vars");
+  if (c->vars.len) {
+    dlog("    b%u", c->b->id);
+    for (const mapent_t* e = map_it(&c->vars); map_itnext(&c->vars, &e); ) {
+      sym_t name = e->key;
+      irval_t* v = e->value;
+      dlog("      %s %s = v%u", name, fmtnode(0, v->type), v->id);
+    }
+  }
+
+  // for (u32 i = 0; i < b->values.len; i++) {
+  //   irval_t* v = b->values.v[i];
+  //   if (v->flags & IR_OWNER) {
+  //     trace("drop v%u", v->id);
+  //     irval_t* drop = pushval(c, frontier_succ, OP_DROP, v->loc, v->type);
+  //     pusharg(drop, v);
+  //   }
+  // }
+}
+
+
 static void stash_block_vars(ircons_t* c, irblock_t* b) {
   // moves block-local vars to long-term definition data
+
   if (c->vars.len == 0)
     return;
 
   // save vars
   trace("stash %u var%s modified by b%u", c->vars.len, c->vars.len==1?"":"s", b->id);
-  // for (const mapent_t* e = map_it(&c->vars); map_itnext(&c->vars, &e); )
-  //   trace("  '%s' => v%u", (const char*)e->key, ((irval_t*)e->value)->id);
+  for (const mapent_t* e = map_it(&c->vars); map_itnext(&c->vars, &e); ) {
+    irval_t* v = e->value;
+    trace("  %s %s = v%u", (const char*)e->key, fmtnode(0, v->type), v->id);
+  }
 
   map_t* vars = assign_block_map(c, &c->defvars, b->id);
   if UNLIKELY(!vars)
@@ -419,14 +470,17 @@ static void stash_block_vars(ircons_t* c, irblock_t* b) {
   *vars = c->vars;
 
   // replace c.vars with a new map
-  if (!map_init(&c->vars, c->ma, 8))
-    return out_of_mem(c);
+  if UNLIKELY(!alloc_map(c, &c->vars))
+    out_of_mem(c);
 }
 
 
 static irblock_t* end_block(ircons_t* c) {
   // transfer live locals and seals c->b if needed
   trace("%s b%u", __FUNCTION__, c->b->id);
+  #ifdef TRACE_ANALYSIS
+  c->traceindent++;
+  #endif
 
   irblock_t* b = c->b;
   c->b = &bad_irblock;
@@ -441,19 +495,24 @@ static irblock_t* end_block(ircons_t* c) {
       "sealed block with pending PHIs");
   }
 
-  return b;
-}
-
-
-static void finalize_block(ircons_t* c, irblock_t* b, irblock_t* frontier_succ) {
-  for (u32 i = 0; i < b->values.len; i++) {
-    irval_t* v = b->values.v[i];
-    if (v->flags & IR_OWNER) {
-      trace("drop v%u", v->id);
-      irval_t* drop = pushval(c, frontier_succ, OP_DROP, v->loc, v->type);
-      pusharg(drop, v);
+  // dump state of vars
+  #ifdef TRACE_ANALYSIS
+  trace("defvars");
+  for (u32 bi = 0; bi < c->defvars.len; bi++) {
+    map_t* vars = &c->defvars.v[bi];
+    if (vars->len == 0)
+      continue;
+    trace("  b%u", bi);
+    for (const mapent_t* e = map_it(vars); map_itnext(vars, &e); ) {
+      sym_t name = e->key;
+      irval_t* v = e->value;
+      trace("    %s %s = v%u", name, fmtnode(0, v->type), v->id);
     }
   }
+  c->traceindent--;
+  #endif
+
+  return b;
 }
 
 
@@ -612,6 +671,8 @@ static irval_t* floatlit(ircons_t* c, floatlit_t* n) {
 
 
 static irval_t* retexpr(ircons_t* c, retexpr_t* n) {
+  if (type_isptr(n->type))
+    trace("TODO 'return' is ptr consumer");
   irval_t* v = n->value ? expr(c, n->value) : NULL;
   c->b->kind = IR_BLOCK_RET;
   set_control(c, c->b, v);
@@ -685,8 +746,6 @@ static irval_t* ifexpr(ircons_t* c, ifexpr_t* n) {
   seal_block(c, thenb);
   irval_t* thenv = blockexpr1(c, n->thenb);
   thenb = end_block(c);
-  if (thenb->kind == IR_BLOCK_RET)
-    finalize_block(c, thenb, thenb);
 
   irval_t* elsev;
 
@@ -695,6 +754,7 @@ static irval_t* ifexpr(ircons_t* c, ifexpr_t* n) {
     trace("if \"else\" block");
 
     // allocate "cont" block; the block following both thenb and elseb
+    // TODO: can we move this past the "thenb->kind == IR_BLOCK_RET" check?
     u32 contb_index = f->blocks.len;
     irblock_t* contb = mkblock(c, f, IR_BLOCK_CONT, n->loc);
     comment(c, contb, fmttmp(c, 0, "b%u.cont", ifb->id));
@@ -791,11 +851,13 @@ static irval_t* ifexpr(ircons_t* c, ifexpr_t* n) {
       elsev = thenv;
     }
 
-    finalize_block(c, ifb, c->b);
+    // terminate_block(c, ifb, c->b);
 
     // if "then" block returns, no PHI is needed
-    if (thenb->kind == IR_BLOCK_RET)
+    if (thenb->kind == IR_BLOCK_RET) {
+      // terminate_block(c, thenb, thenb);
       return elsev;
+    }
   }
 
   // if "else" block returns, or the result of the "if" is not used, so no PHI needed.

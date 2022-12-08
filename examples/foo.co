@@ -45,7 +45,7 @@
 // fun ownership_drop_param(x *int) {
 // }
 
-fun ownership_drop_one(x, y *int) *int {
+fun ownership_drop_one(x, y, z *int) *int {
   if true {
     return x
   }
