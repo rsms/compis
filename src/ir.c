@@ -415,42 +415,6 @@ static void start_block(ircons_t* c, irblock_t* b) {
 }
 
 
-static void terminate_block(ircons_t* c, irblock_t* b, irblock_t* frontier_succ) {
-  dlog("terminate_block b%u", b->id);
-  dlog("  defvars");
-  for (u32 bi = 0; bi < c->defvars.len; bi++) {
-    map_t* vars = &c->defvars.v[bi];
-    if (vars->len == 0)
-      continue;
-    dlog("    b%u", bi);
-    for (const mapent_t* e = map_it(vars); map_itnext(vars, &e); ) {
-      sym_t name = e->key;
-      irval_t* v = e->value;
-      dlog("      %s %s = v%u", name, fmtnode(0, v->type), v->id);
-    }
-  }
-
-  dlog("  vars");
-  if (c->vars.len) {
-    dlog("    b%u", c->b->id);
-    for (const mapent_t* e = map_it(&c->vars); map_itnext(&c->vars, &e); ) {
-      sym_t name = e->key;
-      irval_t* v = e->value;
-      dlog("      %s %s = v%u", name, fmtnode(0, v->type), v->id);
-    }
-  }
-
-  // for (u32 i = 0; i < b->values.len; i++) {
-  //   irval_t* v = b->values.v[i];
-  //   if (v->flags & IR_OWNER) {
-  //     trace("drop v%u", v->id);
-  //     irval_t* drop = pushval(c, frontier_succ, OP_DROP, v->loc, v->type);
-  //     pusharg(drop, v);
-  //   }
-  // }
-}
-
-
 static void stash_block_vars(ircons_t* c, irblock_t* b) {
   // moves block-local vars to long-term definition data
 
@@ -851,13 +815,9 @@ static irval_t* ifexpr(ircons_t* c, ifexpr_t* n) {
       elsev = thenv;
     }
 
-    // terminate_block(c, ifb, c->b);
-
     // if "then" block returns, no PHI is needed
-    if (thenb->kind == IR_BLOCK_RET) {
-      // terminate_block(c, thenb, thenb);
+    if (thenb->kind == IR_BLOCK_RET)
       return elsev;
-    }
   }
 
   // if "else" block returns, or the result of the "if" is not used, so no PHI needed.

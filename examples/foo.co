@@ -1,4 +1,11 @@
 
+fun ownership_drop_one(x, y, z *int) *int {
+  if true {
+    return x
+  }
+  return y
+}
+
 // fun ir_params(x, y int) int {
 //   x * y
 // }
@@ -45,9 +52,3 @@
 // fun ownership_drop_param(x *int) {
 // }
 
-fun ownership_drop_one(x, y, z *int) *int {
-  if true {
-    return x
-  }
-  y
-}
