@@ -1,5 +1,7 @@
 
-fun ownership_drop_one(x, y, z *int) *int {
+fun ownership_drop_one(x, y *int) *int {
+  var k *int
+  x = k
   if true {
     return x
   }

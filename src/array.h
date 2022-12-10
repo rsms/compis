@@ -21,7 +21,7 @@ typedef struct {
 #endif
 } array_t;
 
-#if C0_API_DOC
+#if __documentation__
 
 // array_make returns an initialized empty array
 static array_t array_make();
@@ -50,7 +50,7 @@ void array_remove(T, array_t*, u32 start, u32 len);
 //
 void array_move(T, array_t*, u32 dst, u32 start, u32 end);
 
-#endif // ————————————————————————————————————————————————————————————————————————————
+#endif//__documentation__ —————————————————————————————————————————————————————————————
 // implementation
 
 void array_init(array_t* a);

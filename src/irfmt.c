@@ -20,7 +20,7 @@ typedef struct {
 #define COMMENT_COL  32
 
 
-static void val(fmtctx_t* ctx, const irval_t* v) {
+static void val(fmtctx_t* ctx, const irval_t* v, bool comments) {
   u32 start = ctx->out.len + 1;
   PRINTF("\n    v%-2u ", v->id);
 
@@ -44,6 +44,9 @@ static void val(fmtctx_t* ctx, const irval_t* v) {
     PRINTF(" %g", v->aux.f64val);
     break;
   }
+
+  if (!comments)
+    return;
 
   TABULATE(start, COMMENT_COL);
   PRINTF("# [%u]", v->nuse);
@@ -76,7 +79,7 @@ static void block(fmtctx_t* ctx, const irblock_t* b) {
   }
 
   for (u32 i = 0; i < b->values.len; i++)
-    val(ctx, b->values.v[i]);
+    val(ctx, b->values.v[i], /*comments*/true);
 
   switch (b->kind) {
     case IR_BLOCK_CONT: {
@@ -110,7 +113,8 @@ static void block(fmtctx_t* ctx, const irblock_t* b) {
 
 
 static void fun(fmtctx_t* ctx, const irfun_t* f) {
-  PRINTF("\nfun %s(", f->name);
+  if (ctx->out.len) CHAR('\n');
+  PRINTF("fun %s(", f->name);
   if (f->ast) {
     for (u32 i = 0; i < f->ast->params.len; i++) {
       const local_t* param = f->ast->params.v[i];
@@ -131,6 +135,48 @@ static void fun(fmtctx_t* ctx, const irfun_t* f) {
 }
 
 
+static void block_dot(fmtctx_t* ctx, const char* key_prefix, const irblock_t* b) {
+  PRINTF("  %sb%u [ label=\"b%u\\l", key_prefix, b->id, b->id);
+  for (u32 i = 0; i < b->values.len; i++) {
+    val(ctx, b->values.v[i], /*comments*/false);
+    PRINT("\\l");
+  }
+  PRINT("\" ];\n");
+
+  switch (b->kind) {
+    case IR_BLOCK_CONT: {
+      assert(b->succs[0]);
+      PRINTF("  %sb%u -> %sb%u;\n", key_prefix, b->id, key_prefix, b->succs[0]->id);
+      break;
+    }
+    case IR_BLOCK_FIRST:
+    case IR_BLOCK_IF: {
+      assert(b->succs[0]); // thenb
+      assert(b->succs[1]); // elseb
+      assertf(b->control, "missing control value");
+      PRINTF("  %sb%u -> %sb%u [label=\"if v%u\"];\n",
+        key_prefix, b->id, key_prefix, b->succs[0]->id, b->control->id);
+      PRINTF("  %sb%u -> %sb%u [label=\"if !v%u\"];\n",
+        key_prefix, b->id, key_prefix, b->succs[1]->id, b->control->id);
+      break;
+    }
+    case IR_BLOCK_RET: {
+      // PRINTF("  %sexit [style=invis];\n", key_prefix);
+      PRINTF("  %sexit [label=end];\n", key_prefix);
+      PRINTF("  %sb%u -> %sexit [label=\"return v%u\"];\n",
+        key_prefix, b->id, key_prefix, b->control->id);
+      break;
+    }
+  }
+}
+
+
+static void fun_dot(fmtctx_t* ctx, const irfun_t* f) {
+  for (u32 i = 0; i < f->blocks.len; i++)
+    block_dot(ctx, f->name, f->blocks.v[i]);
+}
+
+
 static void unit(fmtctx_t* ctx, const irunit_t* u) {
   for (u32 i = 0; i < u->functions.len; i++)
     fun(ctx, u->functions.v[i]);
@@ -140,6 +186,22 @@ static void unit(fmtctx_t* ctx, const irunit_t* u) {
 bool irfmt(buf_t* out, const irunit_t* u) {
   fmtctx_t ctx = { .ok = true, .out = *out };
   unit(&ctx, u);
+  *out = ctx.out;
+  return ctx.ok && buf_nullterm(out);
+}
+
+
+bool irfmt_fun(buf_t* out, const irfun_t* f) {
+  fmtctx_t ctx = { .ok = true, .out = *out };
+  fun(&ctx, f);
+  *out = ctx.out;
+  return ctx.ok && buf_nullterm(out);
+}
+
+
+bool irfmt_dot(buf_t* out, const irfun_t* f) {
+  fmtctx_t ctx = { .ok = true, .out = *out };
+  fun_dot(&ctx, f);
   *out = ctx.out;
   return ctx.ok && buf_nullterm(out);
 }

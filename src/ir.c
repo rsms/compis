@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "c0lib.h"
 #include "compiler.h"
+#include <stdlib.h> // for debug_graphviz hack
 
 #define TRACE_ANALYSIS
 
@@ -87,6 +88,100 @@ static const char* fmtnodex(ircons_t* c, u32 bufidx, const void* nullable n, u32
 #endif
 
 
+static bool debug_graphviz(const irunit_t* u, memalloc_t ma) {
+  buf_t buf = buf_make(ma);
+  // buf_print(&buf, "echo '"
+  //   "digraph G {\n"
+  //   "  overlap=false\n"
+  //   "  pad=0.1\n"
+  //   "  bgcolor=\"transparent\"\n"
+  //   "  bgcolor=\"black\"\n"
+  //   "  node [\n"
+  //   "    color=white, shape=record, penwidth=2,\n"
+  //   "    fontcolor=\"#ffffff\", fontname=Menlo, fontsize=30,\n"
+  //   "  ];\n"
+  //   "  edge [color=white];\n"
+  // );
+  buf_print(&buf, "echo '"
+    "digraph G {\n"
+    "  node [shape=record];\n"
+  );
+
+  for (u32 i = 0; i < u->functions.len; i++) {
+    irfun_t* f = u->functions.v[i];
+    if (u->functions.len > 1)
+      buf_printf(&buf, "subgraph \"%s\" {\n", f->name);
+    if (!irfmt_dot(&buf, f)) {
+      fprintf(stderr, "(irfmt_dot failed)\n");
+      buf_dispose(&buf);
+      return false;
+    }
+    if (u->functions.len > 1)
+      buf_print(&buf, "}\n");
+  }
+
+  // buf_print(&buf, "}' | dot -Tpng");
+  buf_print(&buf, "}' | graph-easy --from=dot --timeout=30 --as_boxart");
+  buf_nullterm(&buf);
+
+  // fwrite(buf.chars, buf.len, 1, stderr);
+  // fputc('\n', stderr);
+
+  // dlog("gen graphviz...");
+  // FILE *fp;
+  // assertnotnull((fp = popen(buf.chars, "r")));
+  // buf_clear(&buf);
+  // for (;;) {
+  //   usize avail = buf.cap - buf.len;
+  //   usize n = fread(buf.p + buf.len, 1, avail, fp);
+  //   dlog("fread %zu => %zu", avail, n);
+  //   if (n == 0)
+  //     break;
+  //   buf.len += n;
+  //   buf_reserve(&buf, buf.cap - avail);
+  // }
+  // pclose(fp);
+  // dlog("gen graphviz... done");
+
+  system(buf.chars);
+
+  // buf_nullterm(&buf);
+  // fprintf(stderr, "%s\n", buf.chars);
+  // dlog("output: %zu B", buf.len);
+
+  buf_dispose(&buf);
+  return true;
+}
+
+
+static bool dump_irunit(const irunit_t* u, memalloc_t ma) {
+  buf_t buf = buf_make(ma);
+  if (!irfmt(&buf, u)) {
+    fprintf(stderr, "(irfmt failed)\n");
+    buf_dispose(&buf);
+    return false;
+  }
+  fwrite(buf.chars, buf.len, 1, stderr);
+  fputc('\n', stderr);
+  buf_dispose(&buf);
+  return true;
+}
+
+
+static bool dump_irfun(const irfun_t* f, memalloc_t ma) {
+  buf_t buf = buf_make(ma);
+  if (!irfmt_fun(&buf, f)) {
+    fprintf(stderr, "(irfmt_fun failed)\n");
+    buf_dispose(&buf);
+    return false;
+  }
+  fwrite(buf.chars, buf.len, 1, stderr);
+  fputc('\n', stderr);
+  buf_dispose(&buf);
+  return true;
+}
+
+
 static void assert_types_iscompat(ircons_t* c, const type_t* x, const type_t* y) {
   assertf(types_iscompat(x, y), "%s != %s", fmtnode(0, x), fmtnode(1, y));
 }
@@ -100,6 +195,17 @@ static void seterr(ircons_t* c, err_t err) {
 
 static void out_of_mem(ircons_t* c) {
   seterr(c, ErrNoMem);
+}
+
+
+static type_t* basetype(type_t* t) {
+  // unwrap optional and ref
+  assertnotnull(t);
+  if (t->kind == TYPE_OPTIONAL)
+    t = assertnotnull(((opttype_t*)t)->elem);
+  if (t->kind == TYPE_REF)
+    t = assertnotnull(((reftype_t*)t)->elem);
+  return t;
 }
 
 
@@ -226,20 +332,43 @@ static irblock_t* mkblock(ircons_t* c, irfun_t* f, irblockkind_t kind, srcloc_t 
 
 inline static u32 npreds(const irblock_t* b) {
   static_assert(countof(b->preds) == 2, "countof(irblock_t.preds) changed");
-  assertf( (b->preds[1] == NULL && b->preds[0]) || b->preds[0],
+  assertf(b->preds[1] == NULL && b->preds[0],
     "has preds[1] (b%u) but no b->preds[0]", b->preds[1]->id);
   return (u32)!!b->preds[0] + (u32)!!b->preds[1];
 }
 
 
-// transfer(ircons_t* c, irval_t*   dst, irval_t*   src)  v <- v
-// transfer(ircons_t* c, irblock_t* dst, irval_t*   src)  b <- v
-// transfer(ircons_t* c, irblock_t* dst, irblock_t* src)  b <- b
-// transfer(ircons_t* c, irval_t*   dst, irblock_t* src)  v <- b
-#define transfer(c, dst, src) ( \
+inline static u32 nsuccs(const irblock_t* b) {
+  static_assert(countof(b->succs) == 2, "countof(irblock_t.succs) changed");
+  assertf(b->succs[1] == NULL || b->succs[0],
+    "has succs[1] (b%u) but no b->succs[0]", b->succs[1]->id);
+  return (u32)!!b->succs[0] + (u32)!!b->succs[1];
+}
+
+
+static bool isrvalue(const void* expr) {
+  assert(node_isexpr(expr));
+  return ((const expr_t*)expr)->flags & EX_RVALUE;
+}
+
+
+#define assert_can_own(v_or_b) assertf(\
+  _Generic((v_or_b), \
+    irval_t*:   type_isptr(((irval_t*)(v_or_b))->type), \
+    irblock_t*: true ), \
+  "%c%u is not an owner type", ID_CHAR(v_or_b), (v_or_b)->id)
+
+
+// move_owner transfers ownership of value, from src to dst, if src is ptrtype.
+//   void move_owner(ircons_t* c, irval_t*   dst, irval_t*   src)  v <- v
+//   void move_owner(ircons_t* c, irblock_t* dst, irval_t*   src)  b <- v
+//   void move_owner(ircons_t* c, irblock_t* dst, irblock_t* src)  b <- b
+//   void move_owner(ircons_t* c, irval_t*   dst, irblock_t* src)  v <- b
+#define move_owner(c, dst, src) ( \
   ((src)->flags & IR_OWNER) ? ( \
-    trace("transfer ownership of %c%u -> %c%u", \
+    trace("move owner: %c%u -> %c%u", \
       ID_CHAR(src), (src)->id, ID_CHAR(dst), (dst)->id), \
+    assert_can_own(dst), \
     ((src)->flags &= ~IR_OWNER), \
     ((dst)->flags |= IR_OWNER) ) : \
   ((void)0) )
@@ -443,7 +572,7 @@ static irblock_t* end_block(ircons_t* c) {
   // transfer live locals and seals c->b if needed
   trace("%s b%u", __FUNCTION__, c->b->id);
   #ifdef TRACE_ANALYSIS
-  c->traceindent++;
+  // c->traceindent++;
   #endif
 
   irblock_t* b = c->b;
@@ -459,22 +588,22 @@ static irblock_t* end_block(ircons_t* c) {
       "sealed block with pending PHIs");
   }
 
-  // dump state of vars
-  #ifdef TRACE_ANALYSIS
-  trace("defvars");
-  for (u32 bi = 0; bi < c->defvars.len; bi++) {
-    map_t* vars = &c->defvars.v[bi];
-    if (vars->len == 0)
-      continue;
-    trace("  b%u", bi);
-    for (const mapent_t* e = map_it(vars); map_itnext(vars, &e); ) {
-      sym_t name = e->key;
-      irval_t* v = e->value;
-      trace("    %s %s = v%u", name, fmtnode(0, v->type), v->id);
-    }
-  }
-  c->traceindent--;
-  #endif
+  // // dump state of vars
+  // #ifdef TRACE_ANALYSIS
+  // trace("defvars");
+  // for (u32 bi = 0; bi < c->defvars.len; bi++) {
+  //   map_t* vars = &c->defvars.v[bi];
+  //   if (vars->len == 0)
+  //     continue;
+  //   trace("  b%u", bi);
+  //   for (const mapent_t* e = map_it(vars); map_itnext(vars, &e); ) {
+  //     sym_t name = e->key;
+  //     irval_t* v = e->value;
+  //     trace("    %s %s = v%u", name, fmtnode(0, v->type), v->id);
+  //   }
+  // }
+  // c->traceindent--;
+  // #endif
 
   return b;
 }
@@ -635,10 +764,9 @@ static irval_t* floatlit(ircons_t* c, floatlit_t* n) {
 
 
 static irval_t* retexpr(ircons_t* c, retexpr_t* n) {
-  if (type_isptr(n->type))
-    trace("TODO 'return' is ptr consumer");
   irval_t* v = n->value ? expr(c, n->value) : NULL;
   c->b->kind = IR_BLOCK_RET;
+  move_owner(c, c->b, v);
   set_control(c, c->b, v);
   return v ? v : &bad_irval;
 }
@@ -808,7 +936,7 @@ static irval_t* ifexpr(ircons_t* c, ifexpr_t* n) {
     // move cont block to end (in case blocks were created by "then" body)
     ptrarray_move(&f->blocks, f->blocks.len - 1, elseb_index, elseb_index + 1);
 
-    if (n->flags & EX_RVALUE) {
+    if (isrvalue(n)) {
       // zero in place of "else" block
       elsev = pushval(c, c->b, OP_ZERO, n->loc, thenv->type);
     } else {
@@ -837,7 +965,7 @@ static irval_t* ifexpr(ircons_t* c, ifexpr_t* n) {
   //   b3:
   //     v6 = mul v2 v5  # <- note: only v5 gets here, not v4
   //   ret v6
-  if (elseb->kind == IR_BLOCK_RET || (n->flags & EX_RVALUE) == 0)
+  if (elseb->kind == IR_BLOCK_RET || !isrvalue(n))
     return thenv;
 
   // make Phi, joining the two branches together
@@ -847,6 +975,264 @@ static irval_t* ifexpr(ircons_t* c, ifexpr_t* n) {
   pusharg(phi, elsev);
   comment(c, phi, "if");
   return phi;
+}
+
+
+// postorder_dfs provides a DFS postordering of blocks in f
+static void postorder_dfs(ircons_t* c, irfun_t* f, irblock_t** order) {
+  if (f->blocks.len == 0)
+    return;
+
+  // track which blocks we have visited to break cycles, using a bitset of block IDs
+  u32 idcount = f->bidgen;
+  bitset_t* visited = bitset_make(c->ma, idcount);
+  if UNLIKELY(!visited)
+    return out_of_mem(c);
+
+  // stack of block+next-child-index to visit
+  // (bi_t.i is the number of successor edges of b that have already been visited)
+  typedef struct { irblock_t* b; u32 i; } bi_t;
+  bi_t* workstack = mem_alloctv(c->ma, bi_t, f->blocks.len);
+  u32 worklen = 0;
+  if UNLIKELY(!workstack) {
+    bitset_dispose(visited, c->ma);
+    return out_of_mem(c);
+  }
+
+  irblock_t* b0 = f->blocks.v[0];
+  bitset_add(visited, b0->id);
+  workstack[worklen++] = (bi_t){ b0, 0 };
+  #if DEBUG
+  u32 orderlen = 0;
+  #endif
+
+  while (worklen) {
+    u32 tos = worklen - 1;
+    irblock_t* b = assertnotnull(workstack[tos].b);
+    u32 i = workstack[tos].i;
+
+    if (i < nsuccs(b)) {
+      workstack[tos].i++;
+      irblock_t* bb = assertnotnull(b->succs[i]);
+      if (!bitset_has(visited, bb->id)) {
+        bitset_add(visited, bb->id);
+        workstack[worklen++] = (bi_t){ bb, 0 };
+      }
+    } else {
+      worklen--;
+      *order++ = b;
+      #if DEBUG
+      orderlen++;
+      #endif
+    }
+  }
+
+  assertf(orderlen == f->blocks.len, "did not visit all blocks");
+
+  bitset_dispose(visited, c->ma);
+  mem_freetv(c->ma, workstack, f->blocks.len);
+}
+
+
+typedef struct {
+  u32 r, w, len, cap;
+  void** entries;
+} ptrqueue_t;
+
+
+static bool ptrqueue_init(ptrqueue_t* q, memalloc_t ma, u32 cap) {
+  q->entries = mem_alloctv(ma, void*, cap);
+  if (!q->entries)
+    return false;
+  q->cap = cap;
+  return true;
+}
+
+
+static void ptrqueue_dispose(ptrqueue_t* q, memalloc_t ma) {
+  mem_freetv(ma, q->entries, q->cap);
+}
+
+
+static bool ptrqueue_isempty(ptrqueue_t* q) { return q->len == 0; }
+
+
+static void ptrqueue_clear(ptrqueue_t* q) {
+  q->len = 0;
+  q->r = 0;
+  q->w = 0;
+}
+
+
+static void ptrqueue_push(ptrqueue_t* q, void* value) {
+  assertf(q->len < q->cap, "buffer overflow");
+  q->entries[q->w++] = value;
+  q->len++;
+  if (q->w == q->cap)
+    q->w = 0;
+}
+
+
+static void* ptrqueue_pop(ptrqueue_t* q) {
+  assertf(q->len > 0, "empty");
+  void* v = q->entries[q->r++];
+  q->len--;
+  if (q->r == q->cap)
+    q->r = 0;
+  return v;
+}
+
+
+static void la_walk(
+  ircons_t* c, irfun_t* f, bitset_t* visited, ptrarray_t* g, irval_t* v)
+{
+  // Walk
+  //
+  // The core algorithm works by traversing G in a depth-first search manner. This
+  // is done by a function named Walk (algorithm 4) that takes the graph G and a
+  // start node s as parameters. The initial vertex s is the one related to the
+  // value currently being heap-allocated and which is going to be analyzed in
+  // order to determine if it can be instead stack-allocated. For each node u
+  // reached, a function V isit is applied to verify if u must escape or not. This
+  // function is detailed in algorithm 5.
+  //
+  ptrarray_t workstack = {0};
+  bitset_clear(visited);
+
+  dlog("la_walk v%u", v->id);
+
+  for (u32 i = 0; i < v->parents.len; i++) {
+    irval_t* parentval = v->parents.v[i];
+    ptrarray_push(&workstack, c->ma, parentval);
+  }
+
+  while (workstack.len > 0) {
+    irval_t* v = ptrarray_pop(&workstack);
+    if (bitset_has(visited, v->id))
+      continue;
+    dlog("TODO: visit v%u", v->id);
+    bitset_add(visited, v->id);
+
+    // a
+
+    // b
+
+    for (u32 i = 0; i < v->parents.len; i++) {
+      irval_t* parentval = v->parents.v[i];
+      ptrarray_push(&workstack, c->ma, parentval);
+    }
+  }
+
+  ptrarray_dispose(&workstack, c->ma);
+}
+
+
+static void la_propagate_region(
+  ircons_t* c, irfun_t* f, bitset_t* visited, ptrarray_t* g)
+{
+  usize qlen = 0;
+  ptrqueue_t q;
+  if UNLIKELY(!ptrqueue_init(&q, c->ma, g->len))
+    return out_of_mem(c);
+
+  for (u32 i = 0; i < g->len; i++) {
+    irval_t* v = g->v[i];
+    if ((v->flags & IR_LA_OUTSIDE) == 0)
+      continue;
+    ptrqueue_clear(&q);
+    ptrqueue_push(&q, v);
+    for (;;) {
+      // for each adjacent node w of v not visited yet do ...
+      for (u32 j = 0; j < v->edges.len; j++) {
+        irval_t* w = v->edges.v[j];
+        if (bitset_has(visited, w->id))
+          continue;
+        w->flags |= IR_LA_OUTSIDE;
+        dlog("v%u -> outside", w->id);
+        ptrqueue_push(&q, w);
+        bitset_add(visited, w->id);
+      }
+      if (ptrqueue_isempty(&q))
+        break;
+      v = ptrqueue_pop(&q);
+    }
+  }
+
+  ptrqueue_dispose(&q, c->ma);
+}
+
+
+static void la_build_graph(ircons_t* c, irfun_t* f) {
+  ptrarray_t g = {0};
+  ptrarray_reserve(&g, c->ma, 16);
+  u32 maxid = 0;
+
+  for (u32 i = 0; i < f->blocks.len; i++) {
+    irblock_t* b = f->blocks.v[i];
+    for (u32 j = 0; j < b->values.len; j++) {
+      irval_t* v = b->values.v[j];
+      maxid = MAX(maxid, v->id);
+
+      if (type_isowner(v->type)) {
+        v->flags |= IR_LA_OUTSIDE;
+        dlog("v%u : outside", v->id);
+      } else {
+        dlog("v%u : inside", v->id);
+      }
+      ptrarray_push(&g, c->ma, v);
+
+      for (u32 k = 0; k < v->argc; k++) {
+        irval_t* arg = v->argv[k];
+        if UNLIKELY(
+          !ptrarray_push(&arg->parents, c->ir_ma, v) ||
+          !ptrarray_push(&v->edges, c->ir_ma, arg) )
+        {
+          goto end;
+        }
+      }
+    }
+  }
+
+  // create a bitset for tracking visited values by ID
+  bitset_t* visited = bitset_make(c->ma, maxid + 1);
+  if UNLIKELY(!visited) {
+    out_of_mem(c);
+    goto end;
+  }
+
+  la_propagate_region(c, f, visited, &g);
+
+  for (u32 i = 0; i < g.len; i++) {
+    irval_t* v = g.v[i];
+    if (v->flags & IR_LA_OUTSIDE)
+      la_walk(c, f, visited, &g, v);
+  }
+
+  // check for oom
+  if (!ptrarray_reserve(&g, c->ma, 1))
+    out_of_mem(c);
+
+  bitset_dispose(visited, c->ma);
+end:
+  ptrarray_dispose(&g, c->ma);
+}
+
+
+static void analyze_ownership(ircons_t* c, irfun_t* f) {
+  dump_irfun(f, c->ma);
+  trace("analyze_ownership");
+
+  la_build_graph(c, f);
+
+  // compute postorder of f's blocks
+  irblock_t** postorder = mem_alloctv(c->ma, irblock_t*, f->blocks.len);
+  if UNLIKELY(!postorder)
+    return out_of_mem(c);
+  postorder_dfs(c, f, postorder);
+  dlog("postorder:");
+  for (u32 i = 0; i < f->blocks.len; i++)
+    dlog("  b%u", postorder[i]->id);
+  mem_freetv(c->ma, postorder, f->blocks.len);
 }
 
 
@@ -937,9 +1323,12 @@ static irfun_t* fun(ircons_t* c, fun_t* n) {
       free_map(c, &c->pendingphis.v[i]);
   }
 
+  analyze_ownership(c, f);
+
 end:
 
   // restore past function build state
+  // TODO: remove this code
   if (c->fstack.len > 0) {
     c->f = c->fstack.v[c->fstack.len - 1].f;
     c->b = c->fstack.v[c->fstack.len - 1].b;
@@ -1108,23 +1497,12 @@ end1:
 }
 
 
-static bool dump_irunit(const irunit_t* u, memalloc_t ma) {
-  buf_t buf = buf_make(ma);
-  if (!irfmt(&buf, u)) {
-    fprintf(stderr, "(irfmt failed)\n");
-    return false;
-  }
-  fwrite(buf.chars, buf.len, 1, stderr);
-  fputc('\n', stderr);
-  buf_dispose(&buf);
-  return true;
-}
-
-
 err_t analyze2(compiler_t* compiler, memalloc_t ir_ma, unit_t* unit) {
   irunit_t* u;
   err_t err = ircons(compiler, ir_ma, unit, &u);
   assertnotnull(u);
   dump_irunit(u, compiler->ma);
+  debug_graphviz(u, compiler->ma);
+  return ErrCanceled; // XXX
   return err;
 }

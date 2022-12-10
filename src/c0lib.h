@@ -274,6 +274,7 @@ typedef double             f64;
 #define IS_POW2(x)    ({ __typeof__(x) xtmp__ = (x); IS_POW2_X(xtmp__); })
 #define IS_POW2_X(x)  ( ((x) & ((x) - 1)) == 0 )
 
+
 // T ALIGN2<T>(T x, anyuint a) rounds up x to nearest a (a must be a power of two)
 #define ALIGN2(x,a) ({ \
   __typeof__(x) atmp__ = (__typeof__(x))(a) - 1; \
@@ -285,6 +286,16 @@ typedef double             f64;
 
 // bool IS_ALIGN2(T x, anyuint a) returns true if x is aligned to a
 #define IS_ALIGN2(x, a)  ( !((x) & ((__typeof__(x))(a) - 1)) )
+
+
+// T IDIV_CEIL(T x, ANY divisor) divides x by divisor, rounding up.
+// If x is zero, returns max value of x (wraps.)
+#define IDIV_CEIL(x, divisor) ({ \
+  __typeof__(x) div__ = (__typeof__(x))(divisor); \
+  ( (x) + div__ - 1 ) / div__; \
+})
+#define IDIV_CEIL_X(x, divisor) \
+  ( ( (x) + (__typeof__(x))(divisor) - 1 ) / (__typeof__(x))(divisor) )
 
 
 // COND_FLAG(T flags, T flag, bool on) -> T
@@ -893,5 +904,53 @@ inline static bool promise_isresolved(const promise_t* p) { return p->pid == 0; 
 u32 leb128_size(u64 val); // actual bytes needed
 u32 leb128_u64_write(u8 out[LEB128_NBYTE_64], u64 val);
 u32 leb128_u32_write(u8 out[LEB128_NBYTE_32], u32 val);
+
+//—————————————————————————————————————————————————————————————————————————————————————
+// bitset
+
+typedef struct {
+  u32 size; // size of bits in bytes
+  u8  onheap;
+  u8  bits[];
+} bitset_t;
+
+bitset_t* nullable bitset_alloc(memalloc_t ma, u32 size);
+
+// bitset_t* nullable bitset_make(memalloc_t ma, u32 size)
+#define bitset_make(ma, len) ({ \
+  u32 __size = IDIV_CEIL(len, 8); \
+  (__size <= 64) ? ({ \
+    bitset_t* bs = alloca(sizeof(bitset_t) + __size); \
+    memset(bs->bits, 0, __size); \
+    bs->onheap = 0; \
+    bs->size = __size; \
+    bs; \
+  }) : \
+  bitset_alloc(ma, __size); \
+})
+
+inline static void bitset_dispose(bitset_t* bs, memalloc_t ma) {
+  if (bs->onheap)
+    mem_freex(ma, MEM(bs, sizeof(bitset_t) + bs->size));
+}
+
+inline static bool bit_get(const u8* bits, usize bit) {
+  return !!( bits[bit / 8] & (1lu << (bit % 8)) );
+}
+inline static void bit_set(u8* bits, usize bit) {
+  bits[bit / 8] |= (1 << (bit % 8));
+}
+inline static void bit_clear(u8* bits, usize bit) {
+  bits[bit / 8] &= ~(1 << (bit % 8));
+}
+
+inline static bool bitset_has(const bitset_t* bs, usize bit) {
+  return bit_get(bs->bits, bit);
+}
+inline static void bitset_add(bitset_t* bs, usize bit) { bit_set(bs->bits, bit); }
+inline static void bitset_del(bitset_t* bs, usize bit) { bit_clear(bs->bits, bit); }
+inline static void bitset_clear(bitset_t* bs) { memset(bs->bits, 0, (usize)bs->size); }
+
+
 
 ASSUME_NONNULL_END

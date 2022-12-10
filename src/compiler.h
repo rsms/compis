@@ -318,8 +318,9 @@ typedef struct { // fun is a declaration (stmt) or an expression depending on us
 
 typedef u8 irflag_t;
 enum irflag {
-  IR_SEALED = (u8)1 << 0, // [block] is sealed
-  IR_OWNER  = (u8)1 << 1, // [value|block] is owner of live ptrtype
+  IR_SEALED     = (u8)1 << 0, // [block] is sealed
+  IR_OWNER      = (u8)1 << 1, // [value|block] is owner of live ptrtype
+  IR_LA_OUTSIDE = (u8)1 << 2,
 };
 
 typedef u8 irblockkind_t;
@@ -347,6 +348,8 @@ typedef struct irval_ {
     f64   f64val;
     void* ptr;
   } aux;
+  ptrarray_t edges;   // for temporary graph building
+  ptrarray_t parents; // for temporary graph building
   const char* nullable comment;
 } irval_t;
 
@@ -468,7 +471,9 @@ err_t analyze(parser_t*, unit_t* unit);
 err_t analyze2(compiler_t*, memalloc_t ir_ma, unit_t* unit);
 
 // ir
-bool irfmt(buf_t*, const irunit_t*);
+bool irfmt(buf_t* out, const irunit_t*);
+bool irfmt_fun(buf_t* out, const irfun_t*);
+bool irfmt_dot(buf_t* out, const irfun_t*);
 
 // C code generator
 bool cgen_init(cgen_t* g, compiler_t* c, memalloc_t out_ma);
