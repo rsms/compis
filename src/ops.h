@@ -6,15 +6,21 @@ _( OP_PHI )
 _( OP_ARG )
 _( OP_CALL )
 _( OP_ZERO ) // zero initializer
-_( OP_DROP ) // zero initializer
 
 // constants
 _( OP_ICONST )
 _( OP_FCONST )
 
 // memory
-_( OP_LOCAL ) // stack memory
-_( OP_STORE )
+_( OP_LOCAL )  // stack memory
+_( OP_STORE )  // T -> T
+_( OP_DEREF )  // *T -> T
+
+// ownership & lifetime
+_( OP_MOVE )       // *T -> *T
+_( OP_BORROW )     // T -> &T
+_( OP_BORROW_MUT ) // T -> mut&T
+_( OP_DROP )
 
 // unary
 _( OP_INC )    // ++

@@ -348,8 +348,16 @@ typedef struct irval_ {
     f64   f64val;
     void* ptr;
   } aux;
-  ptrarray_t edges;   // for temporary graph building
-  ptrarray_t parents; // for temporary graph building
+
+  struct {
+    sym_t nullable dst;
+    sym_t nullable src;
+  } var;
+
+  // for temporary graph building
+  ptrarray_t edges;
+  ptrarray_t parents;
+
   const char* nullable comment;
 } irval_t;
 
@@ -601,6 +609,7 @@ void scope_pop(scope_t* s);
 bool scope_stash(scope_t* s, memalloc_t ma);
 void scope_unstash(scope_t* s);
 bool scope_define(scope_t* s, memalloc_t ma, const void* key, void* value);
+bool scope_undefine(scope_t* s, memalloc_t ma, const void* key);
 void* nullable scope_lookup(scope_t* s, const void* key, u32 maxdepth);
 inline static bool scope_istoplevel(const scope_t* s) { return s->base == 0; }
 

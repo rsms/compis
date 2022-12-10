@@ -298,10 +298,8 @@ void scope_unstash(scope_t* s) {
 
 void* nullable scope_lookup(scope_t* s, const void* key, u32 maxdepth) {
   trace(s, "lookup " TRACE_KEY_FMT, TRACE_KEY(key));
-
   u32 i = s->len;
   u32 base = s->base;
-
   while (i > 2) {
     i--;
     if (i == base) {
@@ -325,6 +323,31 @@ void* nullable scope_lookup(scope_t* s, const void* key, u32 maxdepth) {
   }
   trace(s, "  not found");
   return NULL;
+}
+
+
+bool scope_undefine(scope_t* s, memalloc_t ma, const void* key) {
+  trace(s, "undefine " TRACE_KEY_FMT, TRACE_KEY(key));
+  u32 i = s->len;
+  u32 base = s->base;
+  while (i > 2) {
+    i--;
+    if (i == base)
+      break;
+    void* k = s->ptr[i];
+    i--;
+    if (k == key) {
+      if (i + 2 < s->len) {
+        void* dst = s->ptr + i;
+        void* src = dst + 2;
+        memmove(dst, src, (s->len - i - 2));
+      }
+      s->len -= 2;
+      return true;
+    }
+  }
+  trace(s, "  not found");
+  return false;
 }
 
 

@@ -13,6 +13,7 @@ typedef struct {
 
 DEF_ARRAY_TYPE(fstate_t, fstatearray)
 DEF_ARRAY_TYPE(map_t, maparray)
+DEF_ARRAY_TYPE(u32, i32array)
 
 
 typedef struct {
@@ -30,6 +31,12 @@ typedef struct {
   maparray_t      defvars;     // {[block_id] => map_t}
   maparray_t      pendingphis; // {[block_id] => map_t}
   maparray_t      freemaps;    // free map_t's (for defvars and pendingphis)
+
+  struct {
+    i32array_t entries;
+    u32        base; // current scope's base index (e.g. entries.v[base])
+    u32        maxid;
+  } drops;
 
   #ifdef TRACE_ANALYSIS
     int traceindent;
@@ -79,79 +86,98 @@ static const char* fmtnodex(ircons_t* c, u32 bufidx, const void* nullable n, u32
   static void trace_node(ircons_t* c, const char* msg, const node_t* n) {
     trace("%s%-14s: %s", msg, nodekind_name(n->kind), fmtnode(0, n));
   }
+  #define TRACE_NODE(prefix, n) \
+    trace_node(c, prefix, (node_t*)n); \
+    c->traceindent++; \
+    ircons_t* c2 __attribute__((__cleanup__(traceindent_decr),__unused__)) = c;
+
   static void traceindent_decr(void* cp) {
     (*(ircons_t**)cp)->traceindent--;
   }
 #else
   #define trace(fmt, va...) ((void)0)
   #define trace_node(a,msg,n) ((void)0)
+  #define TRACE_NODE(prefix, n) ((void)0)
 #endif
 
 
-static bool debug_graphviz(const irunit_t* u, memalloc_t ma) {
-  buf_t buf = buf_make(ma);
-  // buf_print(&buf, "echo '"
-  //   "digraph G {\n"
-  //   "  overlap=false\n"
-  //   "  pad=0.1\n"
-  //   "  bgcolor=\"transparent\"\n"
-  //   "  bgcolor=\"black\"\n"
-  //   "  node [\n"
-  //   "    color=white, shape=record, penwidth=2,\n"
-  //   "    fontcolor=\"#ffffff\", fontname=Menlo, fontsize=30,\n"
-  //   "  ];\n"
-  //   "  edge [color=white];\n"
-  // );
-  buf_print(&buf, "echo '"
-    "digraph G {\n"
-    "  node [shape=record];\n"
-  );
-
-  for (u32 i = 0; i < u->functions.len; i++) {
-    irfun_t* f = u->functions.v[i];
-    if (u->functions.len > 1)
-      buf_printf(&buf, "subgraph \"%s\" {\n", f->name);
-    if (!irfmt_dot(&buf, f)) {
-      fprintf(stderr, "(irfmt_dot failed)\n");
-      buf_dispose(&buf);
-      return false;
+#if 0
+  static void debug_graphviz(const irunit_t* u, memalloc_t ma) {
+    buf_t buf = buf_make(ma);
+    buf_print(&buf, "echo '"
+      "digraph G {\n"
+      "  node [shape=record];\n"
+    );
+    for (u32 i = 0; i < u->functions.len; i++) {
+      irfun_t* f = u->functions.v[i];
+      if (u->functions.len > 1)
+        buf_printf(&buf, "subgraph \"%s\" {\n", f->name);
+      if (!irfmt_dot(&buf, f)) {
+        fprintf(stderr, "(irfmt_dot failed)\n");
+        buf_dispose(&buf);
+        return;
+      }
+      if (u->functions.len > 1)
+        buf_print(&buf, "}\n");
     }
-    if (u->functions.len > 1)
-      buf_print(&buf, "}\n");
+    buf_print(&buf, "}' | graph-easy --from=dot --timeout=30 --as_boxart");
+    buf_nullterm(&buf);
+    system(buf.chars);
+    buf_dispose(&buf);
   }
+#else
+  static void debug_graphviz(const irunit_t* u, memalloc_t ma) {
+    buf_t buf = buf_make(ma);
+    buf_print(&buf, "echo '"
+      "digraph G {\n"
+      "  overlap=false;\n"
+      "  pad=0.2;\n"
+      "  margin=0;\n"
+      "  bgcolor=\"#171717\";\n"
+      "  rankdir=LR; clusterrank=local;\n"
+      "  size=\"9.6,6!\"; ratio=fill;\n"
+      "  node [\n"
+      "    color=white, shape=record, penwidth=2,\n"
+      "    fontcolor=\"#ffffff\", fontname=Menlo, fontsize=14\n"
+      "  ];\n"
+      "  edge [\n"
+      "    color=white, minlen=2,\n"
+      "    fontcolor=\"#ffffff\", fontname=Menlo, fontsize=14\n"
+      "  ];\n"
+    );
 
-  // buf_print(&buf, "}' | dot -Tpng");
-  buf_print(&buf, "}' | graph-easy --from=dot --timeout=30 --as_boxart");
-  buf_nullterm(&buf);
+    // note: backwards to make subgraphs order as expected
+    for (u32 i = u->functions.len; i;) {
+      irfun_t* f = u->functions.v[--i];
+      if (u->functions.len > 1) {
+        buf_printf(&buf,
+          "subgraph cluster%p {\n"
+          "penwidth=1; color=\"#ffffff44\"; margin=4;\n"
+          "label=\"%s\"; labeljust=l;\n"
+          "fontcolor=\"#ffffff44\"; fontname=Menlo; fontsize=12;\n"
+          , f, f->name);
+      }
+      if (!irfmt_dot(&buf, f)) {
+        fprintf(stderr, "(irfmt_dot failed)\n");
+        buf_dispose(&buf);
+        return;
+      }
+      if (u->functions.len > 1)
+        buf_print(&buf, "}\n");
+    }
 
-  // fwrite(buf.chars, buf.len, 1, stderr);
-  // fputc('\n', stderr);
+    buf_print(&buf, "}' | dot -Tpng -oir-cfg.png");
+    buf_nullterm(&buf);
 
-  // dlog("gen graphviz...");
-  // FILE *fp;
-  // assertnotnull((fp = popen(buf.chars, "r")));
-  // buf_clear(&buf);
-  // for (;;) {
-  //   usize avail = buf.cap - buf.len;
-  //   usize n = fread(buf.p + buf.len, 1, avail, fp);
-  //   dlog("fread %zu => %zu", avail, n);
-  //   if (n == 0)
-  //     break;
-  //   buf.len += n;
-  //   buf_reserve(&buf, buf.cap - avail);
-  // }
-  // pclose(fp);
-  // dlog("gen graphviz... done");
+    //dlog("dot: %s", buf.chars);
 
-  system(buf.chars);
+    dlog("ggraphviz...");
+    system(buf.chars);
+    dlog("graphviz... done");
 
-  // buf_nullterm(&buf);
-  // fprintf(stderr, "%s\n", buf.chars);
-  // dlog("output: %zu B", buf.len);
-
-  buf_dispose(&buf);
-  return true;
-}
+    buf_dispose(&buf);
+  }
+#endif
 
 
 static bool dump_irunit(const irunit_t* u, memalloc_t ma) {
@@ -198,15 +224,15 @@ static void out_of_mem(ircons_t* c) {
 }
 
 
-static type_t* basetype(type_t* t) {
-  // unwrap optional and ref
-  assertnotnull(t);
-  if (t->kind == TYPE_OPTIONAL)
-    t = assertnotnull(((opttype_t*)t)->elem);
-  if (t->kind == TYPE_REF)
-    t = assertnotnull(((reftype_t*)t)->elem);
-  return t;
-}
+// static type_t* basetype(type_t* t) {
+//   // unwrap optional and ref
+//   assertnotnull(t);
+//   if (t->kind == TYPE_OPTIONAL)
+//     t = assertnotnull(((opttype_t*)t)->elem);
+//   if (t->kind == TYPE_REF)
+//     t = assertnotnull(((reftype_t*)t)->elem);
+//   return t;
+// }
 
 
 static bool alloc_map(ircons_t* c, map_t* dst) {
@@ -306,9 +332,9 @@ static irval_t* insertval(
 }
 
 
-#define push_TODO_val(c, b, fmt, args...) ( \
+#define push_TODO_val(c, b, type, fmt, args...) ( \
   dlog("TODO_val " fmt, ##args), \
-  comment((c), pushval((c), (b), OP_NOOP, (srcloc_t){0}, type_void), "TODO") \
+  comment((c), pushval((c), (b), OP_NOOP, (srcloc_t){0}, (type)), "TODO") \
 )
 
 
@@ -332,7 +358,7 @@ static irblock_t* mkblock(ircons_t* c, irfun_t* f, irblockkind_t kind, srcloc_t 
 
 inline static u32 npreds(const irblock_t* b) {
   static_assert(countof(b->preds) == 2, "countof(irblock_t.preds) changed");
-  assertf(b->preds[1] == NULL && b->preds[0],
+  assertf(b->preds[1] == NULL || b->preds[0],
     "has preds[1] (b%u) but no b->preds[0]", b->preds[1]->id);
   return (u32)!!b->preds[0] + (u32)!!b->preds[1];
 }
@@ -359,19 +385,104 @@ static bool isrvalue(const void* expr) {
   "%c%u is not an owner type", ID_CHAR(v_or_b), (v_or_b)->id)
 
 
-// move_owner transfers ownership of value, from src to dst, if src is ptrtype.
-//   void move_owner(ircons_t* c, irval_t*   dst, irval_t*   src)  v <- v
-//   void move_owner(ircons_t* c, irblock_t* dst, irval_t*   src)  b <- v
-//   void move_owner(ircons_t* c, irblock_t* dst, irblock_t* src)  b <- b
-//   void move_owner(ircons_t* c, irval_t*   dst, irblock_t* src)  v <- b
-#define move_owner(c, dst, src) ( \
-  ((src)->flags & IR_OWNER) ? ( \
-    trace("move owner: %c%u -> %c%u", \
-      ID_CHAR(src), (src)->id, ID_CHAR(dst), (dst)->id), \
-    assert_can_own(dst), \
-    ((src)->flags &= ~IR_OWNER), \
-    ((dst)->flags |= IR_OWNER) ) : \
-  ((void)0) )
+// // move_owner transfers ownership of value, from src to dst, if src is ptrtype.
+// //   void move_owner(ircons_t* c, irval_t*   dst, irval_t*   src)  v <- v
+// //   void move_owner(ircons_t* c, irblock_t* dst, irval_t*   src)  b <- v
+// //   void move_owner(ircons_t* c, irblock_t* dst, irblock_t* src)  b <- b
+// //   void move_owner(ircons_t* c, irval_t*   dst, irblock_t* src)  v <- b
+// #define move_owner(c, dst, src) ( \
+//   ((src)->flags & IR_OWNER) ? ( \
+//     trace("move owner: %c%u -> %c%u", \
+//       ID_CHAR(src), (src)->id, ID_CHAR(dst), (dst)->id), \
+//     assert_can_own(dst), \
+//     ((src)->flags &= ~IR_OWNER), \
+//     ((dst)->flags |= IR_OWNER) ) : \
+//   ((void)0) )
+
+
+static void drops_reset(ircons_t* c) {
+  c->drops.maxid = 0;
+  c->drops.base = 0;
+  i32array_clear(&c->drops.entries);
+}
+
+
+static void drops_scope_enter(ircons_t* c) {
+  trace("\e[1;34m%s\e[0m", __FUNCTION__);
+  if UNLIKELY(!i32array_push(&c->drops.entries, c->ma, (i32)c->drops.base))
+    return out_of_mem(c);
+  c->drops.base = c->drops.entries.len - 1;
+}
+
+
+static void drops_scope_leave(ircons_t* c) {
+  trace("\e[1;34m%s\e[0m", __FUNCTION__);
+  c->drops.entries.len = c->drops.base;
+  c->drops.base = (u32)c->drops.entries.v[c->drops.base];
+}
+
+
+static void drops_del(ircons_t* c, irval_t* v) {
+  trace("\e[1;34m%s\e[0m" " v%u", __FUNCTION__, v->id);
+  assert(v->id < (u32)I32_MAX);
+  // note: we encode dead owners with a negative value id, however since v0 is a valid
+  // value id, we offset dead id's by 1 to avoid 0.
+  if UNLIKELY(!i32array_push(&c->drops.entries, c->ma, (-(i32)v->id) - 1))
+    out_of_mem(c);
+  c->drops.maxid = MAX(c->drops.maxid, v->id);
+}
+
+
+static void drops_add(ircons_t* c, irval_t* v) {
+  trace("\e[1;34m%s\e[0m" " v%u", __FUNCTION__, v->id);
+  assert(v->id < (u32)I32_MAX);
+  if UNLIKELY(!i32array_push(&c->drops.entries, c->ma, (i32)v->id))
+    out_of_mem(c);
+  c->drops.maxid = MAX(c->drops.maxid, v->id);
+}
+
+
+static void drops_gen_exit(ircons_t* c, srcloc_t loc) {
+  trace("\e[1;34m%s\e[0m", __FUNCTION__);
+
+  if (c->drops.entries.len == 0)
+    return;
+
+  bitset_t* seen = bitset_make(c->ma, (usize)c->drops.maxid + 1lu);
+  if UNLIKELY(!seen)
+    return out_of_mem(c);
+
+  u32 base = c->drops.base;
+  for (u32 i = c->drops.entries.len; i;) {
+    i32 id = c->drops.entries.v[--i];
+    if (i == base) {
+      trace("  base [%u] -> [%u]", base, (u32)id);
+      base = (u32)id;
+    } else if (id < 0) {
+      // v{id} has relinquished ownership
+      bitset_add(seen, ((usize)(-id)) - 1);
+      trace("  dead v%u", ((u32)(-id)) - 1);
+    } else if (!bitset_has(seen, (usize)id)) {
+      trace("  live v%d", id);
+      bitset_add(seen, (usize)id);
+      irval_t* v = pushval(c, c->b, OP_DROP, loc, type_void);
+      v->aux.i32val = id;
+    }
+  }
+
+  bitset_dispose(seen, c->ma);
+}
+
+
+static void move_owner(ircons_t* c, irval_t* nullable new_owner, irval_t* curr_owner) {
+  drops_del(c, curr_owner);
+  if (new_owner) {
+    drops_add(c, new_owner);
+    trace("\e[1;33m" "move owner: v%u -> v%u" "\e[0m", curr_owner->id, new_owner->id);
+  } else {
+    trace("\e[1;33m" "move owner: v%u -> escape" "\e[0m", curr_owner->id);
+  }
+}
 
 
 //—————————————————————————————————————————————————————————————————————————————————————
@@ -385,6 +496,7 @@ static irval_t* var_read_recursive(ircons_t*, irblock_t*, sym_t, type_t*, srcloc
 //   irflag_t flags;
 // } var_t;
 
+
 static void var_write_map(ircons_t* c, map_t* vars, sym_t name, irval_t* v) {
   irval_t** vp = (irval_t**)map_assign_ptr(vars, c->ma, name);
   if UNLIKELY(!vp)
@@ -394,11 +506,21 @@ static void var_write_map(ircons_t* c, map_t* vars, sym_t name, irval_t* v) {
   // if UNLIKELY(!var)
   //   return out_of_mem(c);
   // var->v = v;
-  // var->flags =
+  // var->flags = ...
 
-  if (*vp) trace("  replacing v%u", (*vp)->id);
-  trace("TODO ownership transfer v%u", v->id);
+  // irval_t* prev = *vp;
   *vp = v;
+
+  // if (type_isowner(v->type)) {
+  //   if (prev) {
+  //     trace(">> transfer ownership v%u -> v%u", prev->id, v->id);
+  //     drops_del(c, prev);
+  //   } else {
+  //     trace(">> establish ownership v%u", v->id);
+  //   }
+  //   if UNLIKELY(!ptrarray_push(&c->drops, c->ma, v))
+  //     out_of_mem(c);
+  // }
 }
 
 
@@ -408,13 +530,13 @@ static irval_t* var_read_map(
   irval_t** vp = (irval_t**)map_lookup_ptr(vars, name);
   if (vp)
     return assertnotnull(*vp);
-  trace("%s %s not found in b%u", __FUNCTION__, name, b->id);
+  //trace("%s %s not found in b%u", __FUNCTION__, name, b->id);
   return var_read_recursive(c, b, name, type, loc);
 }
 
 
 static void var_write_inblock(ircons_t* c, irblock_t* b, sym_t name, irval_t* v) {
-  trace("%s %s = v%u (b%u)", __FUNCTION__, name, v->id, b->id);
+  //trace("%s %s = v%u (b%u)", __FUNCTION__, name, v->id, b->id);
   map_t* vars;
   if (b == c->b) {
     vars = &c->vars;
@@ -428,7 +550,7 @@ static void var_write_inblock(ircons_t* c, irblock_t* b, sym_t name, irval_t* v)
 static irval_t* var_read_inblock(
   ircons_t* c, irblock_t* b, sym_t name, type_t* type, srcloc_t loc)
 {
-  trace("%s %s in b%u", __FUNCTION__, name, b->id);
+  //trace("%s %s in b%u", __FUNCTION__, name, b->id);
   map_t* vars = assign_block_map(c, &c->defvars, b->id);
   return var_read_map(c, b, vars, name, type, loc);
 }
@@ -451,7 +573,9 @@ static void add_pending_phi(ircons_t* c, irblock_t* b, irval_t* phi, sym_t name)
   // blocks that are sealed after they have started. This happens when preds
   // are not known at the time a block starts, but is known and registered
   // before the block ends.
-  trace("%s in b%u for %s", __FUNCTION__, b->id, name);
+
+  //trace("%s in b%u for %s", __FUNCTION__, b->id, name);
+
   map_t* phimap = assign_block_map(c, &c->pendingphis, b->id);
   if UNLIKELY(!phimap)
     return;
@@ -467,28 +591,27 @@ static void add_pending_phi(ircons_t* c, irblock_t* b, irval_t* phi, sym_t name)
 static irval_t* var_read_recursive(
   ircons_t* c, irblock_t* b, sym_t name, type_t* type, srcloc_t loc)
 {
-  // global value numbering
-  trace("%s %s in b%u", __FUNCTION__, name, b->id);
+  //trace("%s %s in b%u", __FUNCTION__, name, b->id);
 
   irval_t* v;
 
   if ((b->flags & IR_SEALED) == 0) {
     // incomplete CFG
-    trace("  block not yet sealed");
+    //trace("  block not yet sealed");
     v = pushval(c, b, OP_PHI, loc, type);
     add_pending_phi(c, b, v, name);
   } else if (npreds(b) == 1) {
-    trace("  read in single predecessor b%u", b->preds[0]->id);
+    //trace("  read in single predecessor b%u", b->preds[0]->id);
     // optimize the common case of single predecessor; no phi needed
     v = var_read_inblock(c, b->preds[0], name, type, loc);
   } else if (npreds(b) == 0) {
     // outside of function
-    trace("  outside of function (no predecessors)");
+    //trace("  outside of function (no predecessors)");
     // ... read_global(c, ...)
-    v = push_TODO_val(c, b, "gvn");
+    v = push_TODO_val(c, b, type, "gvn");
   } else {
     // multiple predecessors
-    trace("  read in predecessors b%u, b%u", b->preds[0]->id, b->preds[1]->id);
+    //trace("  read in predecessors b%u, b%u", b->preds[0]->id, b->preds[1]->id);
     v = pushval(c, b, OP_PHI, loc, type);
     var_write_inblock(c, b, name, v);
     assert(npreds(b) == 2);
@@ -659,51 +782,62 @@ static irval_t* idexpr(ircons_t* c, idexpr_t* n) {
 }
 
 
-static irval_t* local(ircons_t* c, local_t* n) {
-  irval_t* init;
-  if (n->init) {
-    init = expr(c, n->init);
+static irval_t* assign_local(ircons_t* c, local_t* dst, irval_t* value) {
+  irval_t* v;
+
+  if (type_isref(dst->type)) {
+    // T -> &T
+    op_t op = ((reftype_t*)dst->type)->ismut ? OP_BORROW_MUT : OP_BORROW;
+    v = pushval(c, c->b, op, dst->loc, dst->type);
+    pusharg(v, value);
   } else {
-    init = pushval(c, c->b, OP_ZERO, n->loc, n->type);
+    // T -> T
+    v = pushval(c, c->b, OP_MOVE, dst->loc, dst->type);
+    pusharg(v, value);
+    move_owner(c, v, value);
   }
 
+  v->var.dst = dst->name;
+  v->var.src = value->var.dst;
+
+  var_write(c, dst->name, v);
+
+  return v;
+}
+
+
+static irval_t* vardef(ircons_t* c, local_t* n) {
+  irval_t* v;
+  if (n->init) {
+    v = expr(c, n->init);
+  } else {
+    v = pushval(c, c->b, OP_ZERO, n->loc, n->type);
+  }
   if (n->name == sym__)
-    return init;
-
-  var_write(c, n->name, init);
-
-  if (n->kind == EXPR_LET)
-    return init;
-
-  // irval_t* mem = pushval(c, c->b, OP_LOCAL, n->loc, n->type);
-  // comment(c, mem, n->name);
-  // irval_t* store = pushval(c, c->b, OP_STORE, n->loc, n->type);
-  // pusharg(store, mem);
-  // pusharg(store, init);
-
-  return init;
+    return v;
+  return assign_local(c, n, v);
 }
 
 
 static irval_t* assign(ircons_t* c, binop_t* n) {
-  irval_t* value = expr(c, n->right);
-
-  idexpr_t* id = (idexpr_t*)n->left; assert(id->kind == EXPR_ID);
+  irval_t* v = expr(c, n->right);
+  idexpr_t* id = (idexpr_t*)n->left;
+  assertf(id->kind == EXPR_ID, "TODO %s", nodekind_name(id->kind));
   if (id->name == sym__)
-    return value;
-
+    return v;
   if (!node_islocal(id->ref)) // TODO member
-    return push_TODO_val(c, c->b, "%s", nodekind_name(id->ref->kind));
+    return push_TODO_val(c, c->b, n->type, "%s", nodekind_name(id->ref->kind));
+  return assign_local(c, (local_t*)id->ref, v);
+}
 
-  local_t* local = (local_t*)id->ref;
 
-  // symbolic, never used
-  irval_t* v = pushval(c, c->b, OP_STORE, n->loc, n->type);
-  pusharg(v, value);
-
-  var_write(c, local->name, value);
-
-  return value;
+static irval_t* retexpr(ircons_t* c, retexpr_t* n) {
+  irval_t* v = n->value ? expr(c, n->value) : NULL;
+  c->b->kind = IR_BLOCK_RET;
+  move_owner(c, NULL, v);
+  set_control(c, c->b, v);
+  drops_gen_exit(c, n->loc);
+  return v ? v : &bad_irval;
 }
 
 
@@ -763,16 +897,7 @@ static irval_t* floatlit(ircons_t* c, floatlit_t* n) {
 }
 
 
-static irval_t* retexpr(ircons_t* c, retexpr_t* n) {
-  irval_t* v = n->value ? expr(c, n->value) : NULL;
-  c->b->kind = IR_BLOCK_RET;
-  move_owner(c, c->b, v);
-  set_control(c, c->b, v);
-  return v ? v : &bad_irval;
-}
-
-
-static irval_t* blockexpr(ircons_t* c, block_t* n) {
+static irval_t* blockexpr0(ircons_t* c, block_t* n) {
   irval_t* v = &bad_irval;
   for (u32 i = 0; i < n->children.len; i++) {
     expr_t* cn = n->children.v[i];
@@ -784,11 +909,18 @@ static irval_t* blockexpr(ircons_t* c, block_t* n) {
 }
 
 
-#ifdef TRACE_ANALYSIS
-  #define blockexpr1(c, n)  expr((c), (expr_t*)(n))
-#else
-  #define blockexpr1(c, n)  blockexpr((c), (expr_t*)(n))
-#endif
+static irval_t* blockexpr(ircons_t* c, block_t* n) {
+  TRACE_NODE("expr ", n);
+  return blockexpr0(c, n);
+}
+
+
+static irval_t* blockexpr1(ircons_t* c, block_t* n) {
+  drops_scope_enter(c);
+  irval_t* v = blockexpr0(c, n);
+  drops_scope_leave(c);
+  return v;
+}
 
 
 static irval_t* ifexpr(ircons_t* c, ifexpr_t* n) {
@@ -836,7 +968,9 @@ static irval_t* ifexpr(ircons_t* c, ifexpr_t* n) {
   thenb->preds[0] = ifb; // then <- if
   start_block(c, thenb);
   seal_block(c, thenb);
-  irval_t* thenv = blockexpr1(c, n->thenb);
+  drops_scope_enter(c);
+  irval_t* thenv = blockexpr(c, n->thenb);
+  drops_scope_leave(c);
   thenb = end_block(c);
 
   irval_t* elsev;
@@ -856,7 +990,9 @@ static irval_t* ifexpr(ircons_t* c, ifexpr_t* n) {
     elseb->preds[0] = ifb; // else <- if
     start_block(c, elseb);
     seal_block(c, elseb);
-    elsev = blockexpr1(c, n->elseb);
+    drops_scope_enter(c);
+    elsev = blockexpr(c, n->elseb);
+    drops_scope_leave(c);
 
     // if "then" block returns, no "cont" block needed
     if (thenb->kind == IR_BLOCK_RET) {
@@ -1130,7 +1266,6 @@ static void la_walk(
 static void la_propagate_region(
   ircons_t* c, irfun_t* f, bitset_t* visited, ptrarray_t* g)
 {
-  usize qlen = 0;
   ptrqueue_t q;
   if UNLIKELY(!ptrqueue_init(&q, c->ma, g->len))
     return out_of_mem(c);
@@ -1272,23 +1407,18 @@ static irfun_t* fun(ircons_t* c, fun_t* n) {
     // This approach would save us from this complicated state saving stuff.
     //
     panic("TODO implement queue of functions");
-    // fstate_t* fstate = fstatearray_alloc(&c->fstack, c->ma, 1);
-    // if UNLIKELY(!fstate) {
-    //   out_of_mem(c);
-    //   goto end;
-    // }
-    // fstate->f = c->f;
-    // fstate->b = c->b;
-    // c->b = &bad_irblock; // satisfy assertion in start_block
-    // TODO save vars, defvars and pendingphis
   }
 
   c->f = f;
+  drops_reset(c);
 
   // allocate entry block
   irblock_t* entryb = mkblock(c, f, IR_BLOCK_CONT, n->loc);
   start_block(c, entryb);
   seal_block(c, entryb); // entry block has no predecessors
+
+  // enter function scope
+  drops_scope_enter(c);
 
   // define arguments
   for (u32 i = 0; i < n->params.len; i++) {
@@ -1297,20 +1427,35 @@ static irfun_t* fun(ircons_t* c, fun_t* n) {
       continue;
     irval_t* v = pushval(c, c->b, OP_ARG, param->loc, param->type);
     v->aux.i32val = i;
+    v->var.dst = param->name;
     comment(c, v, param->name);
-    if (type_isptr(param->type))
+
+    if (type_isowner(param->type)) {
       v->flags |= IR_OWNER;
+      drops_add(c, v);
+    }
+
     var_write(c, param->name, v);
   }
 
   // build body
-  irval_t* body = blockexpr1(c, (expr_t*)n->body);
+  irval_t* body = blockexpr(c, n->body);
 
-  // end last block, if not already ended
-  c->b->kind = IR_BLOCK_RET;
-  if (((funtype_t*)n->type)->result != type_void)
-    set_control(c, c->b, body);
+  // end last block
+  // note: if the block ended with a "return" statement, b->kind is already BLOCK_RETe
+  if (c->b->kind != IR_BLOCK_RET) {
+    c->b->kind = IR_BLOCK_RET;
+    if (((funtype_t*)n->type)->result != type_void && body != &bad_irval) {
+      // implicit return
+      move_owner(c, NULL, body);
+      set_control(c, c->b, body);
+    }
+    drops_gen_exit(c, n->body->loc);
+  }
   end_block(c);
+
+  // leave function scope
+  drops_scope_leave(c);
 
   // reset
   map_clear(&c->vars);
@@ -1323,33 +1468,19 @@ static irfun_t* fun(ircons_t* c, fun_t* n) {
       free_map(c, &c->pendingphis.v[i]);
   }
 
-  analyze_ownership(c, f);
+  //analyze_ownership(c, f);
 
 end:
-
-  // restore past function build state
-  // TODO: remove this code
-  if (c->fstack.len > 0) {
-    c->f = c->fstack.v[c->fstack.len - 1].f;
-    c->b = c->fstack.v[c->fstack.len - 1].b;
-    fstatearray_pop(&c->fstack);
-  } else {
-    c->f = &bad_irfun;
-  }
-
+  c->f = &bad_irfun;
   return f;
 }
 
 
 static irval_t* expr(ircons_t* c, expr_t* n) {
-  #ifdef TRACE_ANALYSIS
-    trace_node(c, "expr ", (node_t*)n);
-    c->traceindent++;
-    ircons_t* c2 __attribute__((__cleanup__(traceindent_decr),__unused__)) = c;
-  #endif
+  TRACE_NODE("expr ", n);
 
   switch ((enum nodekind)n->kind) {
-  case EXPR_BLOCK:     return blockexpr(c, (block_t*)n);
+  case EXPR_BLOCK:     return blockexpr1(c, (block_t*)n);
   case EXPR_BINOP:     return binop(c, (binop_t*)n);
   case EXPR_ASSIGN:    return assign(c, (binop_t*)n);
   case EXPR_ID:        return idexpr(c, (idexpr_t*)n);
@@ -1361,11 +1492,9 @@ static irval_t* expr(ircons_t* c, expr_t* n) {
   case EXPR_INTLIT:
     return intlit(c, (intlit_t*)n);
 
-  case EXPR_FIELD:
-  case EXPR_PARAM:
   case EXPR_VAR:
   case EXPR_LET:
-    return local(c, (local_t*)n);
+    return vardef(c, (local_t*)n);
 
   // TODO
   case EXPR_FUN:       // return funexpr(c, (fun_t*)n);
@@ -1376,7 +1505,7 @@ static irval_t* expr(ircons_t* c, expr_t* n) {
   case EXPR_POSTFIXOP: // return postfixop(c, (unaryop_t*)n);
   case EXPR_FOR:
     c->err = ErrCanceled;
-    return push_TODO_val(c, c->b, "expr(%s)", nodekind_name(n->kind));
+    return push_TODO_val(c, c->b, type_void, "expr(%s)", nodekind_name(n->kind));
 
   // We should never see these kinds of nodes
   case NODEKIND_COUNT:
@@ -1384,6 +1513,8 @@ static irval_t* expr(ircons_t* c, expr_t* n) {
   case NODE_COMMENT:
   case NODE_UNIT:
   case STMT_TYPEDEF:
+  case EXPR_FIELD:
+  case EXPR_PARAM:
   case TYPE_VOID:
   case TYPE_BOOL:
   case TYPE_INT:
@@ -1416,13 +1547,7 @@ static irunit_t* unit(ircons_t* c, unit_t* n) {
 
   for (u32 i = 0; i < n->children.len; i++) {
     stmt_t* cn = n->children.v[i];
-
-    #ifdef TRACE_ANALYSIS
-      trace_node(c, "stmt ", (node_t*)cn);
-      c->traceindent++;
-      ircons_t* c2 __attribute__((__cleanup__(traceindent_decr),__unused__)) = c;
-    #endif
-
+    TRACE_NODE("stmt ", n);
     switch (cn->kind) {
       case STMT_TYPEDEF:
         // ignore
@@ -1491,6 +1616,8 @@ end1:
   dispose_maparray(c.ma, &c.defvars);
   dispose_maparray(c.ma, &c.pendingphis);
   dispose_maparray(c.ma, &c.freemaps);
+
+  i32array_dispose(&c.drops.entries, c.ma);
 
   *result = u == &bad_irunit ? NULL : u;
   return c.err;

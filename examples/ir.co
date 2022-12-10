@@ -1,0 +1,42 @@
+fun ir_params(x, y int) int {
+  x * y
+}
+
+fun ir_redundant_local(x, y int) int {
+  var b = y // storage unused
+  x * b     // b just points to y, not local storage
+}
+
+fun ir_if_then_result_ret(x, y int) int {
+  if x > y {
+    return x - y
+  }
+  x + y
+}
+
+fun ir_cond_assign(x, y int) int {
+  var a = x
+  if x > y {
+    a = y
+    if x < y {
+      a = x
+    }
+  }
+  a
+}
+
+fun ir_if_else_result(x, y int) int {
+  if x > y {
+    x - y
+  } else {
+    x + y
+  }
+}
+
+fun ir_if_else_result2(x, y int) int {
+  2 * if x > y {
+    x - y
+  } else {
+    x + y + 2 + 4 + 1
+  }
+}

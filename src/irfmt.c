@@ -22,18 +22,24 @@ typedef struct {
 
 static void val(fmtctx_t* ctx, const irval_t* v, bool comments) {
   u32 start = ctx->out.len + 1;
-  PRINTF("\n    v%-2u ", v->id);
+  PRINTF("\n    ");
 
-  u32 tstart = ctx->out.len;
-  node_fmt(&ctx->out, (node_t*)v->type, 0);
-  PRINTF("%*s = %-*s",
-    MAX(0, 4 - (int)(ctx->out.len - tstart)), "",
-    6, op_name(v->op) + 3/*"OP_"*/);
+  if (v->type != type_void) {
+    PRINTF("v%-2u ", v->id);
+    u32 tstart = ctx->out.len;
+    node_fmt(&ctx->out, (node_t*)v->type, 0);
+    PRINTF("%*s = ", MAX(0, 4 - (int)(ctx->out.len - tstart)), "");
+  }
+
+  PRINTF("%-*s", 6, op_name(v->op) + 3/*"OP_"*/);
 
   for (u32 i = 0; i < v->argc; i++)
     PRINTF(" v%-2u", v->argv[i]->id);
 
   switch (v->op) {
+  case OP_DROP:
+    PRINTF(" v%u", v->aux.i32val);
+    break;
   case OP_ARG:
     PRINTF(" %u", v->aux.i32val);
     break;
@@ -52,8 +58,21 @@ static void val(fmtctx_t* ctx, const irval_t* v, bool comments) {
   PRINTF("# [%u]", v->nuse);
   if (v->comment && *v->comment)
     CHAR(' '), PRINT(v->comment);
+
+  if (v->var.src || v->var.dst) {
+    PRINT(" {");
+    if (v->var.dst) {
+      PRINTF("dst=%s", v->var.dst);
+      if (v->var.src)
+        PRINTF(" src=%s", v->var.src);
+    } else {
+      PRINTF("src=%s", v->var.src);
+    }
+    PRINT("}");
+  }
+
   if (v->loc.line) {
-    TABULATE(start, COMMENT_COL + 10);
+    TABULATE(start, COMMENT_COL + 25);
     if (v->loc.input) {
       PRINTF(" %s:%u:%u", v->loc.input->name, v->loc.line, v->loc.col);
     } else {
@@ -162,9 +181,14 @@ static void block_dot(fmtctx_t* ctx, const char* key_prefix, const irblock_t* b)
     }
     case IR_BLOCK_RET: {
       // PRINTF("  %sexit [style=invis];\n", key_prefix);
-      PRINTF("  %sexit [label=end];\n", key_prefix);
-      PRINTF("  %sb%u -> %sexit [label=\"return v%u\"];\n",
-        key_prefix, b->id, key_prefix, b->control->id);
+      PRINTF("  %sexit [label=end, shape=plain];\n", key_prefix);
+      if (b->control) {
+        PRINTF("  %sb%u -> %sexit [label=\"return v%u\"];\n",
+          key_prefix, b->id, key_prefix, b->control->id);
+      } else {
+        PRINTF("  %sb%u -> %sexit [label=\"return\"];\n",
+          key_prefix, b->id, key_prefix);
+      }
       break;
     }
   }

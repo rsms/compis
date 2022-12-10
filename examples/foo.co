@@ -1,12 +1,29 @@
 
-fun ownership_drop_one(x, y *int) *int {
-  var k *int
-  x = k
-  if true {
-    return x
-  }
-  return y
+fun ownership_drop_params(x, y *int) void {
 }
+
+fun ownership_drop_param2(x, y *int) *int {
+  x
+}
+
+fun ownership_drop_var(x *int) {
+  var k *int = x
+} // drop(k)
+
+fun ownership_drop_one(x, y *int) *int {
+  var k *int = x
+  if true {
+    return k
+  } // drop(y)
+  return y
+} // drop(k)
+
+// fun ownership_drop_in_scope(x, y *int) *int {
+//   {
+//     let k = x
+//   } // drop(k)
+//   return y
+// }
 
 // fun ir_params(x, y int) int {
 //   x * y

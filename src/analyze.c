@@ -481,7 +481,7 @@ static fun_t* nullable parent_fun(nref_t parent) {
 static void check_unused(analysis_t* a, const void* expr_node) {
   assert(node_isexpr(expr_node));
   const expr_t* expr = expr_node;
-  if UNLIKELY(expr->nrefs == 0)
+  if UNLIKELY(expr->nrefs == 0 && expr->kind != EXPR_IF && expr->kind != EXPR_ASSIGN)
     warning(a, expr, "unused %s %s", nodekind_fmt(expr->kind), fmtnode(a, 0, expr));
 }
 
