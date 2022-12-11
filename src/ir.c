@@ -13,29 +13,45 @@ typedef struct {
 
 DEF_ARRAY_TYPE(fstate_t, fstatearray)
 DEF_ARRAY_TYPE(map_t, maparray)
-DEF_ARRAY_TYPE(u32, i32array)
+
+typedef enum {
+  DROPKIND_LIVE,
+  DROPKIND_DEAD,
+  DROPKIND_BASE,
+} dropkind_t;
+
+typedef struct {
+  dropkind_t kind;
+  u32        id;
+  union {
+    irval_t* v;
+    u32      base;
+  };
+} drop_t;
+
+DEF_ARRAY_TYPE(drop_t, droparray)
 
 
 typedef struct {
-  compiler_t*     compiler;
-  memalloc_t      ma;          // compiler->ma
-  memalloc_t      ir_ma;       // allocator for ir data
-  irunit_t*       unit;        // current unit
-  irfun_t*        f;           // current function
-  irblock_t*      b;           // current block
-  fstatearray_t   fstack;      // suspended function builds
-  err_t           err;         // result of build process
-  buf_t           tmpbuf[2];   // general-purpose scratch buffers
-  map_t           funm;        // {fun_t* => irfun_t*} for breaking cycles
-  map_t           vars;        // {sym_t => irval_t*} (moved to defvars by end_block)
-  maparray_t      defvars;     // {[block_id] => map_t}
-  maparray_t      pendingphis; // {[block_id] => map_t}
-  maparray_t      freemaps;    // free map_t's (for defvars and pendingphis)
+  compiler_t*   compiler;
+  memalloc_t    ma;          // compiler->ma
+  memalloc_t    ir_ma;       // allocator for ir data
+  irunit_t*     unit;        // current unit
+  irfun_t*      f;           // current function
+  irblock_t*    b;           // current block
+  fstatearray_t fstack;      // suspended function builds
+  err_t         err;         // result of build process
+  buf_t         tmpbuf[2];   // general-purpose scratch buffers
+  map_t         funm;        // {fun_t* => irfun_t*} for breaking cycles
+  map_t         vars;        // {sym_t => irval_t*} (moved to defvars by end_block)
+  maparray_t    defvars;     // {[block_id] => map_t}
+  maparray_t    pendingphis; // {[block_id] => map_t}
+  maparray_t    freemaps;    // free map_t's (for defvars and pendingphis)
 
   struct {
-    i32array_t entries;
-    u32        base; // current scope's base index (e.g. entries.v[base])
-    u32        maxid;
+    droparray_t entries;
+    u32         base; // current scope's base index (e.g. entries.v[base])
+    u32         maxid;
   } drops;
 
   #ifdef TRACE_ANALYSIS
@@ -224,6 +240,25 @@ static void out_of_mem(ircons_t* c) {
 }
 
 
+ATTR_FORMAT(printf,3,4)
+static void errorx(ircons_t* c, srcrange_t srcrange, const char* fmt, ...) {
+  va_list ap;
+  va_start(ap, fmt);
+  report_diagv(c->compiler, srcrange, DIAG_ERR, fmt, ap);
+  va_end(ap);
+}
+
+#define error(c, node_or_val, fmt, args...) \
+  errorx((c), _Generic((node_or_val), \
+    const irval_t*: (srcrange_t){.focus=(node_or_val)->loc}, \
+    irval_t*:       (srcrange_t){.focus=(node_or_val)->loc}, \
+    const node_t*:  node_srcrange((const node_t*)(node_or_val)), \
+    node_t*:        node_srcrange((const node_t*)(node_or_val)), \
+    const expr_t*:  node_srcrange((const node_t*)(node_or_val)), \
+    expr_t*:        node_srcrange((const node_t*)(node_or_val)) \
+  ), (fmt), ##args)
+
+
 // static type_t* basetype(type_t* t) {
 //   // unwrap optional and ref
 //   assertnotnull(t);
@@ -403,14 +438,17 @@ static bool isrvalue(const void* expr) {
 static void drops_reset(ircons_t* c) {
   c->drops.maxid = 0;
   c->drops.base = 0;
-  i32array_clear(&c->drops.entries);
+  droparray_clear(&c->drops.entries);
 }
 
 
 static void drops_scope_enter(ircons_t* c) {
   trace("\e[1;34m%s\e[0m", __FUNCTION__);
-  if UNLIKELY(!i32array_push(&c->drops.entries, c->ma, (i32)c->drops.base))
+  drop_t* d = droparray_alloc(&c->drops.entries, c->ma, 1);
+  if UNLIKELY(!d)
     return out_of_mem(c);
+  d->kind = DROPKIND_BASE;
+  d->base = c->drops.base;
   c->drops.base = c->drops.entries.len - 1;
 }
 
@@ -418,33 +456,42 @@ static void drops_scope_enter(ircons_t* c) {
 static void drops_scope_leave(ircons_t* c) {
   trace("\e[1;34m%s\e[0m", __FUNCTION__);
   c->drops.entries.len = c->drops.base;
-  c->drops.base = (u32)c->drops.entries.v[c->drops.base];
+  c->drops.base = c->drops.entries.v[c->drops.base].base;
 }
 
 
-static void drops_del(ircons_t* c, irval_t* v) {
-  trace("\e[1;34m%s\e[0m" " v%u", __FUNCTION__, v->id);
-  assert(v->id < (u32)I32_MAX);
-  // note: we encode dead owners with a negative value id, however since v0 is a valid
-  // value id, we offset dead id's by 1 to avoid 0.
-  if UNLIKELY(!i32array_push(&c->drops.entries, c->ma, (-(i32)v->id) - 1))
-    out_of_mem(c);
+static void drops_mark(ircons_t* c, irval_t* v, dropkind_t kind) {
+  trace("\e[1;34m%s\e[0m" " %s v%u", __FUNCTION__,
+    (kind == DROPKIND_LIVE) ? "live" : "dead", v->id);
+  assert(kind != DROPKIND_BASE);
+  drop_t* d = droparray_alloc(&c->drops.entries, c->ma, 1);
+  if UNLIKELY(!d)
+    return out_of_mem(c);
+  d->kind = kind;
+  d->v = v;
+  d->id = v->id;
   c->drops.maxid = MAX(c->drops.maxid, v->id);
 }
 
 
-static void drops_add(ircons_t* c, irval_t* v) {
-  trace("\e[1;34m%s\e[0m" " v%u", __FUNCTION__, v->id);
-  assert(v->id < (u32)I32_MAX);
-  if UNLIKELY(!i32array_push(&c->drops.entries, c->ma, (i32)v->id))
-    out_of_mem(c);
-  c->drops.maxid = MAX(c->drops.maxid, v->id);
+drop_t* nullable drops_lookup(ircons_t* c, u32 id) {
+  trace("%s v%u", __FUNCTION__, id);
+  u32 base = c->drops.base;
+  for (u32 i = c->drops.entries.len; i;) {
+    drop_t* d = &c->drops.entries.v[--i];
+    if (i == base) {
+      assert(d->kind == DROPKIND_BASE);
+      base = d->base;
+    } else if (d->id == id) {
+      return d;
+    }
+  }
+  trace("  not found");
+  return NULL;
 }
 
 
-static void drops_gen_exit(ircons_t* c, srcloc_t loc) {
-  trace("\e[1;34m%s\e[0m", __FUNCTION__);
-
+static void drops_gen(ircons_t* c, srcloc_t loc, u32 maxdepth) {
   if (c->drops.entries.len == 0)
     return;
 
@@ -454,19 +501,30 @@ static void drops_gen_exit(ircons_t* c, srcloc_t loc) {
 
   u32 base = c->drops.base;
   for (u32 i = c->drops.entries.len; i;) {
-    i32 id = c->drops.entries.v[--i];
+    drop_t* d = &c->drops.entries.v[--i];
     if (i == base) {
-      trace("  base [%u] -> [%u]", base, (u32)id);
-      base = (u32)id;
-    } else if (id < 0) {
-      // v{id} has relinquished ownership
-      bitset_add(seen, ((usize)(-id)) - 1);
-      trace("  dead v%u", ((u32)(-id)) - 1);
-    } else if (!bitset_has(seen, (usize)id)) {
-      trace("  live v%d", id);
-      bitset_add(seen, (usize)id);
+      assert(d->kind == DROPKIND_BASE);
+      if (maxdepth == 0)
+        break;
+      maxdepth--;
+      trace("  base [%u] -> [%u]", base, d->base);
+      base = d->base;
+      continue;
+    }
+    if (d->kind == DROPKIND_DEAD) {
+      trace("  dead v%d", d->id);
+      bitset_add(seen, d->id);
+      continue;
+    }
+
+    if (bitset_has(seen, d->id))
+      continue;
+    bitset_add(seen, d->id);
+    trace("  %s v%d", d->kind == DROPKIND_LIVE ? "live" : "dead", d->id);
+    if (d->kind == DROPKIND_LIVE) {
       irval_t* v = pushval(c, c->b, OP_DROP, loc, type_void);
-      v->aux.i32val = id;
+      pusharg(v, d->v);
+      v->var.src = d->v->var.dst;
     }
   }
 
@@ -474,14 +532,54 @@ static void drops_gen_exit(ircons_t* c, srcloc_t loc) {
 }
 
 
+static void drops_gen_exit(ircons_t* c, srcloc_t loc) {
+  trace("\e[1;34m%s\e[0m", __FUNCTION__);
+  drops_gen(c, loc, U32_MAX);
+}
+
+
+static void drops_gen_scope(ircons_t* c, srcloc_t loc) {
+  trace("\e[1;34m%s\e[0m", __FUNCTION__);
+  drops_gen(c, loc, 0);
+}
+
+
 static void move_owner(ircons_t* c, irval_t* nullable new_owner, irval_t* curr_owner) {
-  drops_del(c, curr_owner);
+  drops_mark(c, curr_owner, DROPKIND_DEAD);
   if (new_owner) {
-    drops_add(c, new_owner);
+    drops_mark(c, new_owner, DROPKIND_LIVE);
     trace("\e[1;33m" "move owner: v%u -> v%u" "\e[0m", curr_owner->id, new_owner->id);
   } else {
     trace("\e[1;33m" "move owner: v%u -> escape" "\e[0m", curr_owner->id);
   }
+}
+
+
+static irval_t* move(ircons_t* c, irval_t* rvalue) {
+  irval_t* v = pushval(c, c->b, OP_MOVE, rvalue->loc, rvalue->type);
+  pusharg(v, rvalue);
+  move_owner(c, v, rvalue);
+  return v;
+}
+
+
+static irval_t* reference(ircons_t* c, irval_t* rvalue) {
+  op_t op = ((reftype_t*)rvalue->type)->ismut ? OP_BORROW_MUT : OP_BORROW;
+  irval_t* v = pushval(c, c->b, op, rvalue->loc, rvalue->type);
+  pusharg(v, rvalue);
+  return v;
+}
+
+
+static irval_t* move_or_copy(ircons_t* c, irval_t* rvalue) {
+  irval_t* v = rvalue;
+  if (type_ismove(rvalue->type)) {
+    v = move(c, rvalue);
+  } else if (type_isref(rvalue->type)) {
+    v = reference(c, rvalue);
+  }
+  v->var.src = rvalue->var.dst;
+  return v;
 }
 
 
@@ -774,6 +872,37 @@ static irblock_t* entry_block(irfun_t* f) {
 static irval_t* expr(ircons_t* c, expr_t* n);
 
 
+static irval_t* load_expr(ircons_t* c, expr_t* n) {
+  trace("\e[1;35m" "load %s %s" "\e[0m", nodekind_fmt(n->kind), fmtnode(0, n));
+  if (!isrvalue(n))
+    trace("\e[1;31m" "  AST not marked as rvalue" "\e[0m");
+
+  irval_t* v = expr(c, n);
+
+  switch (n->kind) {
+  case EXPR_ID: {
+    idexpr_t* id = (idexpr_t*)n;
+    if (node_islocal(id->ref)) {
+      local_t* local = (local_t*)id->ref;
+      drop_t* d = drops_lookup(c, v->id);
+      if (d && d->kind != DROPKIND_LIVE) {
+        error(c, n, "use of dead value; moved away");
+      }
+      dlog("drops_lookup(v%u) => %s", v->id,
+        d ? (d->kind == DROPKIND_LIVE ? "live" : "dead") : "?");
+      dlog("TODO %s check for uninitialized ref or ptr var", nodekind_name(n->kind));
+      dlog("TODO %s check for dead owner (moved out)", nodekind_name(n->kind));
+    }
+    break;
+  }
+  default:
+    dlog("TODO %s", nodekind_name(n->kind));
+  }
+
+  return v;
+}
+
+
 static irval_t* idexpr(ircons_t* c, idexpr_t* n) {
   assertnotnull(n->ref);
   assertf(node_islocal(n->ref), "%s", nodekind_name(n->ref->kind));
@@ -782,26 +911,10 @@ static irval_t* idexpr(ircons_t* c, idexpr_t* n) {
 }
 
 
-static irval_t* assign_local(ircons_t* c, local_t* dst, irval_t* value) {
-  irval_t* v;
-
-  if (type_isref(dst->type)) {
-    // T -> &T
-    op_t op = ((reftype_t*)dst->type)->ismut ? OP_BORROW_MUT : OP_BORROW;
-    v = pushval(c, c->b, op, dst->loc, dst->type);
-    pusharg(v, value);
-  } else {
-    // T -> T
-    v = pushval(c, c->b, OP_MOVE, dst->loc, dst->type);
-    pusharg(v, value);
-    move_owner(c, v, value);
-  }
-
+static irval_t* assign_local(ircons_t* c, local_t* dst, irval_t* v) {
+  v = move_or_copy(c, v);
   v->var.dst = dst->name;
-  v->var.src = value->var.dst;
-
   var_write(c, dst->name, v);
-
   return v;
 }
 
@@ -809,30 +922,29 @@ static irval_t* assign_local(ircons_t* c, local_t* dst, irval_t* value) {
 static irval_t* vardef(ircons_t* c, local_t* n) {
   irval_t* v;
   if (n->init) {
-    v = expr(c, n->init);
+    v = load_expr(c, n->init);
   } else {
     v = pushval(c, c->b, OP_ZERO, n->loc, n->type);
   }
   if (n->name == sym__)
-    return v;
+    return move_or_copy(c, v);
   return assign_local(c, n, v);
 }
 
 
 static irval_t* assign(ircons_t* c, binop_t* n) {
-  irval_t* v = expr(c, n->right);
+  irval_t* v = load_expr(c, n->right);
   idexpr_t* id = (idexpr_t*)n->left;
   assertf(id->kind == EXPR_ID, "TODO %s", nodekind_name(id->kind));
   if (id->name == sym__)
-    return v;
-  if (!node_islocal(id->ref)) // TODO member
-    return push_TODO_val(c, c->b, n->type, "%s", nodekind_name(id->ref->kind));
+    return move_or_copy(c, v);
+  assert(node_islocal(id->ref));
   return assign_local(c, (local_t*)id->ref, v);
 }
 
 
 static irval_t* retexpr(ircons_t* c, retexpr_t* n) {
-  irval_t* v = n->value ? expr(c, n->value) : NULL;
+  irval_t* v = n->value ? load_expr(c, n->value) : NULL;
   c->b->kind = IR_BLOCK_RET;
   move_owner(c, NULL, v);
   set_control(c, c->b, v);
@@ -841,71 +953,22 @@ static irval_t* retexpr(ircons_t* c, retexpr_t* n) {
 }
 
 
-static irval_t* binop(ircons_t* c, binop_t* n) {
-  irval_t* left  = expr(c, n->left);
-  irval_t* right = expr(c, n->right);
-  assert(left->type && right->type);
-  assert_types_iscompat(c, left->type, right->type);
-  irval_t* v = pushval(c, c->b, n->op, n->loc, n->type);
-  pusharg(v, left);
-  pusharg(v, right);
-  return v;
-}
-
-
-static irval_t* intlit(ircons_t* c, intlit_t* n) {
-  // "intern" constants
-  // this is a really simple solution:
-  // - all constants are placed at the beginning of the entry block
-  //   - first int constants, then float constants
-  // - linear scan for an existing equivalent constant
-  // - fast for functions with few constants, which is the common case
-  // - degrades for functions with many constants
-  //   - could do binary search if we bookkeep ending index
-  irblock_t* b0 = entry_block(c->f);
-  u64 intval = n->intval;
-  u32 i = 0;
-  for (; i < b0->values.len; i++) {
-    irval_t* v = b0->values.v[i];
-    if (v->op != OP_ICONST || v->aux.i64val > intval)
-      break;
-    if (v->aux.i64val == intval && v->type == n->type)
-      return v;
-  }
-  irval_t* v = insertval(c, b0, i, OP_ICONST, n->loc, n->type);
-  v->aux.i64val = intval;
-  return v;
-}
-
-
-static irval_t* floatlit(ircons_t* c, floatlit_t* n) {
-  irblock_t* b0 = entry_block(c->f);
-  f64 f64val = n->f64val;
-  u32 i = 0;
-  for (; i < b0->values.len; i++) {
-    irval_t* v = b0->values.v[i];
-    if (v->op == OP_ICONST)
-      continue;
-    if (v->op != OP_FCONST || v->aux.f64val > f64val)
-      break;
-    if (v->aux.f64val == f64val && v->type == n->type)
-      return v;
-  }
-  irval_t* v = insertval(c, b0, i, OP_FCONST, n->loc, n->type);
-  v->aux.f64val = f64val;
-  return v;
-}
-
-
 static irval_t* blockexpr0(ircons_t* c, block_t* n) {
-  irval_t* v = &bad_irval;
+  if (n->children.len == 0) {
+    if (isrvalue(n))
+      return pushval(c, c->b, OP_ZERO, n->loc, n->type);
+    return &bad_irval;
+  }
+  u32 lastrval = (n->children.len-1) + (u32)!isrvalue(n);
   for (u32 i = 0; i < n->children.len; i++) {
     expr_t* cn = n->children.v[i];
-    v = expr(c, cn);
+    if (i == lastrval)
+      return load_expr(c, cn);
+    expr(c, cn);
     if (cn->kind == EXPR_RETURN)
       break;
   }
-  return v;
+  return &bad_irval;
 }
 
 
@@ -916,9 +979,39 @@ static irval_t* blockexpr(ircons_t* c, block_t* n) {
 
 
 static irval_t* blockexpr1(ircons_t* c, block_t* n) {
+  #define CREATE_BB_FOR_BLOCK
+
+  #ifdef CREATE_BB_FOR_BLOCK
+    irblock_t* prevb = end_block(c);
+    prevb->kind = IR_BLOCK_CONT;
+
+    irblock_t* b = mkblock(c, c->f, IR_BLOCK_CONT, n->loc);
+    irblock_t* contb = mkblock(c, c->f, IR_BLOCK_CONT, n->loc);
+
+    prevb->succs[0] = b;
+    b->preds[0] = prevb;
+    b->succs[0] = contb;
+    contb->preds[0] = b;
+
+    start_block(c, b);
+    seal_block(c, b);
+  #endif
+
   drops_scope_enter(c);
+
   irval_t* v = blockexpr0(c, n);
+  if (isrvalue(n))
+    move_owner(c, NULL, v);
+
+  drops_gen_scope(c, n->loc);
   drops_scope_leave(c);
+
+  #ifdef CREATE_BB_FOR_BLOCK
+    b = end_block(c);
+    start_block(c, contb);
+    seal_block(c, contb);
+  #endif
+
   return v;
 }
 
@@ -947,7 +1040,7 @@ static irval_t* ifexpr(ircons_t* c, ifexpr_t* n) {
   irfun_t* f = c->f;
 
   // generate control condition
-  irval_t* control = expr(c, n->cond);
+  irval_t* control = load_expr(c, n->cond);
   assert(control->type == type_bool);
 
   // end predecessor block (leading up to and including "if")
@@ -1111,6 +1204,62 @@ static irval_t* ifexpr(ircons_t* c, ifexpr_t* n) {
   pusharg(phi, elsev);
   comment(c, phi, "if");
   return phi;
+}
+
+
+static irval_t* binop(ircons_t* c, binop_t* n) {
+  irval_t* left  = load_expr(c, n->left);
+  irval_t* right = load_expr(c, n->right);
+  assert(left->type && right->type);
+  assert_types_iscompat(c, left->type, right->type);
+  irval_t* v = pushval(c, c->b, n->op, n->loc, n->type);
+  pusharg(v, left);
+  pusharg(v, right);
+  return v;
+}
+
+
+static irval_t* intlit(ircons_t* c, intlit_t* n) {
+  // "intern" constants
+  // this is a really simple solution:
+  // - all constants are placed at the beginning of the entry block
+  //   - first int constants, then float constants
+  // - linear scan for an existing equivalent constant
+  // - fast for functions with few constants, which is the common case
+  // - degrades for functions with many constants
+  //   - could do binary search if we bookkeep ending index
+  irblock_t* b0 = entry_block(c->f);
+  u64 intval = n->intval;
+  u32 i = 0;
+  for (; i < b0->values.len; i++) {
+    irval_t* v = b0->values.v[i];
+    if (v->op != OP_ICONST || v->aux.i64val > intval)
+      break;
+    if (v->aux.i64val == intval && v->type == n->type)
+      return v;
+  }
+  irval_t* v = insertval(c, b0, i, OP_ICONST, n->loc, n->type);
+  v->aux.i64val = intval;
+  return v;
+}
+
+
+static irval_t* floatlit(ircons_t* c, floatlit_t* n) {
+  irblock_t* b0 = entry_block(c->f);
+  f64 f64val = n->f64val;
+  u32 i = 0;
+  for (; i < b0->values.len; i++) {
+    irval_t* v = b0->values.v[i];
+    if (v->op == OP_ICONST)
+      continue;
+    if (v->op != OP_FCONST || v->aux.f64val > f64val)
+      break;
+    if (v->aux.f64val == f64val && v->type == n->type)
+      return v;
+  }
+  irval_t* v = insertval(c, b0, i, OP_FCONST, n->loc, n->type);
+  v->aux.f64val = f64val;
+  return v;
 }
 
 
@@ -1432,7 +1581,7 @@ static irfun_t* fun(ircons_t* c, fun_t* n) {
 
     if (type_isowner(param->type)) {
       v->flags |= IR_OWNER;
-      drops_add(c, v);
+      drops_mark(c, v, DROPKIND_LIVE);
     }
 
     var_write(c, param->name, v);
@@ -1617,7 +1766,7 @@ end1:
   dispose_maparray(c.ma, &c.pendingphis);
   dispose_maparray(c.ma, &c.freemaps);
 
-  i32array_dispose(&c.drops.entries, c.ma);
+  droparray_dispose(&c.drops.entries, c.ma);
 
   *result = u == &bad_irunit ? NULL : u;
   return c.err;

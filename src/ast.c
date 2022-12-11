@@ -115,7 +115,7 @@ static void repr_type(RPARAMS, const type_t* t);
 
 
 static bool seen(repr_t* r, const void* n) {
-  if (nodekind_isbasictype(((const node_t*)n)->kind))
+  if (nodekind_isprimtype(((const node_t*)n)->kind))
     return false;
   const void** vp = (const void**)map_assign_ptr(&r->seen, r->outbuf.ma, n);
   if (vp && !*vp) {

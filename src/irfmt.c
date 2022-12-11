@@ -37,9 +37,6 @@ static void val(fmtctx_t* ctx, const irval_t* v, bool comments) {
     PRINTF(" v%-2u", v->argv[i]->id);
 
   switch (v->op) {
-  case OP_DROP:
-    PRINTF(" v%u", v->aux.i32val);
-    break;
   case OP_ARG:
     PRINTF(" %u", v->aux.i32val);
     break;

@@ -512,12 +512,10 @@ inline static bool nodekind_isexpr(nodekind_t kind) {
 inline static bool nodekind_islocal(nodekind_t kind) {
   return kind == EXPR_FIELD || kind == EXPR_PARAM
       || kind == EXPR_LET   || kind == EXPR_VAR; }
-  inline static bool nodekind_isbasictype(nodekind_t kind) {
-  return TYPE_VOID <= kind && kind < TYPE_ARRAY; }
 inline static bool nodekind_isprimtype(nodekind_t kind) {
   return TYPE_VOID <= kind && kind < TYPE_ARRAY; }
 inline static bool nodekind_isusertype(nodekind_t kind) {
-  return TYPE_ARRAY <= kind && kind < NODEKIND_COUNT; }
+  return TYPE_ARRAY <= kind; }
 inline static bool nodekind_isptrtype(nodekind_t kind) { return kind == TYPE_PTR; }
 inline static bool nodekind_isreftype(nodekind_t kind) { return kind == TYPE_REF; }
 inline static bool nodekind_isptrliketype(nodekind_t kind) {
@@ -543,6 +541,9 @@ inline static bool type_isopt(const type_t* nullable t) {
   return assertnotnull(t)->kind == TYPE_OPTIONAL; }
 inline static bool type_isowner(const type_t* t) { // true for "*T" and "?*T"
   return type_isptr(type_isopt(t) ? ((opttype_t*)t)->elem : t);
+}
+inline static bool type_ismove(const type_t* t) {
+  return nodekind_isusertype(t->kind);
 }
 
 // types

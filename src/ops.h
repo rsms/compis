@@ -15,6 +15,7 @@ _( OP_FCONST )
 _( OP_LOCAL )  // stack memory
 _( OP_STORE )  // T -> T
 _( OP_DEREF )  // *T -> T
+_( OP_ALIAS )  // T -> &T
 
 // ownership & lifetime
 _( OP_MOVE )       // *T -> *T

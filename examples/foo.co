@@ -1,29 +1,41 @@
 
-fun ownership_drop_params(x, y *int) void {
-}
-
-fun ownership_drop_param2(x, y *int) *int {
-  x
-}
-
-fun ownership_drop_var(x *int) {
-  var k *int = x
-} // drop(k)
-
-fun ownership_drop_one(x, y *int) *int {
-  var k *int = x
-  if true {
-    return k
-  } // drop(y)
-  return y
-} // drop(k)
-
-// fun ownership_drop_in_scope(x, y *int) *int {
-//   {
-//     let k = x
-//   } // drop(k)
-//   return y
+// fun ownership_drop_params(x, y *int) void {
 // }
+
+// fun ownership_drop_param2(x, y *int) *int {
+//   x
+// }
+
+// fun ownership_drop_var(x *int) {
+//   var k *int = x
+// } // drop(k)
+
+// fun ownership_drop_one(x, y *int) *int {
+//   var k *int = x
+//   if true {
+//     return k
+//   } // drop(y)
+//   return y
+// } // drop(k)
+
+fun ownership_drop_in_scope(x, y *int) *int {
+  let a = {
+    let b = x
+    //let c = x // error: x invalid
+    b
+  } // drop(b)
+  return y
+}
+/*
+fun ownership_drop_in_scope(x *int, y *int) *int {
+  b0:
+    v0  *int = ARG    0         # [1] x {dst=x}           examples/foo.co:21:29
+    v1  *int = ARG    1         # [1] y {dst=y}           examples/foo.co:21:32
+    v2  *int = MOVE   v0        # [0] {dst=k src=x}       examples/foo.co:23:5
+    DROP   v0                   # [0]                     examples/foo.co:25:3
+  ret v1
+}
+*/
 
 // fun ir_params(x, y int) int {
 //   x * y
