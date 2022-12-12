@@ -245,6 +245,6 @@ void* nullable mem_resizev(
   mem_t m = MEM(p, oldcount * size);
   if (check_mul_overflow(newcount, size, &size))
     return NULL;
-  bool ok = ma->f(ma, &m, size, true);
+  bool ok = ma->f(ma, &m, size, /*zeroed*/true);
   return (void*)((uintptr)m.p * (uintptr)ok);
 }

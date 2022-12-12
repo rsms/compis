@@ -619,12 +619,26 @@ typedef struct {
 
 // MEM_FMT is used for printf formatting of a mem_t
 #define MEM_FMT          "{%p … %p %zu}"
-#define MEM_FMT_ARGS(m)  (m).p, ((m).p+(m).size), (m).size
+#define MEM_FMT_ARGS(m)  (m).p, ((void*)((uintptr)(m).p + (uintptr)(m).size)), (m).size
 
 // MEM_POISON constants are non-NULL addresses which will result in page faults.
 // Values match those of Linux.
 #define MEM_POISON1 ((void*)0x100)
 #define MEM_POISON2 ((void*)0x122)
+
+// bool MEM_OVERLAPS(mem_t a, mem_t b) returns true if a & b intersect
+#define MEM_OVERLAPS(a, b) ( \
+  (uintptr)(a).p < ((uintptr)(b).p + (b).size) && \
+  (uintptr)(b).p < ((uintptr)(a).p + (a).size) \
+)
+
+inline static void* memcpy_checked(void* dst, const void* src, usize size) {
+  assertf(!MEM_OVERLAPS(MEM(dst, size), MEM((void*)src, size)),
+    "memcpy: overlapping address ranges\n  dst: " MEM_FMT "\n  src: " MEM_FMT,
+    MEM_FMT_ARGS(MEM(dst, size)), MEM_FMT_ARGS(MEM((void*)src, size))
+  );
+  return memcpy(dst, src, size);
+}
 
 // mem_is_null returns true if m.p==NULL or m.size==0.
 inline static bool mem_is_null(mem_t m) {
@@ -683,6 +697,7 @@ static bool mem_resize(memalloc_t, mem_t* m, usize newsize);
 
 // mem_resizev grows or shrinks the size of an array, returning a pointer to the resized
 // allocation. If resizing fails, NULL is returned and p remains valid.
+// Zeroes additional memory when growing.
 void* nullable mem_resizev(
   memalloc_t, void* nullable p, usize oldcount, usize newcount, usize elemsize);
 
@@ -909,29 +924,43 @@ u32 leb128_u32_write(u8 out[LEB128_NBYTE_32], u32 val);
 // bitset
 
 typedef struct {
-  u32 size; // size of bits in bytes
-  u8  onheap;
-  u8  bits[];
+#if USIZE_MAX >= U64_MAX
+  usize cap : 63; // number of bits at "bits"
+#else
+  usize cap : 31; // number of bits at "bits"
+#endif
+  usize onheap : 1;
+  u8 bits[];
 } bitset_t;
 
-bitset_t* nullable bitset_alloc(memalloc_t ma, u32 size);
+bitset_t* nullable bitset_alloc(memalloc_t ma, usize cap);
+bool bitset_copy(bitset_t** dst, const bitset_t* src, memalloc_t ma);
 
-// bitset_t* nullable bitset_make(memalloc_t ma, u32 size)
-#define bitset_make(ma, len) ({ \
-  u32 __size = IDIV_CEIL(len, 8); \
-  (__size <= 64) ? ({ \
-    bitset_t* bs = alloca(sizeof(bitset_t) + __size); \
-    memset(bs->bits, 0, __size); \
-    bs->onheap = 0; \
-    bs->size = __size; \
+// bitset_make allocates up to BITSET_STACK_SIZE bytes on stack,
+// or uses heap memory from ma if cap > BITSET_STACK_CAP.
+// bitset_t* nullable bitset_make(memalloc_t ma, usize cap)
+#define bitset_make(ma, capacity) ({ \
+  usize __cap = ALIGN2((usize)(capacity), (usize)8); \
+  (__cap <= BITSET_STACK_CAP) ? ({ \
+    bitset_t* bs = alloca(BITSET_STACK_SIZE); \
+    memset(bs, 0, BITSET_STACK_SIZE); \
+    bs->cap = __cap; \
     bs; \
   }) : \
-  bitset_alloc(ma, __size); \
+  bitset_alloc(ma, __cap); \
 })
+#define BITSET_STACK_SIZE  ((usize)64lu)
+#define BITSET_STACK_CAP   ((usize)( (BITSET_STACK_SIZE - sizeof(bitset_t)) * 8lu ))
+
+
+bool bitset_grow(bitset_t** bs, memalloc_t ma, usize mincap);
+inline static bool bitset_ensure_cap(bitset_t** bs, memalloc_t ma, usize mincap) {
+  return LIKELY((*bs)->cap >= mincap) ? true : bitset_grow(bs, ma, mincap);
+}
 
 inline static void bitset_dispose(bitset_t* bs, memalloc_t ma) {
   if (bs->onheap)
-    mem_freex(ma, MEM(bs, sizeof(bitset_t) + bs->size));
+    mem_freex(ma, MEM(bs, sizeof(bitset_t) + bs->cap*8));
 }
 
 inline static bool bit_get(const u8* bits, usize bit) {
@@ -949,7 +978,7 @@ inline static bool bitset_has(const bitset_t* bs, usize bit) {
 }
 inline static void bitset_add(bitset_t* bs, usize bit) { bit_set(bs->bits, bit); }
 inline static void bitset_del(bitset_t* bs, usize bit) { bit_clear(bs->bits, bit); }
-inline static void bitset_clear(bitset_t* bs) { memset(bs->bits, 0, (usize)bs->size); }
+inline static void bitset_clear(bitset_t* bs) { memset(bs->bits, 0, bs->cap/8); }
 
 
 

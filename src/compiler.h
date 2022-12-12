@@ -103,7 +103,7 @@ typedef struct {
 typedef struct diag diag_t;
 typedef struct compiler compiler_t;
 typedef void (*diaghandler_t)(const diag_t*, void* nullable userdata);
-typedef enum { DIAG_ERR, DIAG_WARN } diagkind_t;
+typedef enum { DIAG_ERR, DIAG_WARN, DIAG_HELP } diagkind_t;
 typedef struct diag {
   compiler_t* compiler; // originating compiler instance
   const char* msg;      // descriptive message including "srcname:line:col: type:"
@@ -523,12 +523,17 @@ inline static bool nodekind_isptrliketype(nodekind_t kind) {
 inline static bool nodekind_isvar(nodekind_t kind) {
   return kind == EXPR_VAR || kind == EXPR_LET; }
 
-inline static bool node_istype(const node_t* n) { return nodekind_istype(n->kind); }
-inline static bool node_isexpr(const node_t* n) { return nodekind_isexpr(n->kind); }
-inline static bool node_isvar(const node_t* n) { return nodekind_isvar(n->kind); }
-inline static bool node_islocal(const node_t* n) { return nodekind_islocal(n->kind); }
+inline static bool node_istype(const node_t* n) {
+  return nodekind_istype(assertnotnull(n)->kind); }
+inline static bool node_isexpr(const node_t* n) {
+  return nodekind_isexpr(assertnotnull(n)->kind); }
+inline static bool node_isvar(const node_t* n) {
+  return nodekind_isvar(assertnotnull(n)->kind); }
+inline static bool node_islocal(const node_t* n) {
+  return nodekind_islocal(assertnotnull(n)->kind); }
 inline static bool node_isusertype(const node_t* n) {
   return nodekind_isusertype(n->kind); }
+
 inline static bool type_isptr(const type_t* nullable t) {
   return nodekind_isptrtype(assertnotnull(t)->kind); }
 inline static bool type_isref(const type_t* nullable t) {
@@ -560,10 +565,12 @@ bool expr_no_side_effects(const expr_t* n);
 // asexpr(void* ptr) -> expr_t*
 // asexpr(const void* ptr) -> const expr_t*
 #define asexpr(ptr) ( \
-  assert(node_isexpr((const node_t*)ptr)), \
+  assert(node_isexpr((const node_t*)assertnotnull(ptr))), \
   _Generic((ptr), \
-    const void*: (const expr_t*)ptr, \
-    void*: (expr_t*)ptr ) )
+    const node_t*: (const expr_t*)(ptr), \
+    node_t*:       (expr_t*)(ptr), \
+    const void*:   (const expr_t*)(ptr), \
+    void*:         (expr_t*)(ptr) ) )
 
 // ownership
 inline static bool owner_islive(const void* expr) {

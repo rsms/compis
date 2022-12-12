@@ -189,7 +189,12 @@ void report_diagv(
     } else if (origin.focus.input && origin.focus.input->name[0] != 0) {
       abuf_fmt(&s, "%s: ", origin.focus.input->name);
     }
-    abuf_str(&s, kind == DIAG_ERR ? "error: " : "warning: ");
+
+    switch (kind) {
+      case DIAG_ERR:  abuf_str(&s, "error: "); break;
+      case DIAG_WARN: abuf_str(&s, "warning: "); break;
+      case DIAG_HELP: abuf_str(&s, "help: "); break;
+    }
 
     // short message starts after origin and status info
     c->diag.msgshort = s.p;

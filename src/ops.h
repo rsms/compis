@@ -24,11 +24,10 @@ _( OP_BORROW_MUT ) // T -> mut&T
 _( OP_DROP )
 
 // unary
-_( OP_INC )    // ++
-_( OP_DEC )    // --
+_( OP_INC ) // ++
+_( OP_DEC ) // --
 _( OP_INV ) // ~
-_( OP_NOT )    // !
-// _( OP_DEREF )  // *
+_( OP_NOT ) // !
 
 // binary, arithmetic
 _( OP_ADD ) // +

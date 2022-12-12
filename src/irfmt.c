@@ -24,7 +24,9 @@ static void val(fmtctx_t* ctx, const irval_t* v, bool comments) {
   u32 start = ctx->out.len + 1;
   PRINTF("\n    ");
 
-  if (v->type != type_void) {
+  bool ismemonly = (v->type == type_void);
+
+  if (!ismemonly) {
     PRINTF("v%-2u ", v->id);
     u32 tstart = ctx->out.len;
     node_fmt(&ctx->out, (node_t*)v->type, 0);
@@ -52,7 +54,11 @@ static void val(fmtctx_t* ctx, const irval_t* v, bool comments) {
     return;
 
   TABULATE(start, COMMENT_COL);
-  PRINTF("# [%u]", v->nuse);
+  if (ismemonly) {
+    PRINT("# [M]");
+  } else {
+    PRINTF("# [%u]", v->nuse);
+  }
   if (v->comment && *v->comment)
     CHAR(' '), PRINT(v->comment);
 
