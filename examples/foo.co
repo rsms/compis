@@ -69,7 +69,7 @@ fun ownership_drop_ifelse_drop(x, y *int) *int {
   let k = y
   if true {    // drop(x)
   } else {
-    let a = x  // BUG
+    let a = x
   }            // drop(a)
   // let a = x // error: use of dead value
   return k     // transfer ownership of y to caller

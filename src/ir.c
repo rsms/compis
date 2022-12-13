@@ -147,7 +147,8 @@ static const char* fmtnodex(ircons_t* c, u32 bufidx, const void* nullable n, u32
   static void debug_graphviz(const irunit_t* u, memalloc_t ma) {
     buf_t buf = buf_make(ma);
     #define DOT_FONT "fontname=\"JetBrains Mono NL, Menlo, Courier, monospace\";"
-    buf_print(&buf, "echo '"
+    // buf_print(&buf, "echo '");
+    buf_print(&buf,
       "digraph G {\n"
       "  overlap=false;\n"
       "  pad=0.2;\n"
@@ -192,14 +193,25 @@ static const char* fmtnodex(ircons_t* c, u32 bufidx, const void* nullable n, u32
         buf_print(&buf, "}\n");
     }
 
-    buf_print(&buf, "}' | dot -Tpng -oir-cfg.png");
+    buf_print(&buf, "}");
+
+    err_t err = writefile("ir.dot", 0664, buf_slice(buf));
+    if (err) {
+      fprintf(stderr, "failed to write file ir.dot: %s", err_str(err));
+      goto end;
+    }
+
+    buf_clear(&buf);
+    buf_print(&buf, "dot -Tpng -oir.png ir.dot");
     buf_nullterm(&buf);
 
-    // dlog("dot:\n———————————\n%s\n———————————", buf.chars);
+    // buf_print(&buf, "' | dot -Tpng -oir-cfg.png");
+    // buf_nullterm(&buf);
+    // // dlog("dot:\n———————————\n%s\n———————————", buf.chars);
 
     dlog("graphviz...");
     system(buf.chars);
-
+  end:
     buf_dispose(&buf);
   }
 #endif
@@ -594,7 +606,7 @@ static void drops_since_gen(
   // generate drops for values which lost ownership since deadset1 until deadset2
   while (i > 0) {
     drop_t* d = &c->drops.entries.v[--i];
-    dlog("v%u (%s) ...", d->id, d->kind == DROPKIND_LIVE ? "live" : "dead");
+    //dlog("v%u (%s) ...", d->id, d->kind == DROPKIND_LIVE ? "live" : "dead");
     if (bitset_has(deadset2, d->id) && !bitset_has(deadset1, d->id)) {
       trace("  v%u lost ownership", d->id);
       assert(deadset1->cap > d->id);

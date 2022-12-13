@@ -37,7 +37,6 @@ err_t mmap_unmap(mem_t m) {
 }
 
 
-// err_t writefile(const char* filename, u32 mode, const void* data, usize size) {
 err_t writefile(const char* filename, u32 mode, slice_t data) {
   if (data.len > (usize)ISIZE_MAX)
     return ErrOverflow;
