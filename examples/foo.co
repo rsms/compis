@@ -82,19 +82,20 @@
 //   } else {     // drop(a)
 //   }            // drop(x)
 //   // let a = x // error: use of dead value
-//   return k     // transfer ownership of y to caller
+//   return k     // transfer ownership of y's value to caller
 // }
 
 
 fun ownership_drop_one_of(x, y *int) *int {
-  if true {
-    x          // transfer ownership of x to "then" block
-  } else {     // drop(y)  BUG
-    y          // transfer ownership of y to "else" block
-  }            // drop(x)  BUG
-  // let a = x // error: use of dead value
-  // let b = y // error: use of dead value
-}              // transfer ownership of "if" to caller
+  let result = if true {
+    x          // transfer ownership of x's value to "then" block
+  } else {     // drop(y)
+    y          // transfer ownership of y's value to "else" block
+  }            // drop(x)
+  // let a = *x // error: use of dead value
+  // let b = *y // error: use of dead value
+  return result // transfer ownership of if's value to caller
+}
 
 
 
