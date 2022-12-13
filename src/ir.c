@@ -353,19 +353,19 @@ static void del_block_map(ircons_t* c, maparray_t* a, u32 block_id) {
 
 
 static map_t* assign_block_map(ircons_t* c, maparray_t* a, u32 block_id) {
+  static map_t last_resort_map = {0};
   if (a->len <= block_id) {
     // fill holes
     u32 nholes = (block_id - a->len) + 1;
     map_t* p = maparray_alloc(a, c->ma, nholes);
     if UNLIKELY(!p) {
-      static map_t last_resort_map = {0};
       return out_of_mem(c), &last_resort_map;
     }
     memset(p, 0, sizeof(map_t) * nholes);
   }
   if (a->v[block_id].cap == 0) {
     if UNLIKELY(!alloc_map(c, &a->v[block_id]))
-      out_of_mem(c);
+      return out_of_mem(c), &last_resort_map;
   }
   return &a->v[block_id];
 }
@@ -754,8 +754,6 @@ static void add_pending_phi(ircons_t* c, irblock_t* b, irval_t* phi, sym_t name)
   //trace("%s in b%u for %s", __FUNCTION__, b->id, name);
 
   map_t* phimap = assign_block_map(c, &c->pendingphis, b->id);
-  if UNLIKELY(!phimap)
-    return;
   void** vp = map_assign_ptr(phimap, c->ma, name);
   if UNLIKELY(!vp)
     return out_of_mem(c);
@@ -866,8 +864,6 @@ static void stash_block_vars(ircons_t* c, irblock_t* b) {
   }
 
   map_t* vars = assign_block_map(c, &c->defvars, b->id);
-  if UNLIKELY(!vars)
-    return;
   *vars = c->vars;
 
   // replace c.vars with a new map

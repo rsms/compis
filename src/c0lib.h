@@ -934,7 +934,6 @@ typedef struct {
 } bitset_t;
 
 bitset_t* nullable bitset_alloc(memalloc_t ma, usize cap);
-bool bitset_merge_xor(bitset_t** dstp, const bitset_t* src, memalloc_t ma);
 
 // bitset_make allocates up to BITSET_STACK_SIZE bytes on stack,
 // or uses heap memory from ma if cap > BITSET_STACK_CAP.

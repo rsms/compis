@@ -188,7 +188,11 @@ static void block_dot_nodes(fmtctx_t* ctx, const char* ns, const irblock_t* b) {
       PRINTF("switch v%u", assertnotnull(b->control)->id);
       break;
     case IR_BLOCK_RET:
-      PRINTF("ret v%u", assertnotnull(b->control)->id);
+      if (b->control) {
+        PRINTF("ret v%u", b->control->id);
+      } else {
+        PRINTF("ret");
+      }
       break;
   }
   PRINT("</td></tr>");

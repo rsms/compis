@@ -66,18 +66,18 @@ bool bitset_copy(bitset_t** dstp, const bitset_t* src, memalloc_t ma) {
 // }
 
 
-bool bitset_merge_xor(bitset_t** dstp, const bitset_t* src, memalloc_t ma) {
-  if (!bitset_ensure_cap(dstp, ma, src->cap))
-    return false;
-  uintptr* dstv = (uintptr*)(*dstp)->bits;
-  const uintptr* srcv = (const uintptr*)src->bits;
-  const uintptr* srcend = srcv + src->cap/ALIGN;
-  // note: cap is always a multiple of ALIGN
-  while (srcv != srcend) {
-    dlog("0x%zx ^ 0x%zx => 0x%zx", *dstv, *srcv, *dstv ^ *srcv);
-    *dstv = *dstv ^ *srcv;
-    dstv++;
-    srcv++;
-  }
-  return true;
-}
+// bool bitset_merge_xor(bitset_t** dstp, const bitset_t* src, memalloc_t ma) {
+//   if (!bitset_ensure_cap(dstp, ma, src->cap))
+//     return false;
+//   uintptr* dstv = (uintptr*)(*dstp)->bits;
+//   const uintptr* srcv = (const uintptr*)src->bits;
+//   const uintptr* srcend = srcv + src->cap/ALIGN;
+//   // note: cap is always a multiple of ALIGN
+//   while (srcv != srcend) {
+//     dlog("0x%zx ^ 0x%zx => 0x%zx", *dstv, *srcv, *dstv ^ *srcv);
+//     *dstv = *dstv ^ *srcv;
+//     dstv++;
+//     srcv++;
+//   }
+//   return true;
+// }
