@@ -8,6 +8,9 @@
 .c0
 a.out
 
+/*.dot
+/*.png
+/*.pdf
 /_*
 /deps
 /out
