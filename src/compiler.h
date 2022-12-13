@@ -318,7 +318,7 @@ typedef struct { // fun is a declaration (stmt) or an expression depending on us
 // ———————— BEGIN IR ————————
 
 typedef u8 irflag_t;
-#define IR_SEALED  ((irflag_t)1<< 0) // [block] is sealed
+#define IR_FL_SEALED  ((irflag_t)1<< 0) // [block] is sealed
 
 typedef u8 irblockkind_t;
 enum irblockkind {

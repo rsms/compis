@@ -735,7 +735,7 @@ static irval_t* var_read_recursive(
 
   irval_t* v;
 
-  if ((b->flags & IR_SEALED) == 0) {
+  if ((b->flags & IR_FL_SEALED) == 0) {
     // incomplete CFG
     //trace("  block not yet sealed");
     v = pushval(c, b, OP_PHI, loc, type);
@@ -786,10 +786,10 @@ static void set_control(ircons_t* c, irblock_t* b, irval_t* nullable v) {
 
 
 static void seal_block(ircons_t* c, irblock_t* b) {
-  // sets IR_SEALED, indicating that no further predecessors will be added (to b.preds)
+  // sets IR_FL_SEALED, indicating that no further predecessors will be added
   trace("%s b%u", __FUNCTION__, b->id);
-  assert((b->flags & IR_SEALED) == 0);
-  b->flags |= IR_SEALED;
+  assert((b->flags & IR_FL_SEALED) == 0);
+  b->flags |= IR_FL_SEALED;
 
   map_t* pendingphis = get_block_map(&c->pendingphis, b->id);
   if (pendingphis) {
@@ -850,7 +850,7 @@ static irblock_t* end_block(ircons_t* c) {
 
   stash_block_vars(c, b);
 
-  if (!(b->flags & IR_SEALED)) {
+  if (!(b->flags & IR_FL_SEALED)) {
     seal_block(c, b);
   } else {
     assertf(get_block_map(&c->pendingphis, b->id) == NULL,
@@ -916,7 +916,7 @@ static irblock_t* entry_block(irfun_t* f) {
 
 static irval_t* expr(ircons_t* c, void* expr_node);
 static irval_t* load_expr(ircons_t* c, expr_t* n);
-static irval_t* load_expr1(ircons_t* c, expr_t* origin, expr_t* n);
+static irval_t* load_rvalue(ircons_t* c, expr_t* origin, expr_t* n);
 
 
 static irval_t* idexpr(ircons_t* c, idexpr_t* n) {
@@ -1577,7 +1577,7 @@ static irval_t* funexpr(ircons_t* c, fun_t* n) {
 
 
 static irval_t* deref(ircons_t* c, expr_t* origin, unaryop_t* n) {
-  irval_t* src = load_expr1(c, origin, n->expr);
+  irval_t* src = load_rvalue(c, origin, n->expr);
   irval_t* v = pushval(c, c->b, OP_DEREF, origin->loc, origin->type);
   pusharg(v, src);
   return v;
@@ -1609,23 +1609,13 @@ err_dead:
 }
 
 
-static irval_t* load_expr1(ircons_t* c, expr_t* origin, expr_t* n) {
+static irval_t* load_rvalue(ircons_t* c, expr_t* origin, expr_t* n) {
   trace("\e[1;35m" "load %s %s" "\e[0m", nodekind_fmt(n->kind), fmtnode(0, n));
   TRACE_SCOPE();
 
   switch (n->kind) {
-
-  case EXPR_ASSIGN:    return assign(c, (binop_t*)n);
-  case EXPR_BINOP:     return binop(c, (binop_t*)n);
-  case EXPR_BLOCK:     return blockexpr(c, (block_t*)n);
-  case EXPR_CALL:      return call(c, (call_t*)n);
-  case EXPR_DEREF:     return deref(c, n, (unaryop_t*)n);
-  case EXPR_FUN:       return funexpr(c, (fun_t*)n);
-  case EXPR_IF:        return ifexpr(c, (ifexpr_t*)n);
-  case EXPR_RETURN:    return retexpr(c, (retexpr_t*)n);
-
   case EXPR_ID:
-    return load_expr1(c, origin, asexpr(((idexpr_t*)n)->ref));
+    return load_rvalue(c, origin, asexpr(((idexpr_t*)n)->ref));
 
   case EXPR_FIELD:
   case EXPR_PARAM:
@@ -1633,22 +1623,16 @@ static irval_t* load_expr1(ircons_t* c, expr_t* origin, expr_t* n) {
   case EXPR_VAR:
     return load_local(c, origin, (local_t*)n);
 
-  case EXPR_FLOATLIT:
-    return floatlit(c, (floatlit_t*)n);
-
-  case EXPR_BOOLLIT:
-  case EXPR_INTLIT:
-    return intlit(c, (intlit_t*)n);
-
   default:
-    dlog("TODO %s", nodekind_name(n->kind));
     return expr(c, n);
   }
 }
 
 
 static irval_t* load_expr(ircons_t* c, expr_t* n) {
-  return load_expr1(c, n, n);
+  if (n->kind == EXPR_ID)
+    return load_rvalue(c, n, asexpr(((idexpr_t*)n)->ref));
+  return expr(c, n);
 }
 
 
