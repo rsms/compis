@@ -298,6 +298,11 @@ static void out_of_mem(ircons_t* c) {
 // }
 
 
+// static bool isliveowner(ircons_t* c, const irval_t* v) {
+//   return type_isowner(v->type) && !bitset_has(c->deadset, v->id);
+// }
+
+
 static srcrange_t find_moved_srcrange(ircons_t* c, u32 id) {
   // only used for diagnostics so doesn't have to be fast
   for (u32 bi = c->f->blocks.len; bi != 0;) {
@@ -548,12 +553,10 @@ static void drops_unwind(ircons_t* c, u32 scope_base, srcloc_t loc) {
   for (u32 i = c->drops.entries.len; i > scope_base;) {
     drop_t* d = &c->drops.entries.v[--i];
     if (d->kind == DROPKIND_DEAD) {
-      trace("  dead v%d", d->id);
-      // d->v->flags |= IR_OWNER_DEAD;
+      trace("  v%d dead", d->id);
       bitset_add(c->deadset, d->id);
     } else if (!bitset_has(liveset, d->id) && !bitset_has(c->deadset, d->id)) {
-      trace("  live v%d", d->id);
-      // d->v->flags &= ~IR_OWNER_DEAD;
+      trace("  v%d LIVE", d->id);
       bitset_add(liveset, d->id);
       if (d->kind == DROPKIND_LIVE)
         drop(c, d->v, loc);
@@ -961,7 +964,6 @@ static irval_t* ret(ircons_t* c, irval_t* nullable v, srcloc_t loc) {
   c->b->kind = IR_BLOCK_RET;
   if (v)
     move_owner(c, NULL, v);
-  v->flags |= IR_RETURNED;
   set_control(c, c->b, v);
   drops_unwind_exit(c, loc);
   return v ? v : &bad_irval;
@@ -1436,272 +1438,19 @@ static void postorder_dfs(ircons_t* c, irfun_t* f, irblock_t** order) {
 }
 
 
-typedef struct {
-  u32 r, w, len, cap;
-  void** entries;
-} ptrqueue_t;
-
-
-static bool ptrqueue_init(ptrqueue_t* q, memalloc_t ma, u32 cap) {
-  q->entries = mem_alloctv(ma, void*, cap);
-  if (!q->entries)
-    return false;
-  q->cap = cap;
-  return true;
-}
-
-
-static void ptrqueue_dispose(ptrqueue_t* q, memalloc_t ma) {
-  mem_freetv(ma, q->entries, q->cap);
-}
-
-
-static bool ptrqueue_isempty(ptrqueue_t* q) { return q->len == 0; }
-
-
-static void ptrqueue_clear(ptrqueue_t* q) {
-  q->len = 0;
-  q->r = 0;
-  q->w = 0;
-}
-
-
-static void ptrqueue_push(ptrqueue_t* q, void* value) {
-  assertf(q->len < q->cap, "buffer overflow");
-  q->entries[q->w++] = value;
-  q->len++;
-  if (q->w == q->cap)
-    q->w = 0;
-}
-
-
-static void* ptrqueue_pop(ptrqueue_t* q) {
-  assertf(q->len > 0, "empty");
-  void* v = q->entries[q->r++];
-  q->len--;
-  if (q->r == q->cap)
-    q->r = 0;
-  return v;
-}
-
-
-static bool op_iswrite(op_t op) {
-  // true if operation has write semantics
-  return true;
-}
-
-
-static bool isliveowner(ircons_t* c, const irval_t* v) {
-  return type_isowner(v->type) &&
-    ((v->flags & IR_RETURNED) || !bitset_has(c->deadset, v->id));
-}
-
-
-static bool any_args_isliveowner(ircons_t* c, const irval_t* v) {
-  for (u32 i = 0; i < v->argc; i++) {
-    if (isliveowner(c, v->argv[i]))
-      return true;
-  }
-  return false;
-}
-
-
-static void la_visit(ircons_t* c, irval_t* v) {
-  dlog("  %s v%u", __FUNCTION__, v->id);
-  if (!isliveowner(c, v)) {
-    // v does not hold--or is--a pointer
-    // TODO: for compound types, check so that they do not contain owners
-    v->flags |= IR_LA_NOESC;
-  } else if (op_iswrite(v->op)) {
-    // v is related to a operation with write semantics
-    if (!any_args_isliveowner(c, v)) {
-      // the source value does not contain any pointer
-      v->flags |= IR_LA_NOESC;
-    } else if (v->flags & IR_LA_OUTSIDE) {
-      // the region of the destiny value is "outside"
-      v->flags |= IR_LA_MUSTESC;
-    } else {
-      v->flags |= IR_LA_MAYESC;
-    }
-  } else {
-    v->flags |= IR_LA_MAYESC;
-  }
-}
-
-
-
-static void la_walk(
-  ircons_t* c, irfun_t* f, bitset_t* visited, ptrarray_t* g, irval_t* startval)
-{
-  // Walk
-  //
-  // The core algorithm works by traversing G in a depth-first search manner. This
-  // is done by a function named Walk (algorithm 4) that takes the graph G and a
-  // start node s as parameters. The initial vertex s is the one related to the
-  // value currently being heap-allocated and which is going to be analyzed in
-  // order to determine if it can be instead stack-allocated. For each node u
-  // reached, a function V isit is applied to verify if u must escape or not. This
-  // function is detailed in algorithm 5.
-  //
-  ptrarray_t workstack = {0};
-  bitset_clear(visited);
-
-  dlog("%s v%u", __FUNCTION__, startval->id);
-
-  for (u32 i = 0; i < startval->parents.len; i++) {
-    irval_t* parentval = startval->parents.v[i];
-    ptrarray_push(&workstack, c->ma, parentval);
-  }
-
-  while (workstack.len > 0) {
-    irval_t* v = ptrarray_pop(&workstack);
-    assert(visited->cap > v->id);
-    if (bitset_has(visited, v->id))
-      continue;
-    bitset_add(visited, v->id);
-
-    la_visit(c, v);
-    dlog("  v%u => %s", v->id,
-      (v->flags & IR_LA_MAYESC)  ? "may escape" :
-      (v->flags & IR_LA_MUSTESC) ? "must escape" :
-      (v->flags & IR_LA_NOESC)   ? "no escape" :
-      "?");
-
-    if (v->flags & IR_LA_MUSTESC) {
-      startval->flags |= IR_LA_MUSTESC;
-      break;
-    }
-
-    if (v->flags & IR_LA_NOESC) {
-      startval->flags |= IR_LA_NOESC;
-      continue;
-    }
-
-    for (u32 i = 0; i < v->parents.len; i++) {
-      irval_t* parentval = v->parents.v[i];
-      ptrarray_push(&workstack, c->ma, parentval);
-    }
-  }
-
-  dlog("v%u => %s", startval->id,
-    (startval->flags & IR_LA_MAYESC)  ? "may escape" :
-    (startval->flags & IR_LA_MUSTESC) ? "must escape" :
-    (startval->flags & IR_LA_NOESC)   ? "no escape" :
-    "?");
-
-  ptrarray_dispose(&workstack, c->ma);
-}
-
-
-static void la_propagate_region(
-  ircons_t* c, irfun_t* f, bitset_t* visited, ptrarray_t* g)
-{
-  dlog("%s", __FUNCTION__);
-
-  ptrqueue_t q;
-  if UNLIKELY(!ptrqueue_init(&q, c->ma, g->len))
-    return out_of_mem(c);
-
-  for (u32 i = 0; i < g->len; i++) {
-    irval_t* v = g->v[i];
-    if ((v->flags & IR_LA_OUTSIDE) == 0)
-      continue;
-    ptrqueue_clear(&q);
-    ptrqueue_push(&q, v);
-    for (;;) {
-      // for each adjacent node w of v not visited yet do ...
-      for (u32 j = 0; j < v->edges.len; j++) {
-        irval_t* w = v->edges.v[j];
-        if (bitset_has(visited, w->id))
-          continue;
-        w->flags |= IR_LA_OUTSIDE;
-        dlog("  v%u -> outside", w->id);
-        ptrqueue_push(&q, w);
-        bitset_add(visited, w->id);
-      }
-      if (ptrqueue_isempty(&q))
-        break;
-      v = ptrqueue_pop(&q);
-    }
-  }
-
-  ptrqueue_dispose(&q, c->ma);
-}
-
-
-static void la_build_graph(ircons_t* c, irfun_t* f) {
-  dlog("%s", __FUNCTION__);
-
-  ptrarray_t g = {0};
-  ptrarray_reserve(&g, c->ma, 16);
-  u32 maxid = 0;
-
-  for (u32 i = 0; i < f->blocks.len; i++) {
-    irblock_t* b = f->blocks.v[i];
-    for (u32 j = 0; j < b->values.len; j++) {
-      irval_t* v = b->values.v[j];
-      maxid = MAX(maxid, v->id);
-
-      if (isliveowner(c, v)) {
-        v->flags |= IR_LA_OUTSIDE;
-        dlog("  v%u : outside", v->id);
-      } else {
-        dlog("  v%u : inside", v->id);
-      }
-      ptrarray_push(&g, c->ma, v);
-
-      for (u32 k = 0; k < v->argc; k++) {
-        irval_t* arg = v->argv[k];
-        if UNLIKELY(
-          !ptrarray_push(&arg->parents, c->ir_ma, v) ||
-          !ptrarray_push(&v->edges, c->ir_ma, arg) )
-        {
-          goto end;
-        }
-      }
-    }
-  }
-
-  // create a bitset for tracking visited values by ID
-  bitset_t* visited = bitset_make(c->ma, maxid + 1);
-  if UNLIKELY(!visited) {
-    out_of_mem(c);
-    goto end;
-  }
-
-  la_propagate_region(c, f, visited, &g);
-
-  for (u32 i = 0; i < g.len; i++) {
-    irval_t* v = g.v[i];
-    if (v->flags & IR_LA_OUTSIDE)
-      la_walk(c, f, visited, &g, v);
-  }
-
-  // check for oom
-  if (!ptrarray_reserve(&g, c->ma, 1))
-    out_of_mem(c);
-
-  bitset_dispose(visited, c->ma);
-end:
-  ptrarray_dispose(&g, c->ma);
-}
-
-
 static void check_borrowing(ircons_t* c, irfun_t* f) {
-  dump_irfun(f, c->ma);
-  trace("check_borrowing");
+  // dump_irfun(f, c->ma);
+  dlog("TODO %s", __FUNCTION__);
 
-  la_build_graph(c, f);
-
-  // // compute postorder of f's blocks
-  // irblock_t** postorder = mem_alloctv(c->ma, irblock_t*, f->blocks.len);
-  // if UNLIKELY(!postorder)
-  //   return out_of_mem(c);
-  // postorder_dfs(c, f, postorder);
-  // dlog("postorder:");
-  // for (u32 i = 0; i < f->blocks.len; i++)
-  //   dlog("  b%u", postorder[i]->id);
-  // mem_freetv(c->ma, postorder, f->blocks.len);
+  // compute postorder of f's blocks
+  irblock_t** postorder = mem_alloctv(c->ma, irblock_t*, f->blocks.len);
+  if UNLIKELY(!postorder)
+    return out_of_mem(c);
+  postorder_dfs(c, f, postorder);
+  dlog("postorder:");
+  for (u32 i = 0; i < f->blocks.len; i++)
+    dlog("  b%u", postorder[i]->id);
+  mem_freetv(c->ma, postorder, f->blocks.len);
 }
 
 

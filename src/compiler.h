@@ -318,13 +318,7 @@ typedef struct { // fun is a declaration (stmt) or an expression depending on us
 // ———————— BEGIN IR ————————
 
 typedef u8 irflag_t;
-#define IR_SEALED     ((irflag_t)1<< 0) // [block] is sealed
-#define IR_OWNER_DEAD ((irflag_t)1<< 1) // [value] was owner but has lost ownership
-#define IR_LA_OUTSIDE ((irflag_t)1<< 2) // [value] is outside range (Liveness Analysis)
-#define IR_LA_MAYESC  ((irflag_t)1<< 3) // [value] may escape (Liveness Analysis)
-#define IR_LA_MUSTESC ((irflag_t)1<< 4) // [value] must escape (Liveness Analysis)
-#define IR_LA_NOESC   ((irflag_t)1<< 5) // [value] does not escape (Liveness Analysis)
-#define IR_RETURNED   ((irflag_t)1<< 6) // [value] returned from function
+#define IR_SEALED  ((irflag_t)1<< 0) // [block] is sealed
 
 typedef u8 irblockkind_t;
 enum irblockkind {

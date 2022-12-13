@@ -167,7 +167,7 @@ static void block_dot_nodes(fmtctx_t* ctx, const char* ns, const irblock_t* b) {
     b_bgcolor = "#ffccaa";
   }
 
-  PRINTF("  %sb%u [shape=\"none\", label=<<table border=\"0\" cellborder=\"1\" cellspacing=\"0\"><tr><td bgcolor=\"%s\" align=\"center\" colspan=\"1\"><font color=\"black\">b%u</font></td></tr>",
+  PRINTF("  %sb%u [shape=\"none\", label=<<table border=\"0\" cellborder=\"1\" cellspacing=\"0\"><tr><td bgcolor=\"%s\" align=\"center\" colspan=\"1\"><font color=\"black\">%u</font></td></tr>",
     ns, b->id, b_bgcolor, b->id);
 
   if (b->values.len) {
