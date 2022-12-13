@@ -54,13 +54,29 @@ static const char* fmtnode(analysis_t* a, u32 bufindex, const void* nullable n) 
 
 
 #ifdef TRACE_ANALYSIS
-  static void trace_node(analysis_t* a, const char* msg, const node_t* n) {
-    const char* str = fmtnode(a, 0, n);
-    trace("%s%-14s: %s", msg, nodekind_name(n->kind), str);
+  #define trace_node(a, msg, n) ({ \
+    const node_t* __n = (const node_t*)(n); \
+    trace("%s%-14s: %s", (msg), nodekind_name(__n->kind), fmtnode((a), 0, __n)); \
+  })
+  typedef struct {
+    analysis_t*   a;
+    const node_t* n;
+    const char*   msg;
+  } nodetrace_t;
+  static void _trace_cleanup(nodetrace_t* nt) {
+    analysis_t* a = nt->a;
+    a->traceindent--;
+    trace("%s%-14s => %s", nt->msg, nodekind_name(nt->n->kind),
+      node_isexpr(nt->n) && asexpr(nt->n)->type ?
+        fmtnode(a, 0, asexpr(nt->n)->type) :
+        "NULL");
   }
-  static void traceindent_decr(void* ap) {
-    (*(analysis_t**)ap)->traceindent--;
-  }
+  #define TRACE_ANALYSIS_OF_NODE(a, msg, n) \
+    trace_node((a), (msg), (n)); \
+    (a)->traceindent++; \
+    nodetrace_t __nt __attribute__((__cleanup__(_trace_cleanup),__unused__)) = \
+      {(a), (const node_t*)(n), (msg)};
+
 #else
   #define trace_node(a,msg,n) ((void)0)
 #endif
@@ -668,6 +684,8 @@ static void ifexpr(analysis_t* a, ifexpr_t* n, nref_t parent) {
 
 
 static void idexpr(analysis_t* a, idexpr_t* n, nref_t parent) {
+  if (n->ref)
+    n->type = asexpr(n->ref)->type;
   // check if owner is alive
   if ((n->flags & EX_RVALUE) && type_isowner(n->type)) {
     // first we need to do a fresh lookup in case there's a shadowing definition
@@ -709,6 +727,9 @@ static void retexpr(analysis_t* a, retexpr_t* n, nref_t parent) {
   if (n->value) {
     DEF_SELF(n);
     expr(a, n->value, self);
+    n->type = n->value->type;
+  } else {
+    n->type = type_void;
   }
   transfer_value(a, n, n, n->value);
 }
@@ -1205,11 +1226,7 @@ static void expr(analysis_t* a, expr_t* n, nref_t parent) {
     return;
   n->flags |= EX_ANALYZED;
 
-  #ifdef TRACE_ANALYSIS
-    trace_node(a, "analyze ", (node_t*)n);
-    a->traceindent++;
-    analysis_t* a2 __attribute__((__cleanup__(traceindent_decr),__unused__)) = a;
-  #endif
+  TRACE_ANALYSIS_OF_NODE(a, "analyze ", n);
 
   switch ((enum nodekind)n->kind) {
   case EXPR_FUN:       return fun(a, (fun_t*)n, parent);

@@ -146,6 +146,7 @@ static const char* fmtnodex(ircons_t* c, u32 bufidx, const void* nullable n, u32
 #else
   static void debug_graphviz(const irunit_t* u, memalloc_t ma) {
     buf_t buf = buf_make(ma);
+    #define DOT_FONT "fontname=\"JetBrains Mono NL, Menlo, Courier, monospace\";"
     buf_print(&buf, "echo '"
       "digraph G {\n"
       "  overlap=false;\n"
@@ -155,24 +156,31 @@ static const char* fmtnodex(ircons_t* c, u32 bufidx, const void* nullable n, u32
       "  rankdir=LR; clusterrank=local;\n"
       "  size=\"9.6,6!\"; ratio=fill;\n"
       "  node [\n"
-      "    color=white, shape=record, penwidth=2,\n"
-      "    fontcolor=\"#ffffff\", fontname=Menlo, fontsize=14\n"
+      "    color=white, shape=record, penwidth=1,\n"
+      "    fontcolor=\"#ffffff\"; " DOT_FONT " fontsize=14\n"
       "  ];\n"
       "  edge [\n"
       "    color=white, minlen=2,\n"
-      "    fontcolor=\"#ffffff\", fontname=Menlo, fontsize=14\n"
+      "    fontcolor=\"#ffffff\"; " DOT_FONT " fontsize=14\n"
       "  ];\n"
     );
+
+    // exclude empty (declaration-only) functions
+    u32 nfuns = 0;
+    for (u32 i = u->functions.len; i;)
+      nfuns += (u32)( ((irfun_t*)u->functions.v[--i])->blocks.len != 0 );
 
     // note: backwards to make subgraphs order as expected
     for (u32 i = u->functions.len; i;) {
       irfun_t* f = u->functions.v[--i];
-      if (u->functions.len > 1) {
+      if (f->blocks.len == 0)
+        continue;
+      if (nfuns > 1) {
         buf_printf(&buf,
           "subgraph cluster%p {\n"
           "penwidth=1; color=\"#ffffff44\"; margin=4;\n"
           "label=\"%s\"; labeljust=l;\n"
-          "fontcolor=\"#ffffff44\"; fontname=Menlo; fontsize=12;\n"
+          "fontcolor=\"#ffffff44\"; " DOT_FONT " fontsize=12;\n"
           , f, f->name);
       }
       if (!irfmt_dot(&buf, f)) {
@@ -180,18 +188,17 @@ static const char* fmtnodex(ircons_t* c, u32 bufidx, const void* nullable n, u32
         buf_dispose(&buf);
         return;
       }
-      if (u->functions.len > 1)
+      if (nfuns > 1)
         buf_print(&buf, "}\n");
     }
 
     buf_print(&buf, "}' | dot -Tpng -oir-cfg.png");
     buf_nullterm(&buf);
 
-    //dlog("dot: %s", buf.chars);
+    // dlog("dot:\n———————————\n%s\n———————————", buf.chars);
 
-    dlog("ggraphviz...");
+    dlog("graphviz...");
     system(buf.chars);
-    dlog("graphviz... done");
 
     buf_dispose(&buf);
   }
@@ -333,13 +340,15 @@ static void del_block_map(ircons_t* c, maparray_t* a, u32 block_id) {
 }
 
 
-static map_t* nullable assign_block_map(ircons_t* c, maparray_t* a, u32 block_id) {
+static map_t* assign_block_map(ircons_t* c, maparray_t* a, u32 block_id) {
   if (a->len <= block_id) {
     // fill holes
     u32 nholes = (block_id - a->len) + 1;
-    map_t* p = maparray_alloc(&c->defvars, c->ma, nholes);
-    if UNLIKELY(!p)
-      return out_of_mem(c), NULL;
+    map_t* p = maparray_alloc(a, c->ma, nholes);
+    if UNLIKELY(!p) {
+      static map_t last_resort_map = {0};
+      return out_of_mem(c), &last_resort_map;
+    }
     memset(p, 0, sizeof(map_t) * nholes);
   }
   if (a->v[block_id].cap == 0) {
@@ -349,6 +358,10 @@ static map_t* nullable assign_block_map(ircons_t* c, maparray_t* a, u32 block_id
   return &a->v[block_id];
 }
 
+
+#define commentf(c, obj, fmt, args...) _Generic((obj), \
+  irval_t*:   val_comment, \
+  irblock_t*: block_comment )( (c), (void*)(obj), fmttmp((c), 0, (fmt), ##args) )
 
 #define comment(c, obj, comment) _Generic((obj), \
   irval_t*:   val_comment, \
@@ -512,9 +525,14 @@ drop_t* nullable drops_lookup(ircons_t* c, u32 id) {
 }
 
 
-static void drops_unwind(
-  ircons_t* c, u32 scope_base, bitset_t** deadsetp, srcloc_t loc)
-{
+static void drop(ircons_t* c, irval_t* val_to_drop, srcloc_t loc) {
+  irval_t* v = pushval(c, c->b, OP_DROP, loc, type_void);
+  pusharg(v, val_to_drop);
+  v->var.src = val_to_drop->var.dst;
+}
+
+
+static void drops_unwind(ircons_t* c, u32 scope_base, srcloc_t loc) {
   trace("\e[1;34m%s\e[0m scope_base=%u", __FUNCTION__, scope_base);
 
   assert(c->drops.entries.len >= scope_base);
@@ -523,9 +541,8 @@ static void drops_unwind(
 
   usize idcap = (usize)c->drops.maxid + 1lu;
 
-  if (!bitset_ensure_cap(deadsetp, c->ma, idcap))
+  if (!bitset_ensure_cap(&c->deadset, c->ma, idcap))
     return out_of_mem(c);
-  bitset_t* deadset = *deadsetp;
 
   bitset_t* liveset = bitset_make(c->ma, idcap);
   if (!liveset)
@@ -535,15 +552,12 @@ static void drops_unwind(
     drop_t* d = &c->drops.entries.v[--i];
     if (d->kind == DROPKIND_DEAD) {
       trace("  dead v%d", d->id);
-      bitset_add(deadset, d->id);
-    } else if (!bitset_has(liveset, d->id) && !bitset_has(deadset, d->id)) {
+      bitset_add(c->deadset, d->id);
+    } else if (!bitset_has(liveset, d->id) && !bitset_has(c->deadset, d->id)) {
       trace("  live v%d", d->id);
       bitset_add(liveset, d->id);
-      if (d->kind == DROPKIND_LIVE) {
-        irval_t* v = pushval(c, c->b, OP_DROP, loc, type_void);
-        pusharg(v, d->v);
-        v->var.src = d->v->var.dst;
-      }
+      if (d->kind == DROPKIND_LIVE)
+        drop(c, d->v, loc);
     }
   }
 
@@ -552,12 +566,48 @@ static void drops_unwind(
 
 
 static void drops_unwind_scope(ircons_t* c, u32 scope_base, srcloc_t loc) {
-  drops_unwind(c, scope_base, &c->deadset, loc);
+  drops_unwind(c, scope_base, loc);
 }
 
 
 static void drops_unwind_exit(ircons_t* c, srcloc_t loc) {
-  drops_unwind(c, 0, &c->deadset, loc);
+  drops_unwind(c, 0, loc);
+}
+
+
+static u32 drops_since_lastindex(ircons_t* c, bitset_t* deadset1, bitset_t* deadset2) {
+  // detect if values which lost ownership since deadset_beforeif.
+  // returns index+1 of first (top of stack) drops.entries entry.
+  u32 i = c->drops.entries.len;
+  for (; i > 0;) {
+    drop_t* d = &c->drops.entries.v[--i];
+    if (bitset_has(deadset2, d->id) && !bitset_has(deadset1, d->id))
+      return i + 1;
+  }
+  return 0;
+}
+
+
+static void drops_since_gen(
+  ircons_t* c, bitset_t* deadset1, bitset_t* deadset2, u32 i, srcloc_t loc)
+{
+  // generate drops for values which lost ownership since deadset1 until deadset2
+  while (i > 0) {
+    drop_t* d = &c->drops.entries.v[--i];
+    dlog("v%u (%s) ...", d->id, d->kind == DROPKIND_LIVE ? "live" : "dead");
+    if (bitset_has(deadset2, d->id) && !bitset_has(deadset1, d->id)) {
+      trace("  v%u lost ownership", d->id);
+      assert(deadset1->cap > d->id);
+
+      // mark as dead now
+      d->kind = DROPKIND_DEAD; // ok to modify
+      // drops_mark(c, d->v, DROPKIND_DEAD);
+      // bitset_del(deadset2, d->id);
+
+      bitset_add(deadset1, d->id);
+      drop(c, d->v, loc);
+    }
+  }
 }
 
 
@@ -567,7 +617,7 @@ static void move_owner(ircons_t* c, irval_t* nullable new_owner, irval_t* curr_o
     drops_mark(c, new_owner, DROPKIND_LIVE);
     trace("\e[1;33m" "move owner: v%u -> v%u" "\e[0m", curr_owner->id, new_owner->id);
   } else {
-    trace("\e[1;33m" "move owner: v%u -> escape" "\e[0m", curr_owner->id);
+    trace("\e[1;33m" "move owner: v%u -> outside" "\e[0m", curr_owner->id);
   }
 }
 
@@ -714,6 +764,7 @@ static irval_t* var_read_recursive(
     // incomplete CFG
     //trace("  block not yet sealed");
     v = pushval(c, b, OP_PHI, loc, type);
+    comment(c, v, name);
     add_pending_phi(c, b, v, name);
   } else if (npreds(b) == 1) {
     //trace("  read in single predecessor b%u", b->preds[0]->id);
@@ -727,11 +778,18 @@ static irval_t* var_read_recursive(
   } else {
     // multiple predecessors
     //trace("  read in predecessors b%u, b%u", b->preds[0]->id, b->preds[1]->id);
+    irval_t* v0 = var_read_inblock(c, b->preds[0], name, type, loc);
+    irval_t* v1 = var_read_inblock(c, b->preds[1], name, type, loc);
+    if (v0->id == v1->id) {
+      var_write_inblock(c, b, name, v0);
+      return v0;
+    }
     v = pushval(c, b, OP_PHI, loc, type);
+    comment(c, v, name);
     var_write_inblock(c, b, name, v);
     assert(npreds(b) == 2);
-    pusharg(v, var_read_inblock(c, b->preds[0], name, type, loc));
-    pusharg(v, var_read_inblock(c, b->preds[1], name, type, loc));
+    pusharg(v, v0);
+    pusharg(v, v1);
     return v;
   }
 
@@ -863,16 +921,13 @@ static void discard_block(ircons_t* c, irblock_t* b) {
   }
   #endif
 
-  if (blocks->v[blocks->len - 1] == b) {
-    blocks->len--;
-    return;
-  }
-  u32 i = 0;
-  for (; i < blocks->len; i++) {
-    if (blocks->v[i] == b)
+  // remove b from current function's blocks
+  u32 i = blocks->len;
+  while (i) {
+    if (blocks->v[--i] == b)
       break;
   }
-  assertf(i < blocks->len, "b%u not in current function", b->id);
+  assertf(i != 0, "b%u not in current function", b->id);
   ptrarray_remove(blocks, i, 1);
 }
 
@@ -948,17 +1003,37 @@ static irval_t* retexpr(ircons_t* c, retexpr_t* n) {
 }
 
 
-static irval_t* blockexpr0(ircons_t* c, block_t* n) {
+static irval_t* call(ircons_t* c, call_t* n) {
+  irval_t* recv = load_expr(c, n->recv);
+  dlog("TODO call args");
+  irval_t* v = pushval(c, c->b, OP_CALL, n->loc, n->type);
+  pusharg(v, recv);
+  return v;
+}
+
+
+static irval_t* blockexpr0(ircons_t* c, block_t* n, bool isfunbody) {
   if (n->children.len == 0) {
     if (isrvalue(n))
       return pushval(c, c->b, OP_ZERO, n->loc, n->type);
     return &bad_irval;
   }
   u32 lastrval = (n->children.len-1) + (u32)!isrvalue(n);
+
   for (u32 i = 0; i < n->children.len; i++) {
     expr_t* cn = n->children.v[i];
-    if (i == lastrval)
-      return load_expr(c, cn);
+    if (i == lastrval && cn->kind != EXPR_RETURN) {
+      irval_t* v = load_expr(c, cn);
+      // note: if cn constitutes implicit return from a function, isfunbody==true:
+      // fun() will call ret() to generate a return; no need to move_owner() here.
+      if (!isfunbody) {
+        if (v->op != OP_MOVE)
+          v = move_or_copy(c, v, cn->loc);
+        move_owner(c, NULL, v); // move to lvalue of block (NULL b/c unknown for now)
+      }
+      commentf(c, v, "b%u", c->b->id);
+      return v;
+    }
     expr(c, cn);
     if (cn->kind == EXPR_RETURN)
       break;
@@ -967,9 +1042,9 @@ static irval_t* blockexpr0(ircons_t* c, block_t* n) {
 }
 
 
-static irval_t* blockexpr_noscope(ircons_t* c, block_t* n) {
+static irval_t* blockexpr_noscope(ircons_t* c, block_t* n, bool isfunbody) {
   TRACE_NODE("expr ", n);
-  return blockexpr0(c, n);
+  return blockexpr0(c, n, isfunbody);
 }
 
 
@@ -978,10 +1053,10 @@ static irval_t* blockexpr(ircons_t* c, block_t* n) {
 
   #ifdef CREATE_BB_FOR_BLOCK
     irblock_t* prevb = end_block(c);
-    prevb->kind = IR_BLOCK_CONT;
+    prevb->kind = IR_BLOCK_GOTO;
 
-    irblock_t* b = mkblock(c, c->f, IR_BLOCK_CONT, n->loc);
-    irblock_t* contb = mkblock(c, c->f, IR_BLOCK_CONT, n->loc);
+    irblock_t* b = mkblock(c, c->f, IR_BLOCK_GOTO, n->loc);
+    irblock_t* contb = mkblock(c, c->f, IR_BLOCK_GOTO, n->loc);
 
     prevb->succs[0] = b;
     b->preds[0] = prevb;
@@ -994,9 +1069,9 @@ static irval_t* blockexpr(ircons_t* c, block_t* n) {
 
   u32 scope = drops_scope_enter(c);
 
-  irval_t* v = blockexpr0(c, n);
-  if (isrvalue(n))
-    move_owner(c, NULL, v);
+  irval_t* v = blockexpr0(c, n, /*isfunbody*/false);
+  // if (isrvalue(n))
+  //   move_owner(c, NULL, v);
 
   drops_unwind_scope(c, scope, n->loc);
   drops_scope_leave(c, scope);
@@ -1041,20 +1116,20 @@ static irval_t* ifexpr(ircons_t* c, ifexpr_t* n) {
 
   // end predecessor block (leading up to and including "if")
   irblock_t* ifb = end_block(c);
-  ifb->kind = IR_BLOCK_IF;
+  ifb->kind = IR_BLOCK_SWITCH;
   set_control(c, ifb, control);
 
   // create blocks for then and else branches
-  irblock_t* thenb = mkblock(c, f, IR_BLOCK_CONT, n->thenb->loc);
-  irblock_t* elseb = mkblock(c, f, IR_BLOCK_CONT, n->elseb ? n->elseb->loc : n->loc);
-  u32 elseb_index = f->blocks.len - 1; // used later for moving blocks
+  irblock_t* thenb = mkblock(c, f, IR_BLOCK_GOTO, n->thenb->loc);
+  irblock_t* elseb = mkblock(c, f, IR_BLOCK_GOTO, n->elseb ? n->elseb->loc : n->loc);
+  u32        elseb_index = f->blocks.len - 1; // used later for moving blocks
   ifb->succs[0] = thenb;
   ifb->succs[1] = elseb; // if -> then, else
-  comment(c, thenb, fmttmp(c, 0, "b%u.then", ifb->id));
+  commentf(c, thenb, "b%u.then", ifb->id);
 
-  // copy deadset
-  bitset_t* deadset = bitset_make(c->ma, BITSET_STACK_CAP);
-  if UNLIKELY(!bitset_copy(&deadset, c->deadset, c->ma))
+  // copy deadset as is before entering "then" branch, in case it returns
+  bitset_t* deadset_beforeif = bitset_make(c->ma, c->deadset->cap);
+  if UNLIKELY(!bitset_copy(&deadset_beforeif, c->deadset, c->ma))
     out_of_mem(c);
 
   // begin "then" block
@@ -1063,109 +1138,195 @@ static irval_t* ifexpr(ircons_t* c, ifexpr_t* n) {
   start_block(c, thenb);
   seal_block(c, thenb);
   u32 scope = drops_scope_enter(c);
-  irval_t* thenv = blockexpr_noscope(c, n->thenb);
+  irval_t* thenv = blockexpr_noscope(c, n->thenb, /*isfunbody*/false);
+  drops_unwind_scope(c, scope, n->loc);
   drops_scope_leave(c, scope);
+  u32 thenb_nvars = c->vars.len; // save number of vars modified by the "then" block
+
+  // if "then" block returns, undo deadset changes made by the "then" block
+  if (c->b->kind == IR_BLOCK_RET) {
+    trace("\"then\" block returns -- undo deadset changes from \"then\" block");
+    if UNLIKELY(!bitset_copy(&c->deadset, deadset_beforeif, c->ma))
+      out_of_mem(c);
+  }
+
+  // end & seal "then" block
   thenb = end_block(c);
 
   irval_t* elsev;
 
-  // begin "else" block if there is one
+  // begin "else" branch (if there is one)
   if (n->elseb) {
     trace("if \"else\" block");
 
-    // allocate "cont" block; the block following both thenb and elseb
-    // TODO: can we move this past the "thenb->kind == IR_BLOCK_RET" check?
-    u32 contb_index = f->blocks.len;
-    irblock_t* contb = mkblock(c, f, IR_BLOCK_CONT, n->loc);
-    comment(c, contb, fmttmp(c, 0, "b%u.cont", ifb->id));
+    // copy deadset as is before entering "else" branch, in case it returns
+    bitset_t* deadset_beforeelse = bitset_make(c->ma, c->deadset->cap);
+    if UNLIKELY(!bitset_copy(&deadset_beforeelse, c->deadset, c->ma))
+      out_of_mem(c);
 
     // begin "else" block
-    comment(c, elseb, fmttmp(c, 0, "b%u.else", ifb->id));
+    commentf(c, elseb, "b%u.else", ifb->id);
     elseb->preds[0] = ifb; // else <- if
     start_block(c, elseb);
     seal_block(c, elseb);
     u32 scope = drops_scope_enter(c);
-    elsev = blockexpr_noscope(c, n->elseb);
+    elsev = blockexpr_noscope(c, n->elseb, /*isfunbody*/false);
+    drops_unwind_scope(c, scope, n->loc);
     drops_scope_leave(c, scope);
 
     // if "then" block returns, no "cont" block needed
+    // e.g. "fun f() { if true { 1 } else { return 2 }; return 3 }"
     if (thenb->kind == IR_BLOCK_RET) {
-      discard_block(c, contb);
-      bitset_dispose(deadset, c->ma);
+      // discard_block(c, contb);
+      bitset_dispose(deadset_beforeif, c->ma);
+      bitset_dispose(deadset_beforeelse, c->ma);
       return elsev;
     }
 
+    // check if "then" branch caused loss of ownership of outer values
+    if (elseb->kind != IR_BLOCK_RET) {
+      u32 then_drops_i = drops_since_lastindex(c, deadset_beforeif, deadset_beforeelse);
+      if (then_drops_i) {
+        trace("gen synthetic drops in \"else\" branch b%u", c->b->id);
+        // generate drops in "else" branch for outer values dropped in "then" branch
+        drops_since_gen(c, deadset_beforeif, deadset_beforeelse, then_drops_i, n->loc);
+      }
+    }
+
+    u32 elseb_nvars = c->vars.len; // save number of vars modified by the "else" block
     elseb = end_block(c);
 
-    // wire up graph edges
-    elseb->succs[0] = contb; // else -> cont
-    thenb->succs[0] = contb; // then -> cont
-    if (thenb->kind == IR_BLOCK_RET) {
-      contb->preds[0] = elseb; // cont <- else
-    } else if (elseb->kind == IR_BLOCK_RET) {
-      contb->preds[0] = thenb; // cont <- then
+    // if "else" block returns, undo deadset changes made by the "else" block
+    if (elseb->kind == IR_BLOCK_RET) {
+      trace("\"else\" block returns -- undo deadset changes from \"else\" block");
+      if UNLIKELY(!bitset_copy(&c->deadset, deadset_beforeelse, c->ma))
+        out_of_mem(c);
     } else {
-      contb->preds[0] = thenb; // ...
-      contb->preds[1] = elseb; // cont <- then, else
+      // check if "else" branch caused loss of ownership of outer values
+      u32 else_drops_i = drops_since_lastindex(c, deadset_beforeelse, c->deadset);
+      if (else_drops_i) {
+        // generate drops in "then" branch for outer values dropped in "else" branch
+        trace("gen synthetic drops in \"then\" branch b%u", thenb->id);
+        start_block(c, thenb);
+        drops_since_gen(c, deadset_beforeelse, c->deadset, else_drops_i, n->loc);
+        end_block(c);
+      }
     }
 
-    // begin "cont" block
+    bitset_dispose(deadset_beforeelse, c->ma);
+
+    // create continuation block (the block after the "if")
+    irblock_t* contb = mkblock(c, f, IR_BLOCK_GOTO, n->loc);
+    commentf(c, contb, "b%u.cont", ifb->id);
+
+    // test if "then" or "else" blocks are empty without effects
+    bool thenb_isnoop = !thenb->values.len && !thenb_nvars && thenb->preds[0] == ifb;
+    bool elseb_isnoop = !elseb->values.len && !elseb_nvars && elseb->preds[0] == ifb;
+
+    // wire up graph edges
+    if UNLIKELY(thenb_isnoop && elseb_isnoop) {
+      // none of the branches have any effect; cut both of them out
+      trace("eliding \"then\" and \"else\" branches");
+      // Note: we can't simply skip the continuation block because var_read_recursive
+      // will look in predecessors to find a variable.
+      // This happens after end_block which calls stash_block_vars which moves
+      // c.vars ("vars of this block") to c.defvars ("vars of other blocs").
+      // This is unavoidable since we must end_block(ifb) to build thenb and elseb.
+      //
+      // transform "if" block to simple "goto contb"
+      ifb->kind = IR_BLOCK_GOTO;
+      set_control(c, ifb, NULL);
+      ifb->succs[0] = contb;
+      ifb->succs[1] = NULL;
+      contb->preds[0] = ifb;
+      // discard unused blocks
+      discard_block(c, elseb);
+      discard_block(c, thenb);
+      // prime for conditional later on
+      thenv = elsev;
+    } else if (thenb_isnoop) {
+      // "then" branch has no effect; cut it out
+      trace("eliding \"then\" branch");
+      elseb->succs[0] = contb; // else —> cont
+      ifb->succs[0] = contb;   // if true —> cont
+      contb->preds[0] = ifb;   // cont[0] <— if
+      contb->preds[1] = elseb; // cont[1] <— else
+      discard_block(c, thenb); // trash thenb
+      thenb = contb;
+    } else if (elseb_isnoop) {
+      // "then" branch has no effect; cut it out
+      trace("eliding \"else\" branch");
+      thenb->succs[0] = contb; // then —> cont
+      ifb->succs[1] = contb;   // if false —> cont
+      contb->preds[0] = thenb; // cont[0] <— then
+      contb->preds[1] = ifb;   // cont[1] <— if
+      discard_block(c, elseb); // trash elseb
+      elseb = contb;
+    } else {
+      // both branches have effect
+      elseb->succs[0] = contb; // else —> cont
+      thenb->succs[0] = contb; // then —> cont
+      if (thenb->kind == IR_BLOCK_RET) {
+        contb->preds[0] = elseb; // cont[0] <— else
+      } else if (elseb->kind == IR_BLOCK_RET) {
+        contb->preds[0] = thenb; // cont[0] <— then
+      } else {
+        contb->preds[0] = thenb; // cont[0] <— then
+        contb->preds[1] = elseb; // cont[1] <— else
+      }
+    }
+
+    // begin continuation block
     start_block(c, contb);
     seal_block(c, contb);
-
-    // move cont block to end (in case blocks were created by "else" body)
-    ptrarray_move(&f->blocks, f->blocks.len - 1, contb_index, contb_index + 1);
-
-    // sanity check types
-    assertf(types_iscompat(thenv->type, elsev->type),
-      "branch type mismatch %s, %s",
-      fmtnode(0, thenv->type), fmtnode(1, elsev->type));
-
-    if (elseb->values.len == 0) {
-      // "else" body may be empty in case it refers to an existing value. For example:
-      //   x = 9 ; y = if true { x + 1 } else { x }
-      // This compiles to:
-      //   b0:
-      //     v1 = const 9
-      //     v2 = const 1
-      //   if true -> b1, b2
-      //   b1:
-      //     v3 = add v1 v2
-      //   cont -> b3
-      //   b2:                    #<-  Note: Empty
-      //   cont -> b3
-      //   b3:
-      //     v4 = phi v3 v1
-      //
-      // The above can be reduced to:
-      //   b0:
-      //     v1 = const 9
-      //     v2 = const 1
-      //   if true -> b1, b3     #<- change elseb to contb
-      //   b1:
-      //     v3 = add v1 v2
-      //   cont -> b3
-      //                         #<- remove elseb
-      //   b3:
-      //     v4 = phi v3 v1      #<- phi remains valid; no change needed
-      //
-      ifb->succs[1] = contb;  // if -> cont
-      contb->preds[1] = ifb;  // cont <- if
-      discard_block(c, elseb);
-      elseb = NULL;
-    }
   } else {
-    // no "else" block; convert elseb to "end" block
-    comment(c, elseb, fmttmp(c, 0, "b%u.cont", ifb->id));
-    thenb->succs[0] = elseb; // then -> else
-    elseb->preds[0] = ifb;
-    if (thenb->kind != IR_BLOCK_RET)
-      elseb->preds[1] = thenb; // else <- if, then
-    start_block(c, elseb);
-    seal_block(c, elseb);
+    // no "else" branch
 
-    // move cont block to end (in case blocks were created by "then" body)
-    ptrarray_move(&f->blocks, f->blocks.len - 1, elseb_index, elseb_index + 1);
+    // check if "then" branch caused loss of ownership of outer values
+    u32 then_drops_i = 0;
+    if (thenb->kind != IR_BLOCK_RET)
+      then_drops_i = drops_since_lastindex(c, deadset_beforeif, c->deadset);
+
+    if (then_drops_i) {
+      // begin "else" branch
+      commentf(c, elseb, "b%u.else", ifb->id);
+      elseb->preds[0] = ifb; // else <- if
+      start_block(c, elseb);
+      seal_block(c, elseb);
+
+      // generate drops for values dropped in "then" branch
+      drops_since_gen(c, deadset_beforeif, c->deadset, then_drops_i, n->loc);
+
+      // end "else" branch
+      elseb = end_block(c);
+
+      // create continuation block (the block after the "if")
+      irblock_t* contb = mkblock(c, f, IR_BLOCK_GOTO, n->loc);
+      commentf(c, contb, "b%u.cont", ifb->id);
+
+      // wire up graph edges
+      elseb->succs[0] = contb; // else —> cont
+      thenb->succs[0] = contb; // then —> cont
+      contb->preds[0] = thenb; // cont[0] <— then
+      contb->preds[1] = elseb; // cont[1] <— else
+
+      // begin continuation block
+      start_block(c, contb);
+      seal_block(c, contb);
+    } else {
+      // convert elseb to "end" block
+      commentf(c, elseb, "b%u.cont", ifb->id);
+      thenb->succs[0] = elseb; // then -> else
+      elseb->preds[0] = ifb;
+      if (thenb->kind != IR_BLOCK_RET)
+        elseb->preds[1] = thenb; // else <- if, then
+      start_block(c, elseb);
+      seal_block(c, elseb);
+
+      // move cont block to end (in case blocks were created by "then" body)
+      ptrarray_move(&f->blocks, f->blocks.len - 1, elseb_index, elseb_index + 1);
+
+    }
 
     if (isrvalue(n)) {
       // zero in place of "else" block
@@ -1173,38 +1334,12 @@ static irval_t* ifexpr(ircons_t* c, ifexpr_t* n) {
     } else {
       elsev = thenv;
     }
-
-    // if "then" block returns, no PHI is needed
-    if (thenb->kind == IR_BLOCK_RET) {
-      // undo any owner kills from the "then" block since they won't affect
-      // what happens if the "then" branch is not taken.
-      if UNLIKELY(!bitset_copy(&c->deadset, deadset, c->ma))
-        out_of_mem(c);
-      bitset_dispose(deadset, c->ma);
-      return elsev;
-    }
   }
 
-  bitset_dispose(deadset, c->ma);
+  bitset_dispose(deadset_beforeif, c->ma);
 
-  // if "else" block returns, or the result of the "if" is not used, so no PHI needed.
-  // e.g. "fun f(x int) { 2 * if x > 0 { x - 2 } else { return x + 2 } }"
-  //   b0:
-  //     v0 = arg 0
-  //     v1 = const 0
-  //     v2 = const 2
-  //     v3 = gt v0 v1   # x > 0
-  //   if v3 -> b1, b2
-  //   b1:               # then
-  //     v4 = sub v0 v2  # x - 2
-  //   cont -> b3
-  //   b2:               # else
-  //     v5 = add v0 v1  # x + 2
-  //   ret v5            # return
-  //   b3:
-  //     v6 = mul v2 v5  # <- note: only v5 gets here, not v4
-  //   ret v6
-  if (elseb->kind == IR_BLOCK_RET || !isrvalue(n))
+  // if the result of the "if" expression is not used, no PHI is needed
+  if (!isrvalue(n) || thenv == elsev)
     return thenv;
 
   // make Phi, joining the two branches together
@@ -1213,6 +1348,7 @@ static irval_t* ifexpr(ircons_t* c, ifexpr_t* n) {
   pusharg(phi, thenv);
   pusharg(phi, elsev);
   comment(c, phi, "if");
+
   return phi;
 }
 
@@ -1554,6 +1690,10 @@ static irfun_t* fun(ircons_t* c, fun_t* n) {
     goto end;
   }
 
+  // just a declaration?
+  if (n->body == NULL)
+    return f;
+
   // save current function build state
   if (c->f != &bad_irfun) {
     // TODO: a better strategy would be to use a queue of functions:
@@ -1572,7 +1712,7 @@ static irfun_t* fun(ircons_t* c, fun_t* n) {
   drops_reset(c);
 
   // allocate entry block
-  irblock_t* entryb = mkblock(c, f, IR_BLOCK_CONT, n->loc);
+  irblock_t* entryb = mkblock(c, f, IR_BLOCK_GOTO, n->loc);
   start_block(c, entryb);
   seal_block(c, entryb); // entry block has no predecessors
 
@@ -1605,12 +1745,12 @@ static irfun_t* fun(ircons_t* c, fun_t* n) {
   }
 
   // build body
-  irval_t* body = blockexpr_noscope(c, n->body);
+  irval_t* body = blockexpr_noscope(c, n->body, /*isfunbody*/true);
 
   // reset EX_RVALUE flag, in case we set it above
   n->body->flags &= ~EX_RVALUE;
 
-  // generate implicit return
+  // handle implicit return
   // note: if the block ended with a "return" statement, b->kind is already BLOCK_RET
   if (c->b->kind != IR_BLOCK_RET)
     ret(c, body != &bad_irval ? body : NULL, n->body->loc);
@@ -1640,6 +1780,16 @@ end:
 }
 
 
+static irval_t* funexpr(ircons_t* c, fun_t* n) {
+  irfun_t* f = fun(c, n);
+  irval_t* v = pushval(c, c->b, OP_FUN, n->loc, n->type);
+  v->aux.ptr = f;
+  if (n->name)
+    comment(c, v, n->name);
+  return v;
+}
+
+
 static irval_t* deref(ircons_t* c, expr_t* origin, unaryop_t* n) {
   irval_t* src = load_expr1(c, origin, n->expr);
   irval_t* v = pushval(c, c->b, OP_DEREF, origin->loc, origin->type);
@@ -1665,7 +1815,7 @@ static irval_t* load_local(ircons_t* c, expr_t* origin, local_t* n) {
   return v;
 
 err_dead:
-  error(c, origin, "use of dead %s %s", nodekind_fmt(n->kind), n->name);
+  error(c, origin, "use of dead value %s", n->name);
   srcrange_t moved_srcrange = find_moved_srcrange(c, v->id);
   if (moved_srcrange.focus.line)
     help(c, moved_srcrange, "%s moved here", n->name);
@@ -1679,11 +1829,17 @@ static irval_t* load_expr1(ircons_t* c, expr_t* origin, expr_t* n) {
 
   switch (n->kind) {
 
+  case EXPR_ASSIGN:    return assign(c, (binop_t*)n);
+  case EXPR_BINOP:     return binop(c, (binop_t*)n);
+  case EXPR_BLOCK:     return blockexpr(c, (block_t*)n);
+  case EXPR_CALL:      return call(c, (call_t*)n);
+  case EXPR_DEREF:     return deref(c, n, (unaryop_t*)n);
+  case EXPR_FUN:       return funexpr(c, (fun_t*)n);
+  case EXPR_IF:        return ifexpr(c, (ifexpr_t*)n);
+  case EXPR_RETURN:    return retexpr(c, (retexpr_t*)n);
+
   case EXPR_ID:
     return load_expr1(c, origin, asexpr(((idexpr_t*)n)->ref));
-
-  case EXPR_DEREF:
-    return deref(c, origin, (unaryop_t*)n);
 
   case EXPR_FIELD:
   case EXPR_PARAM:
@@ -1715,14 +1871,16 @@ static irval_t* expr(ircons_t* c, void* expr_node) {
   TRACE_NODE("expr ", n);
 
   switch ((enum nodekind)n->kind) {
-  case EXPR_BLOCK:     return blockexpr(c, (block_t*)n);
-  case EXPR_BINOP:     return binop(c, (binop_t*)n);
   case EXPR_ASSIGN:    return assign(c, (binop_t*)n);
-  case EXPR_ID:        return idexpr(c, (idexpr_t*)n);
-  case EXPR_RETURN:    return retexpr(c, (retexpr_t*)n);
-  case EXPR_FLOATLIT:  return floatlit(c, (floatlit_t*)n);
-  case EXPR_IF:        return ifexpr(c, (ifexpr_t*)n);
+  case EXPR_BINOP:     return binop(c, (binop_t*)n);
+  case EXPR_BLOCK:     return blockexpr(c, (block_t*)n);
+  case EXPR_CALL:      return call(c, (call_t*)n);
   case EXPR_DEREF:     return deref(c, n, (unaryop_t*)n);
+  case EXPR_FLOATLIT:  return floatlit(c, (floatlit_t*)n);
+  case EXPR_ID:        return idexpr(c, (idexpr_t*)n);
+  case EXPR_FUN:       return funexpr(c, (fun_t*)n);
+  case EXPR_IF:        return ifexpr(c, (ifexpr_t*)n);
+  case EXPR_RETURN:    return retexpr(c, (retexpr_t*)n);
 
   case EXPR_BOOLLIT:
   case EXPR_INTLIT:
@@ -1733,8 +1891,6 @@ static irval_t* expr(ircons_t* c, void* expr_node) {
     return vardef(c, (local_t*)n);
 
   // TODO
-  case EXPR_FUN:       // return funexpr(c, (fun_t*)n);
-  case EXPR_CALL:      // return call(c, (call_t*)n);
   case EXPR_MEMBER:    // return member(c, (member_t*)n);
   case EXPR_PREFIXOP:  // return prefixop(c, (unaryop_t*)n);
   case EXPR_POSTFIXOP: // return postfixop(c, (unaryop_t*)n);
@@ -1827,7 +1983,7 @@ static err_t ircons(
 
   c.deadset = assertnotnull( bitset_make(c.ma, BITSET_STACK_CAP) );
 
-  if (!map_init(&c.funm, c.ma, n->children.len*2)) {
+  if (!map_init(&c.funm, c.ma, MAX(n->children.len,1)*2)) {
     c.err = ErrNoMem;
     goto fail_funm;
   }

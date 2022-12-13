@@ -1,44 +1,100 @@
+// fun create() *int
 
-fun ownership_drop_params(x, y *int) void {
-} // drop(y); drop(x)
 
-fun ownership_drop_param2(x, y *int) *int {
-  x
-} // drop(y)
+// fun ownership_drop_params(x, y *int) void {
+// } // drop(y); drop(x)
 
-fun ownership_drop_var(x, y, z *int) {
-  var a *int = x
-  var b *int = y
-  var c *int = z
-} // drop(c); drop(b); drop(a)
+// fun ownership_drop_param2(x, y *int) *int {
+//   x
+// } // drop(y)
 
-fun ownership_drop_in_scope(x, y *int) *int {
-  // var k *int
-  {
-    let b = x    // transfer ownership of value at x to b
-    // let c = k // error: use of uninitialized variable
-    // let c = x // error: use of dead parameter
-  }              // drop(b)
-  // let c = x   // error: use of dead parameter
-  return y       // transfer ownership of y to caller
+// fun ownership_drop_var(x, y, z *int) {
+//   var a *int = x
+//   var b *int = y
+//   var c *int = z
+// } // drop(c); drop(b); drop(a)
+
+// fun ownership_drop_in_scope(x, y *int) *int {
+//   // var k *int
+//   {
+//     let b = x    // transfer ownership of value at x to b
+//     // let c = k // error: use of uninitialized variable
+//     // let c = x // error: use of dead value
+//   }              // drop(b)
+//   // let c = x   // error: use of dead value
+//   return y       // transfer ownership of y to caller
+// }
+
+// fun ownership_drop_via_block(x, y *int) *int {
+//   let a = {
+//     let b = x // transfer ownership of value at x to b
+//     b         // transfer ownership of value at b to block
+//   }           // transfer ownership of block value to a
+//   return y    // transfer ownership of y to caller
+// }             // drop(a)
+
+// fun ownership_drop_ifthen_ret(x, y *int) *int {
+//   if true {
+//     return x // transfer ownership of x to caller
+//   }          // drop(y)
+//   let k = *x // ok since x is alive here
+//   return y   // transfer ownership of y to caller
+// }            // drop(x)
+
+// fun ownership_drop_ifelse_ret(x, y *int) *int {
+//   if true {
+//   } else {
+//     return x // transfer ownership of x to caller
+//   }          // drop(y)
+//   let k = *x // ok since x is alive here
+//   return y   // transfer ownership of y to caller
+// }            // drop(x)
+
+// fun ownership_drop_unused_if(x, y *int) *int {
+//   if true {} else {}
+//   return y // transfer ownership of y to caller
+// }          // drop(x)
+
+fun ownership_drop_ifthen_drop(x, y *int) *int {
+  let k = y
+  if true {
+    let a = x
+  }            // drop(a)
+               // drop(x) in synthetic "else" branch
+  // let a = x // error: use of dead value
+  return k     // transfer ownership of y to caller
 }
 
-fun ownership_drop_via_block(x, y *int) *int {
-  var k *int
-  let a = {
-    let b = x // transfer ownership of value at x to b
-    b         // transfer ownership of value at b to block
-  }           // transfer ownership of block value to a
-  return y    // transfer ownership of y to caller
-}             // drop(a)
+fun ownership_drop_ifelse_drop(x, y *int) *int {
+  let k = y
+  if true {    // drop(x)
+  } else {
+    let a = x  // BUG
+  }            // drop(a)
+  // let a = x // error: use of dead value
+  return k     // transfer ownership of y to caller
+}
 
-fun ownership_drop_if_ret(x, y *int) *int {
+fun ownership_drop_ifthenelse_drop(x, y *int) *int {
+  let k = y
   if true {
-    return x // transfer ownership of x to caller
-  }          // drop(y)
-  let k = *x // ok since x is alive here
-  return y   // transfer ownership of y to caller
-}            // drop(x)
+    let a = x
+  } else {     // drop(a)
+  }            // drop(x)
+  // let a = x // error: use of dead value
+  return k     // transfer ownership of y to caller
+}
+
+
+// fun ownership_drop_one_of(x, y *int) *int {
+//   if true {
+//     x          // transfer ownership of x to "then" block
+//   } else {     // drop(y)  BUG
+//     y          // transfer ownership of y to "else" block
+//   }            // drop(x)  BUG
+//   // let a = x // error: use of dead value
+//   // let b = y // error: use of dead value
+// }              // transfer ownership of "if" to caller
 
 
 

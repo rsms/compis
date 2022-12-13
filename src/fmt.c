@@ -309,8 +309,10 @@ static void fmt(abuf_t* s, const node_t* nullable n, u32 indent, u32 maxdepth) {
   case TYPE_I64:  abuf_str(s, ((type_t*)n)->isunsigned ? "u64" : "i64"); break;
   case TYPE_F32:  abuf_str(s, "f32"); break;
   case TYPE_F64:  abuf_str(s, "f64"); break;
-  case TYPE_FUN:  return funtype(s, (const funtype_t*)n, indent, maxdepth);
   case TYPE_STRUCT: return structtype(s, (const structtype_t*)n, indent, maxdepth);
+  case TYPE_FUN:
+    abuf_str(s, "fun");
+    return funtype(s, (const funtype_t*)n, indent, maxdepth);
   case TYPE_ARRAY: {
     arraytype_t* a = (arraytype_t*)n;
     abuf_fmt(s, "[%zu]", a->size);

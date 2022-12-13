@@ -20,17 +20,21 @@ typedef struct {
 #define COMMENT_COL  32
 
 
-static void val(fmtctx_t* ctx, const irval_t* v, bool comments) {
+static void val(fmtctx_t* ctx, const irval_t* v, bool isdot) {
   u32 start = ctx->out.len + 1;
-  PRINTF("\n    ");
+  PRINTF(isdot ? "\n" : "\n    ");
 
   bool ismemonly = (v->type == type_void);
 
   if (!ismemonly) {
-    PRINTF("v%-2u ", v->id);
-    u32 tstart = ctx->out.len;
-    node_fmt(&ctx->out, (node_t*)v->type, 0);
-    PRINTF("%*s = ", MAX(0, 4 - (int)(ctx->out.len - tstart)), "");
+    if (isdot) {
+      PRINTF("v%u = ", v->id);
+    } else {
+      PRINTF("v%-2u", v->id);
+      u32 tstart = ctx->out.len;
+      node_fmt(&ctx->out, (node_t*)v->type, 0);
+      PRINTF("%*s = ", MAX(0, 4 - (int)(ctx->out.len - tstart)), "");
+    }
   }
 
   PRINTF("%-*s", 6, op_name(v->op) + 3/*"OP_"*/);
@@ -50,7 +54,7 @@ static void val(fmtctx_t* ctx, const irval_t* v, bool comments) {
     break;
   }
 
-  if (!comments)
+  if (isdot)
     return;
 
   TABULATE(start, COMMENT_COL);
@@ -101,24 +105,22 @@ static void block(fmtctx_t* ctx, const irblock_t* b) {
   }
 
   for (u32 i = 0; i < b->values.len; i++)
-    val(ctx, b->values.v[i], /*comments*/true);
+    val(ctx, b->values.v[i], /*isdot*/false);
 
   switch (b->kind) {
-    case IR_BLOCK_CONT: {
+    case IR_BLOCK_GOTO: {
       if (b->succs[0]) {
-        PRINTF("\n  cont -> b%u", b->succs[0]->id);
+        PRINTF("\n  goto -> b%u", b->succs[0]->id);
       } else {
-        PRINT("\n  cont -> ?");
+        PRINT("\n  goto -> ?");
       }
       break;
     }
-    case IR_BLOCK_FIRST:
-    case IR_BLOCK_IF: {
+    case IR_BLOCK_SWITCH: {
       assert(b->succs[0]); // thenb
       assert(b->succs[1]); // elseb
       assertf(b->control, "missing control value");
-      PRINTF("\n  %s v%u -> b%u b%u",
-        (b->kind == IR_BLOCK_IF) ? "if" : "first",
+      PRINTF("\n  switch v%u -> b%u b%u",
         b->control->id, b->succs[0]->id, b->succs[1]->id);
       break;
     }
@@ -157,50 +159,81 @@ static void fun(fmtctx_t* ctx, const irfun_t* f) {
 }
 
 
-static void block_dot(fmtctx_t* ctx, const char* key_prefix, const irblock_t* b) {
-  PRINTF("  %sb%u [ label=\"b%u\\l", key_prefix, b->id, b->id);
-  for (u32 i = 0; i < b->values.len; i++) {
-    val(ctx, b->values.v[i], /*comments*/false);
-    PRINT("\\l");
+static void block_dot_nodes(fmtctx_t* ctx, const char* ns, const irblock_t* b) {
+  const char* b_bgcolor = "#cccccc";
+  if (b->id == 0) {
+    b_bgcolor = "#aaffdd";
+  } else if (b->kind == IR_BLOCK_RET) {
+    b_bgcolor = "#ffccaa";
   }
-  PRINT("\" ];\n");
 
+  PRINTF("  %sb%u [shape=\"none\", label=<<table border=\"0\" cellborder=\"1\" cellspacing=\"0\"><tr><td bgcolor=\"%s\" align=\"center\" colspan=\"1\"><font color=\"black\">b%u</font></td></tr>",
+    ns, b->id, b_bgcolor, b->id);
+
+  if (b->values.len) {
+    PRINT("<tr><td align=\"left\" balign=\"left\">");
+    for (u32 i = 0; i < b->values.len; i++) {
+      val(ctx, b->values.v[i], /*isdot*/true);
+      PRINT("<br/>");
+    }
+    PRINT("</td></tr>");
+  }
+
+  PRINT("<tr><td align=\"left\">");
   switch (b->kind) {
-    case IR_BLOCK_CONT: {
+    case IR_BLOCK_GOTO:
+      PRINT("goto");
+      break;
+    case IR_BLOCK_SWITCH:
+      PRINTF("switch v%u", assertnotnull(b->control)->id);
+      break;
+    case IR_BLOCK_RET:
+      PRINTF("ret v%u", assertnotnull(b->control)->id);
+      break;
+  }
+  PRINT("</td></tr>");
+
+  PRINT("</table>>]");
+}
+
+
+static void block_dot_edges(fmtctx_t* ctx, const char* ns, const irblock_t* b) {
+  switch (b->kind) {
+    case IR_BLOCK_GOTO: {
       assert(b->succs[0]);
-      PRINTF("  %sb%u -> %sb%u;\n", key_prefix, b->id, key_prefix, b->succs[0]->id);
+      PRINTF("  %sb%u -> %sb%u;\n", ns, b->id, ns, b->succs[0]->id);
       break;
     }
-    case IR_BLOCK_FIRST:
-    case IR_BLOCK_IF: {
+    case IR_BLOCK_SWITCH: {
       assert(b->succs[0]); // thenb
       assert(b->succs[1]); // elseb
-      assertf(b->control, "missing control value");
-      PRINTF("  %sb%u -> %sb%u [label=\"if v%u\"];\n",
-        key_prefix, b->id, key_prefix, b->succs[0]->id, b->control->id);
-      PRINTF("  %sb%u -> %sb%u [label=\"if !v%u\"];\n",
-        key_prefix, b->id, key_prefix, b->succs[1]->id, b->control->id);
+      assertnotnull(b->control);
+      PRINTF("  %sb%u -> %sb%u [label=\"[0] v%u=1\"];\n",
+        ns, b->id, ns, b->succs[0]->id, b->control->id);
+      PRINTF("  %sb%u -> %sb%u [label=\"[1] v%u=0\"];\n",
+        ns, b->id, ns, b->succs[1]->id, b->control->id);
       break;
     }
-    case IR_BLOCK_RET: {
-      // PRINTF("  %sexit [style=invis];\n", key_prefix);
-      PRINTF("  %sexit [label=end, shape=plain];\n", key_prefix);
-      if (b->control) {
-        PRINTF("  %sb%u -> %sexit [label=\"return v%u\"];\n",
-          key_prefix, b->id, key_prefix, b->control->id);
-      } else {
-        PRINTF("  %sb%u -> %sexit [label=\"return\"];\n",
-          key_prefix, b->id, key_prefix);
-      }
-      break;
-    }
+    // case IR_BLOCK_RET: {
+    //   // PRINTF("  %sexit [style=invis];\n", ns);
+    //   PRINTF("  %sexit [label=end, shape=plain];\n", ns);
+    //   PRINTF("  %sb%u -> %sexit [label=\"return\"];\n", ns, b->id, ns);
+    //   break;
+    // }
   }
 }
 
 
 static void fun_dot(fmtctx_t* ctx, const irfun_t* f) {
-  for (u32 i = 0; i < f->blocks.len; i++)
-    block_dot(ctx, f->name, f->blocks.v[i]);
+  if (f->blocks.len == 0) {
+    // declaration only, no body
+    PRINTF("  %sb0 [label=\"decl-only\";shape=none];\n", f->name);
+  } else {
+    for (u32 i = 0; i < f->blocks.len; i++)
+      block_dot_nodes(ctx, f->name, f->blocks.v[i]);
+    for (u32 i = 0; i < f->blocks.len; i++)
+      block_dot_edges(ctx, f->name, f->blocks.v[i]);
+  }
 }
 
 

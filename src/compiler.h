@@ -325,10 +325,9 @@ enum irflag {
 
 typedef u8 irblockkind_t;
 enum irblockkind {
-  IR_BLOCK_CONT = 0, // plain block with a single successor
+  IR_BLOCK_GOTO = 0, // plain continuation block with a single successor
   IR_BLOCK_RET,      // no successors, control value is memory result
-  IR_BLOCK_FIRST,    // 2 successors, always takes the first one (second is dead)
-  IR_BLOCK_IF,       // 2 successors, if control goto succs[0] else goto succs[1]
+  IR_BLOCK_SWITCH,   // N successors, switch(control) goto succs[N]
 };
 
 typedef struct irval_ irval_t;
@@ -363,17 +362,17 @@ typedef struct irval_ {
 
 typedef struct irblock_ irblock_t;
 typedef struct irblock_ {
-  u32               id;
-  irflag_t          flags;
-  irblockkind_t     kind;
-  srcloc_t          loc;
-  irblock_t*        succs[2]; // successors (CFG)
-  irblock_t*        preds[2]; // predecessors (CFG)
-  ptrarray_t        values;
-  irval_t* nullable control;
+  u32                 id;
+  irflag_t            flags;
+  irblockkind_t       kind;
+  srcloc_t            loc;
+  irblock_t* nullable succs[2]; // successors (CFG)
+  irblock_t* nullable preds[2]; // predecessors (CFG)
+  ptrarray_t          values;
+  irval_t* nullable   control;
     // control is a value that determines how the block is exited.
     // Its value depends on the kind of the block.
-    // I.e. a IR_BLOCK_IF has a boolean control value
+    // I.e. a IR_BLOCK_SWITCH has a boolean control value
     // while a IR_BLOCK_RET has a memory control value.
   const char* nullable comment;
 } irblock_t;

@@ -7,6 +7,31 @@ fun ir_redundant_local(x, y int) int {
   x * b     // b just points to y, not local storage
 }
 
+
+fun unused_if() int {
+  var a int = 1
+  if true {} else {}  // then and else branches ignored
+  return a
+}
+
+fun unused_actually_used_ifthen() int {
+  var a int = 0
+  if true { a = 1 } else {} // "else" branch ignored
+  return a
+}
+fun unused_actually_used_ifthen2() int {
+  var a int = 0
+  if true { a = 1 } // same IR as function above
+  return a
+}
+
+fun unused_actually_used_ifelse() int {
+  var a int = 0
+  if true {} else { a = 2 } // "then" branch ignored
+  return a
+}
+
+
 fun ir_if_then_result_ret(x, y int) int {
   if x > y {
     return x - y

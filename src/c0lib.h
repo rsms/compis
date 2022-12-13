@@ -930,11 +930,11 @@ typedef struct {
   usize cap : 31; // number of bits at "bits"
 #endif
   usize onheap : 1;
-  u8 bits[];
+  uintptr bits[];
 } bitset_t;
 
 bitset_t* nullable bitset_alloc(memalloc_t ma, usize cap);
-bool bitset_copy(bitset_t** dst, const bitset_t* src, memalloc_t ma);
+bool bitset_merge_xor(bitset_t** dstp, const bitset_t* src, memalloc_t ma);
 
 // bitset_make allocates up to BITSET_STACK_SIZE bytes on stack,
 // or uses heap memory from ma if cap > BITSET_STACK_CAP.
@@ -952,33 +952,39 @@ bool bitset_copy(bitset_t** dst, const bitset_t* src, memalloc_t ma);
 #define BITSET_STACK_SIZE  ((usize)64lu)
 #define BITSET_STACK_CAP   ((usize)( (BITSET_STACK_SIZE - sizeof(bitset_t)) * 8lu ))
 
-
-bool bitset_grow(bitset_t** bs, memalloc_t ma, usize mincap);
-inline static bool bitset_ensure_cap(bitset_t** bs, memalloc_t ma, usize mincap) {
-  return LIKELY((*bs)->cap >= mincap) ? true : bitset_grow(bs, ma, mincap);
-}
-
 inline static void bitset_dispose(bitset_t* bs, memalloc_t ma) {
   if (bs->onheap)
     mem_freex(ma, MEM(bs, sizeof(bitset_t) + bs->cap*8));
 }
 
+bool bitset_grow(bitset_t** bs, memalloc_t ma, usize mincap);
+inline static bool bitset_ensure_cap(bitset_t** bs, memalloc_t ma, usize mincap) {
+  return LIKELY((*bs)->cap >= mincap) ? true : bitset_grow(bs, ma, mincap);
+}
+bool bitset_copy(bitset_t** dst, const bitset_t* src, memalloc_t ma);
+inline static void bitset_clear(bitset_t* bs) { memset(bs->bits, 0, bs->cap/8); }
+
+// generic bytewise bit access functions
 inline static bool bit_get(const u8* bits, usize bit) {
-  return !!( bits[bit / 8] & (1lu << (bit % 8)) );
+  return !!( bits[bit / 8] & ((u8)1u << (bit % 8)) );
 }
 inline static void bit_set(u8* bits, usize bit) {
-  bits[bit / 8] |= (1 << (bit % 8));
+  bits[bit / 8] |= ((u8)1u << (bit % 8));
 }
 inline static void bit_clear(u8* bits, usize bit) {
-  bits[bit / 8] &= ~(1 << (bit % 8));
+  bits[bit / 8] &= ~((u8)1u << (bit % 8));
 }
 
+// bitset
 inline static bool bitset_has(const bitset_t* bs, usize bit) {
-  return bit_get(bs->bits, bit);
+  return bit_get((const u8*)bs->bits, bit);
 }
-inline static void bitset_add(bitset_t* bs, usize bit) { bit_set(bs->bits, bit); }
-inline static void bitset_del(bitset_t* bs, usize bit) { bit_clear(bs->bits, bit); }
-inline static void bitset_clear(bitset_t* bs) { memset(bs->bits, 0, bs->cap/8); }
+inline static void bitset_add(bitset_t* bs, usize bit) {
+  bit_set((u8*)bs->bits, bit);
+}
+inline static void bitset_del(bitset_t* bs, usize bit) {
+  bit_clear((u8*)bs->bits, bit);
+}
 
 
 
