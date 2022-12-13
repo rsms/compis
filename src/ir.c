@@ -475,21 +475,6 @@ static bool isrvalue(const void* expr) {
   "%c%u is not an owner type", ID_CHAR(v_or_b), (v_or_b)->id)
 
 
-// // move_owner transfers ownership of value, from src to dst, if src is ptrtype.
-// //   void move_owner(ircons_t* c, irval_t*   dst, irval_t*   src)  v <- v
-// //   void move_owner(ircons_t* c, irblock_t* dst, irval_t*   src)  b <- v
-// //   void move_owner(ircons_t* c, irblock_t* dst, irblock_t* src)  b <- b
-// //   void move_owner(ircons_t* c, irval_t*   dst, irblock_t* src)  v <- b
-// #define move_owner(c, dst, src) ( \
-//   ((src)->flags & IR_OWNER) ? ( \
-//     trace("move owner: %c%u -> %c%u", \
-//       ID_CHAR(src), (src)->id, ID_CHAR(dst), (dst)->id), \
-//     assert_can_own(dst), \
-//     ((src)->flags &= ~IR_OWNER), \
-//     ((dst)->flags |= IR_OWNER) ) : \
-//   ((void)0) )
-
-
 static void drops_reset(ircons_t* c) {
   c->drops.maxid = 0;
   droparray_clear(&c->drops.entries);
@@ -564,9 +549,11 @@ static void drops_unwind(ircons_t* c, u32 scope_base, srcloc_t loc) {
     drop_t* d = &c->drops.entries.v[--i];
     if (d->kind == DROPKIND_DEAD) {
       trace("  dead v%d", d->id);
+      // d->v->flags |= IR_OWNER_DEAD;
       bitset_add(c->deadset, d->id);
     } else if (!bitset_has(liveset, d->id) && !bitset_has(c->deadset, d->id)) {
       trace("  live v%d", d->id);
+      // d->v->flags &= ~IR_OWNER_DEAD;
       bitset_add(liveset, d->id);
       if (d->kind == DROPKIND_LIVE)
         drop(c, d->v, loc);
@@ -601,7 +588,7 @@ static u32 drops_since_lastindex(ircons_t* c, bitset_t* deadset1, bitset_t* dead
 
 
 static void drops_since_gen(
-  ircons_t* c, bitset_t* deadset1, bitset_t* deadset2, u32 i, srcloc_t loc)
+  ircons_t* c, bitset_t* deadset1, const bitset_t* deadset2, u32 i, srcloc_t loc)
 {
   // generate drops for values which lost ownership since deadset1 until deadset2
   while (i > 0) {
@@ -668,36 +655,11 @@ static irval_t* move_or_copy(ircons_t* c, irval_t* rvalue, srcloc_t loc) {
 static irval_t* var_read_recursive(ircons_t*, irblock_t*, sym_t, type_t*, srcloc_t);
 
 
-// typedef struct {
-//   irval_t* v;
-//   irflag_t flags;
-// } var_t;
-
-
 static void var_write_map(ircons_t* c, map_t* vars, sym_t name, irval_t* v) {
   irval_t** vp = (irval_t**)map_assign_ptr(vars, c->ma, name);
   if UNLIKELY(!vp)
     return out_of_mem(c);
-
-  // var_t* var = mem_alloct(c->ma, var_t);
-  // if UNLIKELY(!var)
-  //   return out_of_mem(c);
-  // var->v = v;
-  // var->flags = ...
-
-  // irval_t* prev = *vp;
   *vp = v;
-
-  // if (type_isowner(v->type)) {
-  //   if (prev) {
-  //     trace(">> transfer ownership v%u -> v%u", prev->id, v->id);
-  //     drops_del(c, prev);
-  //   } else {
-  //     trace(">> establish ownership v%u", v->id);
-  //   }
-  //   if UNLIKELY(!ptrarray_push(&c->drops, c->ma, v))
-  //     out_of_mem(c);
-  // }
 }
 
 
@@ -999,6 +961,7 @@ static irval_t* ret(ircons_t* c, irval_t* nullable v, srcloc_t loc) {
   c->b->kind = IR_BLOCK_RET;
   if (v)
     move_owner(c, NULL, v);
+  v->flags |= IR_RETURNED;
   set_control(c, c->b, v);
   drops_unwind_exit(c, loc);
   return v ? v : &bad_irval;
@@ -1522,8 +1485,53 @@ static void* ptrqueue_pop(ptrqueue_t* q) {
 }
 
 
+static bool op_iswrite(op_t op) {
+  // true if operation has write semantics
+  return true;
+}
+
+
+static bool isliveowner(ircons_t* c, const irval_t* v) {
+  return type_isowner(v->type) &&
+    ((v->flags & IR_RETURNED) || !bitset_has(c->deadset, v->id));
+}
+
+
+static bool any_args_isliveowner(ircons_t* c, const irval_t* v) {
+  for (u32 i = 0; i < v->argc; i++) {
+    if (isliveowner(c, v->argv[i]))
+      return true;
+  }
+  return false;
+}
+
+
+static void la_visit(ircons_t* c, irval_t* v) {
+  dlog("  %s v%u", __FUNCTION__, v->id);
+  if (!isliveowner(c, v)) {
+    // v does not hold--or is--a pointer
+    // TODO: for compound types, check so that they do not contain owners
+    v->flags |= IR_LA_NOESC;
+  } else if (op_iswrite(v->op)) {
+    // v is related to a operation with write semantics
+    if (!any_args_isliveowner(c, v)) {
+      // the source value does not contain any pointer
+      v->flags |= IR_LA_NOESC;
+    } else if (v->flags & IR_LA_OUTSIDE) {
+      // the region of the destiny value is "outside"
+      v->flags |= IR_LA_MUSTESC;
+    } else {
+      v->flags |= IR_LA_MAYESC;
+    }
+  } else {
+    v->flags |= IR_LA_MAYESC;
+  }
+}
+
+
+
 static void la_walk(
-  ircons_t* c, irfun_t* f, bitset_t* visited, ptrarray_t* g, irval_t* v)
+  ircons_t* c, irfun_t* f, bitset_t* visited, ptrarray_t* g, irval_t* startval)
 {
   // Walk
   //
@@ -1538,29 +1546,48 @@ static void la_walk(
   ptrarray_t workstack = {0};
   bitset_clear(visited);
 
-  dlog("la_walk v%u", v->id);
+  dlog("%s v%u", __FUNCTION__, startval->id);
 
-  for (u32 i = 0; i < v->parents.len; i++) {
-    irval_t* parentval = v->parents.v[i];
+  for (u32 i = 0; i < startval->parents.len; i++) {
+    irval_t* parentval = startval->parents.v[i];
     ptrarray_push(&workstack, c->ma, parentval);
   }
 
   while (workstack.len > 0) {
     irval_t* v = ptrarray_pop(&workstack);
+    assert(visited->cap > v->id);
     if (bitset_has(visited, v->id))
       continue;
-    dlog("TODO: visit v%u", v->id);
     bitset_add(visited, v->id);
 
-    // a
+    la_visit(c, v);
+    dlog("  v%u => %s", v->id,
+      (v->flags & IR_LA_MAYESC)  ? "may escape" :
+      (v->flags & IR_LA_MUSTESC) ? "must escape" :
+      (v->flags & IR_LA_NOESC)   ? "no escape" :
+      "?");
 
-    // b
+    if (v->flags & IR_LA_MUSTESC) {
+      startval->flags |= IR_LA_MUSTESC;
+      break;
+    }
+
+    if (v->flags & IR_LA_NOESC) {
+      startval->flags |= IR_LA_NOESC;
+      continue;
+    }
 
     for (u32 i = 0; i < v->parents.len; i++) {
       irval_t* parentval = v->parents.v[i];
       ptrarray_push(&workstack, c->ma, parentval);
     }
   }
+
+  dlog("v%u => %s", startval->id,
+    (startval->flags & IR_LA_MAYESC)  ? "may escape" :
+    (startval->flags & IR_LA_MUSTESC) ? "must escape" :
+    (startval->flags & IR_LA_NOESC)   ? "no escape" :
+    "?");
 
   ptrarray_dispose(&workstack, c->ma);
 }
@@ -1569,6 +1596,8 @@ static void la_walk(
 static void la_propagate_region(
   ircons_t* c, irfun_t* f, bitset_t* visited, ptrarray_t* g)
 {
+  dlog("%s", __FUNCTION__);
+
   ptrqueue_t q;
   if UNLIKELY(!ptrqueue_init(&q, c->ma, g->len))
     return out_of_mem(c);
@@ -1586,7 +1615,7 @@ static void la_propagate_region(
         if (bitset_has(visited, w->id))
           continue;
         w->flags |= IR_LA_OUTSIDE;
-        dlog("v%u -> outside", w->id);
+        dlog("  v%u -> outside", w->id);
         ptrqueue_push(&q, w);
         bitset_add(visited, w->id);
       }
@@ -1601,6 +1630,8 @@ static void la_propagate_region(
 
 
 static void la_build_graph(ircons_t* c, irfun_t* f) {
+  dlog("%s", __FUNCTION__);
+
   ptrarray_t g = {0};
   ptrarray_reserve(&g, c->ma, 16);
   u32 maxid = 0;
@@ -1611,11 +1642,11 @@ static void la_build_graph(ircons_t* c, irfun_t* f) {
       irval_t* v = b->values.v[j];
       maxid = MAX(maxid, v->id);
 
-      if (type_isowner(v->type)) {
+      if (isliveowner(c, v)) {
         v->flags |= IR_LA_OUTSIDE;
-        dlog("v%u : outside", v->id);
+        dlog("  v%u : outside", v->id);
       } else {
-        dlog("v%u : inside", v->id);
+        dlog("  v%u : inside", v->id);
       }
       ptrarray_push(&g, c->ma, v);
 
@@ -1656,21 +1687,21 @@ end:
 }
 
 
-static void analyze_ownership(ircons_t* c, irfun_t* f) {
+static void check_borrowing(ircons_t* c, irfun_t* f) {
   dump_irfun(f, c->ma);
-  trace("analyze_ownership");
+  trace("check_borrowing");
 
   la_build_graph(c, f);
 
-  // compute postorder of f's blocks
-  irblock_t** postorder = mem_alloctv(c->ma, irblock_t*, f->blocks.len);
-  if UNLIKELY(!postorder)
-    return out_of_mem(c);
-  postorder_dfs(c, f, postorder);
-  dlog("postorder:");
-  for (u32 i = 0; i < f->blocks.len; i++)
-    dlog("  b%u", postorder[i]->id);
-  mem_freetv(c->ma, postorder, f->blocks.len);
+  // // compute postorder of f's blocks
+  // irblock_t** postorder = mem_alloctv(c->ma, irblock_t*, f->blocks.len);
+  // if UNLIKELY(!postorder)
+  //   return out_of_mem(c);
+  // postorder_dfs(c, f, postorder);
+  // dlog("postorder:");
+  // for (u32 i = 0; i < f->blocks.len; i++)
+  //   dlog("  b%u", postorder[i]->id);
+  // mem_freetv(c->ma, postorder, f->blocks.len);
 }
 
 
@@ -1737,10 +1768,8 @@ static irfun_t* fun(ircons_t* c, fun_t* n) {
     v->var.dst = param->name;
     comment(c, v, param->name);
 
-    if (type_isowner(param->type)) {
-      v->flags |= IR_OWNER;
+    if (type_isowner(param->type))
       drops_mark(c, v, DROPKIND_LIVE);
-    }
 
     var_write(c, param->name, v);
   }
@@ -1780,7 +1809,7 @@ static irfun_t* fun(ircons_t* c, fun_t* n) {
       free_map(c, &c->pendingphis.v[i]);
   }
 
-  //analyze_ownership(c, f);
+  check_borrowing(c, f);
 
 end:
   c->f = &bad_irfun;

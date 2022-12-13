@@ -60,6 +60,9 @@ enum tok {
   TOK_COUNT,
 };
 
+typedef u8 opflag_t;
+#define OP_FL_WRITE ((opflag_t)1<< 0) // write semantics
+
 typedef u8 op_t;
 enum op {
   #define _(NAME, ...) NAME,
@@ -176,16 +179,14 @@ enum nodekind {
 };
 
 typedef u32 exprflag_t;
-enum exprflag {
-  EX_RVALUE           = (u8)1 << 0, // expression is used as an rvalue
-  EX_OPTIONAL         = (u8)1 << 1, // type-narrowed from optional
-  EX_SHADOWS_OWNER    = (u8)1 << 2, // shadows the original owner of a value (TYPE_PTR)
-  EX_EXITS            = (u8)1 << 3, // block exits the function (ie has "return")
-  EX_SHADOWS_OPTIONAL = (u8)1 << 4, // type-narrowed "if" check on optional
-  EX_DEAD_OWNER       = (u8)1 << 5, // node _was_ owner of TYPE_PTR (is no longer owner)
-  EX_OWNER_MOVED      = (u8)1 << 6, // owner moved
-  EX_ANALYZED         = (u8)1 << 7, // has been checked by the analyzer
-};
+#define EX_RVALUE           ((exprflag_t)1<< 0) // expression is used as an rvalue
+#define EX_OPTIONAL         ((exprflag_t)1<< 1) // type-narrowed from optional
+#define EX_SHADOWS_OWNER    ((exprflag_t)1<< 2) // shadows the original owner of a value
+#define EX_EXITS            ((exprflag_t)1<< 3) // block exits the function (has return)
+#define EX_SHADOWS_OPTIONAL ((exprflag_t)1<< 4) // type-narrowed "if" check on optional
+#define EX_DEAD_OWNER       ((exprflag_t)1<< 5) // node _was_ owner of TYPE_PTR
+#define EX_OWNER_MOVED      ((exprflag_t)1<< 6) // owner moved
+#define EX_ANALYZED         ((exprflag_t)1<< 7) // has been checked by the analyzer
 
 typedef struct {
   nodekind_t kind;
@@ -317,11 +318,13 @@ typedef struct { // fun is a declaration (stmt) or an expression depending on us
 // ———————— BEGIN IR ————————
 
 typedef u8 irflag_t;
-enum irflag {
-  IR_SEALED     = (u8)1 << 0, // [block] is sealed
-  IR_OWNER      = (u8)1 << 1, // [value|block] is owner of live ptrtype
-  IR_LA_OUTSIDE = (u8)1 << 2,
-};
+#define IR_SEALED     ((irflag_t)1<< 0) // [block] is sealed
+#define IR_OWNER_DEAD ((irflag_t)1<< 1) // [value] was owner but has lost ownership
+#define IR_LA_OUTSIDE ((irflag_t)1<< 2) // [value] is outside range (Liveness Analysis)
+#define IR_LA_MAYESC  ((irflag_t)1<< 3) // [value] may escape (Liveness Analysis)
+#define IR_LA_MUSTESC ((irflag_t)1<< 4) // [value] must escape (Liveness Analysis)
+#define IR_LA_NOESC   ((irflag_t)1<< 5) // [value] does not escape (Liveness Analysis)
+#define IR_RETURNED   ((irflag_t)1<< 6) // [value] returned from function
 
 typedef u8 irblockkind_t;
 enum irblockkind {

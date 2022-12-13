@@ -1,70 +1,79 @@
 // SPDX-License-Identifier: Apache-2.0
+//
+// _( NAME name, opflag_t flags )
+//
+
+// temporary flag aliases
+#define W  OP_FL_WRITE
 
 // special ops
-_( OP_NOOP )
-_( OP_PHI )
-_( OP_ARG )
-_( OP_CALL )
-_( OP_ZERO ) // zero initializer
-_( OP_FUN )
+_( OP_NOOP, 0 )
+_( OP_PHI, 0 )
+_( OP_ARG, 0 )
+_( OP_CALL, 0 )
+_( OP_ZERO, 0 ) // zero initializer
+_( OP_FUN, 0 )
 
 // constants
-_( OP_ICONST )
-_( OP_FCONST )
+_( OP_ICONST, 0 )
+_( OP_FCONST, 0 )
 
 // memory
-_( OP_LOCAL )  // stack memory
-_( OP_STORE )  // T -> T
-_( OP_DEREF )  // *T -> T
-_( OP_ALIAS )  // T -> &T
+_( OP_LOCAL, 0 )  // stack memory
+_( OP_STORE, 0 )  // T -> T
+_( OP_DEREF, 0 )  // *T -> T
+_( OP_ALIAS, 0 )  // T -> &T
 
 // ownership & lifetime
-_( OP_MOVE )       // *T -> *T
-_( OP_BORROW )     // T -> &T
-_( OP_BORROW_MUT ) // T -> mut&T
-_( OP_DROP )
+_( OP_MOVE, 0 )       // *T -> *T
+_( OP_BORROW, 0 )     // T -> &T
+_( OP_BORROW_MUT, 0 ) // T -> mut&T
+_( OP_DROP, 0 )
 
 // unary
-_( OP_INC ) // ++
-_( OP_DEC ) // --
-_( OP_INV ) // ~
-_( OP_NOT ) // !
+_( OP_INC, 0 ) // ++
+_( OP_DEC, 0 ) // --
+_( OP_INV, 0 ) // ~
+_( OP_NOT, 0 ) // !
 
 // binary, arithmetic
-_( OP_ADD ) // +
-_( OP_SUB ) // -
-_( OP_MUL ) // *
-_( OP_DIV ) // /
-_( OP_MOD ) // %
+_( OP_ADD, 0 ) // +
+_( OP_SUB, 0 ) // -
+_( OP_MUL, 0 ) // *
+_( OP_DIV, 0 ) // /
+_( OP_MOD, 0 ) // %
 
 // binary, bitwise
-_( OP_AND ) // &
-_( OP_OR )  // |
-_( OP_XOR ) // ^
-_( OP_SHL ) // <<
-_( OP_SHR ) // >>
+_( OP_AND, 0 ) // &
+_( OP_OR, 0 )  // |
+_( OP_XOR, 0 ) // ^
+_( OP_SHL, 0 ) // <<
+_( OP_SHR, 0 ) // >>
 
 // binary, logical
-_( OP_LAND ) // &&
-_( OP_LOR )  // ||
+_( OP_LAND, 0 ) // &&
+_( OP_LOR, 0 )  // ||
 
 // binary, comparison
-_( OP_EQ )   // ==
-_( OP_NEQ )  // !=
-_( OP_LT )   // <
-_( OP_GT )   // >
-_( OP_LTEQ ) // <=
-_( OP_GTEQ ) // >=
+_( OP_EQ, 0 )   // ==
+_( OP_NEQ, 0 )  // !=
+_( OP_LT, 0 )   // <
+_( OP_GT, 0 )   // >
+_( OP_LTEQ, 0 ) // <=
+_( OP_GTEQ, 0 ) // >=
 
 // binary, assignment
-_( OP_ASSIGN )     // =
-_( OP_ADD_ASSIGN ) // +=
-_( OP_AND_ASSIGN ) // &=
-_( OP_DIV_ASSIGN ) // /=
-_( OP_MOD_ASSIGN ) // %=
-_( OP_MUL_ASSIGN ) // *=
-_( OP_OR_ASSIGN )  // |=
-_( OP_SHL_ASSIGN ) // <<=
-_( OP_SHR_ASSIGN ) // >>=
-_( OP_SUB_ASSIGN ) // -=
-_( OP_XOR_ASSIGN ) // ^=
+_( OP_ASSIGN, 0 )     // =
+_( OP_ADD_ASSIGN, 0 ) // +=
+_( OP_AND_ASSIGN, 0 ) // &=
+_( OP_DIV_ASSIGN, 0 ) // /=
+_( OP_MOD_ASSIGN, 0 ) // %=
+_( OP_MUL_ASSIGN, 0 ) // *=
+_( OP_OR_ASSIGN, 0 )  // |=
+_( OP_SHL_ASSIGN, 0 ) // <<=
+_( OP_SHR_ASSIGN, 0 ) // >>=
+_( OP_SUB_ASSIGN, 0 ) // -=
+_( OP_XOR_ASSIGN, 0 ) // ^=
+
+
+#undef W
