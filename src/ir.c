@@ -1034,12 +1034,15 @@ static void close_block_scope(
       continue;
 
     if (!deadset_has(xor_deadset, v->id)) {
-      dlog("  v%u is definitely live owner", v->id);
+      dlog("  v%u is live >> drop(v%u)", v->id, v->id);
+      drop(c, v, (srcloc_t){0});
       continue;
     }
 
     dlog("  v%u may have lost ownership", v->id);
     // TODO: detect if it _definitely_ lost ownership and just insert a drop()
+    // it's likely so that when var_read(v->var.live) is not a PHI we can just drop
+    // if v is dead..? Maybe?
 
     // if (base != c->owners.base) {
     //   dlog("    propagate to parent scope");
@@ -1076,9 +1079,7 @@ static void close_block_scope(
     start_block(c, deadb);
     seal_block(c, deadb);
 
-    irval_t* dropv = pushval(c, c->b, OP_DROP, (srcloc_t){0}, type_void);
-    pusharg(dropv, v);
-    dropv->var.src = v->var.dst;
+    drop(c, v, (srcloc_t){0});
 
     end_block(c);
 
@@ -1885,12 +1886,12 @@ static irval_t* load_local(ircons_t* c, expr_t* origin, local_t* n) {
   if (bitset_has(c->deadset, v->id))
     goto err_dead;
 
-  drop_t* d = drops_lookup(c, v->id);
-  if (!d) {
-    error(c, origin, "use of uninitialized %s %s", nodekind_fmt(n->kind), n->name);
-  } else if (d->kind != DROPKIND_LIVE) {
-    goto err_dead;
-  }
+  // drop_t* d = drops_lookup(c, v->id);
+  // if (!d) {
+  //   error(c, origin, "use of uninitialized %s %s", nodekind_fmt(n->kind), n->name);
+  // } else if (d->kind != DROPKIND_LIVE) {
+  //   goto err_dead;
+  // }
   return v;
 
 err_dead:
