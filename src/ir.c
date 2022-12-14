@@ -8,46 +8,27 @@
 
 DEF_ARRAY_TYPE(map_t, maparray)
 
-typedef enum {
-  DROPKIND_LIVE,
-  DROPKIND_DEAD,
-  DROPKIND_BASE,
-} dropkind_t;
 
 typedef struct {
-  dropkind_t kind;
-  u32        id;
-  irval_t*   v;
-} drop_t;
-
-DEF_ARRAY_TYPE(drop_t, droparray)
-
-
-typedef struct {
-  compiler_t*   compiler;
-  memalloc_t    ma;          // compiler->ma
-  memalloc_t    ir_ma;       // allocator for ir data
-  irunit_t*     unit;        // current unit
-  irfun_t*      f;           // current function
-  irblock_t*    b;           // current block
-  err_t         err;         // result of build process
-  buf_t         tmpbuf[2];   // general-purpose scratch buffers
-  map_t         funm;        // {fun_t* => irfun_t*} for breaking cycles
-  map_t         vars;        // {sym_t => irval_t*} (moved to defvars by end_block)
-  maparray_t    defvars;     // {[block_id] => map_t}
-  maparray_t    pendingphis; // {[block_id] => map_t}
-  maparray_t    freemaps;    // free map_t's (for defvars and pendingphis)
-  bitset_t*     deadset;
+  compiler_t* compiler;
+  memalloc_t  ma;          // compiler->ma
+  memalloc_t  ir_ma;       // allocator for ir data
+  irunit_t*   unit;        // current unit
+  irfun_t*    f;           // current function
+  irblock_t*  b;           // current block
+  err_t       err;         // result of build process
+  buf_t       tmpbuf[2];   // general-purpose scratch buffers
+  map_t       funm;        // {fun_t* => irfun_t*} for breaking cycles
+  map_t       vars;        // {sym_t => irval_t*} (moved to defvars by end_block)
+  maparray_t  defvars;     // {[block_id] => map_t}
+  maparray_t  pendingphis; // {[block_id] => map_t}
+  maparray_t  freemaps;    // free map_t's (for defvars and pendingphis)
+  bitset_t*   deadset;
 
   struct {
     ptrarray_t entries;
     u32        base;   // current scope's base index
   } owners;
-
-  struct {
-    droparray_t entries;
-    u32         maxid;
-  } drops;
 
   #ifdef TRACE_ANALYSIS
     int traceindent;
@@ -516,140 +497,6 @@ static bool isrvalue(const void* expr) {
   "%c%u is not an owner type", ID_CHAR(v_or_b), (v_or_b)->id)
 
 
-static void drops_reset(ircons_t* c) {
-  c->drops.maxid = 0;
-  droparray_clear(&c->drops.entries);
-  bitset_clear(c->deadset);
-}
-
-
-static u32 drops_scope_enter(ircons_t* c) {
-  trace("\e[1;34m%s\e[0m", __FUNCTION__);
-  return c->drops.entries.len;
-}
-
-
-static void drops_scope_leave(ircons_t* c, u32 scope_base) {
-  trace("\e[1;34m%s\e[0m", __FUNCTION__);
-  c->drops.entries.len = scope_base;
-}
-
-
-static void drops_mark(ircons_t* c, irval_t* v, dropkind_t kind) {
-  trace("\e[1;34m%s\e[0m" " %s v%u", __FUNCTION__,
-    (kind == DROPKIND_LIVE) ? "live" : "dead", v->id);
-  assert(kind != DROPKIND_BASE);
-  drop_t* d = droparray_alloc(&c->drops.entries, c->ma, 1);
-  if UNLIKELY(!d)
-    return out_of_mem(c);
-  d->kind = kind;
-  d->v = v;
-  d->id = v->id;
-  c->drops.maxid = MAX(c->drops.maxid, v->id);
-}
-
-
-drop_t* nullable drops_lookup(ircons_t* c, u32 id) {
-  trace("\e[1;34m%s\e[0m" " v%u", __FUNCTION__, id);
-  if (id <= c->drops.maxid) {
-    for (u32 i = c->drops.entries.len; i;) {
-      drop_t* d = &c->drops.entries.v[--i];
-      if (d->id == id)
-        return d;
-    }
-  }
-  trace("  not found");
-  return NULL;
-}
-
-
-static void drop(ircons_t* c, irval_t* val_to_drop, srcloc_t loc) {
-  irval_t* v = pushval(c, c->b, OP_DROP, loc, type_void);
-  pusharg(v, val_to_drop);
-  v->var.src = val_to_drop->var.dst;
-}
-
-
-static void drops_unwind(ircons_t* c, u32 scope_base, srcloc_t loc) {
-  return; // XXX
-
-  trace("\e[1;34m%s\e[0m scope_base=%u", __FUNCTION__, scope_base);
-
-  assert(c->drops.entries.len >= scope_base);
-  if (c->drops.entries.len == scope_base)
-    return;
-
-  usize idcap = (usize)c->drops.maxid + 1lu;
-
-  if (!bitset_ensure_cap(&c->deadset, c->ma, idcap))
-    return out_of_mem(c);
-
-  bitset_t* liveset = bitset_make(c->ma, idcap);
-  if (!liveset)
-    return out_of_mem(c);
-
-  for (u32 i = c->drops.entries.len; i > scope_base;) {
-    drop_t* d = &c->drops.entries.v[--i];
-    if (d->kind == DROPKIND_DEAD) {
-      trace("  v%d dead", d->id);
-      bitset_add(c->deadset, d->id);
-    } else if (!bitset_has(liveset, d->id) && !bitset_has(c->deadset, d->id)) {
-      trace("  v%d LIVE", d->id);
-      bitset_add(liveset, d->id);
-      if (d->kind == DROPKIND_LIVE)
-        drop(c, d->v, loc);
-    }
-  }
-
-  bitset_dispose(liveset, c->ma);
-}
-
-
-static void drops_unwind_scope(ircons_t* c, u32 scope_base, srcloc_t loc) {
-  drops_unwind(c, scope_base, loc);
-}
-
-
-static void drops_unwind_exit(ircons_t* c, srcloc_t loc) {
-  drops_unwind(c, 0, loc);
-}
-
-
-static u32 drops_since_lastindex(ircons_t* c, bitset_t* deadset1, bitset_t* deadset2) {
-  // detect if values which lost ownership since entry_deadset.
-  // returns index+1 of first (top of stack) drops.entries entry.
-  u32 i = c->drops.entries.len;
-  for (; i > 0;) {
-    drop_t* d = &c->drops.entries.v[--i];
-    if (bitset_has(deadset2, d->id) && !bitset_has(deadset1, d->id))
-      return i + 1;
-  }
-  return 0;
-}
-
-
-// static void drops_since_gen(
-//   ircons_t* c, bitset_t* deadset1, const bitset_t* deadset2, u32 i, srcloc_t loc)
-// {
-//   // generate drops for values which lost ownership since deadset1 until deadset2
-//   while (i > 0) {
-//     drop_t* d = &c->drops.entries.v[--i];
-//     //dlog("v%u (%s) ...", d->id, d->kind == DROPKIND_LIVE ? "live" : "dead");
-//     if (bitset_has(deadset2, d->id) && !bitset_has(deadset1, d->id)) {
-//       trace("  v%u lost ownership", d->id);
-//       assert(deadset1->cap > d->id);
-
-//       // mark as dead now
-//       d->kind = DROPKIND_DEAD; // ok to modify
-//       // drops_mark(c, d->v, DROPKIND_DEAD);
-//       // bitset_del(deadset2, d->id);
-
-//       bitset_add(deadset1, d->id);
-//       drop(c, d->v, loc);
-//     }
-//   }
-// }
-
 
 //—————————————————————————————————————————————————————————————————————————————————————
 
@@ -976,6 +823,7 @@ static bool owners_has(ircons_t* c, irval_t* v, u32 depth) {
       return true;
     }
   }
+  return false;
 }
 
 
@@ -997,11 +845,16 @@ static const char* fmtdeadset(ircons_t* c, u32 bufidx, const bitset_t* bs) {
 }
 
 
-static void gen_conditional_drop(ircons_t* c, irval_t* control, irval_t* owner) {
+static void drop(ircons_t* c, irval_t* val_to_drop, srcloc_t loc) {
+  irval_t* v = pushval(c, c->b, OP_DROP, loc, type_void);
+  pusharg(v, val_to_drop);
+  v->var.src = val_to_drop->var.dst;
+}
+
+
+static void conditional_drop(ircons_t* c, irval_t* control, irval_t* owner) {
   // creates "if (!.vN_live) { drop(vN) }"
   irblock_t* ifb = end_block(c);
-  irval_t* end_control = ifb->control;
-  irblockkind_t end_kind = ifb->kind;
 
   irblock_t* deadb = mkblock(c, c->f, IR_BLOCK_GOTO, (srcloc_t){0});
   irblock_t* contb = mkblock(c, c->f, IR_BLOCK_GOTO, (srcloc_t){0});
@@ -1032,9 +885,7 @@ static void gen_conditional_drop(ircons_t* c, irval_t* control, irval_t* owner) 
 }
 
 
-static void close_block_scope(
-  ircons_t* c, u32 scope_base, irblock_t* entryb, bitset_t* entry_deadset)
-{
+static void close_block_scope(ircons_t* c, irblock_t* entryb, bitset_t* entry_deadset) {
   assertf(c->b != &bad_irblock, "no current block");
 
   trace("%s b%u ... b%u", __FUNCTION__, entryb->id, c->b->id);
@@ -1089,7 +940,7 @@ static void close_block_scope(
         trace("  v%u's ownership is runtime conditional", v->id);
         // ownership depends on what path the code takes; i.e. determined at runtime.
         // generate "if (!.vN_live) { drop(vN) }"
-        gen_conditional_drop(c, liveness_var, v);
+        conditional_drop(c, liveness_var, v);
       } else {
         // transitive liveness variable. i.e. a boolean constant like ".v0_live=false"
         trace("  v%u lost ownership", v->id);
@@ -1107,9 +958,7 @@ static void close_block_scope(
 
 
 static void move_owner(ircons_t* c, irval_t* nullable new_owner, irval_t* old_owner) {
-  drops_mark(c, old_owner, DROPKIND_DEAD);
   if (new_owner) {
-    drops_mark(c, new_owner, DROPKIND_LIVE);
     owners_add(c, new_owner);
     trace("\e[1;33m" "move owner: v%u -> v%u" "\e[0m", old_owner->id, new_owner->id);
   } else {
@@ -1117,7 +966,6 @@ static void move_owner(ircons_t* c, irval_t* nullable new_owner, irval_t* old_ow
   }
 
   assertf(!deadset_has(c->deadset, old_owner->id), "source value is dead");
-  //dlog("deadset_add v%u", old_owner->id);
   deadset_add(c, &c->deadset, old_owner->id);
 
   // mark as no longer live (at runtime) by setting its liveness var to false
@@ -1252,7 +1100,7 @@ static irval_t* ret(ircons_t* c, irval_t* nullable v, srcloc_t loc) {
   if (v)
     move_owner(c, NULL, v);
   set_control(c, c->b, v);
-  drops_unwind_exit(c, loc);
+  dlog("TODO: owners_unwind (was drops_unwind_exit)");
   return v ? v : &bad_irval;
 }
 
@@ -1331,14 +1179,12 @@ static irval_t* blockexpr(ircons_t* c, block_t* n) {
     seal_block(c, b);
   #endif
 
-  u32 scope = drops_scope_enter(c);
   owners_enter_scope(c);
 
   irval_t* v = blockexpr0(c, n, /*isfunbody*/false);
 
   owners_leave_scope(c);
-  drops_unwind_scope(c, scope, n->loc);
-  drops_scope_leave(c, scope);
+  //drops_unwind_scope(c, scope, n->loc);
 
   #ifdef CREATE_BB_FOR_BLOCK
     b = end_block(c);
@@ -1424,13 +1270,11 @@ static irval_t* ifexpr(ircons_t* c, ifexpr_t* n) {
   thenb->preds[0] = ifb; // then <- if
   start_block(c, thenb);
   seal_block(c, thenb);
-  u32 scope = drops_scope_enter(c);
   owners_enter_scope(c);
   irval_t* thenv = blockexpr_noscope(c, n->thenb, /*isfunbody*/false);
-  drops_unwind_scope(c, scope, n->loc);
-  close_block_scope(c, scope, ifb, entry_deadset);
+  //drops_unwind_scope(c, scope, n->loc);
+  close_block_scope(c, ifb, entry_deadset);
   owners_leave_scope(c);
-  drops_scope_leave(c, scope);
   u32 thenb_nvars = c->vars.len; // save number of vars modified by the "then" block
 
   // if "then" block returns, undo deadset changes made by the "then" block
@@ -1462,13 +1306,11 @@ static irval_t* ifexpr(ircons_t* c, ifexpr_t* n) {
     elseb->preds[0] = ifb; // else <- if
     start_block(c, elseb);
     seal_block(c, elseb);
-    u32 scope = drops_scope_enter(c);
     owners_enter_scope(c);
     elsev = blockexpr_noscope(c, n->elseb, /*isfunbody*/false);
-    drops_unwind_scope(c, scope, n->loc);
-    close_block_scope(c, scope, ifb, entry_deadset);
+    //drops_unwind_scope(c, scope, n->loc);
+    close_block_scope(c, ifb, entry_deadset);
     owners_leave_scope(c);
-    drops_scope_leave(c, scope);
 
     // if "then" block returns, no "cont" block needed
     // e.g. "fun f() { if true { 1 } else { return 2 }; return 3 }"
@@ -1586,8 +1428,10 @@ static irval_t* ifexpr(ircons_t* c, ifexpr_t* n) {
 
     // check if "then" branch caused loss of ownership of outer values
     u32 then_drops_i = 0;
-    if (thenb->kind != IR_BLOCK_RET)
-      then_drops_i = drops_since_lastindex(c, entry_deadset, c->deadset);
+    if (thenb->kind != IR_BLOCK_RET) {
+      dlog("TODO owners_since_lastindex");
+      // then_drops_i = drops_since_lastindex(c, entry_deadset, c->deadset);
+    }
 
     if (then_drops_i) {
       // begin "else" branch
@@ -1806,7 +1650,6 @@ static irfun_t* fun(ircons_t* c, fun_t* n) {
   }
 
   c->f = f;
-  drops_reset(c);
 
   // allocate entry block
   irblock_t* entryb = mkblock(c, f, IR_BLOCK_GOTO, n->loc);
@@ -1814,7 +1657,6 @@ static irfun_t* fun(ircons_t* c, fun_t* n) {
   seal_block(c, entryb); // entry block has no predecessors
 
   // enter function scope
-  u32 scope = drops_scope_enter(c);
   owners_enter_scope(c);
 
   // define arguments
@@ -1827,10 +1669,8 @@ static irfun_t* fun(ircons_t* c, fun_t* n) {
     v->var.dst = param->name;
     comment(c, v, param->name);
 
-    if (type_isowner(param->type)) {
+    if (type_isowner(param->type))
       owners_add(c, v);
-      drops_mark(c, v, DROPKIND_LIVE);
-    }
 
     var_write(c, param->name, v);
   }
@@ -1856,12 +1696,11 @@ static irfun_t* fun(ircons_t* c, fun_t* n) {
     ret(c, body != &bad_irval ? body : NULL, n->body->loc);
 
   // end final block of the function
-  close_block_scope(c, scope, entryb, entry_deadset);
+  close_block_scope(c, entryb, entry_deadset);
   bitset_dispose(entry_deadset, c->ma);
   end_block(c);
 
   // leave function scope
-  drops_scope_leave(c, scope);
   owners_leave_scope(c);
 
   // reset
@@ -2091,7 +1930,6 @@ static err_t ircons(
   for (usize i = 0; i < countof(c.tmpbuf); i++)
     buf_dispose(&c.tmpbuf[i]);
 
-  droparray_dispose(&c.drops.entries, c.ma);
   ptrarray_dispose(&c.owners.entries, c.ma);
   bitset_dispose(c.deadset, c.ma);
 
