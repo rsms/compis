@@ -28,7 +28,7 @@ static void val(fmtctx_t* ctx, const irval_t* v, bool isdot) {
 
   if (!ismemonly) {
     if (isdot) {
-      PRINTF("v%u = ", v->id);
+      PRINTF("v%-2u = ", v->id);
     } else {
       PRINTF("v%-2u ", v->id);
       u32 tstart = ctx->out.len;
@@ -265,9 +265,53 @@ bool irfmt_fun(buf_t* out, const irfun_t* f) {
 }
 
 
-bool irfmt_dot(buf_t* out, const irfun_t* f) {
+bool irfmt_dot(buf_t* out, const irunit_t* u) {
   fmtctx_t ctx = { .ok = true, .out = *out };
-  fun_dot(&ctx, f);
+
+  #define DOT_FONT "fontname=\"JetBrains Mono NL, Menlo, Courier, monospace\";"
+  buf_print(&ctx.out,
+    "digraph G {\n"
+    "  overlap=false;\n"
+    "  pad=0.2;\n"
+    "  margin=0;\n"
+    "  bgcolor=\"#171717\";\n"
+    "  rankdir=TB; clusterrank=local;\n"
+    "  size=\"9.6,8!\";\n" //"ratio=fill;\n"
+    "  node [\n"
+    "    color=white, shape=record, penwidth=1,\n"
+    "    fontcolor=\"#ffffff\"; " DOT_FONT " fontsize=14\n"
+    "  ];\n"
+    "  edge [\n"
+    "    color=white, minlen=2,\n"
+    "    fontcolor=\"#ffffff\"; " DOT_FONT " fontsize=14\n"
+    "  ];\n"
+  );
+
+  // exclude empty (declaration-only) functions
+  u32 nfuns = 0;
+  for (u32 i = u->functions.len; i;)
+    nfuns += (u32)( ((irfun_t*)u->functions.v[--i])->blocks.len != 0 );
+
+  // note: backwards to make subgraphs order as expected
+  for (u32 i = u->functions.len; i;) {
+    irfun_t* f = u->functions.v[--i];
+    if (f->blocks.len == 0)
+      continue;
+    if (nfuns > 1) {
+      buf_printf(&ctx.out,
+        "subgraph cluster%p {\n"
+        "penwidth=1; color=\"#ffffff44\"; margin=4;\n"
+        "label=\"%s\"; labeljust=l;\n"
+        "fontcolor=\"#ffffff44\"; " DOT_FONT " fontsize=12;\n"
+        , f, f->name);
+    }
+    fun_dot(&ctx, f);
+    if (nfuns > 1)
+      buf_print(&ctx.out, "}\n");
+  }
+
+  buf_push(&ctx.out, '}');
+
   *out = ctx.out;
   return ctx.ok && buf_nullterm(out);
 }

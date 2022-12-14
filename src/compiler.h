@@ -477,8 +477,8 @@ err_t analyze2(compiler_t*, memalloc_t ir_ma, unit_t* unit);
 
 // ir
 bool irfmt(buf_t* out, const irunit_t*);
+bool irfmt_dot(buf_t* out, const irunit_t*); // graphviz
 bool irfmt_fun(buf_t* out, const irfun_t*);
-bool irfmt_dot(buf_t* out, const irfun_t*);
 
 // C code generator
 bool cgen_init(cgen_t* g, compiler_t* c, memalloc_t out_ma);

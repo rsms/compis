@@ -33,13 +33,13 @@ fun create() *int
 //   return y    // transfer ownership of y to caller
 // }             // drop(a)
 
-// fun ownership_drop_ifthen_ret(x, y *int) *int {
+// fun ownership_drop_ifthen_ret(x, y, z *int) *int {
 //   if true {
 //     return x // transfer ownership of x to caller
-//   }          // drop(y)
+//   }          // drop(z), drop(y)
 //   let k = *x // ok since x is alive here
 //   return y   // transfer ownership of y to caller
-// }            // drop(x)
+// }            // drop(z), drop(x)
 
 // fun ownership_drop_ifelse_ret(x, y *int) *int {
 //   if true {
@@ -60,8 +60,8 @@ fun create() *int
 //   if true {
 //     let a = x
 //   }            // drop(a)
-//                // drop(x) in synthetic "else" branch
-//   // let a = x // error: use of dead value
+//                // drop(x) in implicit "else" branch
+//   // let b = x // error: use of dead value
 //   return k     // transfer ownership of y to caller
 // }
 
@@ -94,14 +94,60 @@ fun create() *int
 // }
 
 
+// fun ownership_drop_one_of(x, y *int) *int {
+//   let result = if true {
+//     x          // transfer ownership of x's value to "then" block
+//   } else {     // drop(y)
+//     y          // transfer ownership of y's value to "else" block
+//   }            // drop(x)
+//   // let a = *x // error: use of dead value
+//   // let b = *y // error: use of dead value
+//   return result // transfer ownership of if's value to caller
+// }
+
+
+// fun ownership_drop_inner_ifthen(x *int) *int {
+//   if true {
+//     let a = create()
+//   }        // drop(a)
+//   return x // transfer ownership of x's value to caller
+// }
+
+
+// fun ownership_drop_ifthen(x, y *int) *int {
+//   if true {
+//     let a = y
+//   }        // drop(a); drop(y) in implicit "else" branch
+//   return x // transfer ownership of x's value to caller
+// }
+
+
+fun ownership_drop_ifthen_inner(x *int) *int {
+  if true {
+    let a = create()
+    if true {
+      let _ = *a // make the IR easier to read
+      let b = a
+    }            // drop(b); drop(a) in implicit "else" branch
+  }
+  return x       // transfer ownership of if's value to caller
+}
+
+
 fun ownership_drop_one_of(x, y *int) *int {
   let result = if true {
-    x          // transfer ownership of x's value to "then" block
-  } else {     // drop(y)
-    y          // transfer ownership of y's value to "else" block
-  }            // drop(x)
+    let a = create()
+    let b = create()
+    if true {
+      let a2 = a
+    }           // drop(a2); drop(a) in implicit "else" branch
+    x           // transfer ownership of x's value to "then" block
+  } else {      // drop(b)
+    y           // transfer ownership of y's value to "else" block
+  }             // drop(z)
   // let a = *x // error: use of dead value
   // let b = *y // error: use of dead value
+                // conditionally drop(x) or drop(y)
   return result // transfer ownership of if's value to caller
 }
 
