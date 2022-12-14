@@ -30,7 +30,7 @@ static void val(fmtctx_t* ctx, const irval_t* v, bool isdot) {
     if (isdot) {
       PRINTF("v%u = ", v->id);
     } else {
-      PRINTF("v%-2u", v->id);
+      PRINTF("v%-2u ", v->id);
       u32 tstart = ctx->out.len;
       node_fmt(&ctx->out, (node_t*)v->type, 0);
       PRINTF("%*s = ", MAX(0, 4 - (int)(ctx->out.len - tstart)), "");
@@ -162,9 +162,11 @@ static void fun(fmtctx_t* ctx, const irfun_t* f) {
 static void block_dot_nodes(fmtctx_t* ctx, const char* ns, const irblock_t* b) {
   const char* b_bgcolor = "#cccccc";
   if (b->id == 0) {
-    b_bgcolor = "#aaffdd";
+    b_bgcolor = "#55ff88";
   } else if (b->kind == IR_BLOCK_RET) {
-    b_bgcolor = "#ffccaa";
+    b_bgcolor = "#ff9988";
+  } else if (b->kind == IR_BLOCK_SWITCH) {
+    b_bgcolor = "#77ccff";
   }
 
   PRINTF("  %sb%u [shape=\"none\", label=<<table border=\"0\" cellborder=\"1\" cellspacing=\"0\"><tr><td bgcolor=\"%s\" align=\"center\" colspan=\"1\"><font color=\"black\">%u</font></td></tr>",
@@ -204,7 +206,7 @@ static void block_dot_nodes(fmtctx_t* ctx, const char* ns, const irblock_t* b) {
 static void block_dot_edges(fmtctx_t* ctx, const char* ns, const irblock_t* b) {
   switch (b->kind) {
     case IR_BLOCK_GOTO: {
-      assert(b->succs[0]);
+      assertf(b->succs[0], "b%u", b->id);
       PRINTF("  %sb%u -> %sb%u;\n", ns, b->id, ns, b->succs[0]->id);
       break;
     }

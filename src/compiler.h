@@ -338,14 +338,15 @@ typedef struct irval_ {
   irval_t* argv[3];
   u32      argc;
   union {
-    u32   i32val;
-    u64   i64val;
-    f32   f32val;
-    f64   f64val;
-    void* ptr;
+    u32            i32val;
+    u64            i64val;
+    f32            f32val;
+    f64            f64val;
+    void* nullable ptr;
   } aux;
 
   struct {
+    sym_t nullable live;
     sym_t nullable dst;
     sym_t nullable src;
   } var;
