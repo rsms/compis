@@ -831,9 +831,7 @@ static void stash_block_vars(ircons_t* c, irblock_t* b) {
 
   // save vars
   map_t* vars = assign_block_map(c, &c->defvars, b->id);
-  if UNLIKELY(vars->len != 0) {
-    trace("  merge (block was reopened)");
-  }
+  assertf(vars->len == 0, "block was reopened and variables modified");
   *vars = c->vars;
 
   // replace c.vars with a new map
@@ -965,6 +963,21 @@ static void owners_add(ircons_t* c, irval_t* v) {
     out_of_mem(c);
 }
 
+static bool owners_has(ircons_t* c, irval_t* v, u32 depth) {
+  u32 i = c->owners.entries.len;
+  u32 base = c->owners.base;
+  while (i > 1) {
+    if (--i == base) {
+      if (depth == 0)
+        break;
+      depth--;
+      base = (u32)(uintptr)c->owners.entries.v[i];
+    } else if (c->owners.entries.v[i] == v) {
+      return true;
+    }
+  }
+}
+
 
 static const char* fmtdeadset(ircons_t* c, u32 bufidx, const bitset_t* bs) {
   buf_t* buf = &c->tmpbuf[bufidx];
@@ -984,27 +997,63 @@ static const char* fmtdeadset(ircons_t* c, u32 bufidx, const bitset_t* bs) {
 }
 
 
+static void gen_conditional_drop(ircons_t* c, irval_t* control, irval_t* owner) {
+  // creates "if (!.vN_live) { drop(vN) }"
+  irblock_t* ifb = end_block(c);
+  irval_t* end_control = ifb->control;
+  irblockkind_t end_kind = ifb->kind;
+
+  irblock_t* deadb = mkblock(c, c->f, IR_BLOCK_GOTO, (srcloc_t){0});
+  irblock_t* contb = mkblock(c, c->f, IR_BLOCK_GOTO, (srcloc_t){0});
+
+  set_control(c, contb, ifb->control);
+  contb->kind = ifb->kind;
+  memcpy(contb->succs, ifb->succs, nsuccs(ifb)*sizeof(*ifb->succs));
+
+  ifb->kind = IR_BLOCK_SWITCH;
+  set_control(c, ifb, control);
+
+  ifb->succs[0] = contb; ifb->succs[1] = deadb;   // if -> cont, dead
+  deadb->succs[0] = contb;                        // dead -> cont
+  deadb->preds[0] = ifb;                          // dead <- if
+  contb->preds[0] = ifb; contb->preds[1] = deadb; // cont <- if, dead
+  commentf(c, deadb, "b%u.then", ifb->id);
+  commentf(c, contb, "b%u.cont", ifb->id);
+
+  start_block(c, deadb);
+  seal_block(c, deadb);
+
+  drop(c, owner, (srcloc_t){0});
+
+  end_block(c);
+
+  start_block(c, contb);
+  seal_block(c, contb);
+}
+
+
 static void close_block_scope(
   ircons_t* c, u32 scope_base, irblock_t* entryb, bitset_t* entry_deadset)
 {
   assertf(c->b != &bad_irblock, "no current block");
 
   trace("%s b%u ... b%u", __FUNCTION__, entryb->id, c->b->id);
-  dlog(">> %s b%u ... b%u", __FUNCTION__, entryb->id, c->b->id);
 
   if (entryb != c->b) {
     for (u32 i = 0; i < entryb->values.len; i++) {
       irval_t* v = entryb->values.v[i];
       if (v->var.live) {
-        dlog("b%u: read liveness var %s originating in b%u",
+        // must read var to register PHI when needed
+        trace("b%u reading liveness var %s originating in b%u",
           c->b->id, v->var.live, entryb->id);
-        // must read var to register PHI
         var_read(c, v->var.live, type_bool, (srcloc_t){0});
-        // irval_t* varv = var_read(c, v->var.live, type_bool, (srcloc_t){0});
-        // var_write_inblock(c, c->b, v->var.live, varv);
       }
     }
   }
+
+  // stop now if this scope has no owners
+  if (c->owners.entries.len == 0)
+    return;
 
   // xor computes the set difference between "dead before" and "dead after",
   // effectively "what values were killed in the scope"
@@ -1018,75 +1067,40 @@ static void close_block_scope(
   // iterate over owners defined in the current scope (parent of scope that closed)
   u32 i = c->owners.entries.len;
   u32 base = c->owners.base;
-  u32 entry_endid =
+  u32 entry_endid = // TODO: max id of entryb, not just the last one
     entryb->values.len ? ((irval_t*)entryb->values.v[entryb->values.len-1])->id+1 : 0;
-  while (i > 1) {
-    i--;
-    if (i == base) {
-      // base = (u32)(uintptr)c->owners.entries.v[i];
-      // continue;
-      break;
-    }
+  while (--i > base) {
     irval_t* v = c->owners.entries.v[i];
 
-    // if v was created in the continuation block id doesn't affect liveness diff
-    if (v->id >= entry_endid)
-      continue;
-
-    if (!deadset_has(xor_deadset, v->id)) {
-      dlog("  v%u is live >> drop(v%u)", v->id, v->id);
-      drop(c, v, (srcloc_t){0});
+    if (v->id >= entry_endid) {
+      // v was created in the continuation block; doesn't affect liveness diff
       continue;
     }
 
-    dlog("  v%u may have lost ownership", v->id);
-    // TODO: detect if it _definitely_ lost ownership and just insert a drop()
-    // it's likely so that when var_read(v->var.live) is not a PHI we can just drop
-    // if v is dead..? Maybe?
-
-    // if (base != c->owners.base) {
-    //   dlog("    propagate to parent scope");
-    //   continue;
-    // }
-
-    irval_t* control = var_read(c, v->var.live, type_bool, (srcloc_t){0});
-    dlog("    control: v%u %s", control->id, op_name(control->op));
-    if (control->op != OP_PHI)
-      continue;
-
-    // create "if (!.vN_live) { drop(vN) }"
-    irblock_t* ifb = end_block(c);
-    irval_t* end_control = ifb->control;
-    irblockkind_t end_kind = ifb->kind;
-
-    irblock_t* contb = mkblock(c, c->f, IR_BLOCK_GOTO, (srcloc_t){0});
-    irblock_t* deadb = mkblock(c, c->f, IR_BLOCK_GOTO, (srcloc_t){0});
-
-    set_control(c, contb, ifb->control);
-    contb->kind = ifb->kind;
-    memcpy(contb->succs, ifb->succs, nsuccs(ifb)*sizeof(*ifb->succs));
-
-    ifb->kind = IR_BLOCK_SWITCH;
-    set_control(c, ifb, control);
-
-    ifb->succs[0] = contb; ifb->succs[1] = deadb;   // if -> cont, dead
-    deadb->succs[0] = contb;                        // dead -> cont
-    deadb->preds[0] = ifb;                          // dead <- if
-    contb->preds[0] = ifb; contb->preds[1] = deadb; // cont <- if, dead
-    commentf(c, deadb, "b%u.then", ifb->id);
-    commentf(c, contb, "b%u.cont", ifb->id);
-
-    start_block(c, deadb);
-    seal_block(c, deadb);
-
-    drop(c, v, (srcloc_t){0});
-
-    end_block(c);
-
-    start_block(c, contb);
-    seal_block(c, contb);
+    if (!deadset_has(xor_deadset, v->id)) {
+      // v definitely owns its value at the exit of its owning scope -- drop it
+      trace("  v%u has ownership; drop now", v->id);
+      drop(c, v, (srcloc_t){0});
+    } else {
+      // v may be owning its value, maybe not
+      irval_t* liveness_var = var_read(c, v->var.live, type_bool, (srcloc_t){0});
+      trace("  %s = v%u %s", v->var.live, liveness_var->id, op_name(liveness_var->op));
+      if (liveness_var->op == OP_PHI) {
+        trace("  v%u's ownership is runtime conditional", v->id);
+        // ownership depends on what path the code takes; i.e. determined at runtime.
+        // generate "if (!.vN_live) { drop(vN) }"
+        gen_conditional_drop(c, liveness_var, v);
+      } else {
+        // transitive liveness variable. i.e. a boolean constant like ".v0_live=false"
+        trace("  v%u lost ownership", v->id);
+        dlog(">>> transitive liveness variable (%s = %s)",
+          v->var.live, liveness_var->aux.i64val ? "true" : "false");
+        assert(liveness_var->op == OP_ICONST);
+        assert(liveness_var->aux.i64val == 0); // maybe legit. needs testing
+        // ^ if hit, .vN_live==true -- revisit logic.
+      }
+    }
   }
-  // dlog("abort");abort(); // XXX
 
   bitset_dispose(xor_deadset, c->ma);
 }
@@ -1125,8 +1139,14 @@ static void move_owner(ircons_t* c, irval_t* nullable new_owner, irval_t* old_ow
 
 
 static irval_t* move(ircons_t* c, irval_t* rvalue, srcloc_t loc) {
-  if (rvalue->op == OP_PHI)
+  if (rvalue->op == OP_PHI) {
+    // rvalue is a PHI which means it joins two already-existing moves together
     return rvalue;
+  }
+  if (owners_has(c, rvalue, 0)) {
+    // rvalue is a same-scope owner; additional move is redundant
+    return rvalue;
+  }
   irval_t* v = pushval(c, c->b, OP_MOVE, loc, rvalue->type);
   pusharg(v, rvalue);
   move_owner(c, v, rvalue);
@@ -1248,6 +1268,8 @@ static irval_t* call(ircons_t* c, call_t* n) {
   dlog("TODO call args");
   irval_t* v = pushval(c, c->b, OP_CALL, n->loc, n->type);
   pusharg(v, recv);
+  if (type_isowner(v->type))
+    owners_add(c, v);
   return v;
 }
 
@@ -1262,6 +1284,7 @@ static irval_t* blockexpr0(ircons_t* c, block_t* n, bool isfunbody) {
 
   for (u32 i = 0; i < n->children.len; i++) {
     expr_t* cn = n->children.v[i];
+
     if (i == lastrval && cn->kind != EXPR_RETURN) {
       irval_t* v = load_expr(c, cn);
       // note: if cn constitutes implicit return from a function, isfunbody==true:
@@ -1274,6 +1297,7 @@ static irval_t* blockexpr0(ircons_t* c, block_t* n, bool isfunbody) {
       commentf(c, v, "b%u", c->b->id);
       return v;
     }
+
     expr(c, cn);
     if (cn->kind == EXPR_RETURN)
       break;
@@ -1406,7 +1430,6 @@ static irval_t* ifexpr(ircons_t* c, ifexpr_t* n) {
   drops_unwind_scope(c, scope, n->loc);
   close_block_scope(c, scope, ifb, entry_deadset);
   owners_leave_scope(c);
-  dlog("—————— end \"then\" block ——————");
   drops_scope_leave(c, scope);
   u32 thenb_nvars = c->vars.len; // save number of vars modified by the "then" block
 
