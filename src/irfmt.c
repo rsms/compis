@@ -300,9 +300,9 @@ bool irfmt_dot(buf_t* out, const irunit_t* u) {
     if (nfuns > 1) {
       buf_printf(&ctx.out,
         "subgraph cluster%p {\n"
-        "penwidth=1; color=\"#ffffff44\"; margin=4;\n"
+        "penwidth=1; color=\"#ffffff77\"; margin=4;\n"
         "label=\"%s\"; labeljust=l;\n"
-        "fontcolor=\"#ffffff44\"; " DOT_FONT " fontsize=12;\n"
+        "fontcolor=\"#ffffff77\"; " DOT_FONT " fontsize=14;\n"
         , f, f->name);
     }
     fun_dot(&ctx, f);

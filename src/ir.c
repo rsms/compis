@@ -17,6 +17,7 @@ typedef struct {
   irfun_t*    f;           // current function
   irblock_t*  b;           // current block
   err_t       err;         // result of build process
+  u32         condnest;    // >0 when inside conditional ("if", "for", etc)
   buf_t       tmpbuf[2];   // general-purpose scratch buffers
   map_t       funm;        // {fun_t* => irfun_t*} for breaking cycles
   map_t       vars;        // {sym_t => irval_t*} (moved to defvars by end_block)
@@ -306,6 +307,7 @@ static map_t* nullable get_block_map(maparray_t* a, u32 block_id) {
 static void del_block_map(ircons_t* c, maparray_t* a, u32 block_id) {
   assertf(get_block_map(a, block_id), "no block map for b%u", block_id);
   free_map(c, &a->v[block_id]);
+  maparray_remove(a, block_id, 1);
 }
 
 
@@ -315,9 +317,8 @@ static map_t* assign_block_map(ircons_t* c, maparray_t* a, u32 block_id) {
     // fill holes
     u32 nholes = (block_id - a->len) + 1;
     map_t* p = maparray_alloc(a, c->ma, nholes);
-    if UNLIKELY(!p) {
+    if UNLIKELY(!p)
       return out_of_mem(c), &last_resort_map;
-    }
     memset(p, 0, sizeof(map_t) * nholes);
   }
   if (a->v[block_id].cap == 0) {
@@ -416,14 +417,6 @@ inline static u32 nsuccs(const irblock_t* b) {
   assertf(b->succs[1] == NULL || b->succs[0],
     "has succs[1] (b%u) but no b->succs[0]", b->succs[1]->id);
   return (u32)!!b->succs[0] + (u32)!!b->succs[1];
-}
-
-
-static u32 block_max_val_id(const irblock_t* b) {
-  u32 id = 0;
-  for (u32 i = b->values.len; i;)
-    id = MAX(id, ((irval_t*)b->values.v[--i])->id);
-  return id;
 }
 
 
@@ -634,12 +627,24 @@ static void stash_block_vars(ircons_t* c, irblock_t* b) {
 
   // save vars
   map_t* vars = assign_block_map(c, &c->defvars, b->id);
-  assertf(vars->len == 0, "block was reopened and variables modified");
-  *vars = c->vars;
+  //assertf(vars->len == 0, "block was reopened and variables modified");
+  if (vars->len == 0) {
+    // swap c.vars with defvars
+    map_t newmap = *vars;
+    *vars = c->vars;
+    c->vars = newmap;
+  } else {
+    // merge c.vars into existing defvars
+    if UNLIKELY(!map_reserve(vars, c->ma, c->vars.len))
+      return out_of_mem(c);
+    for (const mapent_t* e = map_it(&c->vars); map_itnext(&c->vars, &e); ) {
+      void** vp = map_assign_ptr(vars, c->ma, e->key);
+      assertnotnull(vp); // earlier map_reserve should prevent this from happening
+      *vp = e->value;
+    }
+    map_clear(&c->vars);
+  }
 
-  // replace c.vars with a new map
-  if UNLIKELY(!alloc_map(c, &c->vars))
-    out_of_mem(c);
 }
 
 
@@ -723,26 +728,25 @@ static irblock_t* entry_block(irfun_t* f) {
 static irval_t* intconst(ircons_t* c, type_t* t, u64 value, srcloc_t loc);
 
 
-static sym_t liveness_var(ircons_t* c, irval_t* v) {
-  if (v->var.live != NULL)
-    return v->var.live;
+static void create_liveness_var(ircons_t* c, irval_t* v) {
+  assert(v->var.live == NULL);
 
+  // create initial (always true) liveness var in the block that defines v
   char tmp[32];
   sym_t name = sym_snprintf(tmp, sizeof(tmp), ".v%u_live", v->id);
   v->var.live = name;
 
-  srcloc_t loc = {0};
-  irval_t* truev = intconst(c, type_bool, 1, loc);
-
   irblock_t* b = irval_block(c, v);
-
-  // irval_t* store = pushval(c, b, OP_LOCAL, loc, type_bool);
-  // pusharg(store, truev);
-  // comment(c, store, name);
-
+  irval_t* truev = intconst(c, type_bool, 1, (srcloc_t){0});
   var_write_inblock(c, b, name, truev);
+}
 
-  return name;
+
+static void write_liveness_var(ircons_t* c, irval_t* owner, bool islive) {
+  if (owner->var.live == NULL)
+    create_liveness_var(c, owner);
+  irval_t* islivev = intconst(c, type_bool, (u64)islive, (srcloc_t){0});
+  var_write_inblock(c, c->b, owner->var.live, islivev);
 }
 
 
@@ -771,7 +775,7 @@ static void owners_add(ircons_t* c, irval_t* v) {
 static void owners_del_at(ircons_t* c, u32 index) {
   trace("\e[1;32m%s\e[0m" " [%u]", __FUNCTION__, index);
   assert(c->owners.entries.len > index);
-  assertf(c->owners.base < index, "index is base storage, not value");
+  assertf(c->owners.base < index, "index(%u) is below base(%u)", index, c->owners.base);
   ptrarray_remove(&c->owners.entries, index, 1);
 }
 
@@ -863,11 +867,13 @@ static void drop(ircons_t* c, irval_t* v, srcloc_t loc) {
     v->type = type_void;
     // note: arg 0 is already the value to drop
     v->var.src = v->var.dst;
+    trace("drop v%u in b%u", v->argv[0]->id, c->b->id);
   } else {
     //
     irval_t* dropv = pushval(c, c->b, OP_DROP, loc, type_void);
     pusharg(dropv, v);
     dropv->var.src = v->var.dst;
+    trace("drop v%u in b%u", v->id, c->b->id);
   }
 }
 
@@ -908,9 +914,11 @@ static void conditional_drop(ircons_t* c, irval_t* control, irval_t* owner) {
 static void owners_unwind_one(ircons_t* c, const bitset_t* deadset, irval_t* v) {
   if (!deadset_has(deadset, v->id)) {
     // v definitely owns its value at the exit of its owning scope -- drop it
-    trace("  v%u retains ownership; drop now", v->id);
+    trace("  v%u is live; drop right here in b%u", v->id, c->b->id);
     drop(c, v, (srcloc_t){0});
-  } else {
+    return;
+  }
+  if (v->var.live) {
     // v may be owning its value, maybe not
     irval_t* liveness_var = var_read(c, v->var.live, type_bool, (srcloc_t){0});
     trace("  %s = v%u %s", v->var.live, liveness_var->id, op_name(liveness_var->op));
@@ -919,9 +927,8 @@ static void owners_unwind_one(ircons_t* c, const bitset_t* deadset, irval_t* v) 
       // ownership depends on what path the code takes; i.e. determined at runtime.
       // generate "if (!.vN_live) { drop(vN) }"
       conditional_drop(c, liveness_var, v);
+      return;
     } else {
-      // transitive liveness variable. i.e. a boolean constant like ".v0_live=false"
-      trace("  v%u lost ownership", v->id);
       // dlog("transitive liveness variable (%s = %s)",
       //   v->var.live, liveness_var->aux.i64val ? "true" : "false");
       assert(liveness_var->op == OP_ICONST);
@@ -929,11 +936,13 @@ static void owners_unwind_one(ircons_t* c, const bitset_t* deadset, irval_t* v) 
       // ^ if hit, .vN_live==true -- revisit logic.
     }
   }
+  // transitive liveness variable. i.e. a boolean constant like ".v0_live=false"
+  trace("  v%u lost ownership", v->id);
 }
 
 
 static void owners_unwind_all(ircons_t* c) {
-  trace("%s b%u", __FUNCTION__, c->b->id);
+  trace("%s b%u (%u owners in scope)", __FUNCTION__, c->b->id, c->owners.entries.len);
 
   u32 i = c->owners.entries.len;
   u32 base = c->owners.base;
@@ -974,21 +983,68 @@ static void owners_unwind_scope(
   u32 i = c->owners.entries.len;
   u32 base = c->owners.base;
 
-  // // entry_endid is the max id + 1 of entryb->values
-  // u32 entry_endid = block_max_val_id(entryb);
-  // dlog("entry_endid %u", entry_endid);
-  // entry_endid += entry_endid != 0; // if (entry_endid != 0) entry_endid++
-
   while (--i > base) {
     irval_t* v = c->owners.entries.v[i];
-    // // if v was created in the entry block
-    // // (values created in continuation block doesn't affect liveness diff)
-    // if (v->id < entry_endid)
-    //   owners_unwind_one(c, xor_deadset, v);
     owners_unwind_one(c, xor_deadset, v);
   }
 
   bitset_dispose(xor_deadset, c->ma);
+}
+
+
+static u32 owners_find_lost(
+  ircons_t* c, const bitset_t* entry_deadset, const bitset_t* exit_deadset)
+{
+  // returns index+1 of first (top of stack) drops.entries entry which
+  // lost ownership since entry_deadset. (returns 0 if none found.)
+  u32 i = c->owners.entries.len;
+  u32 base = c->owners.base;
+  while (i > 1) {
+    if (--i == base) {
+      base = (u32)(uintptr)c->owners.entries.v[i];
+    } else {
+      irval_t* v = c->owners.entries.v[i];
+      if (!bitset_has(entry_deadset, v->id) && bitset_has(exit_deadset, v->id))
+        return i + 1;
+    }
+  }
+  return 0;
+}
+
+
+static void owners_drop_lost(
+  ircons_t*       c,
+  const bitset_t* entry_deadset,
+  const bitset_t* exit_deadset,
+  srcloc_t        loc
+  #ifdef TRACE_ANALYSIS
+  ,const char*    trace_msg
+  #endif
+  )
+{
+  // drops values which lost ownership since entry_deadset. loc is used for DROPs.
+  u32 i = c->owners.entries.len;
+  u32 base = c->owners.base;
+  while (i > 1) {
+    i--;
+    if (i == base) {
+      base = (u32)(uintptr)c->owners.entries.v[i];
+      continue;
+    }
+    irval_t* v = c->owners.entries.v[i];
+    if (!bitset_has(entry_deadset, v->id) && bitset_has(exit_deadset, v->id)) {
+      trace("  v%u lost ownership%s", v->id, trace_msg);
+      assert(entry_deadset->cap > v->id);
+      drop(c, v, loc);
+      if (base == c->owners.base) {
+        // belongs to the current scope; we can simply forget about this owner
+        owners_del_at(c, i);
+      } else {
+        // belongs to a parent scope; update its liveness var
+        write_liveness_var(c, v, false);
+      }
+    }
+  }
 }
 
 
@@ -1000,23 +1056,19 @@ static void move_owner(ircons_t* c, irval_t* nullable new_owner, irval_t* old_ow
     trace("\e[1;33m" "move owner: v%u -> outside" "\e[0m", old_owner->id);
   }
 
-  assertf(!deadset_has(c->deadset, old_owner->id), "source value is dead");
+  assertf(!deadset_has(c->deadset, old_owner->id), "v%u in deadset", old_owner->id);
+  if (new_owner)
+    assertf(!deadset_has(c->deadset, new_owner->id), "v%u in deadset", new_owner->id);
+
+  // mark old_owner as dead, no longer having ownership over its value
   deadset_add(c, &c->deadset, old_owner->id);
 
-  // mark old_owner as no longer live by setting its liveness var to false
-  // TODO: only do this when we know we'll need Phi (e.g. inside conditionals)
-  irval_t* falsev = intconst(c, type_bool, 0, (srcloc_t){0});
-  sym_t old_name = liveness_var(c, old_owner);
-  var_write(c, old_name, falsev);
-
-  if (new_owner) {
-    if UNLIKELY(!bitset_ensure_cap(&c->deadset, c->ma, new_owner->id+1))
-      out_of_mem(c);
-    assertf(!bitset_has(c->deadset, new_owner->id),
-      "new_owner v%u already in deadset!", new_owner->id);
-    irval_t* truev = intconst(c, type_bool, 1, (srcloc_t){0});
-    sym_t new_name = liveness_var(c, new_owner);
-    var_write(c, new_name, truev);
+  // when on a conditional path, e.g. from "if", track liveness vars
+  if (c->condnest) {
+    // mark old_owner as no longer live by setting its liveness var to false
+    write_liveness_var(c, old_owner, false);
+    if (new_owner)
+      write_liveness_var(c, new_owner, true);
   }
 }
 
@@ -1254,6 +1306,7 @@ static irval_t* ifexpr(ircons_t* c, ifexpr_t* n) {
   //     <continuation-block>
   //
   irfun_t* f = c->f;
+  c->condnest++;
 
   // generate control condition
   irval_t* control = load_expr(c, n->cond);
@@ -1275,8 +1328,8 @@ static irval_t* ifexpr(ircons_t* c, ifexpr_t* n) {
   // copy deadset as is before entering "then" branch, in case it returns
   bitset_t* entry_deadset = deadset_copy(c, c->deadset);
 
-  // begin "then" block
-  trace("if \"then\" block");
+  // begin "then" branch
+  trace("if \"then\" branch");
   thenb->preds[0] = ifb; // then <- if
   start_block(c, thenb);
   seal_block(c, thenb);
@@ -1284,11 +1337,16 @@ static irval_t* ifexpr(ircons_t* c, ifexpr_t* n) {
   irval_t* thenv = blockexpr_noscope(c, n->thenb, /*isfunbody*/false);
   owners_unwind_scope(c, ifb, entry_deadset);
   owners_leave_scope(c);
-  u32 thenb_nvars = c->vars.len; // save number of vars modified by the "then" block
+  u32 thenb_nvars = c->vars.len; // save number of vars modified by the "then" branch
 
-  // if "then" block returns, undo deadset changes made by the "then" block
-  if (c->b->kind == IR_BLOCK_RET) {
-    trace("\"then\" block returns -- undo deadset changes from \"then\" block");
+  // if "then" branch returns, undo deadset changes made by the "then" branch,
+  // or there's an "else" branch which needs deadset state before "then" branch.
+  bitset_t* then_entry_deadset;
+  if (c->b->kind == IR_BLOCK_RET || n->elseb) {
+    if (n->elseb) {
+      // copy deadset as is before entering "else" branch
+      then_entry_deadset = deadset_copy(c, c->deadset);
+    }
     if UNLIKELY(!bitset_copy(&c->deadset, entry_deadset, c->ma))
       out_of_mem(c);
   }
@@ -1300,15 +1358,7 @@ static irval_t* ifexpr(ircons_t* c, ifexpr_t* n) {
 
   // begin "else" branch (if there is one)
   if (n->elseb) {
-    trace("if \"else\" block");
-
-    // copy deadset as is before entering "else" branch, in case it returns
-    bitset_t* then_entry_deadset = deadset_copy(c, c->deadset);
-
-    // undo kills made in "then" branch
-    // FIXME: duplicate (also done earlier when thenb->kind==IR_BLOCK_RET)
-    if UNLIKELY(!bitset_copy(&c->deadset, entry_deadset, c->ma))
-      out_of_mem(c);
+    trace("if \"else\" branch");
 
     // begin "else" block
     commentf(c, elseb, "b%u.else", ifb->id);
@@ -1317,19 +1367,26 @@ static irval_t* ifexpr(ircons_t* c, ifexpr_t* n) {
     seal_block(c, elseb);
     owners_enter_scope(c);
     elsev = blockexpr_noscope(c, n->elseb, /*isfunbody*/false);
-    //drops_unwind_scope(c, scope, n->loc);
     owners_unwind_scope(c, ifb, entry_deadset);
     owners_leave_scope(c);
 
     // if "then" block returns, no "cont" block needed
-    // e.g. "fun f() { if true { 1 } else { return 2 }; return 3 }"
+    // e.g. "fun f() int { if true { 1 } else { return 2 }; 3 }"
     if (thenb->kind == IR_BLOCK_RET) {
       // discard_block(c, contb);
       bitset_dispose(entry_deadset, c->ma);
       bitset_dispose(then_entry_deadset, c->ma);
+      c->condnest--;
       return elsev;
     }
 
+    // generate drops in "else" branch for owners lost in "then" branch
+    // note: must run in the "if"-parent scope, not in a branch's scope.
+    //dlog("entry_deadset:\n  %s", fmtdeadset(c, 0, entry_deadset));
+    //dlog("c->deadset:\n  %s", fmtdeadset(c, 0, c->deadset));
+    owners_drop_lost(c, c->deadset, then_entry_deadset, n->loc, " in \"then\" branch");
+
+    // end "else" block
     u32 elseb_nvars = c->vars.len; // save number of vars modified by the "else" block
     elseb = end_block(c);
 
@@ -1338,6 +1395,13 @@ static irval_t* ifexpr(ircons_t* c, ifexpr_t* n) {
       trace("\"else\" block returns -- undo deadset changes from \"else\" block");
       if UNLIKELY(!bitset_copy(&c->deadset, then_entry_deadset, c->ma))
         out_of_mem(c);
+    } else if (owners_find_lost(c, then_entry_deadset, c->deadset)) {
+      // generate drops in "then" branch for owners lost in "else" branch.
+      // note: must run in the "if"-parent scope, not in a branch's scope.
+      start_block(c, thenb);
+      //reopen_block(c, thenb);
+      owners_drop_lost(c, then_entry_deadset, c->deadset, n->loc, " in \"else\" branch");
+      end_block(c);
     }
 
     // merge ownership losses that happened in the "then" branch into "after if"
@@ -1413,21 +1477,7 @@ static irval_t* ifexpr(ircons_t* c, ifexpr_t* n) {
     // no "else" branch
 
     // check if "then" branch caused loss of ownership of outer values
-    u32 then_drops_i = 0;
-    if (thenb->kind != IR_BLOCK_RET) {
-      // detect if values which lost ownership since entry_deadset.
-      // returns index+1 of first (top of stack) drops.entries entry.
-      for (u32 i = c->owners.entries.len; i-- > 0; ) {
-        irval_t* v = c->owners.entries.v[i];
-        if (i == c->owners.base)
-          break;
-        if (bitset_has(c->deadset, v->id) && !bitset_has(entry_deadset, v->id)) {
-          then_drops_i = i + 1;
-          break;
-        }
-      }
-    }
-    if (then_drops_i) {
+    if (thenb->kind != IR_BLOCK_RET && owners_find_lost(c, entry_deadset, c->deadset)) {
       // begin "else" branch
       commentf(c, elseb, "b%u.implicit_else", ifb->id);
       elseb->preds[0] = ifb; // else <- if
@@ -1435,17 +1485,7 @@ static irval_t* ifexpr(ircons_t* c, ifexpr_t* n) {
       seal_block(c, elseb);
 
       // generate drops for values which lost ownership in the "then" branch
-      for (u32 i = then_drops_i; i-- > 0 ;) {
-        if (i == c->owners.base)
-          break;
-        irval_t* v = c->owners.entries.v[i];
-        if (bitset_has(c->deadset, v->id) && !bitset_has(entry_deadset, v->id)) {
-          trace("  v%u lost ownership in \"then\" branch", v->id);
-          assert(entry_deadset->cap > v->id);
-          drop(c, v, n->loc);
-          owners_del_at(c, i);
-        }
-      }
+      owners_drop_lost(c, entry_deadset, c->deadset, n->loc, " in \"then\" branch");
 
       // end "else" branch
       elseb = end_block(c);
@@ -1486,6 +1526,7 @@ static irval_t* ifexpr(ircons_t* c, ifexpr_t* n) {
   }
 
   bitset_dispose(entry_deadset, c->ma);
+  c->condnest--;
 
   // if the result of the "if" expression is not used, no PHI is needed
   if (!isrvalue(n) || thenv == elsev)
@@ -1653,6 +1694,7 @@ static irfun_t* fun(ircons_t* c, fun_t* n) {
   }
 
   c->f = f;
+  c->condnest = 0;
   c->owners.entries.len = 0;
   c->owners.base = 0;
   bitset_clear(c->deadset);
@@ -1721,7 +1763,7 @@ static irfun_t* fun(ircons_t* c, fun_t* n) {
       free_map(c, &c->pendingphis.v[i]);
   }
 
-  check_borrowing(c, f);
+  //check_borrowing(c, f);
 
 end:
   c->f = &bad_irfun;
