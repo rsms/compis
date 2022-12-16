@@ -29,6 +29,11 @@ void cgen_dispose(cgen_t* g) {
 }
 
 
+inline static locmap_t* locmap(cgen_t* g) {
+  return &g->compiler->locmap;
+}
+
+
 static void seterr(cgen_t* g, err_t err) {
   if (!g->err)
     g->err = err;
@@ -36,28 +41,27 @@ static void seterr(cgen_t* g, err_t err) {
 
 
 #define error(g, node_or_type, fmt, args...) \
-  _error((g), (srcrange_t){ .focus = assertnotnull(node_or_type)->loc }, \
+  _error((g), origin_make(locmap(g), assertnotnull(node_or_type)->loc), \
     "[cgen] " fmt, ##args)
+
+ATTR_FORMAT(printf,3,4)
+static void _error(cgen_t* g, origin_t origin, const char* fmt, ...) {
+  va_list ap;
+  va_start(ap, fmt);
+  report_diagv(g->compiler, origin, DIAG_ERR, fmt, ap);
+  va_end(ap);
+  seterr(g, ErrInvalid);
+}
 
 
 #if DEBUG
   #define debugdie(g, node_or_type, fmt, args...) ( \
-    _error((g), (srcrange_t){ .focus = (node_or_type)->loc }, "[cgen] " fmt, ##args), \
+    error((g), (node_or_type), fmt, ##args), \
     panic("code generator got unexpected AST") \
   )
 #else
   #define debugdie(...) ((void)0)
 #endif
-
-
-ATTR_FORMAT(printf,3,4)
-static void _error(cgen_t* g, srcrange_t srcrange, const char* fmt, ...) {
-  va_list ap;
-  va_start(ap, fmt);
-  report_diagv(g->compiler, srcrange, DIAG_ERR, fmt, ap);
-  va_end(ap);
-  seterr(g, ErrInvalid);
-}
 
 
 #define INTERNAL_PREFIX "_c0·"
@@ -75,32 +79,34 @@ static char lastchar(cgen_t* g) {
 }
 
 
-static bool startloc(cgen_t* g, srcloc_t loc) {
-  bool inputok = loc.input == NULL || g->input == loc.input;
+static bool startloc(cgen_t* g, loc_t loc) {
+  bool inputok = loc_inputid(loc) == 0 || g->inputid == loc_inputid(loc);
+  u32 lineno = loc_line(loc);
 
-  if (loc.line == 0 || (g->lineno == loc.line && inputok))
+  if (lineno == 0 || (g->lineno == lineno && inputok))
     return false;
 
-  if (g->lineno < loc.line && inputok && loc.line - g->lineno < 4) {
-    buf_fill(&g->outbuf, '\n', loc.line - g->lineno);
+  if (g->lineno < lineno && inputok && lineno - g->lineno < 4) {
+    buf_fill(&g->outbuf, '\n', lineno - g->lineno);
   } else {
     if (g->outbuf.len && g->outbuf.chars[g->outbuf.len-1] != '\n')
       CHAR('\n');
     if (g->scopenest == 0)
       CHAR('\n');
-    PRINTF("#line %u", loc.line);
+    PRINTF("#line %u", lineno);
     if (!inputok) {
-      g->input = loc.input;
-      PRINTF(" \"%s\"", g->input->name);
+      input_t* input = loc_input(loc, locmap(g));
+      g->inputid = loc_inputid(loc);
+      PRINTF(" \"%s\"", assertnotnull(input)->name);
     }
   }
 
-  g->lineno = loc.line;
+  g->lineno = lineno;
   return true;
 }
 
 
-static void startline(cgen_t* g, srcloc_t loc) {
+static void startline(cgen_t* g, loc_t loc) {
   g->lineno++;
   startloc(g, loc);
   CHAR('\n');
@@ -109,7 +115,6 @@ static void startline(cgen_t* g, srcloc_t loc) {
 
 
 static void startlinex(cgen_t* g) {
-  // startline(g, (srcloc_t){.line=g->lineno+1});
   g->lineno++;
   CHAR('\n');
   buf_fill(&g->outbuf, ' ', g->indent*2);
@@ -122,7 +127,7 @@ static sizetuple_t x_semi_begin_char(cgen_t* g, char c) {
 }
 
 
-static sizetuple_t x_semi_begin_startline(cgen_t* g, srcloc_t loc) {
+static sizetuple_t x_semi_begin_startline(cgen_t* g, loc_t loc) {
   usize len0 = g->outbuf.len;
   startline(g, loc);
   return (sizetuple_t){{ len0, g->outbuf.len }};
@@ -355,7 +360,7 @@ static void gen_struct_typedef(cgen_t* g, const type_t* tp, sym_t typename) {
     const type_t* t = NULL;
     for (u32 i = 0; i < n->fields.len; i++) {
       const local_t* f = n->fields.v[i];
-      bool newline = f->loc.line != g->lineno;
+      bool newline = loc_line(f->loc) != g->lineno;
       if (newline) {
         if (i) CHAR(';');
         t = NULL;
@@ -377,7 +382,7 @@ static void gen_struct_typedef(cgen_t* g, const type_t* tp, sym_t typename) {
     }
     CHAR(';');
     g->indent--;
-    startline(g, (srcloc_t){0});
+    startline(g, (loc_t){0});
   }
   PRINT("} ");
   PRINT(typename);
@@ -614,15 +619,15 @@ static void cleanups(cgen_t* g, const ptrarray_t* cleanup) {
 }
 
 
-static sizetuple_t x_semi_begin(cgen_t* g, srcloc_t loc) {
-  if (loc.line != g->lineno && loc.line)
+static sizetuple_t x_semi_begin(cgen_t* g, loc_t loc) {
+  if (loc_line(loc) != g->lineno && loc_line(loc) == 0)
     return x_semi_begin_startline(g, loc);
   return x_semi_begin_char(g, ' ');
 }
 
 
-static void startline_if_needed(cgen_t* g, srcloc_t loc) {
-  if (loc.line != g->lineno && loc.line)
+static void startline_if_needed(cgen_t* g, loc_t loc) {
+  if (loc_line(loc) != g->lineno && loc_line(loc) == 0)
     startline(g, loc);
 }
 
@@ -834,7 +839,7 @@ static void block(cgen_t* g, const block_t* n, blockflag_t fl) {
     } // for
     g->indent--;
     if (start_lineno != g->lineno) {
-      startline(g, (srcloc_t){0});
+      startline(g, (loc_t){0});
     } else {
       CHAR(' ');
     }
@@ -1394,7 +1399,7 @@ static void ifexpr(cgen_t* g, const ifexpr_t* n) {
     }
     PRINT(" : (");
     if (n->elseb) {
-      if (n->elseb->loc.line != g->lineno)
+      if (loc_line(n->elseb->loc) != g->lineno)
         startline(g, n->elseb->loc);
       block(g, n->elseb, 0);
       if (n->elseb->type == type_void)
@@ -1555,16 +1560,17 @@ err_t cgen_generate(cgen_t* g, const unit_t* n) {
   map_clear(&g->typedefmap);
   map_clear(&g->tmpmap);
   g->anon_idgen = 0;
-  g->input = NULL;
+  g->inputid = 0;
   g->lineno = 0;
   g->scopenest = 0;
   g->headnest = 0;
 
   PRINT("#include <c0prelude.h>\n");
-  if (n->loc.input) {
-    g->input = n->loc.input;
+  input_t* input = loc_input(n->loc, locmap(g));
+  if (input) {
+    g->inputid = loc_inputid(n->loc);
     g->lineno = 1;
-    PRINTF("\n#line 1 \"%s\"\n", n->loc.input->name);
+    PRINTF("\n#line 1 \"%s\"\n", input->name);
   }
 
   usize headstart = g->outbuf.len;

@@ -45,9 +45,8 @@ void scanner_set_input(scanner_t* s, input_t* input) {
   s->inp = input->data.p;
   s->inend = input->data.p + input->data.size;
   s->linestart = input->data.p;
-  s->loc.line = 1;
-  s->loc.col = 1;
-  s->loc.input = input;
+  u32 input_loc_inputid = locmap_inputid(&s->compiler->locmap, input, s->compiler->ma);
+  s->loc = loc_make(input_loc_inputid, 1, 1, 1);
   s->lineno = 1;
 }
 
@@ -72,11 +71,11 @@ slice_t scanner_lit(const scanner_t* s) {
 ATTR_FORMAT(printf,2,3)
 static void error(scanner_t* s, const char* fmt, ...) {
   if (s->inp == s->inend && s->tok == TEOF)
-    return;
-  srcrange_t srcrange = { .focus = s->loc };
+    return; // stop_scanning
+  origin_t origin = origin_make(&s->compiler->locmap, s->loc);
   va_list ap;
   va_start(ap, fmt);
-  report_diagv(s->compiler, srcrange, DIAG_ERR, fmt, ap);
+  report_diagv(s->compiler, origin, DIAG_ERR, fmt, ap);
   va_end(ap);
   stop_scanning(s);
 }
@@ -310,8 +309,8 @@ static void skip_comment(scanner_t* s) {
 
 static void scan1(scanner_t* s) {
   s->tokstart = s->inp;
-  s->loc.line = s->lineno;
-  s->loc.col = (u32)(uintptr)(s->tokstart - s->linestart) + 1;
+  loc_set_line(&s->loc, s->lineno);
+  loc_set_col(&s->loc, (u32)(uintptr)(s->tokstart - s->linestart) + 1);
 
   bool insertsemi = s->insertsemi;
   s->insertsemi = false;
@@ -413,8 +412,8 @@ static void scan0(scanner_t* s) {
     s->insertsemi = false;
     s->tokstart = prev_linestart;
     s->tok = TSEMI;
-    s->loc.line = prev_lineno;
-    s->loc.col = (usize)(uintptr)(s->tokend - prev_linestart) + 1;
+    loc_set_line(&s->loc, prev_lineno);
+    loc_set_col(&s->loc, (usize)(uintptr)(s->tokend - prev_linestart) + 1);
     return;
   }
 
@@ -422,8 +421,8 @@ static void scan0(scanner_t* s) {
   if UNLIKELY(s->inp >= s->inend) {
     s->tokstart = s->inend;
     s->tok = TEOF;
-    s->loc.line = s->lineno;
-    s->loc.col = (u32)(uintptr)(s->tokstart - s->linestart) + 1;
+    loc_set_line(&s->loc, s->lineno);
+    loc_set_col(&s->loc, (u32)(uintptr)(s->tokstart - s->linestart) + 1);
     if (s->insertsemi) {
       s->tok = TSEMI;
       s->insertsemi = false;
@@ -439,12 +438,11 @@ void scanner_next(scanner_t* s) {
   s->tokend = s->inp;
   scan0(s);
   #ifdef DEBUG_SCANNING
-    u32 line = s->loc.line;
-    u32 col = s->loc.col;
-    const char* srcfile = s->loc.input->name;
+    char locstr[128];
+    loc_fmt(s->loc, locstr, sizeof(locstr), &s->compiler->locmap);
     const char* name = tok_name(s->tok);
     slice_t lit = scanner_lit(s);
-    log("scan>  %s:%u:%u\t%-12s \"%.*s\"\t%llu\t0x%llx",
-      srcfile, line, col, name, (int)lit.len, lit.chars, s->litint, s->litint);
+    log("scan>  %s\t%-12s \"%.*s\"\t%llu\t0x%llx",
+      locstr, name, (int)lit.len, lit.chars, s->litint, s->litint);
   #endif
 }

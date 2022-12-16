@@ -86,12 +86,21 @@ inline static void restore_scanstate(parser_t* p, scanstate_t state) {
 }
 
 
+inline static locmap_t* locmap(parser_t* p) {
+  return &p->scanner.compiler->locmap;
+}
+
+
 inline static tok_t currtok(parser_t* p) {
   return p->scanner.tok;
 }
 
-inline static srcloc_t currloc(parser_t* p) {
+inline static loc_t currloc(parser_t* p) {
   return p->scanner.loc;
+}
+
+inline static origin_t curr_origin(parser_t* p) {
+  return origin_make(locmap(p), currloc(p));
 }
 
 
@@ -121,12 +130,9 @@ static bool lookahead_issym(parser_t* p, sym_t sym) {
 
 #ifdef LOG_PRATT_ENABLED
   static void log_pratt(parser_t* p, const char* msg) {
-    log("parse> %s:%u:%u\t%-12s %s",
-      p->scanner.loc.input->name,
-      p->scanner.loc.line,
-      p->scanner.loc.col,
-      tok_name(currtok(p)),
-      msg);
+    char locstr[128];
+    loc_fmt(p->scanner.loc, locstr, sizeof(locstr), locmap(p));
+    log("parse> %s\t%-12s %s", locstr, tok_name(currtok(p)), msg);
   }
   static void log_pratt_infix(
     parser_t* p, const char* class,
@@ -172,12 +178,13 @@ static void fastforward_semi(parser_t* p) {
 
 
 ATTR_FORMAT(printf,3,4)
-static void error1(parser_t* p, srcrange_t srcrange, const char* fmt, ...) {
+static void error_loc(parser_t* p, loc_t loc, const char* fmt, ...) {
   if (p->scanner.inp == p->scanner.inend && p->scanner.tok == TEOF)
     return;
+  origin_t origin = origin_make(locmap(p), loc);
   va_list ap;
   va_start(ap, fmt);
-  report_diagv(p->scanner.compiler, srcrange, DIAG_ERR, fmt, ap);
+  report_diagv(p->scanner.compiler, origin, DIAG_ERR, fmt, ap);
   va_end(ap);
 }
 
@@ -186,20 +193,20 @@ ATTR_FORMAT(printf,3,4)
 static void error(parser_t* p, const void* nullable n, const char* fmt, ...) {
   if (p->scanner.inp == p->scanner.inend && p->scanner.tok == TEOF)
     return;
-  srcrange_t srcrange = n ? node_srcrange(n) : (srcrange_t){ .focus = currloc(p), };
+  origin_t origin = n ? node_origin(locmap(p), n) : curr_origin(p);
   va_list ap;
   va_start(ap, fmt);
-  report_diagv(p->scanner.compiler, srcrange, DIAG_ERR, fmt, ap);
+  report_diagv(p->scanner.compiler, origin, DIAG_ERR, fmt, ap);
   va_end(ap);
 }
 
 
 ATTR_FORMAT(printf,3,4)
 static void warning(parser_t* p, const void* nullable n, const char* fmt, ...) {
-  srcrange_t srcrange = n ? node_srcrange(n) : (srcrange_t){ .focus = currloc(p), };
+  origin_t origin = n ? node_origin(locmap(p), n) : curr_origin(p);
   va_list ap;
   va_start(ap, fmt);
-  report_diagv(p->scanner.compiler, srcrange, DIAG_WARN, fmt, ap);
+  report_diagv(p->scanner.compiler, origin, DIAG_WARN, fmt, ap);
   va_end(ap);
 }
 
@@ -584,7 +591,7 @@ static bool struct_fieldset(parser_t* p, structtype_t* st) {
       const char* s = fmtnode(p, 0, st, 0);
       error(p, f, "duplicate %s \"%s\" for type %s",
         (existing->kind == EXPR_FIELD) ? "field" : "member", f->name, s);
-      if (existing->loc.line)
+      if (loc_line(existing->loc))
         warning(p, (node_t*)existing, "previously defined here");
     }
 
@@ -1684,7 +1691,7 @@ static map_t* nullable get_or_create_methodmap(parser_t* p, const type_t* t) {
 }
 
 
-static void add_method(parser_t* p, fun_t* fun, srcloc_t name_loc) {
+static void add_method(parser_t* p, fun_t* fun, loc_t name_loc) {
   assertnotnull(fun->methodof);
   assertnotnull(fun->name);
   assert(fun->name != sym__);
@@ -1701,10 +1708,9 @@ static void add_method(parser_t* p, fun_t* fun, srcloc_t name_loc) {
 
   if UNLIKELY(existing) {
     const char* s = fmtnode(p, 0, fun->methodof, 0);
-    srcrange_t srcrange = { .focus = name_loc };
-    error1(p, srcrange, "duplicate %s \"%s\" for type %s",
+    error_loc(p, name_loc, "duplicate %s \"%s\" for type %s",
       (existing->kind == EXPR_FUN) ? "method" : "member", fun->name, s);
-    if (existing->loc.line)
+    if (loc_line(existing->loc))
       warning(p, (node_t*)existing, "previously defined here");
     return;
   }
@@ -1715,7 +1721,7 @@ static void add_method(parser_t* p, fun_t* fun, srcloc_t name_loc) {
 
 static void fun_name(parser_t* p, fun_t* fun, type_t* nullable recv) {
   fun->name = p->scanner.sym;
-  srcloc_t name_loc = currloc(p);
+  loc_t name_loc = currloc(p);
   next(p);
 
   if (recv) {
@@ -1732,13 +1738,12 @@ static void fun_name(parser_t* p, fun_t* fun, type_t* nullable recv) {
     // resolve receiver, e.g. "Foo" in "Foo.bar"
     recv = (type_t*)lookup(p, fun->name);
     if UNLIKELY(!recv) {
-      error1(p, (srcrange_t){ .focus = name_loc },
-        "undeclared identifier \"%s\"", fun->name);
+      error_loc(p, name_loc, "undeclared identifier \"%s\"", fun->name);
       return;
     }
     if UNLIKELY(!nodekind_istype(recv->kind)) {
       const char* s = fmtnode(p, 0, recv, 1);
-      error1(p, (srcrange_t){ .focus = name_loc }, "%s is not a type", s);
+      error_loc(p, name_loc, "%s is not a type", s);
       return;
     }
     fun->methodof = recv;

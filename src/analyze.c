@@ -88,28 +88,38 @@ static void seterr(analysis_t* a, err_t err) {
 }
 
 
-ATTR_FORMAT(printf,3,4)
-static void error(analysis_t* a, const void* nullable n, const char* fmt, ...) {
-  srcrange_t srcrange = n ? node_srcrange(n) : (srcrange_t){0};
-  va_list ap;
-  va_start(ap, fmt);
-  report_diagv(a->compiler, srcrange, DIAG_ERR, fmt, ap);
-  va_end(ap);
+inline static locmap_t* locmap(analysis_t* a) {
+  return &a->compiler->locmap;
 }
 
 
-ATTR_FORMAT(printf,3,4)
-static void warning(analysis_t* a, const void* nullable n, const char* fmt, ...) {
-  srcrange_t srcrange = n ? node_srcrange(n) : (srcrange_t){0};
-  va_list ap;
-  va_start(ap, fmt);
-  report_diagv(a->compiler, srcrange, DIAG_WARN, fmt, ap);
-  va_end(ap);
-}
+// const origin_t to_origin(analysis_t*, T origin)
+// where T is one of: origin_t | loc_t | node_t* (default)
+#define to_origin(a, origin) ({ \
+  __typeof__(origin)* __tmp = &origin; \
+  const origin_t __origin = _Generic(__tmp, \
+          origin_t*:  *(origin_t*)__tmp, \
+    const origin_t*:  *(origin_t*)__tmp, \
+          loc_t*:     origin_make(locmap(a), *(loc_t*)__tmp), \
+    const loc_t*:     origin_make(locmap(a), *(loc_t*)__tmp), \
+          default:    node_origin(locmap(a), *(node_t**)__tmp) \
+  ); \
+  __origin; \
+})
+
+
+// void diag(analysis_t*, T origin, diagkind_t diagkind, const char* fmt, ...)
+// where T is one of: origin_t | loc_t | node_t* | expr_t*
+#define diag(a, origin, diagkind, fmt, args...) \
+  report_diag((a)->compiler, to_origin((a), (origin)), (diagkind), (fmt), ##args)
+
+#define error(a, origin, fmt, args...)    diag(a, origin, DIAG_ERR, (fmt), ##args)
+#define warning(a, origin, fmt, args...)  diag(a, origin, DIAG_WARN, (fmt), ##args)
+#define help(a, origin, fmt, args...)     diag(a, origin, DIAG_HELP, (fmt), ##args)
 
 
 static void out_of_mem(analysis_t* a) {
-  error(a, NULL, "out of memory");
+  error(a, (origin_t){0}, "out of memory");
   seterr(a, ErrNoMem);
 }
 
@@ -450,7 +460,7 @@ static void define(analysis_t* a, sym_t name, void* n) {
     node_t* existing = scope_lookup(&a->scope, name, 0);
     if (existing) {
       error(a, n, "duplicate definition \"%s\"", name);
-      if (existing->loc.line)
+      if (loc_line(existing->loc))
         warning(a, existing, "previously defined here");
       assertf(0, "duplicate definition \"%s\"", name);
     }

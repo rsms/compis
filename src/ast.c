@@ -444,31 +444,36 @@ static u32 u64log10(u64 u) {
 }
 
 
-srcrange_t node_srcrange(const node_t* n) {
-  srcrange_t r = { .start = n->loc, .focus = n->loc };
+origin_t node_origin(const locmap_t* lm, const node_t* n) {
+  origin_t r = origin_make(lm, n->loc);
   switch (n->kind) {
-    case EXPR_INTLIT:
-      r.end = r.focus;
-      r.end.col += u64log10(((intlit_t*)n)->intval); // FIXME e.g. 0xbeef
-      break;
-    case EXPR_ID:
-      r.end = r.focus;
-      r.end.col += strlen(((idexpr_t*)n)->name);
-      break;
-    case EXPR_CALL: {
-      const call_t* call = (const call_t*)n;
-      if (call->recv)
-        r.start = node_srcrange((node_t*)call->recv).start;
-      if (call->args.len > 0) {
-        r.end = node_srcrange(call->args.v[call->args.len-1]).end;
-      } else {
-        r.end = r.focus;
-      }
-      r.end.col++; // ")"
-      break;
-    }
-    default:
-      dlog("TODO %s %s", __FUNCTION__, nodekind_name(n->kind));
+
+  case EXPR_INTLIT:
+    if (r.width == 0)
+      r.width = u64log10(((intlit_t*)n)->intval); // FIXME e.g. 0xbeef
+    break;
+
+  case EXPR_ID:
+    if (r.width == 0)
+      r.width = strlen(((idexpr_t*)n)->name);
+    break;
+
+  case EXPR_DEREF:
+    return origin_union(r, node_origin(lm, (node_t*)((unaryop_t*)n)->expr));
+
+  case EXPR_CALL: {
+    const call_t* call = (call_t*)n;
+    if (call->recv)
+      r = origin_union(r, node_origin(lm, (node_t*)call->recv));
+    r.width++; // "("
+    if (call->args.len > 0)
+      r = origin_union(r, node_origin(lm, call->args.v[call->args.len-1]));
+    r.width++; // ")"
+    break;
+  }
+
+  default:
+    dlog("TODO %s %s", __FUNCTION__, nodekind_name(n->kind));
   }
   return r;
 }

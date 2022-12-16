@@ -97,64 +97,38 @@ static const char* fmtnodex(ircons_t* c, u32 bufidx, const void* nullable n, u32
 #endif
 
 
-#if 0
-  static void debug_graphviz(const irunit_t* u, memalloc_t ma) {
-    buf_t buf = buf_make(ma);
-    buf_print(&buf, "echo '"
-      "digraph G {\n"
-      "  node [shape=record];\n"
-    );
-    for (u32 i = 0; i < u->functions.len; i++) {
-      irfun_t* f = u->functions.v[i];
-      if (u->functions.len > 1)
-        buf_printf(&buf, "subgraph \"%s\" {\n", f->name);
-      if (!irfmt_dot(&buf, f)) {
-        fprintf(stderr, "(irfmt_dot failed)\n");
-        buf_dispose(&buf);
-        return;
-      }
-      if (u->functions.len > 1)
-        buf_print(&buf, "}\n");
-    }
-    buf_print(&buf, "}' | graph-easy --from=dot --timeout=30 --as_boxart");
-    buf_nullterm(&buf);
-    system(buf.chars);
-    buf_dispose(&buf);
-  }
-#else
-  static void debug_graphviz(const irunit_t* u, memalloc_t ma) {
-    buf_t buf = buf_make(ma);
-
-    // generate graphviz "dot" text data
-    if UNLIKELY(!irfmt_dot(&buf, u)) {
-      fprintf(stderr, "(irfmt_dot failed)\n");
-      buf_dispose(&buf);
-      return;
-    }
-    // dlog("dot:\n———————————\n%s\n———————————", buf.chars);
-
-    // write .dot file
-    err_t err = writefile("ir.dot", 0664, buf_slice(buf));
-    if (err) {
-      fprintf(stderr, "failed to write file ir.dot: %s", err_str(err));
-      goto end;
-    }
-
-    // invoke "dot" program
-    buf_clear(&buf);
-    buf_print(&buf, "dot -Tpng -oir.png ir.dot");
-    buf_nullterm(&buf);
-    dlog("running '%s' ...", buf.chars);
-    system(buf.chars);
-  end:
-    buf_dispose(&buf);
-  }
-#endif
-
-
-static bool dump_irunit(const irunit_t* u, memalloc_t ma) {
+static void debug_graphviz(const irunit_t* u, memalloc_t ma, const locmap_t* lm) {
   buf_t buf = buf_make(ma);
-  if (!irfmt(&buf, u)) {
+
+  // generate graphviz "dot" text data
+  if UNLIKELY(!irfmt_dot(&buf, u, lm)) {
+    fprintf(stderr, "(irfmt_dot failed)\n");
+    buf_dispose(&buf);
+    return;
+  }
+  // dlog("dot:\n———————————\n%s\n———————————", buf.chars);
+
+  // write .dot file
+  err_t err = writefile("ir.dot", 0664, buf_slice(buf));
+  if (err) {
+    fprintf(stderr, "failed to write file ir.dot: %s", err_str(err));
+    goto end;
+  }
+
+  // invoke "dot" program
+  buf_clear(&buf);
+  buf_print(&buf, "dot -Tpng -oir.png ir.dot");
+  buf_nullterm(&buf);
+  dlog("running '%s' ...", buf.chars);
+  system(buf.chars);
+end:
+  buf_dispose(&buf);
+}
+
+
+static bool dump_irunit(const irunit_t* u, memalloc_t ma, const locmap_t* lm) {
+  buf_t buf = buf_make(ma);
+  if (!irfmt(&buf, u, lm)) {
     fprintf(stderr, "(irfmt failed)\n");
     buf_dispose(&buf);
     return false;
@@ -166,9 +140,9 @@ static bool dump_irunit(const irunit_t* u, memalloc_t ma) {
 }
 
 
-// static bool dump_irfun(const irfun_t* f, memalloc_t ma) {
+// static bool dump_irfun(const irfun_t* f, memalloc_t ma, const locmap_t* lm) {
 //   buf_t buf = buf_make(ma);
-//   if (!irfmt_fun(&buf, f)) {
+//   if (!irfmt_fun(&buf, f, lm)) {
 //     fprintf(stderr, "(irfmt_fun failed)\n");
 //     buf_dispose(&buf);
 //     return false;
@@ -190,30 +164,38 @@ static void seterr(ircons_t* c, err_t err) {
 }
 
 
+inline static locmap_t* locmap(ircons_t* c) {
+  return &c->compiler->locmap;
+}
+
+
 // void out_of_mem(ircons_t* c)
 #define out_of_mem(c) ( dlog("OUT OF MEMORY"), seterr(c, ErrNoMem) )
 
 
-// const srcrange_t to_srcrange(ircons_t*, T origin)
-// where T is one of: irval_t* | node_t* | expr_t* | srcrange_t
-#define to_srcrange(origin) ({ \
+// const origin_t to_origin(ircons_t*, T origin)
+// where T is one of: origin_t | loc_t | irval_t* | node_t* | expr_t*
+#define to_origin(c, origin) ({ \
   __typeof__(origin)* __tmp = &origin; \
-  const srcrange_t __s = _Generic(__tmp, \
-    const srcrange_t*: *(const srcrange_t*)__tmp, \
-          srcrange_t*: *(const srcrange_t*)__tmp, \
-    const irval_t**:   (srcrange_t){.focus=(*(const irval_t**)__tmp)->loc}, \
-          node_t**:    node_srcrange(*(const node_t**)__tmp), \
-    const node_t**:    node_srcrange(*(const node_t**)__tmp), \
-          expr_t**:    node_srcrange(*(const node_t**)__tmp), \
-    const expr_t**:    node_srcrange(*(const node_t**)__tmp) \
+  const origin_t __origin = _Generic(__tmp, \
+          origin_t*:  *(origin_t*)__tmp, \
+    const origin_t*:  *(origin_t*)__tmp, \
+          loc_t*:     origin_make(locmap(c), *(loc_t*)__tmp), \
+    const loc_t*:     origin_make(locmap(c), *(loc_t*)__tmp), \
+          irval_t**:  origin_make(locmap(c), (*(irval_t**)__tmp)->loc), \
+    const irval_t**:  origin_make(locmap(c), (*(irval_t**)__tmp)->loc), \
+          node_t**:   node_origin(locmap(c), *(node_t**)__tmp), \
+    const node_t**:   node_origin(locmap(c), *(node_t**)__tmp), \
+          expr_t**:   node_origin(locmap(c), *(node_t**)__tmp), \
+    const expr_t**:   node_origin(locmap(c), *(node_t**)__tmp) \
   ); \
-  __s; \
+  __origin; \
 })
 
 // void diag(ircons_t*, T origin, diagkind_t diagkind, const char* fmt, ...)
-// where T is one of: irval_t* | node_t* | expr_t* | srcrange_t
+// where T is one of: origin_t | loc_t | irval_t* | node_t* | expr_t*
 #define diag(c, origin, diagkind, fmt, args...) \
-  report_diag((c)->compiler, to_srcrange(origin), (diagkind), (fmt), ##args)
+  report_diag((c)->compiler, to_origin((c), (origin)), (diagkind), (fmt), ##args)
 
 #define error(c, origin, fmt, args...)    diag(c, origin, DIAG_ERR, (fmt), ##args)
 #define warning(c, origin, fmt, args...)  diag(c, origin, DIAG_WARN, (fmt), ##args)
@@ -353,7 +335,7 @@ static irblock_t* block_comment(ircons_t* c, irblock_t* b, const char* comment) 
 }
 
 
-static irval_t* mkval(ircons_t* c, op_t op, srcloc_t loc, type_t* type) {
+static irval_t* mkval(ircons_t* c, op_t op, loc_t loc, type_t* type) {
   irval_t* v = mem_alloct(c->ir_ma, irval_t);
   if UNLIKELY(v == NULL)
     return out_of_mem(c), &bad_irval;
@@ -365,7 +347,7 @@ static irval_t* mkval(ircons_t* c, op_t op, srcloc_t loc, type_t* type) {
 }
 
 
-static irval_t* pushval(ircons_t* c, irblock_t* b, op_t op, srcloc_t loc, type_t* type) {
+static irval_t* pushval(ircons_t* c, irblock_t* b, op_t op, loc_t loc, type_t* type) {
   irval_t* v = mkval(c, op, loc, type);
   if UNLIKELY(!ptrarray_push(&b->values, c->ir_ma, v))
     out_of_mem(c);
@@ -374,7 +356,7 @@ static irval_t* pushval(ircons_t* c, irblock_t* b, op_t op, srcloc_t loc, type_t
 
 
 static irval_t* insertval(
-  ircons_t* c, irblock_t* b, u32 at_index, op_t op, srcloc_t loc, type_t* type)
+  ircons_t* c, irblock_t* b, u32 at_index, op_t op, loc_t loc, type_t* type)
 {
   irval_t* v = mkval(c, op, loc, type);
   irval_t** vp = (irval_t**)ptrarray_allocat(&b->values, c->ir_ma, at_index, 1);
@@ -387,7 +369,7 @@ static irval_t* insertval(
 
 #define push_TODO_val(c, b, type, fmt, args...) ( \
   dlog("TODO_val " fmt, ##args), \
-  comment((c), pushval((c), (b), OP_NOOP, (srcloc_t){0}, (type)), "TODO") \
+  comment((c), pushval((c), (b), OP_NOOP, (loc_t){0}, (type)), "TODO") \
 )
 
 
@@ -398,7 +380,7 @@ static void pusharg(irval_t* dst, irval_t* arg) {
 }
 
 
-static irblock_t* mkblock(ircons_t* c, irfun_t* f, irblockkind_t kind, srcloc_t loc) {
+static irblock_t* mkblock(ircons_t* c, irfun_t* f, irblockkind_t kind, loc_t loc) {
   irblock_t* b = mem_alloct(c->ir_ma, irblock_t);
   if UNLIKELY(b == NULL || !ptrarray_push(&f->blocks, c->ir_ma, b))
     return out_of_mem(c), &bad_irblock;
@@ -455,7 +437,7 @@ static bool isrvalue(const void* expr) {
 //—————————————————————————————————————————————————————————————————————————————————————
 
 
-static irval_t* var_read_recursive(ircons_t*, irblock_t*, sym_t, type_t*, srcloc_t);
+static irval_t* var_read_recursive(ircons_t*, irblock_t*, sym_t, type_t*, loc_t);
 
 
 static void var_write_map(ircons_t* c, map_t* vars, sym_t name, irval_t* v) {
@@ -467,7 +449,7 @@ static void var_write_map(ircons_t* c, map_t* vars, sym_t name, irval_t* v) {
 
 
 static irval_t* var_read_map(
-  ircons_t* c, irblock_t* b, map_t* vars, sym_t name, type_t* type, srcloc_t loc)
+  ircons_t* c, irblock_t* b, map_t* vars, sym_t name, type_t* type, loc_t loc)
 {
   irval_t** vp = (irval_t**)map_lookup_ptr(vars, name);
   if (vp)
@@ -490,7 +472,7 @@ static void var_write_inblock(ircons_t* c, irblock_t* b, sym_t name, irval_t* v)
 
 
 static irval_t* var_read_inblock(
-  ircons_t* c, irblock_t* b, sym_t name, type_t* type, srcloc_t loc)
+  ircons_t* c, irblock_t* b, sym_t name, type_t* type, loc_t loc)
 {
   // trace("%s %s in b%u", __FUNCTION__, name, b->id);
   assertf(b != c->b, "defvars not yet flushed; use var_read for current block");
@@ -505,7 +487,7 @@ static void var_write(ircons_t* c, sym_t name, irval_t* v) {
 }
 
 
-static irval_t* var_read(ircons_t* c, sym_t name, type_t* type, srcloc_t loc) {
+static irval_t* var_read(ircons_t* c, sym_t name, type_t* type, loc_t loc) {
   trace("%s %s", __FUNCTION__, name);
   return var_read_map(c, c->b, &c->vars, name, type, loc);
 }
@@ -531,7 +513,7 @@ static void add_pending_phi(ircons_t* c, irblock_t* b, irval_t* phi, sym_t name)
 
 
 static irval_t* var_read_recursive(
-  ircons_t* c, irblock_t* b, sym_t name, type_t* type, srcloc_t loc)
+  ircons_t* c, irblock_t* b, sym_t name, type_t* type, loc_t loc)
 {
   //trace("%s %s in b%u", __FUNCTION__, name, b->id);
 
@@ -730,7 +712,7 @@ static irblock_t* entry_block(irfun_t* f) {
 //—————————————————————————————————————————————————————————————————————————————————————
 
 
-static irval_t* intconst(ircons_t* c, type_t* t, u64 value, srcloc_t loc);
+static irval_t* intconst(ircons_t* c, type_t* t, u64 value, loc_t loc);
 
 
 static void create_liveness_var(ircons_t* c, irval_t* v) {
@@ -743,7 +725,7 @@ static void create_liveness_var(ircons_t* c, irval_t* v) {
 
   // initially dead or alive?
   bool islive = !deadset_has(c->deadset, v->id);
-  irval_t* islivev = intconst(c, type_bool, islive, (srcloc_t){0});
+  irval_t* islivev = intconst(c, type_bool, islive, (loc_t){0});
 
   irblock_t* b = irval_block(c, v);
   var_write_inblock(c, b, name, islivev);
@@ -753,7 +735,7 @@ static void create_liveness_var(ircons_t* c, irval_t* v) {
 static void write_liveness_var(ircons_t* c, irval_t* owner, bool islive) {
   if (owner->var.live == NULL)
     create_liveness_var(c, owner);
-  irval_t* islivev = intconst(c, type_bool, (u64)islive, (srcloc_t){0});
+  irval_t* islivev = intconst(c, type_bool, (u64)islive, (loc_t){0});
   var_write_inblock(c, c->b, owner->var.live, islivev);
 }
 
@@ -823,7 +805,7 @@ static u32 owners_indexof(ircons_t* c, irval_t* v, u32 depth) {
 // }
 
 
-static void drop(ircons_t* c, irval_t* v, srcloc_t loc) {
+static void drop(ircons_t* c, irval_t* v, loc_t loc) {
   if (v->op == OP_MOVE && v->nuse == 0 && irval_block(c, v) == c->b) {
     // simplify MOVE;DROP in same block into DROP, e.g.
     //   v2 *int = MOVE v1
@@ -900,8 +882,8 @@ static void conditional_drop(ircons_t* c, irval_t* control, irval_t* owner) {
   // creates "if (!.vN_live) { drop(vN) }"
   irblock_t* ifb = end_block(c);
 
-  irblock_t* deadb = mkblock(c, c->f, IR_BLOCK_GOTO, (srcloc_t){0});
-  irblock_t* contb = mkblock(c, c->f, IR_BLOCK_GOTO, (srcloc_t){0});
+  irblock_t* deadb = mkblock(c, c->f, IR_BLOCK_GOTO, (loc_t){0});
+  irblock_t* contb = mkblock(c, c->f, IR_BLOCK_GOTO, (loc_t){0});
 
   set_control(c, contb, ifb->control);
   contb->kind = ifb->kind;
@@ -920,7 +902,7 @@ static void conditional_drop(ircons_t* c, irval_t* control, irval_t* owner) {
   start_block(c, deadb);
   seal_block(c, deadb);
 
-  drop(c, owner, (srcloc_t){0});
+  drop(c, owner, (loc_t){0});
 
   end_block(c);
 
@@ -933,12 +915,12 @@ static void owners_unwind_one(ircons_t* c, const bitset_t* deadset, irval_t* v) 
   if (!deadset_has(deadset, v->id)) {
     // v definitely owns its value at the exit of its owning scope -- drop it
     trace("  v%u is live; drop right here in b%u", v->id, c->b->id);
-    drop(c, v, (srcloc_t){0});
+    drop(c, v, (loc_t){0});
     return;
   }
   if (v->var.live) {
     // v may be owning its value, maybe not
-    irval_t* liveness_var = var_read(c, v->var.live, type_bool, (srcloc_t){0});
+    irval_t* liveness_var = var_read(c, v->var.live, type_bool, (loc_t){0});
     trace("  %s = v%u %s", v->var.live, liveness_var->id, op_name(liveness_var->op));
     if (liveness_var->op == OP_PHI) {
       trace("  v%u's ownership is runtime conditional", v->id);
@@ -1031,7 +1013,7 @@ static void owners_drop_lost(
   ircons_t*       c,
   const bitset_t* entry_deadset,
   const bitset_t* exit_deadset,
-  srcloc_t        loc
+  loc_t        loc
   #ifdef TRACE_ANALYSIS
   ,const char*    trace_msg
   #endif
@@ -1109,7 +1091,7 @@ static void move_owner_outside(ircons_t* c, irval_t* old_owner) {
 
 
 static irval_t* move(
-  ircons_t* c, irval_t* rvalue, srcloc_t loc, irval_t* nullable replace_owner)
+  ircons_t* c, irval_t* rvalue, loc_t loc, irval_t* nullable replace_owner)
 {
   if (rvalue->op == OP_PHI) {
     // rvalue is a PHI which means it joins two already-existing moves together
@@ -1146,7 +1128,7 @@ static irval_t* move(
 }
 
 
-static irval_t* reference(ircons_t* c, irval_t* rvalue, srcloc_t loc) {
+static irval_t* reference(ircons_t* c, irval_t* rvalue, loc_t loc) {
   op_t op = ((reftype_t*)rvalue->type)->ismut ? OP_BORROW_MUT : OP_BORROW;
   irval_t* v = pushval(c, c->b, op, loc, rvalue->type);
   pusharg(v, rvalue);
@@ -1155,7 +1137,7 @@ static irval_t* reference(ircons_t* c, irval_t* rvalue, srcloc_t loc) {
 
 
 static irval_t* move_or_copy(
-  ircons_t* c, irval_t* rvalue, srcloc_t loc, irval_t* nullable replace_owner)
+  ircons_t* c, irval_t* rvalue, loc_t loc, irval_t* nullable replace_owner)
 {
   irval_t* v = rvalue;
   if (type_isowner(rvalue->type)) {
@@ -1176,7 +1158,7 @@ static irval_t* load_expr(ircons_t* c, expr_t* n);
 static irval_t* load_rvalue(ircons_t* c, expr_t* origin, expr_t* n);
 
 
-static irval_t* intconst(ircons_t* c, type_t* t, u64 value, srcloc_t loc) {
+static irval_t* intconst(ircons_t* c, type_t* t, u64 value, loc_t loc) {
   // "intern" constants
   // this is a really simple solution:
   // - all constants are placed at the beginning of the entry block
@@ -1250,7 +1232,7 @@ static irval_t* assign(ircons_t* c, binop_t* n) {
   assert(node_islocal(id->ref));
   sym_t varname = ((local_t*)id->ref)->name;
 
-  irval_t* curr_owner = var_read(c, varname, v->type, (srcloc_t){0});
+  irval_t* curr_owner = var_read(c, varname, v->type, (loc_t){0});
   v = move_or_copy(c, v, n->loc, curr_owner);
 
   comment(c, v, varname);
@@ -1259,7 +1241,7 @@ static irval_t* assign(ircons_t* c, binop_t* n) {
 }
 
 
-static irval_t* ret(ircons_t* c, irval_t* nullable v, srcloc_t loc) {
+static irval_t* ret(ircons_t* c, irval_t* nullable v, loc_t loc) {
   c->b->kind = IR_BLOCK_RET;
   if (v)
     move_owner_outside(c, v);
@@ -1876,14 +1858,14 @@ static irval_t* load_local(ircons_t* c, expr_t* origin, local_t* n) {
 
   if (!parentv && v->op == OP_ZERO) {
     error(c, origin, "use of uninitialized %s %s", nodekind_fmt(n->kind), n->name);
-    if (v->loc.line)
-      help(c, (srcrange_t){.focus=v->loc}, "%s defined here", n->name);
+    if (loc_line(v->loc))
+      help(c, v, "%s defined here", n->name);
     return v;
   }
 
   error(c, origin, "use of dead value %s", n->name);
-  if (parentv && parentv->op == OP_MOVE && parentv->loc.line)
-    help(c, (srcrange_t){.focus=parentv->loc}, "%s moved here", n->name);
+  if (parentv && parentv->op == OP_MOVE && loc_line(parentv->loc))
+    help(c, parentv, "%s moved here", n->name);
 
   return v;
 }
@@ -2073,8 +2055,8 @@ err_t analyze2(compiler_t* compiler, memalloc_t ir_ma, unit_t* unit) {
   irunit_t* u;
   err_t err = ircons(compiler, ir_ma, unit, &u);
   assertnotnull(u);
-  dump_irunit(u, compiler->ma);
-  debug_graphviz(u, compiler->ma);
+  dump_irunit(u, compiler->ma, &compiler->locmap);
+  debug_graphviz(u, compiler->ma, &compiler->locmap);
   dlog("sizeof(irval_t) %zu", sizeof(irval_t));
   return ErrCanceled; // XXX
   return err;

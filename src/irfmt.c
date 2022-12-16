@@ -4,8 +4,9 @@
 
 
 typedef struct {
-  buf_t out;
-  bool  ok;
+  buf_t    out;
+  locmap_t locmap; // read-only copy
+  bool     ok;
 } fmtctx_t;
 
 
@@ -82,12 +83,13 @@ static void val(fmtctx_t* ctx, const irval_t* v, bool isdot) {
     PRINT("}");
   }
 
-  if (v->loc.line) {
+  if (loc_line(v->loc)) {
     TABULATE(start, COMMENT_COL + 25);
-    if (v->loc.input) {
-      PRINTF(" %s:%u:%u", v->loc.input->name, v->loc.line, v->loc.col);
+    input_t* input = loc_input(v->loc, &ctx->locmap);
+    if (input) {
+      PRINTF(" %s:%u:%u", input->name, loc_line(v->loc), loc_col(v->loc));
     } else {
-      PRINTF(" %u:%u", v->loc.line, v->loc.col);
+      PRINTF(" %u:%u", loc_line(v->loc), loc_col(v->loc));
     }
   }
 }
@@ -250,24 +252,30 @@ static void unit(fmtctx_t* ctx, const irunit_t* u) {
 }
 
 
-bool irfmt(buf_t* out, const irunit_t* u) {
+bool irfmt(buf_t* out, const irunit_t* u, const locmap_t* nullable lm) {
   fmtctx_t ctx = { .ok = true, .out = *out };
+  if (lm)
+    ctx.locmap = *lm;
   unit(&ctx, u);
   *out = ctx.out;
   return ctx.ok && buf_nullterm(out);
 }
 
 
-bool irfmt_fun(buf_t* out, const irfun_t* f) {
+bool irfmt_fun(buf_t* out, const irfun_t* f, const locmap_t* nullable lm) {
   fmtctx_t ctx = { .ok = true, .out = *out };
+  if (lm)
+    ctx.locmap = *lm;
   fun(&ctx, f);
   *out = ctx.out;
   return ctx.ok && buf_nullterm(out);
 }
 
 
-bool irfmt_dot(buf_t* out, const irunit_t* u) {
+bool irfmt_dot(buf_t* out, const irunit_t* u, const locmap_t* nullable lm) {
   fmtctx_t ctx = { .ok = true, .out = *out };
+  if (lm)
+    ctx.locmap = *lm;
 
   #define DOT_FONT "fontname=\"JetBrains Mono NL, Menlo, Courier, monospace\";"
   buf_print(&ctx.out,

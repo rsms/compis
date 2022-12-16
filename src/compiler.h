@@ -87,22 +87,21 @@ typedef struct {
   char       name[];
 } input_t;
 
+// loc_t is a compact representation of a source location: file, line, column & width.
+// Inspired by the Go compiler's xpos & lico. (loc_t)0 is invalid.
+typedef u64 loc_t;
+
+// locmap_t maps loc_t to input_t
+typedef array_type(input_t*) locmap_t; // slot 0 is always NULL
+
+// origin_t describes the origin of diagnostic message (usually derived from loc_t)
 typedef struct {
   const input_t* nullable input;
-  u32 line, col;
-} srcloc_t;
-
-typedef struct {
-  srcloc_t start, focus, end;
-} srcrange_t;
-
-// pos_t is a compact representation of a source position: file, line and column.
-// Limits: 1048575 source files, 1048575 lines, 4095 columns, 4095 span width.
-// Inspired by the Go compiler's xpos & lico. (pos_t)0 is invalid.
-typedef u64 pos_t;
-
-// posmap_t maps pos_t to input_t
-typedef array_type(input_t*) posmap_t; // slot 0 is always NULL
+  u32 line;      // 0 if unknown (if so, other fields below are invalid)
+  u32 column;
+  u32 width;     // >0 if it's a range (starting at line & column)
+  u32 focus_col; // if >0, signifies important column at loc_line(loc)
+} origin_t;
 
 // diaghandler_t is called when an error occurs. Return false to stop.
 typedef struct diag diag_t;
@@ -114,7 +113,7 @@ typedef struct diag {
   const char* msg;      // descriptive message including "srcname:line:col: type:"
   const char* msgshort; // short descriptive message without source location
   const char* srclines; // source context (a few lines of the source; may be empty)
-  srcrange_t  origin;   // origin of error (loc.line=0 if unknown)
+  origin_t    origin;   // origin of error (.line=0 if unknown)
   diagkind_t  kind;
 } diag_t;
 
@@ -133,7 +132,7 @@ typedef struct compiler {
   char*          cflags;
   diaghandler_t  diaghandler; // called when errors are encountered
   void* nullable userdata;    // passed to diaghandler
-  posmap_t       posmap;      // maps input <—> pos_t
+  locmap_t       locmap;      // maps input <—> loc_t
   u32            errcount;    // number of errors encountered
   diag_t         diag;        // most recent diagnostic message
   buf_t          diagbuf;     // for diag.msg
@@ -150,7 +149,7 @@ typedef struct {
   const u8* inend;       // input buffer end
   const u8* linestart;   // start of current line
   tok_t     tok;         // recently parsed token (current token during scanning)
-  srcloc_t  loc;         // recently parsed token's source location
+  loc_t     loc;         // recently parsed token's source location
   bool      insertsemi;  // insert a semicolon before next newline
   u32       lineno;      // monotonic line number counter (!= tok.loc.line)
 } scanstate_t;
@@ -189,7 +188,8 @@ typedef u32 exprflag_t;
 
 typedef struct {
   nodekind_t kind;
-  srcloc_t   loc;
+  u8         _unused[sizeof(loc_t) - sizeof(nodekind_t)];
+  loc_t      loc;
 } node_t;
 
 typedef struct {
@@ -335,7 +335,7 @@ typedef struct irval_ {
   u8       _reserved[2];
   u32      argc;
   irval_t* argv[3];
-  srcloc_t loc;
+  loc_t    loc;
   type_t*  type;
   union {
     u32            i32val;
@@ -359,7 +359,8 @@ typedef struct irblock_ {
   u32                 id;
   irflag_t            flags;
   irblockkind_t       kind;
-  srcloc_t            loc;
+  u8                  _reserved[2];
+  loc_t               loc;
   irblock_t* nullable succs[2]; // successors (CFG)
   irblock_t* nullable preds[2]; // predecessors (CFG)
   ptrarray_t          values;
@@ -411,6 +412,7 @@ typedef struct {
   buf_t       headbuf;
   usize       headoffs;
   u32         headnest;
+  u32         inputid;
   err_t       err;
   u32         anon_idgen;
   usize       indent;
@@ -418,7 +420,6 @@ typedef struct {
   u32         scopenest;
   map_t       typedefmap;
   map_t       tmpmap;
-  const input_t* nullable input;
 } cgen_t;
 
 
@@ -472,9 +473,9 @@ err_t analyze(parser_t*, unit_t* unit);
 err_t analyze2(compiler_t*, memalloc_t ir_ma, unit_t* unit);
 
 // ir
-bool irfmt(buf_t* out, const irunit_t*);
-bool irfmt_dot(buf_t* out, const irunit_t*); // graphviz
-bool irfmt_fun(buf_t* out, const irfun_t*);
+bool irfmt(buf_t* out, const irunit_t*, const locmap_t* nullable lm);
+bool irfmt_dot(buf_t* out, const irunit_t*, const locmap_t* nullable lm); // graphviz
+bool irfmt_fun(buf_t* out, const irfun_t*, const locmap_t* nullable lm);
 
 // C code generator
 bool cgen_init(cgen_t* g, compiler_t* c, memalloc_t out_ma);
@@ -486,7 +487,7 @@ const char* nodekind_name(nodekind_t); // e.g. "EXPR_INTLIT"
 const char* nodekind_fmt(nodekind_t); // e.g. "variable"
 err_t node_fmt(buf_t* buf, const node_t* nullable n, u32 depth); // e.g. i32, x, "foo"
 err_t node_repr(buf_t* buf, const node_t* n); // S-expr AST tree
-srcrange_t node_srcrange(const node_t* n); // computes the source range for an AST
+origin_t node_origin(const locmap_t*, const node_t*); // compute source origin of node
 node_t* _mknode(parser_t* p, usize size, nodekind_t kind); // parser.c
 node_t* clone_node(parser_t* p, const node_t* n);
 // T* CLONE_NODE(T* node)
@@ -582,9 +583,9 @@ const char* op_name(op_t); // e.g. OP_ADD => "OP_ADD"
 int op_name_maxlen();
 
 // diagnostics
-void report_diagv(compiler_t*, srcrange_t origin, diagkind_t, const char* fmt, va_list);
+void report_diagv(compiler_t*, origin_t origin, diagkind_t, const char* fmt, va_list);
 ATTR_FORMAT(printf,4,5) inline static void report_diag(
-  compiler_t* c, srcrange_t origin, diagkind_t kind, const char* fmt, ...)
+  compiler_t* c, origin_t origin, diagkind_t kind, const char* fmt, ...)
 {
   va_list ap;
   va_start(ap, fmt);
@@ -612,120 +613,131 @@ void* nullable scope_lookup(scope_t* s, const void* key, u32 maxdepth);
 inline static bool scope_istoplevel(const scope_t* s) { return s->base == 0; }
 
 // pos
-static void posmap_dispose(posmap_t* pm, memalloc_t ma);
-inline static void posmap_clear(posmap_t* pm) { pm->len = 0; }
-u32 posmap_origin(posmap_t* pm, input_t*, memalloc_t); // get origin for source
+static void locmap_dispose(locmap_t* lm, memalloc_t ma);
+inline static void locmap_clear(locmap_t* lm) { lm->len = 0; }
+u32 locmap_inputid(locmap_t* lm, input_t*, memalloc_t); // get input id for source
 
-static pos_t pos_make(u32 origin, u32 line, u32 col, u32 width);
+static loc_t loc_make(u32 inputid, u32 line, u32 col, u32 width);
 
-static input_t* nullable pos_input(pos_t p, const posmap_t*);
-static u32 pos_line(pos_t p);
-static u32 pos_col(pos_t p);
-static u32 pos_width(pos_t p);
-static u32 pos_origin(pos_t p); // key for posmap_t; 0 for pos without origin
+static input_t* nullable loc_input(loc_t p, const locmap_t*);
+static u32 loc_line(loc_t p);
+static u32 loc_col(loc_t p);
+static u32 loc_width(loc_t p);
+static u32 loc_inputid(loc_t p); // key for locmap_t; 0 for pos without input
 
-static pos_t pos_with_origin(pos_t p, u32 origin); // copy of p with specific origin
-static pos_t pos_with_line(pos_t p, u32 line);     // copy of p with specific line
-static pos_t pos_with_col(pos_t p, u32 col);       // copy of p with specific col
-static pos_t pos_with_width(pos_t p, u32 width);   // copy of p with specific width
+static loc_t loc_with_inputid(loc_t p, u32 inputid); // copy of p with specific inputid
+static loc_t loc_with_line(loc_t p, u32 line);       // copy of p with specific line
+static loc_t loc_with_col(loc_t p, u32 col);         // copy of p with specific col
+static loc_t loc_with_width(loc_t p, u32 width);     // copy of p with specific width
 
-static void pos_set_line(pos_t* p, u32 line);
-static void pos_set_col(pos_t* p, u32 col);
-static void pos_set_width(pos_t* p, u32 width);
+static void loc_set_line(loc_t* p, u32 line);
+static void loc_set_col(loc_t* p, u32 col);
+static void loc_set_width(loc_t* p, u32 width);
 
-// pos_adjuststart returns a copy of p with its start and width adjusted by deltacol
-pos_t pos_adjuststart(pos_t p, i32 deltacol); // cannot overflow (clamped)
+// loc_adjuststart returns a copy of p with its start and width adjusted by deltacol
+loc_t loc_adjuststart(loc_t p, i32 deltacol); // cannot overflow (clamped)
 
-// pos_union returns a pos_t that covers the column extent of both a and b
-pos_t pos_union(pos_t a, pos_t b); // a and b must be on the same line
+// loc_union returns a loc_t that covers the column extent of both a and b
+loc_t loc_union(loc_t a, loc_t b); // a and b must be on the same line
 
-static pos_t pos_min(pos_t a, pos_t b);
-static pos_t pos_max(pos_t a, pos_t b);
-inline static bool pos_isknown(pos_t p) { return !!(pos_origin(p) | pos_line(p)); }
+static loc_t loc_min(loc_t a, loc_t b);
+static loc_t loc_max(loc_t a, loc_t b);
+inline static bool loc_isknown(loc_t p) { return !!(loc_inputid(p) | loc_line(p)); }
 
 // p is {before,after} q in same input
-inline static bool pos_isbefore(pos_t p, pos_t q) { return p < q; }
-inline static bool pos_isafter(pos_t p, pos_t q) { return p > q; }
+inline static bool loc_isbefore(loc_t p, loc_t q) { return p < q; }
+inline static bool loc_isafter(loc_t p, loc_t q) { return p > q; }
 
-// pos_fmt appends "file:line:col" to buf (behaves like snprintf)
-usize pos_fmt(pos_t p, char* buf, usize bufcap, const posmap_t* pm);
+// loc_fmt appends "file:line:col" to buf (behaves like snprintf)
+usize loc_fmt(loc_t p, char* buf, usize bufcap, const locmap_t* lm);
+
+// origin_make creates a origin_t
+// 1. origin_make(const locmap_t*, loc_t)
+// 2. origin_make(const locmap_t*, loc_t, u32 focus_col)
+#define origin_make(...) __VARG_DISP(_origin_make,__VA_ARGS__)
+#define _origin_make1 _origin_make2 // catch "too few arguments to function call"
+origin_t _origin_make2(const locmap_t* m, loc_t loc);
+origin_t _origin_make3(const locmap_t* m, loc_t loc, u32 focus_col);
+
+origin_t origin_union(origin_t a, origin_t b);
 
 //—————————————————————————————————————————————————————
-// pos & posmap implementation
-//
-// Layout constants: 20 bits origin, 20 bits line, 12 bits column, 12 bits width.
-// Limits: sources: 1048575, lines: 1048575, columns: 4095, width: 4095
-// If this is too tight, we can either make lico 64b wide, or we can introduce a tiered encoding
-// where we remove column information as line numbers grow bigger; similar to what gcc does.
-static const u64 _pos_widthBits  = 12;
-static const u64 _pos_colBits    = 12;
-static const u64 _pos_lineBits   = 20;
-static const u64 _pos_originBits = 64 - _pos_lineBits - _pos_colBits - _pos_widthBits;
+// loc implementation
 
-static const u64 _pos_originMax = (1llu << _pos_originBits) - 1;
-static const u64 _pos_lineMax   = (1llu << _pos_lineBits) - 1;
-static const u64 _pos_colMax    = (1llu << _pos_colBits) - 1;
-static const u64 _pos_widthMax  = (1llu << _pos_widthBits) - 1;
+// Limits: inputs: 1048575, lines: 1048575, columns: 4095, width: 4095
+// If this is too tight, we can either make lico 64b wide, or we can introduce a
+// tiered encoding where we remove column information as line numbers grow bigger.
+static const u64 _loc_widthBits   = 12;
+static const u64 _loc_colBits     = 12;
+static const u64 _loc_lineBits    = 20;
+static const u64 _loc_inputidBits = 64 - _loc_lineBits - _loc_colBits - _loc_widthBits;
 
-static const u64 _pos_originShift = _pos_originBits + _pos_colBits + _pos_widthBits;
-static const u64 _pos_lineShift   = _pos_colBits + _pos_widthBits;
-static const u64 _pos_colShift    = _pos_widthBits;
+static const u64 _loc_inputidMax = (1llu << _loc_inputidBits) - 1;
+static const u64 _loc_lineMax    = (1llu << _loc_lineBits) - 1;
+static const u64 _loc_colMax     = (1llu << _loc_colBits) - 1;
+static const u64 _loc_widthMax   = (1llu << _loc_widthBits) - 1;
 
-inline static pos_t pos_make_unchecked(u32 origin, u32 line, u32 col, u32 width) {
-  return (pos_t)( ((u64)origin << _pos_originShift)
-              | ((u64)line << _pos_lineShift)
-              | ((u64)col << _pos_colShift)
+static const u64 _loc_inputidShift = _loc_inputidBits + _loc_colBits + _loc_widthBits;
+static const u64 _loc_lineShift    = _loc_colBits + _loc_widthBits;
+static const u64 _loc_colShift     = _loc_widthBits;
+
+
+inline static loc_t loc_make_unchecked(u32 inputid, u32 line, u32 col, u32 width) {
+  return (loc_t)( ((loc_t)inputid << _loc_inputidShift)
+              | ((loc_t)line << _loc_lineShift)
+              | ((loc_t)col << _loc_colShift)
               | width );
 }
-inline static pos_t pos_make(u32 origin, u32 line, u32 col, u32 width) {
-  return pos_make_unchecked(
-    MIN(_pos_originMax, origin),
-    MIN(_pos_lineMax, line),
-    MIN(_pos_colMax, col),
-    MIN(_pos_widthMax, width));
+inline static loc_t loc_make(u32 inputid, u32 line, u32 col, u32 width) {
+  return loc_make_unchecked(
+    MIN(_loc_inputidMax, inputid),
+    MIN(_loc_lineMax, line),
+    MIN(_loc_colMax, col),
+    MIN(_loc_widthMax, width));
 }
-inline static u32 pos_origin(pos_t p) { return p >> _pos_originShift; }
-inline static u32 pos_line(pos_t p)   { return (p >> _pos_lineShift) & _pos_lineMax; }
-inline static u32 pos_col(pos_t p)    { return (p >> _pos_colShift) & _pos_colMax; }
-inline static u32 pos_width(pos_t p)   { return p & _pos_widthMax; }
+inline static u32 loc_inputid(loc_t p) { return p >> _loc_inputidShift; }
+inline static u32 loc_line(loc_t p)    { return (p >> _loc_lineShift) & _loc_lineMax; }
+inline static u32 loc_col(loc_t p)     { return (p >> _loc_colShift) & _loc_colMax; }
+inline static u32 loc_width(loc_t p)   { return p & _loc_widthMax; }
 
 // TODO: improve the efficiency of these
-inline static pos_t pos_with_origin(pos_t p, u32 origin) {
-  return pos_make_unchecked(
-    MIN(_pos_originMax, origin), pos_line(p), pos_col(p), pos_width(p));
+inline static loc_t loc_with_inputid(loc_t p, u32 inputid) {
+  return loc_make_unchecked(
+    MIN(_loc_inputidMax, inputid), loc_line(p), loc_col(p), loc_width(p));
 }
-inline static pos_t pos_with_line(pos_t p, u32 line) {
-  return pos_make_unchecked(
-    pos_origin(p), MIN(_pos_lineMax, line), pos_col(p), pos_width(p));
+inline static loc_t loc_with_line(loc_t p, u32 line) {
+  return loc_make_unchecked(
+    loc_inputid(p), MIN(_loc_lineMax, line), loc_col(p), loc_width(p));
 }
-inline static pos_t pos_with_col(pos_t p, u32 col) {
-  return pos_make_unchecked(
-    pos_origin(p), pos_line(p), MIN(_pos_colMax, col), pos_width(p));
+inline static loc_t loc_with_col(loc_t p, u32 col) {
+  return loc_make_unchecked(
+    loc_inputid(p), loc_line(p), MIN(_loc_colMax, col), loc_width(p));
 }
-inline static pos_t pos_with_width(pos_t p, u32 width) {
-  return pos_make_unchecked(
-    pos_origin(p), pos_line(p), pos_col(p), MIN(_pos_widthMax, width));
-}
-
-inline static void pos_set_line(pos_t* p, u32 line) { *p = pos_with_line(*p, line); }
-inline static void pos_set_col(pos_t* p, u32 col) { *p = pos_with_col(*p, col); }
-inline static void pos_set_width(pos_t* p, u32 width) { *p = pos_with_width(*p, width); }
-
-inline static input_t* nullable pos_input(pos_t p, const posmap_t* pm) {
-  return pm->v[pos_origin(p)];
+inline static loc_t loc_with_width(loc_t p, u32 width) {
+  return loc_make_unchecked(
+    loc_inputid(p), loc_line(p), loc_col(p), MIN(_loc_widthMax, width));
 }
 
-inline static pos_t pos_min(pos_t a, pos_t b) {
-  // pos-1 causes (pos_t)0 to become the maximum value of pos_t,
-  // effectively preferring >(pos_t)0 over (pos_t)0 here.
+inline static void loc_set_line(loc_t* p, u32 line) { *p = loc_with_line(*p, line); }
+inline static void loc_set_col(loc_t* p, u32 col) { *p = loc_with_col(*p, col); }
+inline static void loc_set_width(loc_t* p, u32 width) { *p = loc_with_width(*p, width); }
+
+inline static input_t* nullable loc_input(loc_t p, const locmap_t* lm) {
+  u32 id = loc_inputid(p);
+  return lm->len > id ? lm->v[id] : NULL;
+}
+
+inline static loc_t loc_min(loc_t a, loc_t b) {
+  // pos-1 causes (loc_t)0 to become the maximum value of loc_t,
+  // effectively preferring >(loc_t)0 over (loc_t)0 here.
   return (b-1 < a-1) ? b : a;
 }
-inline static pos_t pos_max(pos_t a, pos_t b) {
+inline static loc_t loc_max(loc_t a, loc_t b) {
   return (b > a) ? b : a;
 }
 
-inline static void posmap_dispose(posmap_t* pm, memalloc_t ma) {
-  array_dispose(input_t*, (array_t*)pm, ma);
+inline static void locmap_dispose(locmap_t* lm, memalloc_t ma) {
+  array_dispose(input_t*, (array_t*)lm, ma);
 }
 
 
