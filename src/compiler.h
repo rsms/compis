@@ -544,9 +544,6 @@ inline static bool type_isopt(const type_t* nullable t) {
 inline static bool type_isowner(const type_t* t) { // true for "*T" and "?*T"
   return type_isptr(type_isopt(t) ? ((opttype_t*)t)->elem : t);
 }
-inline static bool type_ismove(const type_t* t) {
-  return nodekind_isusertype(t->kind);
-}
 
 // types
 bool types_isconvertible(const type_t* dst, const type_t* src);

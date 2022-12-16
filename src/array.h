@@ -228,5 +228,9 @@ static void        NAME_move(NAME_t* a, u32 dst, u32 start, u32 end)
 
 
 DEF_ARRAY_TYPE_NULLABLEPTR(void*, ptrarray)
+u32 ptrarray_rindexof(const ptrarray_t* a, const void* value); // U32_MAX if not found
+
+// ptrarray_move_to_end is equivalent to ptrarray_move(a, a->len-1, index, index+1)
+void ptrarray_move_to_end(ptrarray_t* a, u32 index);
 
 ASSUME_NONNULL_END

@@ -52,6 +52,10 @@ static void val(fmtctx_t* ctx, const irval_t* v, bool isdot) {
   case OP_FCONST:
     PRINTF(" %g", v->aux.f64val);
     break;
+  case OP_DROP:
+    if (isdot && v->var.src)
+      PRINTF(" (%s)", v->var.src);
+    break;
   }
 
   if (isdot)
@@ -214,10 +218,8 @@ static void block_dot_edges(fmtctx_t* ctx, const char* ns, const irblock_t* b) {
       assert(b->succs[0]); // thenb
       assert(b->succs[1]); // elseb
       assertnotnull(b->control);
-      PRINTF("  %sb%u -> %sb%u [label=\"[0] v%u=1\"];\n",
-        ns, b->id, ns, b->succs[0]->id, b->control->id);
-      PRINTF("  %sb%u -> %sb%u [label=\"[1] v%u=0\"];\n",
-        ns, b->id, ns, b->succs[1]->id, b->control->id);
+      PRINTF("  %sb%u -> %sb%u [label=\"[0]true\"];\n", ns, b->id, ns, b->succs[0]->id);
+      PRINTF("  %sb%u -> %sb%u [label=\"[1]false\"];\n", ns, b->id, ns, b->succs[1]->id);
       break;
     }
     // case IR_BLOCK_RET: {
@@ -274,7 +276,7 @@ bool irfmt_dot(buf_t* out, const irunit_t* u) {
     "  overlap=false;\n"
     "  pad=0.2;\n"
     "  margin=0;\n"
-    "  bgcolor=\"#171717\";\n"
+    "  bgcolor=\"#1A1A19\";\n"
     "  rankdir=TB; clusterrank=local;\n"
     "  size=\"9.6,8!\";\n" //"ratio=fill;\n"
     "  node [\n"

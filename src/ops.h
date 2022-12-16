@@ -19,7 +19,7 @@ _( OP_ICONST, 0 )
 _( OP_FCONST, 0 )
 
 // memory
-_( OP_LOCAL, 0 )  // stack memory
+_( OP_VAR, 0 )    // stack memory
 _( OP_STORE, 0 )  // T -> T
 _( OP_DEREF, 0 )  // *T -> T
 _( OP_ALIAS, 0 )  // T -> &T

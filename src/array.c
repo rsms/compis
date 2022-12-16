@@ -140,3 +140,20 @@ void _arotatemem(usize stride, void* v, usize first, usize mid, usize last) {
 
 DEF_AROTATE(_arotate32, u32)
 DEF_AROTATE(_arotate64, u64)
+
+
+u32 ptrarray_rindexof(const ptrarray_t* a, const void* value) {
+  for (u32 i = a->len; i;) {
+    if (a->v[--i] == value)
+      return i;
+  }
+  return U32_MAX;
+}
+
+
+void ptrarray_move_to_end(ptrarray_t* a, u32 i) {
+  assert(a->len > 0);
+  assert(i < a->len);
+  if (i < a->len - 1)
+    ptrarray_move(a, a->len - 1, i, i+1);
+}

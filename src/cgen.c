@@ -157,11 +157,16 @@ static const char* operator(op_t op) {
   case OP_ARG:
   case OP_CALL:
   case OP_ZERO:
+  case OP_FUN:
+  case OP_MOVE:
+  case OP_BORROW:
+  case OP_BORROW_MUT:
   case OP_DROP:
   case OP_ICONST:
   case OP_FCONST:
-  case OP_LOCAL:
+  case OP_VAR:
   case OP_STORE:
+  case OP_ALIAS:
     break;
 
   // unary
@@ -169,7 +174,7 @@ static const char* operator(op_t op) {
   case OP_DEC: return "--";
   case OP_INV: return "~";
   case OP_NOT: return "!";
-  //case OP_DEREF:  return "*";
+  case OP_DEREF:  return "*";
 
   // binary, arithmetic
   case OP_ADD: return "+";
