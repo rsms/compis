@@ -21,13 +21,16 @@ typedef struct {
 #define COMMENT_COL  32
 
 
+static bool ismemonly(const irval_t* v) {
+  return v->type == type_void;
+}
+
+
 static void val(fmtctx_t* ctx, const irval_t* v, bool isdot) {
   u32 start = ctx->out.len + 1;
   PRINTF(isdot ? "\n" : "\n    ");
 
-  bool ismemonly = (v->type == type_void);
-
-  if (!ismemonly) {
+  if (!ismemonly(v)) {
     if (isdot) {
       PRINTF("v%-2u = ", v->id);
     } else {
@@ -63,7 +66,7 @@ static void val(fmtctx_t* ctx, const irval_t* v, bool isdot) {
     return;
 
   TABULATE(start, COMMENT_COL);
-  if (ismemonly) {
+  if (ismemonly(v)) {
     PRINT("# [M]");
   } else {
     PRINTF("# [%u]", v->nuse);
@@ -181,7 +184,13 @@ static void block_dot_nodes(fmtctx_t* ctx, const char* ns, const irblock_t* b) {
   if (b->values.len) {
     PRINT("<tr><td align=\"left\" balign=\"left\">");
     for (u32 i = 0; i < b->values.len; i++) {
-      val(ctx, b->values.v[i], /*isdot*/true);
+      const irval_t* v = b->values.v[i];
+      bool dimmed = !ismemonly(v) && v->nuse == 0;
+      if (dimmed)
+        PRINT("<font color=\"#ffffff99\">");
+      val(ctx, v, /*isdot*/true);
+      if (dimmed)
+        PRINT("</font>");
       PRINT("<br/>");
     }
     PRINT("</td></tr>");
