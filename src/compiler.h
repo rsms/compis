@@ -69,12 +69,6 @@ enum op {
   #include "ops.h"
   #undef _
 };
-// enum _op_count {
-//   #define _(NAME, ...) _x##NAME,
-//   #include "ops.h"
-//   #undef _
-//   OP_COUNT_
-// };
 
 typedef u8 filetype_t;
 enum filetype {
@@ -101,6 +95,14 @@ typedef struct {
 typedef struct {
   srcloc_t start, focus, end;
 } srcrange_t;
+
+// pos_t is a compact representation of a source position: file, line and column.
+// Limits: 1048575 source files, 1048575 lines, 4095 columns, 4095 span width.
+// Inspired by the Go compiler's xpos & lico. (pos_t)0 is invalid.
+typedef u64 pos_t;
+
+// posmap_t maps pos_t to input_t
+typedef array_type(input_t*) posmap_t; // slot 0 is always NULL
 
 // diaghandler_t is called when an error occurs. Return false to stop.
 typedef struct diag diag_t;
@@ -131,6 +133,7 @@ typedef struct compiler {
   char*          cflags;
   diaghandler_t  diaghandler; // called when errors are encountered
   void* nullable userdata;    // passed to diaghandler
+  posmap_t       posmap;      // maps input <—> pos_t
   u32            errcount;    // number of errors encountered
   diag_t         diag;        // most recent diagnostic message
   buf_t          diagbuf;     // for diag.msg
@@ -139,21 +142,17 @@ typedef struct compiler {
   bool           isbigendian;
 } compiler_t;
 
-typedef struct {
-  tok_t    t;
-  srcloc_t loc;
-} token_t;
-
 typedef const char* sym_t;
 
 typedef struct {
-  input_t*    input;       // input source
-  const u8*   inp;         // input buffer current pointer
-  const u8*   inend;       // input buffer end
-  const u8*   linestart;   // start of current line
-  token_t     tok;         // recently parsed token (current token during scanning)
-  bool        insertsemi;  // insert a semicolon before next newline
-  u32         lineno;      // monotonic line number counter (!= tok.loc.line)
+  input_t*  input;       // input source
+  const u8* inp;         // input buffer current pointer
+  const u8* inend;       // input buffer end
+  const u8* linestart;   // start of current line
+  tok_t     tok;         // recently parsed token (current token during scanning)
+  srcloc_t  loc;         // recently parsed token's source location
+  bool      insertsemi;  // insert a semicolon before next newline
+  u32       lineno;      // monotonic line number counter (!= tok.loc.line)
 } scanstate_t;
 
 typedef struct {
@@ -333,10 +332,11 @@ typedef struct irval_ {
   u32      nuse;
   irflag_t flags;
   op_t     op;
+  u8       _reserved[2];
+  u32      argc;
+  irval_t* argv[3];
   srcloc_t loc;
   type_t*  type;
-  irval_t* argv[3];
-  u32      argc;
   union {
     u32            i32val;
     u64            i64val;
@@ -350,10 +350,6 @@ typedef struct irval_ {
     sym_t nullable dst;
     sym_t nullable src;
   } var;
-
-  // for temporary graph building
-  ptrarray_t edges;
-  ptrarray_t parents;
 
   const char* nullable comment;
 } irval_t;
@@ -614,6 +610,124 @@ bool scope_define(scope_t* s, memalloc_t ma, const void* key, void* value);
 bool scope_undefine(scope_t* s, memalloc_t ma, const void* key);
 void* nullable scope_lookup(scope_t* s, const void* key, u32 maxdepth);
 inline static bool scope_istoplevel(const scope_t* s) { return s->base == 0; }
+
+// pos
+static void posmap_dispose(posmap_t* pm, memalloc_t ma);
+inline static void posmap_clear(posmap_t* pm) { pm->len = 0; }
+u32 posmap_origin(posmap_t* pm, input_t*, memalloc_t); // get origin for source
+
+static pos_t pos_make(u32 origin, u32 line, u32 col, u32 width);
+
+static input_t* nullable pos_input(pos_t p, const posmap_t*);
+static u32 pos_line(pos_t p);
+static u32 pos_col(pos_t p);
+static u32 pos_width(pos_t p);
+static u32 pos_origin(pos_t p); // key for posmap_t; 0 for pos without origin
+
+static pos_t pos_with_origin(pos_t p, u32 origin); // copy of p with specific origin
+static pos_t pos_with_line(pos_t p, u32 line);     // copy of p with specific line
+static pos_t pos_with_col(pos_t p, u32 col);       // copy of p with specific col
+static pos_t pos_with_width(pos_t p, u32 width);   // copy of p with specific width
+
+static void pos_set_line(pos_t* p, u32 line);
+static void pos_set_col(pos_t* p, u32 col);
+static void pos_set_width(pos_t* p, u32 width);
+
+// pos_adjuststart returns a copy of p with its start and width adjusted by deltacol
+pos_t pos_adjuststart(pos_t p, i32 deltacol); // cannot overflow (clamped)
+
+// pos_union returns a pos_t that covers the column extent of both a and b
+pos_t pos_union(pos_t a, pos_t b); // a and b must be on the same line
+
+static pos_t pos_min(pos_t a, pos_t b);
+static pos_t pos_max(pos_t a, pos_t b);
+inline static bool pos_isknown(pos_t p) { return !!(pos_origin(p) | pos_line(p)); }
+
+// p is {before,after} q in same input
+inline static bool pos_isbefore(pos_t p, pos_t q) { return p < q; }
+inline static bool pos_isafter(pos_t p, pos_t q) { return p > q; }
+
+// pos_fmt appends "file:line:col" to buf (behaves like snprintf)
+usize pos_fmt(pos_t p, char* buf, usize bufcap, const posmap_t* pm);
+
+//—————————————————————————————————————————————————————
+// pos & posmap implementation
+//
+// Layout constants: 20 bits origin, 20 bits line, 12 bits column, 12 bits width.
+// Limits: sources: 1048575, lines: 1048575, columns: 4095, width: 4095
+// If this is too tight, we can either make lico 64b wide, or we can introduce a tiered encoding
+// where we remove column information as line numbers grow bigger; similar to what gcc does.
+static const u64 _pos_widthBits  = 12;
+static const u64 _pos_colBits    = 12;
+static const u64 _pos_lineBits   = 20;
+static const u64 _pos_originBits = 64 - _pos_lineBits - _pos_colBits - _pos_widthBits;
+
+static const u64 _pos_originMax = (1llu << _pos_originBits) - 1;
+static const u64 _pos_lineMax   = (1llu << _pos_lineBits) - 1;
+static const u64 _pos_colMax    = (1llu << _pos_colBits) - 1;
+static const u64 _pos_widthMax  = (1llu << _pos_widthBits) - 1;
+
+static const u64 _pos_originShift = _pos_originBits + _pos_colBits + _pos_widthBits;
+static const u64 _pos_lineShift   = _pos_colBits + _pos_widthBits;
+static const u64 _pos_colShift    = _pos_widthBits;
+
+inline static pos_t pos_make_unchecked(u32 origin, u32 line, u32 col, u32 width) {
+  return (pos_t)( ((u64)origin << _pos_originShift)
+              | ((u64)line << _pos_lineShift)
+              | ((u64)col << _pos_colShift)
+              | width );
+}
+inline static pos_t pos_make(u32 origin, u32 line, u32 col, u32 width) {
+  return pos_make_unchecked(
+    MIN(_pos_originMax, origin),
+    MIN(_pos_lineMax, line),
+    MIN(_pos_colMax, col),
+    MIN(_pos_widthMax, width));
+}
+inline static u32 pos_origin(pos_t p) { return p >> _pos_originShift; }
+inline static u32 pos_line(pos_t p)   { return (p >> _pos_lineShift) & _pos_lineMax; }
+inline static u32 pos_col(pos_t p)    { return (p >> _pos_colShift) & _pos_colMax; }
+inline static u32 pos_width(pos_t p)   { return p & _pos_widthMax; }
+
+// TODO: improve the efficiency of these
+inline static pos_t pos_with_origin(pos_t p, u32 origin) {
+  return pos_make_unchecked(
+    MIN(_pos_originMax, origin), pos_line(p), pos_col(p), pos_width(p));
+}
+inline static pos_t pos_with_line(pos_t p, u32 line) {
+  return pos_make_unchecked(
+    pos_origin(p), MIN(_pos_lineMax, line), pos_col(p), pos_width(p));
+}
+inline static pos_t pos_with_col(pos_t p, u32 col) {
+  return pos_make_unchecked(
+    pos_origin(p), pos_line(p), MIN(_pos_colMax, col), pos_width(p));
+}
+inline static pos_t pos_with_width(pos_t p, u32 width) {
+  return pos_make_unchecked(
+    pos_origin(p), pos_line(p), pos_col(p), MIN(_pos_widthMax, width));
+}
+
+inline static void pos_set_line(pos_t* p, u32 line) { *p = pos_with_line(*p, line); }
+inline static void pos_set_col(pos_t* p, u32 col) { *p = pos_with_col(*p, col); }
+inline static void pos_set_width(pos_t* p, u32 width) { *p = pos_with_width(*p, width); }
+
+inline static input_t* nullable pos_input(pos_t p, const posmap_t* pm) {
+  return pm->v[pos_origin(p)];
+}
+
+inline static pos_t pos_min(pos_t a, pos_t b) {
+  // pos-1 causes (pos_t)0 to become the maximum value of pos_t,
+  // effectively preferring >(pos_t)0 over (pos_t)0 here.
+  return (b-1 < a-1) ? b : a;
+}
+inline static pos_t pos_max(pos_t a, pos_t b) {
+  return (b > a) ? b : a;
+}
+
+inline static void posmap_dispose(posmap_t* pm, memalloc_t ma) {
+  array_dispose(input_t*, (array_t*)pm, ma);
+}
+
 
 
 ASSUME_NONNULL_END

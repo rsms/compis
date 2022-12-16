@@ -87,11 +87,11 @@ inline static void restore_scanstate(parser_t* p, scanstate_t state) {
 
 
 inline static tok_t currtok(parser_t* p) {
-  return p->scanner.tok.t;
+  return p->scanner.tok;
 }
 
 inline static srcloc_t currloc(parser_t* p) {
-  return p->scanner.tok.loc;
+  return p->scanner.loc;
 }
 
 
@@ -122,9 +122,9 @@ static bool lookahead_issym(parser_t* p, sym_t sym) {
 #ifdef LOG_PRATT_ENABLED
   static void log_pratt(parser_t* p, const char* msg) {
     log("parse> %s:%u:%u\t%-12s %s",
-      p->scanner.tok.loc.input->name,
-      p->scanner.tok.loc.line,
-      p->scanner.tok.loc.col,
+      p->scanner.loc.input->name,
+      p->scanner.loc.line,
+      p->scanner.loc.col,
       tok_name(currtok(p)),
       msg);
   }
@@ -173,7 +173,7 @@ static void fastforward_semi(parser_t* p) {
 
 ATTR_FORMAT(printf,3,4)
 static void error1(parser_t* p, srcrange_t srcrange, const char* fmt, ...) {
-  if (p->scanner.inp == p->scanner.inend && p->scanner.tok.t == TEOF)
+  if (p->scanner.inp == p->scanner.inend && p->scanner.tok == TEOF)
     return;
   va_list ap;
   va_start(ap, fmt);
@@ -184,7 +184,7 @@ static void error1(parser_t* p, srcrange_t srcrange, const char* fmt, ...) {
 
 ATTR_FORMAT(printf,3,4)
 static void error(parser_t* p, const void* nullable n, const char* fmt, ...) {
-  if (p->scanner.inp == p->scanner.inend && p->scanner.tok.t == TEOF)
+  if (p->scanner.inp == p->scanner.inend && p->scanner.tok == TEOF)
     return;
   srcrange_t srcrange = n ? node_srcrange(n) : (srcrange_t){ .focus = currloc(p), };
   va_list ap;

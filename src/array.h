@@ -146,16 +146,21 @@ static void        NAME_remove(NAME_t* a, u32 start, u32 len)
 static void        NAME_move(NAME_t* a, u32 dst, u32 start, u32 end)
 #endif//__documentation__
 
-#define DEF_ARRAY_TYPE(T, NAME) \
-  typedef struct {              \
-    union {                     \
-      struct {                  \
-        T* nullable v;          \
-      };                        \
-      array_t;                  \
-    };                          \
-  } NAME##_t;                   \
-  \
+// array_type(NAME T)
+#if DEBUG
+  #define array_type(T) struct { \
+    T* nullable v; \
+    u32 cap, len; \
+    memalloc_t ma; \
+  }
+#else
+  #define array_type(T) struct { \
+    T* nullable v; \
+    u32 cap, len; \
+  }
+#endif
+
+#define DEF_ARRAY_TYPE_API(T, NAME) \
   UNUSED inline static void NAME##_init(NAME##_t* a) { \
     array_init((array_t*)(a)); } \
   UNUSED inline static void NAME##_dispose(NAME##_t* a, memalloc_t ma) { \
@@ -186,16 +191,7 @@ static void        NAME_move(NAME_t* a, u32 dst, u32 start, u32 end)
   UNUSED inline static void NAME##_move(NAME##_t* a, u32 dst, u32 start, u32 end){\
     array_move(T, (array_t*)(a), dst, start, end); }
 
-#define DEF_ARRAY_TYPE_NULLABLEPTR(T, NAME) \
-  typedef struct {              \
-    union {                     \
-      struct {                  \
-        T* nullable v;          \
-      };                        \
-      array_t;                  \
-    };                          \
-  } NAME##_t;                   \
-  \
+#define DEF_ARRAY_TYPE_NULLABLEPTR_API(T, NAME) \
   UNUSED inline static void NAME##_init(NAME##_t* a) { \
     array_init((array_t*)(a)); } \
   UNUSED inline static void NAME##_dispose(NAME##_t* a, memalloc_t ma) { \
@@ -227,7 +223,9 @@ static void        NAME_move(NAME_t* a, u32 dst, u32 start, u32 end)
     array_move(T, (array_t*)(a), dst, start, end); }
 
 
-DEF_ARRAY_TYPE_NULLABLEPTR(void*, ptrarray)
+typedef array_type(void*) ptrarray_t;
+
+DEF_ARRAY_TYPE_NULLABLEPTR_API(void*, ptrarray)
 u32 ptrarray_rindexof(const ptrarray_t* a, const void* value); // U32_MAX if not found
 
 // ptrarray_move_to_end is equivalent to ptrarray_move(a, a->len-1, index, index+1)

@@ -55,6 +55,7 @@ void compiler_init(compiler_t* c, memalloc_t ma, diaghandler_t dh) {
 void compiler_dispose(compiler_t* c) {
   buf_dispose(&c->diagbuf);
   map_dispose(&c->typeidmap, c->ma);
+  posmap_dispose(&c->posmap, c->ma);
 }
 
 

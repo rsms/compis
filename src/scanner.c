@@ -45,9 +45,9 @@ void scanner_set_input(scanner_t* s, input_t* input) {
   s->inp = input->data.p;
   s->inend = input->data.p + input->data.size;
   s->linestart = input->data.p;
-  s->tok.loc.line = 1;
-  s->tok.loc.col = 1;
-  s->tok.loc.input = input;
+  s->loc.line = 1;
+  s->loc.col = 1;
+  s->loc.input = input;
   s->lineno = 1;
 }
 
@@ -55,7 +55,7 @@ void scanner_set_input(scanner_t* s, input_t* input) {
 static void stop_scanning(scanner_t* s) {
   // move cursor to end of source causes scanner_next to return TEOF
   s->inp = s->inend;
-  s->tok.t = TEOF;
+  s->tok = TEOF;
 }
 
 
@@ -71,9 +71,9 @@ slice_t scanner_lit(const scanner_t* s) {
 
 ATTR_FORMAT(printf,2,3)
 static void error(scanner_t* s, const char* fmt, ...) {
-  if (s->inp == s->inend && s->tok.t == TEOF)
+  if (s->inp == s->inend && s->tok == TEOF)
     return;
-  srcrange_t srcrange = { .focus = s->tok.loc };
+  srcrange_t srcrange = { .focus = s->loc };
   va_list ap;
   va_start(ap, fmt);
   report_diagv(s->compiler, srcrange, DIAG_ERR, fmt, ap);
@@ -90,7 +90,7 @@ static void newline(scanner_t* s) {
 
 
 static void floatnumber(scanner_t* s, int base) {
-  s->tok.t = TFLOATLIT;
+  s->tok = TFLOATLIT;
   s->insertsemi = true;
   bool allowsign = false;
   buf_clear(&s->litbuf);
@@ -141,7 +141,7 @@ end:
 
 
 static void number(scanner_t* s, int base) {
-  s->tok.t = TINTLIT;
+  s->tok = TINTLIT;
   s->insertsemi = true;
   s->litint = 0;
   const u8* start_inp = s->inp;
@@ -234,7 +234,7 @@ static void identifier_utf8(scanner_t* s) {
       break;
     }
   }
-  s->tok.t = TID;
+  s->tok = TID;
   intern_identifier(s);
 }
 
@@ -257,7 +257,7 @@ static void maybe_keyword(scanner_t* s) {
       if (lit.len < keywordtab[mid].len) {
         high = mid;
       } else {
-        s->tok.t = keywordtab[mid].t;
+        s->tok = keywordtab[mid].t;
         break;
       }
     } else if (cmp < 0) {
@@ -274,7 +274,7 @@ static void identifier(scanner_t* s) {
     s->inp++;
   if (s->inp < s->inend && (u8)*s->inp >= UTF8_SELF)
     return identifier_utf8(s);
-  s->tok.t = TID;
+  s->tok = TID;
   s->insertsemi = true;
   intern_identifier(s);
   maybe_keyword(s);
@@ -310,8 +310,8 @@ static void skip_comment(scanner_t* s) {
 
 static void scan1(scanner_t* s) {
   s->tokstart = s->inp;
-  s->tok.loc.line = s->lineno;
-  s->tok.loc.col = (u32)(uintptr)(s->tokstart - s->linestart) + 1;
+  s->loc.line = s->lineno;
+  s->loc.col = (u32)(uintptr)(s->tokstart - s->linestart) + 1;
 
   bool insertsemi = s->insertsemi;
   s->insertsemi = false;
@@ -320,20 +320,20 @@ static void scan1(scanner_t* s) {
   u8 nextc = *(s->inp - (u8)(s->inp == s->inend)) * (u8)(s->inp != s->inend);
 
   #define OP2(tok1, c2, tok2) \
-    ( s->tok.t = (nextc == c2) ? (++s->inp, tok2) : tok1 )
+    ( s->tok = (nextc == c2) ? (++s->inp, tok2) : tok1 )
 
   switch (c) {
-  case '(': s->tok.t = TLPAREN; break;
-  case ')': s->insertsemi = true; s->tok.t = TRPAREN; break;
-  case '{': s->tok.t = TLBRACE; break;
-  case '}': s->insertsemi = true; s->tok.t = TRBRACE; break;
-  case '[': s->tok.t = TLBRACK; break;
-  case ']': s->insertsemi = true; s->tok.t = TRBRACK; break;
-  case ':': s->tok.t = TCOLON; break;
-  case ';': s->tok.t = TSEMI; break;
-  case ',': s->tok.t = TCOMMA; break;
-  case '?': s->tok.t = TQUESTION; break;
-  case '~': s->tok.t = TTILDE; break;
+  case '(': s->tok = TLPAREN; break;
+  case ')': s->insertsemi = true; s->tok = TRPAREN; break;
+  case '{': s->tok = TLBRACE; break;
+  case '}': s->insertsemi = true; s->tok = TRBRACE; break;
+  case '[': s->tok = TLBRACK; break;
+  case ']': s->insertsemi = true; s->tok = TRBRACK; break;
+  case ':': s->tok = TCOLON; break;
+  case ';': s->tok = TSEMI; break;
+  case ',': s->tok = TCOMMA; break;
+  case '?': s->tok = TQUESTION; break;
+  case '~': s->tok = TTILDE; break;
   case '<': OP2( TLT,      '<', TSHL); break;
   case '>': OP2( TGT,      '>', TSHR); break;
   case '=': OP2( TASSIGN,  '=', TEQ); break;
@@ -343,16 +343,16 @@ static void scan1(scanner_t* s) {
   case '|': OP2( TOR,      '=', TORASSIGN); break;
   case '^': OP2( TXOR,     '=', TXORASSIGN); break;
   case '+': switch (nextc) {
-    case '+': s->insertsemi = true; s->tok.t = TPLUSPLUS; s->inp++; break;
-    case '=': s->tok.t = TADDASSIGN; s->inp++; break;
-    default: s->tok.t = TPLUS;
+    case '+': s->insertsemi = true; s->tok = TPLUSPLUS; s->inp++; break;
+    case '=': s->tok = TADDASSIGN; s->inp++; break;
+    default: s->tok = TPLUS;
   } break;
   case '-': switch (nextc) {
-    case '-': s->insertsemi = true; s->tok.t = TMINUSMINUS; s->inp++; break;
-    case '=': s->tok.t = TSUBASSIGN; s->inp++; break;
-    default: s->tok.t = TMINUS;
+    case '-': s->insertsemi = true; s->tok = TMINUSMINUS; s->inp++; break;
+    case '=': s->tok = TSUBASSIGN; s->inp++; break;
+    default: s->tok = TMINUS;
   } break;
-  case '/': s->tok.t = TSLASH; switch (nextc) {
+  case '/': s->tok = TSLASH; switch (nextc) {
     case '/':
     case '*':
       s->inp--;
@@ -360,7 +360,7 @@ static void scan1(scanner_t* s) {
       skip_comment(s);
       MUSTTAIL return scan0(s);
     case '=':
-      ++s->inp, s->tok.t = TDIVASSIGN; break;
+      ++s->inp, s->tok = TDIVASSIGN; break;
   } break;
   case '0': return zeronumber(s);
   case '.': switch (nextc) {
@@ -370,12 +370,12 @@ static void scan1(scanner_t* s) {
     case '.':
       if (s->inp+1 < s->inend && s->inp[1] == '.') {
         s->inp += 2;
-        s->tok.t = TDOTDOTDOT;
+        s->tok = TDOTDOTDOT;
         break;
       }
       FALLTHROUGH;
     default:
-      s->tok.t = TDOT;
+      s->tok = TDOT;
   } break;
   default:
     if (isdigit(c)) {
@@ -412,20 +412,20 @@ static void scan0(scanner_t* s) {
   if (prev_linestart != s->linestart && s->insertsemi) {
     s->insertsemi = false;
     s->tokstart = prev_linestart;
-    s->tok.t = TSEMI;
-    s->tok.loc.line = prev_lineno;
-    s->tok.loc.col = (usize)(uintptr)(s->tokend - prev_linestart) + 1;
+    s->tok = TSEMI;
+    s->loc.line = prev_lineno;
+    s->loc.col = (usize)(uintptr)(s->tokend - prev_linestart) + 1;
     return;
   }
 
   // EOF?
   if UNLIKELY(s->inp >= s->inend) {
     s->tokstart = s->inend;
-    s->tok.t = TEOF;
-    s->tok.loc.line = s->lineno;
-    s->tok.loc.col = (u32)(uintptr)(s->tokstart - s->linestart) + 1;
+    s->tok = TEOF;
+    s->loc.line = s->lineno;
+    s->loc.col = (u32)(uintptr)(s->tokstart - s->linestart) + 1;
     if (s->insertsemi) {
-      s->tok.t = TSEMI;
+      s->tok = TSEMI;
       s->insertsemi = false;
     }
     return;
@@ -439,10 +439,10 @@ void scanner_next(scanner_t* s) {
   s->tokend = s->inp;
   scan0(s);
   #ifdef DEBUG_SCANNING
-    u32 line = s->tok.loc.line;
-    u32 col = s->tok.loc.col;
-    const char* srcfile = s->tok.loc.input->name;
-    const char* name = tok_name(s->tok.t);
+    u32 line = s->loc.line;
+    u32 col = s->loc.col;
+    const char* srcfile = s->loc.input->name;
+    const char* name = tok_name(s->tok);
     slice_t lit = scanner_lit(s);
     log("scan>  %s:%u:%u\t%-12s \"%.*s\"\t%llu\t0x%llx",
       srcfile, line, col, name, (int)lit.len, lit.chars, s->litint, s->litint);

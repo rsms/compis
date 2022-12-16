@@ -6,7 +6,8 @@
 #define TRACE_ANALYSIS
 
 
-DEF_ARRAY_TYPE(map_t, maparray)
+typedef array_type(map_t) maparray_t;
+DEF_ARRAY_TYPE_API(map_t, maparray)
 
 
 typedef struct {
@@ -2074,6 +2075,7 @@ err_t analyze2(compiler_t* compiler, memalloc_t ir_ma, unit_t* unit) {
   assertnotnull(u);
   dump_irunit(u, compiler->ma);
   debug_graphviz(u, compiler->ma);
+  dlog("sizeof(irval_t) %zu", sizeof(irval_t));
   return ErrCanceled; // XXX
   return err;
 }
