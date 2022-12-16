@@ -215,11 +215,10 @@ static void block_dot_edges(fmtctx_t* ctx, const char* ns, const irblock_t* b) {
       break;
     }
     case IR_BLOCK_SWITCH: {
-      assert(b->succs[0]); // thenb
-      assert(b->succs[1]); // elseb
-      assertnotnull(b->control);
-      PRINTF("  %sb%u -> %sb%u [label=\"[0]true\"];\n", ns, b->id, ns, b->succs[0]->id);
-      PRINTF("  %sb%u -> %sb%u [label=\"[1]false\"];\n", ns, b->id, ns, b->succs[1]->id);
+      assertnotnull(b->succs[0]);
+      assertnotnull(b->succs[1]);
+      PRINTF("  %sb%u -> %sb%u [label=\" 0 \"];\n", ns, b->id, ns, b->succs[0]->id);
+      PRINTF("  %sb%u -> %sb%u [label=\" 1 \"];\n", ns, b->id, ns, b->succs[1]->id);
       break;
     }
     // case IR_BLOCK_RET: {

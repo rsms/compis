@@ -1398,8 +1398,8 @@ static irval_t* ifexpr(ircons_t* c, ifexpr_t* n) {
   irblock_t* thenb = mkblock(c, f, IR_BLOCK_GOTO, n->thenb->loc);
   irblock_t* elseb = mkblock(c, f, IR_BLOCK_GOTO, n->elseb ? n->elseb->loc : n->loc);
   u32        elseb_index = f->blocks.len - 1; // used later for moving blocks
-  ifb->succs[0] = thenb;
-  ifb->succs[1] = elseb; // if -> then, else
+  ifb->succs[1] = thenb;
+  ifb->succs[0] = elseb; // switch control -> [else, then]
   commentf(c, thenb, "b%u.then", ifb->id);
 
   // copy deadset as is before entering "then" branch, in case it returns
@@ -1518,18 +1518,18 @@ static irval_t* ifexpr(ircons_t* c, ifexpr_t* n) {
       // "then" branch has no effect; cut it out
       trace("eliding \"then\" branch");
       elseb->succs[0] = contb; // else —> cont
-      ifb->succs[0] = contb;   // if true —> cont
-      contb->preds[0] = ifb;   // cont[0] <— if
-      contb->preds[1] = elseb; // cont[1] <— else
+      ifb->succs[1] = contb;   // if true —> cont
+      contb->preds[0] = elseb; // cont[0] <— else
+      contb->preds[1] = ifb;   // cont[1] <— if
       discard_block(c, thenb); // trash thenb
       thenb = contb;
     } else if (elseb_isnoop) {
-      // "then" branch has no effect; cut it out
+      // "else" branch has no effect; cut it out
       trace("eliding \"else\" branch");
       thenb->succs[0] = contb; // then —> cont
-      ifb->succs[1] = contb;   // if false —> cont
-      contb->preds[0] = thenb; // cont[0] <— then
-      contb->preds[1] = ifb;   // cont[1] <— if
+      ifb->succs[0] = contb;   // if false —> cont
+      contb->preds[0] = ifb;   // cont[0] <— if
+      contb->preds[1] = thenb; // cont[1] <— then
       discard_block(c, elseb); // trash elseb
       elseb = contb;
     } else {
@@ -1541,8 +1541,8 @@ static irval_t* ifexpr(ircons_t* c, ifexpr_t* n) {
       } else if (elseb->kind == IR_BLOCK_RET) {
         contb->preds[0] = thenb; // cont[0] <— then
       } else {
-        contb->preds[0] = thenb; // cont[0] <— then
-        contb->preds[1] = elseb; // cont[1] <— else
+        contb->preds[1] = thenb; // cont[1] <— then
+        contb->preds[0] = elseb; // cont[0] <— else
       }
     }
 
@@ -1573,8 +1573,8 @@ static irval_t* ifexpr(ircons_t* c, ifexpr_t* n) {
       // wire up graph edges
       elseb->succs[0] = contb; // else —> cont
       thenb->succs[0] = contb; // then —> cont
-      contb->preds[0] = thenb; // cont[0] <— then
-      contb->preds[1] = elseb; // cont[1] <— else
+      contb->preds[1] = thenb; // cont[1] <— then
+      contb->preds[0] = elseb; // cont[0] <— else
 
       // begin continuation block
       start_block(c, contb);
