@@ -23,8 +23,6 @@ typedef struct {
   err_t       err;
   type_t*     typectx;
   ptrarray_t  typectxstack;
-  block_t*    block;
-  ptrarray_t  blockstack;
 
   #ifdef TRACE_ANALYSIS
     int traceindent;
@@ -124,9 +122,6 @@ static void out_of_mem(analysis_t* a) {
 }
 
 
-static void* nullable lookup(analysis_t* a, sym_t name);
-
-
 #define mknode(a, TYPE, kind)  ( (TYPE*)_mknode((a)->p, sizeof(TYPE), (kind)) )
 
 
@@ -185,25 +180,6 @@ bool expr_no_side_effects(const expr_t* n) { switch (n->kind) {
 }}
 
 
-static local_t* nullable find_local(expr_t* n) {
-  for (;;) switch (n->kind) {
-    case EXPR_FIELD:
-    case EXPR_PARAM:
-    case EXPR_LET:
-    case EXPR_VAR:
-      return (local_t*)n;
-    case EXPR_ID:
-      if (((idexpr_t*)n)->ref && node_isexpr(((idexpr_t*)n)->ref)) {
-        n = (expr_t*)((idexpr_t*)n)->ref;
-        continue;
-      }
-      return NULL;
-    default:
-      return NULL;
-  }
-}
-
-
 static void error_incompatible_types(
   analysis_t* a, const void* nullable origin_node, const type_t* x, const type_t* y)
 {
@@ -236,218 +212,25 @@ static void typectx_pop(analysis_t* a) {
 }
 
 
-static void blockctx_push(analysis_t* a, block_t* b) {
-  if UNLIKELY(!ptrarray_push(&a->blockstack, a->ma, a->block))
-    out_of_mem(a);
-  a->block = b;
-}
-
-static void blockctx_pop(analysis_t* a) {
-  assert(a->blockstack.len > 0);
-  a->block = ptrarray_pop(&a->blockstack);
-}
-
-
-static void error_use_of_dead_ptr(analysis_t* a, void* origin_node, void* src_expr) {
-  expr_t* src = (expr_t*)src_expr;
-  if (nodekind_islocal(src->kind)) {
-    local_t* local = (local_t*)src;
-    error(a, origin_node,
-      "attempt to use dead %s \"%s\"", nodekind_fmt(local->kind), local->name);
-  } else {
-    assert(nodekind_isexpr(src->kind));
-    error(a, origin_node,
-      "attempt to use dead %s %s", nodekind_fmt(src->kind), fmtnode(a, 0, src));
-  }
-}
-
-
-static void ownership_transfer(
-  analysis_t* a, scope_t* scope, expr_t* dstx, expr_t* src)
-{
-  // find destination
-  expr_t* dst = (expr_t*)find_local(dstx);
-  if (!dst)
-    dst = dstx;
-
-  assert(type_isowner(src->type));
-  assert(type_isowner(dst->type));
-
-  trace("ownership_transfer: %s %s -> %s %s",
-    nodekind_fmt(src->kind), fmtnode(a, 0, src),
-    nodekind_fmt(dst->kind), fmtnode(a, 1, dst));
-
-  // shadow
-  local_t* src_local = find_local(src);
-  if (src_local) {
-    if UNLIKELY(!owner_islive(src_local))
-      return error_use_of_dead_ptr(a, src, src_local);
-
-    local_t* src_local2 = CLONE_NODE(a->p, src_local);
-    owner_setlive(src_local2, false);
-    src_local2->flags |= EX_SHADOWS_OWNER;
-
-    // define_replace(a, src_local2->name, (node_t*)src_local2);
-    memalloc_t ma = scope == &a->scope ? a->ma : a->ast_ma;
-    if UNLIKELY(!scope_define(scope, ma, src_local2->name, src_local2))
-      out_of_mem(a);
-
-    src_local->flags |= EX_OWNER_MOVED;
-  } else {
-    trace("  src is not a local, but %s", nodekind_name(src->kind));
-    src->flags |= EX_OWNER_MOVED;
-  }
-
-  // mark destination as alive
-  owner_setlive(dst, true);
-}
-
-
-static void transfer_value(
-  analysis_t* a, void* origin, void* nullable dstp, void* nullable srcp)
-{
-  expr_t* dst = dstp; assert(dst == NULL || nodekind_isexpr(dst->kind));
-  expr_t* src = srcp; assert(src == NULL || nodekind_isexpr(src->kind));
-
-  return; // XXX IR
-
-  if (a->compiler->errcount)
-    return; // avoid reporting cascading errors
-
-  if (dst == NULL) {
-    if (!src)
-      return;
-    if (type_isowner(src->type)) {
-      trace("kill %s", fmtnode(a, 1, src->type));
-      owner_setlive(src, false);
-    }
-  } else if (type_isowner(dst->type)) {
-    if (src) {
-      trace("move %s -> %s", fmtnode(a, 0, src->type), fmtnode(a, 1, dst->type));
-      if UNLIKELY(!type_isowner(src->type))
-        return error_incompatible_types(a, origin, dst->type, src->type);
-      ownership_transfer(a, &a->scope, dst, src);
-    } else {
-      trace("kill %s", fmtnode(a, 1, dst->type));
-      owner_setlive(dst, false);
-    }
-  } else if (type_isref(dst->type)) {
-    if UNLIKELY(src == NULL)
-      return error(a, origin, "passing null to non-optional reference");
-    trace("borrow %s -> %s", fmtnode(a, 0, src->type), fmtnode(a, 1, dst->type));
-  } else if (src) {
-    trace("copy %s -> %s", fmtnode(a, 0, src->type), fmtnode(a, 1, dst->type));
-  } else {
-    trace("zero %s", fmtnode(a, 1, dst->type));
-  }
-}
-
-
 static void enter_scope(analysis_t* a) {
   if (!scope_push(&a->scope, a->ma))
     out_of_mem(a);
 }
 
 
-static void add_cleanup(analysis_t* a, ptrarray_t* cleanup, expr_t* owner) {
-  assert(nodekind_islocal(owner->kind) || owner->kind == EXPR_CALL);
-  if LIKELY(owner_islive(owner)) {
-    trace("cleanup %s %s", nodekind_fmt(owner->kind), fmtnode(a, 0, owner->type));
-    owner->nrefs++;
-    if UNLIKELY(!ptrarray_push(cleanup, a->ast_ma, owner))
-      out_of_mem(a);
-  }
-}
-
-
-// returns true if the owner should be ignored
-static bool abandon_owner(
-  analysis_t* a, scope_t* scope, ptrarray_t* cleanup, bool exits,
-  sym_t name, local_t* owner
-) {
-  assert(type_isowner(owner->type));
-
-  // ignore type-narrowed shadow and moved-to-owner (e.g. return)
-  if (owner->flags & (EX_SHADOWS_OPTIONAL | EX_OWNER_MOVED))
-    return true;
-
-  trace("%s: %s \"%s\" (%s)",
-    __FUNCTION__, nodekind_fmt(owner->kind), name,
-    owner_islive(owner) ? "live" : "dead");
-
-  if ((owner->flags & EX_SHADOWS_OWNER) && !exits) {
-    // the owner shadows a var in the outer scope
-    trace("  shadow found");
-    local_t* prev = scope_lookup(&a->scope, name, 0);
-    if (prev) {
-      // what is being shadowed is defined in this (the outer) scope
-      trace("    mark %s \"%s\" DEAD", nodekind_fmt(prev->kind), name);
-      assertnotnull(prev);
-      assert(prev->kind == owner->kind);
-      owner_setlive(prev, false);
-    } else {
-      // what owner shadows is defined further out; carry over the shadowing
-      // owner into this (the outer) scope
-      trace("    propagate %s \"%s\" to outer scope", nodekind_fmt(owner->kind), name);
-      if UNLIKELY(!scope_define(&a->scope, a->ma, name, owner))
-        out_of_mem(a);
-    }
-    return false;
-  }
-
-  add_cleanup(a, cleanup, (expr_t*)owner);
-  return false;
-}
-
-
-static void unwind_scope(
-  analysis_t* a, scope_t* scope, ptrarray_t* cleanup, bool exits)
-{
-  return; // XXX IR
-
-  // TODO: iterate in reverse order
-  for (u32 i = scope->base + 1; i < scope->len; i++) {
-    node_t* n = assertnotnull(scope->ptr[i++]);
-    sym_t name = assertnotnull(scope->ptr[i]);
-
-    if (name == sym__ || !node_isexpr(n))
-      continue;
-
-    switch (n->kind) {
-    case EXPR_FUN:
-    case EXPR_ID:
-      continue;
-    case EXPR_LET:
-    case EXPR_VAR:
-    case EXPR_PARAM:
-      if (((local_t*)n)->isthis)
-        continue;
-      if (type_isowner(((local_t*)n)->type)) {
-        if (abandon_owner(a, scope, cleanup, exits, name, (local_t*)n))
-          continue;
-      }
-      break;
-    }
-
-    if (((const expr_t*)n)->nrefs == 0)
-      warning(a, n, "unused %s \"%s\"", nodekind_fmt(n->kind), name);
-  }
-}
-
-
-static void leave_scope(analysis_t* a, ptrarray_t* cleanup, bool exits) {
-  scope_t s = a->scope; // copy len & base before scope_pop
+static void leave_scope(analysis_t* a) {
   scope_pop(&a->scope);
-  unwind_scope(a, &s, cleanup, exits);
 }
 
 
-static void leave_scope_TODO_cleanup(analysis_t* a, bool exits) {
-  ptrarray_t cleanup = {0};
-  leave_scope(a, &cleanup, exits);
-  if (cleanup.len)
-    panic("TODO cleanup");
-}
+// static void* nullable lookup(analysis_t* a, sym_t name) {
+//   node_t* n = scope_lookup(&a->scope, name, U32_MAX);
+//   if (n)
+//     return n;
+//   // look in package scope and its parent universe scope
+//   void** vp = map_lookup(&a->p->pkgdefs, name, strlen(name));
+//   return vp ? *vp : NULL;
+// }
 
 
 static void define(analysis_t* a, sym_t name, void* n) {
@@ -468,16 +251,6 @@ static void define(analysis_t* a, sym_t name, void* n) {
 
   if (!scope_define(&a->scope, a->ma, name, n))
     out_of_mem(a);
-}
-
-
-static void* nullable lookup(analysis_t* a, sym_t name) {
-  node_t* n = scope_lookup(&a->scope, name, U32_MAX);
-  if (n)
-    return n;
-  // look in package scope and its parent universe scope
-  void** vp = map_lookup(&a->p->pkgdefs, name, strlen(name));
-  return vp ? *vp : NULL;
 }
 
 
@@ -522,7 +295,6 @@ static void block_noscope(analysis_t* a, block_t* n, nref_t parent) {
 
   u32 count = n->children.len;
   u32 stmt_end = count - (u32)(n->flags & EX_RVALUE);
-  blockctx_push(a, n);
 
   for (u32 i = 0; i < stmt_end; i++) {
     stmt_t* cn = n->children.v[i];
@@ -566,17 +338,14 @@ static void block_noscope(analysis_t* a, block_t* n, nref_t parent) {
     expr(a, lastexpr, self);
     lastexpr->nrefs = MAX(n->nrefs, lastexpr->nrefs);
     n->type = lastexpr->type;
-    transfer_value(a, n, n, lastexpr);
   }
-
-  blockctx_pop(a);
 }
 
 
 static void block(analysis_t* a, block_t* n, nref_t parent) {
   enter_scope(a);
   block_noscope(a, n, parent);
-  leave_scope(a, &n->cleanup, n->flags & EX_EXITS);
+  leave_scope(a);
 }
 
 
@@ -614,7 +383,7 @@ static void fun(analysis_t* a, fun_t* n, nref_t parent) {
   n->body->flags &= ~EX_RVALUE;
 
   if (n->params.len > 0)
-    leave_scope(a, &n->body->cleanup, /*exits*/true);
+    leave_scope(a);
 
   // check type of return value
   if UNLIKELY(ft->result != type_void && !types_iscompat(ft->result, n->body->type)) {
@@ -657,17 +426,17 @@ static void ifexpr(analysis_t* a, ifexpr_t* n, nref_t parent) {
     enter_scope(a);
     n->elseb->flags |= extrafl;
     block_noscope(a, n->elseb, self);
-    leave_scope(a, &n->elseb->cleanup, n->elseb->flags & EX_EXITS);
+    leave_scope(a);
 
     // restore stashed "then" scope
     scope_unstash(&a->scope);
   }
 
   // leave "then" scope
-  leave_scope(a, &n->thenb->cleanup, n->thenb->flags & EX_EXITS);
+  leave_scope(a);
 
   // leave "cond" scope
-  leave_scope_TODO_cleanup(a, /*exits*/false);
+  leave_scope(a);
 
   // type check
   if (n->flags & EX_RVALUE) {
@@ -696,16 +465,6 @@ static void ifexpr(analysis_t* a, ifexpr_t* n, nref_t parent) {
 static void idexpr(analysis_t* a, idexpr_t* n, nref_t parent) {
   if (n->ref)
     n->type = asexpr(n->ref)->type;
-  // check if owner is alive
-  if ((n->flags & EX_RVALUE) && type_isowner(n->type)) {
-    // first we need to do a fresh lookup in case there's a shadowing definition
-    n->ref = assertnotnull( lookup(a, n->name) );
-    local_t* src = (local_t*)n->ref;
-    assert(nodekind_islocal(src->kind));
-    assert(type_isowner(src->type));
-    if UNLIKELY(!owner_islive(src))
-      error_use_of_dead_ptr(a, n, src);
-  }
 }
 
 
@@ -729,7 +488,6 @@ static void local(analysis_t* a, local_t* n, nref_t parent) {
 static void local_var(analysis_t* a, local_t* n, nref_t parent) {
   assert(nodekind_isvar(n->kind));
   local(a, n, parent);
-  transfer_value(a, n, n, n->init);
 }
 
 
@@ -741,7 +499,6 @@ static void retexpr(analysis_t* a, retexpr_t* n, nref_t parent) {
   } else {
     n->type = type_void;
   }
-  transfer_value(a, n, n, n->value);
 }
 
 
@@ -851,8 +608,7 @@ static void binop(analysis_t* a, binop_t* n, nref_t parent) {
 
 static void assign(analysis_t* a, binop_t* n, nref_t parent) {
   binop(a, n, parent);
-  if (check_assign(a, n->left))
-    transfer_value(a, n, n->left, n->right);
+  check_assign(a, n->left);
 }
 
 
@@ -1146,9 +902,7 @@ static void call_fun(analysis_t* a, call_t* call, funtype_t* ft, nref_t self) {
       arg->type = namedarg->init->type;
       seen_named_arg = true;
 
-      if LIKELY(namedarg->name == param->name) {
-        transfer_value(a, namedarg, param, namedarg->init);
-      } else {
+      if UNLIKELY(namedarg->name != param->name) {
         u32 j = i;
         for (j = 0; j < paramsc; j++) {
           if (paramsv[j]->name == namedarg->name)
@@ -1166,7 +920,6 @@ static void call_fun(analysis_t* a, call_t* call, funtype_t* ft, nref_t self) {
         break;
       }
       expr(a, arg, self);
-      transfer_value(a, arg, param, arg);
     }
 
     typectx_pop(a);
@@ -1182,7 +935,6 @@ static void call_fun(analysis_t* a, call_t* call, funtype_t* ft, nref_t self) {
   if ((call->flags & EX_RVALUE) == 0 && type_isowner(call->type)) {
     // return value is owner, but it is not used (call is not rvalue)
     warning(a, call, "unused result; ownership transferred from function call");
-    add_cleanup(a, &a->block->cleanup, (expr_t*)call);
   }
 }
 
@@ -1300,7 +1052,6 @@ static void expr(analysis_t* a, expr_t* n, nref_t parent) {
 
 err_t analyze(parser_t* p, unit_t* unit) {
   scope_clear(&p->scope);
-  block_t unit_block = { .kind = EXPR_BLOCK, .type = type_void };
 
   analysis_t a = {
     .compiler = p->scanner.compiler,
@@ -1310,7 +1061,6 @@ err_t analyze(parser_t* p, unit_t* unit) {
     .scope = p->scope,
     .typectx = type_void,
     .typectxstack = a.p->typectxstack,
-    .block = &unit_block,
   };
 
   ptrarray_clear(&a.typectxstack);
@@ -1321,17 +1071,7 @@ err_t analyze(parser_t* p, unit_t* unit) {
   for (u32 i = 0; i < unit->children.len; i++)
     stmt(&a, unit->children.v[i], self);
 
-  ptrarray_t cleanup = {0};
-  leave_scope(&a, &cleanup, /*exits*/true);
-  if UNLIKELY(cleanup.len) {
-    dlog("unexpected top-level cleanup");
-    seterr(&a, ErrInvalid);
-  }
-
-  assert(a.block == &unit_block);
-  assert(unit_block.cleanup.cap == 0);
-
-  ptrarray_dispose(&a.blockstack, a.ma);
+  leave_scope(&a);
 
   // update borrowed containers owned by p (in case they grew)
   p->scope = a.scope;
