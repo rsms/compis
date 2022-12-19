@@ -322,6 +322,13 @@ typedef double             f64;
 // debugging
 #include <stdio.h>
 
+// _Noreturn abort()
+#if __has_builtin(__builtin_abort)
+  #define abort __builtin_abort
+#else
+  void abort(void); // stdlib.h
+#endif
+
 // panic prints msg to stderr and calls TRAP()
 #define panic(fmt, args...) _panic(__FILE__, __LINE__, __FUNCTION__, fmt, ##args)
 

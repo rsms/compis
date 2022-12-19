@@ -157,21 +157,22 @@ static void expr_as_value(cgen_t* g, const expr_t* n);
 
 static const char* operator(op_t op) {
   switch ((enum op)op) {
-  case OP_NOOP:
-  case OP_PHI:
+  case OP_ALIAS:
   case OP_ARG:
-  case OP_CALL:
-  case OP_ZERO:
-  case OP_FUN:
-  case OP_MOVE:
   case OP_BORROW:
   case OP_BORROW_MUT:
+  case OP_CALL:
   case OP_DROP:
-  case OP_ICONST:
   case OP_FCONST:
-  case OP_VAR:
+  case OP_FUN:
+  case OP_ICONST:
+  case OP_MOVE:
+  case OP_NOOP:
+  case OP_OCHECK:
+  case OP_PHI:
   case OP_STORE:
-  case OP_ALIAS:
+  case OP_VAR:
+  case OP_ZERO:
     break;
 
   // unary
@@ -716,7 +717,7 @@ static void cleanups_before_stmt(
 static void block(cgen_t* g, const block_t* n, blockflag_t fl) {
   g->scopenest++;
 
-  if (n->flags & EX_RVALUE) {
+  if (n->flags & NF_RVALUE) {
     if (n->cleanup.len == 0) {
       // simplify empty expression block
       if (n->children.len == 0) {
@@ -736,7 +737,7 @@ static void block(cgen_t* g, const block_t* n, blockflag_t fl) {
 
   CHAR('{');
 
-  bool block_isrvalue = n->type != type_void && (n->flags & EX_RVALUE);
+  bool block_isrvalue = n->type != type_void && (n->flags & NF_RVALUE);
   char block_resvar[ID_SIZE("block")];
   if (block_isrvalue) {
     FMT_ID(block_resvar, sizeof(block_resvar), "block", n);
@@ -799,7 +800,7 @@ static void block(cgen_t* g, const block_t* n, blockflag_t fl) {
         if (fl & BLOCKFLAG_RET) {
           // implicit return from function body block
           // e.g. "fun foo(x int) int { x }"
-          assertf(!block_isrvalue, "function block flagged EX_RVALUE");
+          assertf(!block_isrvalue, "function block flagged NF_RVALUE");
           x_semi_begin(g, cn->loc);
           if (cn->type == type_void) {
             expr(g, cn), CHAR(';');
@@ -858,7 +859,7 @@ static void block(cgen_t* g, const block_t* n, blockflag_t fl) {
   if (block_isrvalue)
     PRINT(block_resvar), CHAR(';');
 
-  if (n->flags & EX_RVALUE) {
+  if (n->flags & NF_RVALUE) {
     PRINT("})");
   } else {
     CHAR('}');
@@ -1060,7 +1061,7 @@ static void call(cgen_t* g, const call_t* n) {
   assert(n->recv->type->kind == TYPE_FUN);
 
   // owner sink? (i.e. return value is unused but must be dropped)
-  bool owner_sink = (n->flags & EX_RVALUE) == 0 && type_isowner(n->type);
+  bool owner_sink = (n->flags & NF_RVALUE) == 0 && type_isowner(n->type);
   if (owner_sink)
     drop_begin(g, (expr_t*)n);
 
@@ -1218,7 +1219,7 @@ static void vardef1(cgen_t* g, const local_t* n, const char* name, bool wrap_rva
   if (n->nrefs == 0 && expr_no_side_effects((expr_t*)n))
     return;
 
-  if ((n->flags & EX_RVALUE) && wrap_rvalue)
+  if ((n->flags & NF_RVALUE) && wrap_rvalue)
     PRINT("({");
   type(g, n->type);
   if (n->kind == EXPR_LET && (type_isprim(n->type) ||
@@ -1249,7 +1250,7 @@ static void vardef1(cgen_t* g, const local_t* n, const char* name, bool wrap_rva
   } else {
     zeroinit(g, n->type);
   }
-  if ((n->flags & EX_RVALUE) && wrap_rvalue)
+  if ((n->flags & NF_RVALUE) && wrap_rvalue)
     PRINT("; "), PRINT(name), PRINT(";})");
 }
 
@@ -1265,7 +1266,7 @@ static void ifexpr(cgen_t* g, const ifexpr_t* n) {
   bool has_tmp_opt = false;
   char tmp[TMP_ID_SIZE];
 
-  if (n->flags & EX_RVALUE)
+  if (n->flags & NF_RVALUE)
     g->indent++;
 
   if (hasvar) {
@@ -1275,15 +1276,15 @@ static void ifexpr(cgen_t* g, const ifexpr_t* n) {
     // or, when varinit has no side effects:
     //   ({ T x = varinit.v; if (varinit.ok) ... })
     const local_t* var = (const local_t*)n->cond;
-    assert(!type_isopt(var->type)); // should be narrowed & have EX_OPTIONAL
+    assert(!type_isopt(var->type)); // should be narrowed & have NF_OPTIONAL
 
-    if (n->flags & EX_RVALUE)
+    if (n->flags & NF_RVALUE)
       CHAR('(');
     PRINT("{ ");
 
     g->indent++;
 
-    if ((var->flags & EX_OPTIONAL) == 0 ||
+    if ((var->flags & NF_OPTIONAL) == 0 ||
         expr_no_side_effects(var->init) ||
         type_isptrlike(var->type))
     {
@@ -1292,28 +1293,28 @@ static void ifexpr(cgen_t* g, const ifexpr_t* n) {
 
       // "T x = init;" | "T x = init.v;"
       vardef1(g, var, var->name, false);
-      if ((var->flags & EX_OPTIONAL) && !type_isptrlike(var->type))
+      if ((var->flags & NF_OPTIONAL) && !type_isptrlike(var->type))
         PRINT(".v");
       PRINT("; ");
 
       //   "if (x != NULL)" | "((x != NULL) ?"
       // | "if (init.ok)"   | "((init.ok) ?"
       // | "if (x)"         | "((x) ?"
-      if (n->flags & EX_RVALUE) {
+      if (n->flags & NF_RVALUE) {
         CHAR('(');
       } else {
         PRINT("if ");
       }
-      if ((var->flags & EX_OPTIONAL) && !type_isptrlike(var->type)) {
+      if ((var->flags & NF_OPTIONAL) && !type_isptrlike(var->type)) {
         CHAR('('), expr_as_value(g, var->init), PRINT(".ok)");
       } else {
         PRINTF("(%s)", var->name);
       }
       CHAR(' ');
-      if (n->flags & EX_RVALUE)
+      if (n->flags & NF_RVALUE)
         CHAR('?');
     } else {
-      assert(var->flags & EX_OPTIONAL);
+      assert(var->flags & NF_OPTIONAL);
       fmt_tmp_id(tmp, sizeof(tmp), var);
 
       // "opt0 tmp = init;"
@@ -1333,7 +1334,7 @@ static void ifexpr(cgen_t* g, const ifexpr_t* n) {
 
       //   "if (x != NULL)" | "((x != NULL) ?"
       // | "if (init.ok)"   | "((init.ok) ?"
-      if (n->flags & EX_RVALUE) {
+      if (n->flags & NF_RVALUE) {
         PRINTF("(%s.ok ?", tmp);
       } else {
         PRINTF("if (%s.ok) ", tmp);
@@ -1353,7 +1354,7 @@ static void ifexpr(cgen_t* g, const ifexpr_t* n) {
       id = (const idexpr_t*)n->cond;
       if (node_isexpr(id->ref) && ((const expr_t*)id->ref)->nrefs > 1) {
         g->indent++;
-        if (n->flags & EX_RVALUE)
+        if (n->flags & NF_RVALUE)
           CHAR('(');
         PRINT("{ ");
         opttype(g, (const opttype_t*)n->cond->type);
@@ -1368,7 +1369,7 @@ static void ifexpr(cgen_t* g, const ifexpr_t* n) {
       }
     }
 
-    if (n->flags & EX_RVALUE) {
+    if (n->flags & NF_RVALUE) {
       if (id) {
         PRINTF("(%s.ok ? ", has_tmp_opt ? tmp : id->name);
       } else {
@@ -1389,7 +1390,7 @@ static void ifexpr(cgen_t* g, const ifexpr_t* n) {
     }
   }
 
-  if (n->flags & EX_RVALUE) {
+  if (n->flags & NF_RVALUE) {
     startline(g, n->thenb->loc);
 
     if ((!n->elseb || n->elseb->type == type_void) && !type_isopt(n->thenb->type)) {
@@ -1424,7 +1425,7 @@ static void ifexpr(cgen_t* g, const ifexpr_t* n) {
     }
   }
 
-  if (n->flags & EX_RVALUE)
+  if (n->flags & NF_RVALUE)
     g->indent--;
 
   if (hasvar || has_tmp_opt) {
@@ -1434,7 +1435,7 @@ static void ifexpr(cgen_t* g, const ifexpr_t* n) {
       CHAR(';');
     startlinex(g);
     CHAR('}');
-    if (n->flags & EX_RVALUE)
+    if (n->flags & NF_RVALUE)
       CHAR(')');
   }
 }
@@ -1515,6 +1516,8 @@ static void expr(cgen_t* g, const expr_t* n) {
   case TYPE_REF:
   case TYPE_OPTIONAL:
   case TYPE_STRUCT:
+  case TYPE_UNKNOWN:
+  case TYPE_NAMED:
     break;
   }
   debugdie(g, n, "unexpected node %s", nodekind_name(n->kind));

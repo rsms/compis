@@ -38,6 +38,10 @@ const char* nodekind_fmt(nodekind_t kind) {
       return "field";
     case TYPE_STRUCT:
       return "struct type";
+    case TYPE_UNKNOWN:
+      return "unknown type";
+    case TYPE_NAMED:
+      return "named type";
     default:
       if (nodekind_istype(kind))
         return "type";
@@ -262,7 +266,12 @@ static void fmt(abuf_t* s, const node_t* nullable n, u32 indent, u32 maxdepth) {
 
   case EXPR_DEREF:
   case EXPR_PREFIXOP:
-    abuf_str(s, op_name(((unaryop_t*)n)->op));
+    switch ( ((unaryop_t*)n)->op ) {
+    case OP_INC: abuf_str(s, "++"); break;
+    case OP_DEC: abuf_str(s, "--"); break;
+    case OP_INV: abuf_str(s, "~"); break;
+    case OP_NOT: abuf_str(s, "!"); break;
+    }
     fmt(s, (node_t*)((unaryop_t*)n)->expr, indent, maxdepth);
     break;
 
@@ -300,15 +309,15 @@ static void fmt(abuf_t* s, const node_t* nullable n, u32 indent, u32 maxdepth) {
     break;
   }
 
-  case TYPE_VOID: abuf_str(s, "void"); break;
-  case TYPE_BOOL: abuf_str(s, "bool"); break;
-  case TYPE_INT:  abuf_str(s, ((type_t*)n)->isunsigned ? "uint" : "int"); break;
-  case TYPE_I8:   abuf_str(s, ((type_t*)n)->isunsigned ? "u8" : "i8"); break;
-  case TYPE_I16:  abuf_str(s, ((type_t*)n)->isunsigned ? "u16" : "i16"); break;
-  case TYPE_I32:  abuf_str(s, ((type_t*)n)->isunsigned ? "u32" : "i32"); break;
-  case TYPE_I64:  abuf_str(s, ((type_t*)n)->isunsigned ? "u64" : "i64"); break;
-  case TYPE_F32:  abuf_str(s, "f32"); break;
-  case TYPE_F64:  abuf_str(s, "f64"); break;
+  case TYPE_VOID:    abuf_str(s, "void"); break;
+  case TYPE_BOOL:    abuf_str(s, "bool"); break;
+  case TYPE_INT:     abuf_str(s, ((type_t*)n)->isunsigned ? "uint" : "int"); break;
+  case TYPE_I8:      abuf_str(s, ((type_t*)n)->isunsigned ? "u8" : "i8"); break;
+  case TYPE_I16:     abuf_str(s, ((type_t*)n)->isunsigned ? "u16" : "i16"); break;
+  case TYPE_I32:     abuf_str(s, ((type_t*)n)->isunsigned ? "u32" : "i32"); break;
+  case TYPE_I64:     abuf_str(s, ((type_t*)n)->isunsigned ? "u64" : "i64"); break;
+  case TYPE_F32:     abuf_str(s, "f32"); break;
+  case TYPE_F64:     abuf_str(s, "f64"); break;
   case TYPE_STRUCT: return structtype(s, (const structtype_t*)n, indent, maxdepth);
   case TYPE_FUN:
     abuf_str(s, "fun");
@@ -342,6 +351,14 @@ static void fmt(abuf_t* s, const node_t* nullable n, u32 indent, u32 maxdepth) {
     abuf_str(s, "/* TODO fmt ");
     abuf_str(s, nodekind_name(n->kind));
     abuf_str(s, "*/");
+    break;
+
+  case TYPE_UNKNOWN:
+    abuf_str(s, "unknown");
+    break;
+
+  case TYPE_NAMED:
+    abuf_str(s, ((namedtype_t*)n)->name);
     break;
 
   case NODE_BAD:

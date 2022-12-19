@@ -332,6 +332,7 @@ static void scan1(scanner_t* s) {
   case ';': s->tok = TSEMI; break;
   case ',': s->tok = TCOMMA; break;
   case '?': s->tok = TQUESTION; break;
+  case '!': s->tok = TNOT; break;
   case '~': s->tok = TTILDE; break;
   case '<': OP2( TLT,      '<', TSHL); break;
   case '>': OP2( TGT,      '>', TSHR); break;

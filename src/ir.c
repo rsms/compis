@@ -422,7 +422,7 @@ static irblock_t* irval_block(ircons_t* c, const irval_t* v) {
 
 static bool isrvalue(const void* expr) {
   assert(node_isexpr(expr));
-  return ((const expr_t*)expr)->flags & EX_RVALUE;
+  return ((const expr_t*)expr)->flags & NF_RVALUE;
 }
 
 
@@ -1343,6 +1343,23 @@ static irval_t* blockexpr(ircons_t* c, block_t* n) {
 }
 
 
+static irval_t* bincond(ircons_t* c, expr_t* n) {
+  // binary conditional is either a boolean or optional
+
+  // TODO: "!x"
+
+  irval_t* v = load_expr(c, n);
+  if (v->type == type_bool)
+    return v;
+
+  assertf(v->type->kind == TYPE_OPTIONAL, "%s", nodekind_name(v->type->kind));
+
+  irval_t* optcheck = pushval(c, c->b, OP_OCHECK, n->loc, type_bool);
+  pusharg(optcheck, v);
+  return optcheck;
+}
+
+
 static irval_t* ifexpr(ircons_t* c, ifexpr_t* n) {
   // if..end has the following semantics:
   //
@@ -1369,8 +1386,7 @@ static irval_t* ifexpr(ircons_t* c, ifexpr_t* n) {
   c->condnest++;
 
   // generate control condition
-  irval_t* control = load_expr(c, n->cond);
-  assert(control->type == type_bool);
+  irval_t* control = bincond(c, n->cond);
 
   // end predecessor block (leading up to and including "if")
   irblock_t* ifb = end_block(c);
@@ -1785,7 +1801,7 @@ static irfun_t* fun(ircons_t* c, fun_t* n) {
   if (((funtype_t*)n->type)->result != type_void && n->body->children.len) {
     expr_t* lastexpr = n->body->children.v[n->body->children.len-1];
     if (lastexpr->kind != EXPR_RETURN)
-      n->body->flags |= EX_RVALUE;
+      n->body->flags |= NF_RVALUE;
   }
 
   bitset_t* entry_deadset = deadset_copy(c, c->deadset);
@@ -1793,8 +1809,8 @@ static irfun_t* fun(ircons_t* c, fun_t* n) {
   // build body
   irval_t* body = blockexpr_noscope(c, n->body, /*isfunbody*/true);
 
-  // reset EX_RVALUE flag, in case we set it above
-  n->body->flags &= ~EX_RVALUE;
+  // reset NF_RVALUE flag, in case we set it above
+  n->body->flags &= ~NF_RVALUE;
 
   // handle implicit return
   // note: if the block ended with a "return" statement, b->kind is already BLOCK_RET
@@ -1954,6 +1970,8 @@ static irval_t* expr(ircons_t* c, void* expr_node) {
   case TYPE_REF:
   case TYPE_OPTIONAL:
   case TYPE_STRUCT:
+  case TYPE_UNKNOWN:
+  case TYPE_NAMED:
     break;
   }
   assertf(0, "unexpected node %s", nodekind_name(n->kind));
@@ -2051,7 +2069,7 @@ fail_funm:
 }
 
 
-err_t analyze2(compiler_t* compiler, memalloc_t ir_ma, unit_t* unit) {
+err_t analyze(compiler_t* compiler, unit_t* unit, memalloc_t ir_ma) {
   irunit_t* u;
   err_t err = ircons(compiler, ir_ma, unit, &u);
   assertnotnull(u);

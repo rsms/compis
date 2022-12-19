@@ -1,4 +1,4 @@
-fun create() *int
+// fun create() *int
 
 
 // fun ownership_drop_params(x, y *int) void {
@@ -58,13 +58,13 @@ fun create() *int
 //   return y    // transfer ownership of y's value to caller
 // }             // drop(a)
 
-fun ownership_drop_ifthen_ret(x, y, z *int) *int {
-  if true {
-    return x // transfer ownership of x to caller
-  }          // drop(z), drop(y)
-  let k = *x // ok since x is alive here
-  return y   // transfer ownership of y to caller
-}            // drop(z), drop(x)
+// fun ownership_drop_ifthen_ret(x, y, z *int) *int {
+//   if true {
+//     return x // transfer ownership of x to caller
+//   }          // drop(z), drop(y)
+//   let k = *x // ok since x is alive here
+//   return y   // transfer ownership of y to caller
+// }            // drop(z), drop(x)
 
 // fun ownership_drop_ifelse_ret(x, y *int) *int {
 //   if true {
@@ -136,16 +136,16 @@ fun ownership_drop_ifthen_ret(x, y, z *int) *int {
 // }
 
 
-fun ownership_drop_one_of(x, y *int) *int {
-  let result = if true {
-    x          // transfer ownership of x's value to "then" block
-  } else {     // drop(y)
-    y          // transfer ownership of y's value to "else" block
-  }            // drop(x)
-  // let a = *x // error: use of dead value
-  // let b = *y // error: use of dead value
-  return result // transfer ownership of if's value to caller
-}
+// fun ownership_drop_one_of(x, y *int) *int {
+//   let result = if true {
+//     x          // transfer ownership of x's value to "then" block
+//   } else {     // drop(y)
+//     y          // transfer ownership of y's value to "else" block
+//   }            // drop(x)
+//   // let a = *x // error: use of dead value
+//   // let b = *y // error: use of dead value
+//   return result // transfer ownership of if's value to caller
+// }
 
 
 // fun ownership_drop_ifthen_inner(x *int) *int {
@@ -217,6 +217,35 @@ fun ownership_drop_one_of(x, y *int) *int {
 //   return a        // transfer ownership of a's value to caller
 // }                 // drop(z)
 
+
+// fun optional_ifthen_opt(x ?int, y int) ?int {
+//   var a ?int = x
+//   if a {
+//     a
+//   }
+// }
+
+// fun optional_ifthen_cont(x ?int, y int) int {
+//   var a ?int = x
+//   if a {
+//     a
+//   }
+//   0
+// }
+
+fun foo(x int, y MyInt) int {
+  let z = y + 1
+  return double(x)
+}
+
+fun double(x int) int {
+  x * 2
+}
+
+type MyInt int
+
+
+/// TODO ownership test these:
 
 /*
 fun ownership_drop_in_scope(x *int, y *int) *int {

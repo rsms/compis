@@ -29,6 +29,7 @@ _( OP_MOVE, 0 )       // *T -> *T
 _( OP_BORROW, 0 )     // T -> &T
 _( OP_BORROW_MUT, 0 ) // T -> mut&T
 _( OP_DROP, 0 )
+_( OP_OCHECK, 0 )     // test if T? has value
 
 // unary
 _( OP_INC, 0 ) // ++

@@ -34,8 +34,17 @@ void compiler_set_triple(compiler_t* c, const char* triple) {
   c->triple = triple;
   CoLLVMTargetInfo info;
   llvm_triple_info(triple, &info);
+  c->intsize = info.ptr_size;
   c->ptrsize = info.ptr_size;
   c->isbigendian = !info.is_little_endian;
+  switch (info.ptr_size) {
+    case 1: c->addrtype = type_u8; break;
+    case 2: c->addrtype = type_u16; break;
+    case 4: c->addrtype = type_u32; break;
+    default:
+      assert(info.ptr_size <= 8);
+      c->addrtype = type_u64;
+  }
 }
 
 
@@ -148,15 +157,17 @@ static err_t compile_co_to_c(compiler_t* c, input_t* input, const char* cfile) {
   if ((err = dump_ast((node_t*)unit)))
     goto end_parser;
 
+  dlog("abort");abort(); // XXX
+
   // bail on parse error
   if (c->errcount > errcount) {
     err = ErrCanceled;
     goto end_parser;
   }
 
-  // analyze
-  dlog("————————— analyze —————————");
-  if (( err = analyze(&parser, unit) ))
+  // typecheck
+  dlog("————————— typecheck —————————");
+  if (( err = typecheck(&parser, unit) ))
     goto end_parser;
   dlog("————————— AST —————————");
   if ((err = dump_ast((node_t*)unit)))
@@ -166,10 +177,10 @@ static err_t compile_co_to_c(compiler_t* c, input_t* input, const char* cfile) {
     goto end_parser;
   }
 
-  // analyze2 (ir)
-  dlog("————————— analyze2 —————————");
+  // analyze (ir)
+  dlog("————————— analyze —————————");
   memalloc_t ir_ma = ast_ma;
-  if (( err = analyze2(c, ir_ma, unit) ))
+  if (( err = analyze(c, unit, ir_ma) ))
     goto end_parser;
 
   // generate C code

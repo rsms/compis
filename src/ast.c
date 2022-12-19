@@ -187,9 +187,26 @@ static void repr_call(RPARAMS, const call_t* n) {
 }
 
 
+static void flags(RPARAMS, const node_t* n) {
+  // {flags}
+  if (n->flags & (NF_RVALUE | NF_OPTIONAL | NF_UNKNOWN)) {
+    PRINT(" {");
+    if (n->flags & NF_RVALUE)   CHAR('r');
+    if (n->flags & NF_OPTIONAL) CHAR('o');
+    if (n->flags & NF_UNKNOWN) CHAR('u');
+    CHAR('}');
+  }
+}
+
+
 static void repr_type(RPARAMS, const type_t* t) {
   REPR_BEGIN('<', nodekind_name(t->kind));
   bool isnew = !seen(r, t);
+
+  // {flags}
+  if (isnew)
+    flags(RARGS, (node_t*)t);
+
   switch (t->kind) {
   case TYPE_INT:
   case TYPE_I8:
@@ -254,36 +271,28 @@ static void repr(RPARAMS, const node_t* nullable n) {
   const char* kindname = STRTAB_GET(nodekind_strtab, n->kind);
   REPR_BEGIN('(', kindname);
 
-  // name up front, even if seen
+  bool isnew = !seen(r, n);
+
+  // name up front of functions and variables, even if seen
   if (node_isexpr(n)) {
     if (n->kind == EXPR_FUN && ((fun_t*)n)->name) {
       CHAR(' '), PRINT(((fun_t*)n)->name);
-      if (seen(r, n))
-        goto end;
-      NEWLINE();
       indent += INDENT;
-      goto meta; // avoid second call to seen()
     } else if (node_islocal(n)) {
-      CHAR(' '), PRINT(((local_t*)n)->name), CHAR(' ');
-    } else {
-      CHAR(' ');
+      CHAR(' '), PRINT(((local_t*)n)->name);
     }
   }
 
-  if (seen(r, n))
+  if (!isnew)
     goto end;
 
-meta:
+  flags(RARGS, n);
 
-  // {flags} and <type>
+  // <type>
   if (node_isexpr(n)) {
+    if (r->outbuf.len > 0 && r->outbuf.chars[r->outbuf.len-1] != ' ')
+      CHAR(' ');
     expr_t* expr = (expr_t*)n;
-    if (expr->flags & (EX_RVALUE | EX_OPTIONAL)) {
-      CHAR('{');
-      if (expr->flags & EX_RVALUE)   CHAR('r');
-      if (expr->flags & EX_OPTIONAL) CHAR('o');
-      PRINT("} ");
-    }
     if (expr->type) {
       repr_type(RARGSFL(fl | REPRFLAG_HEAD), expr->type);
     } else {
@@ -401,8 +410,6 @@ meta:
   case EXPR_VAR: {
     const local_t* var = (const local_t*)n;
     CHAR(' '); PRINT(var->name);
-    if (type_isowner(var->type))
-      PRINT(owner_islive(var) ? " {live}" : " {dead}");
     if (var->init) {
       CHAR(' ');
       repr(RARGS, (const node_t*)var->init);

@@ -32,6 +32,7 @@
   _( EXPR_FLOATLIT )\
 // end FOREACH_NODEKIND
 #define FOREACH_NODEKIND_TYPE(_) \
+  /* primitive types */\
   _( TYPE_VOID ) /* must be first type kind */\
   _( TYPE_BOOL )\
   _( TYPE_I8  )\
@@ -41,13 +42,17 @@
   _( TYPE_F32 )\
   _( TYPE_F64 )\
   _( TYPE_INT )\
-  _( TYPE_ARRAY ) /* nodekind_isusertype assumes this is first user type */\
+  /* user types */\
+  _( TYPE_ARRAY ) /* nodekind_is*type assumes this is the first user type */\
   _( TYPE_ENUM )\
   _( TYPE_FUN )\
   _( TYPE_PTR )\
   _( TYPE_REF )\
   _( TYPE_OPTIONAL )\
   _( TYPE_STRUCT )\
+  /* special types replaced by typecheck */\
+  _( TYPE_UNKNOWN ) /* nodekind_is*type assumes this is the first special type */\
+  _( TYPE_NAMED )\
 // end FOREACH_NODEKIND_TYPE
 
 typedef u8 tok_t;
@@ -124,46 +129,7 @@ typedef struct {
   void** ptr;  // entries
 } scope_t;
 
-typedef struct compiler {
-  memalloc_t     ma;          // memory allocator
-  const char*    triple;      // target triple
-  char*          cachedir;    // defaults to ".c0"
-  char*          objdir;      // "${cachedir}/obj"
-  char*          cflags;
-  diaghandler_t  diaghandler; // called when errors are encountered
-  void* nullable userdata;    // passed to diaghandler
-  locmap_t       locmap;      // maps input <—> loc_t
-  u32            errcount;    // number of errors encountered
-  diag_t         diag;        // most recent diagnostic message
-  buf_t          diagbuf;     // for diag.msg
-  map_t          typeidmap;
-  usize          ptrsize;     // byte size of pointer, e.g. 8 for i64
-  bool           isbigendian;
-} compiler_t;
-
 typedef const char* sym_t;
-
-typedef struct {
-  input_t*  input;       // input source
-  const u8* inp;         // input buffer current pointer
-  const u8* inend;       // input buffer end
-  const u8* linestart;   // start of current line
-  tok_t     tok;         // recently parsed token (current token during scanning)
-  loc_t     loc;         // recently parsed token's source location
-  bool      insertsemi;  // insert a semicolon before next newline
-  u32       lineno;      // monotonic line number counter (!= tok.loc.line)
-} scanstate_t;
-
-typedef struct {
-  scanstate_t;
-  compiler_t* compiler;
-  const u8*   tokstart;    // start of current token
-  const u8*   tokend;      // end of previous token
-  usize       litlenoffs;  // subtracted from source span len in scanner_litlen()
-  u64         litint;      // parsed INTLIT
-  buf_t       litbuf;      // interpreted source literal (e.g. "foo\n")
-  sym_t       sym;         // identifier
-} scanner_t;
 
 // ———————— BEGIN AST ————————
 
@@ -176,19 +142,21 @@ enum nodekind {
   NODEKIND_COUNT,
 };
 
-typedef u32 exprflag_t;
-#define EX_RVALUE           ((exprflag_t)1<< 0) // expression is used as an rvalue
-#define EX_OPTIONAL         ((exprflag_t)1<< 1) // type-narrowed from optional
-#define EX_SHADOWS_OWNER    ((exprflag_t)1<< 2) // shadows the original owner of a value
-#define EX_EXITS            ((exprflag_t)1<< 3) // block exits the function (has return)
-#define EX_SHADOWS_OPTIONAL ((exprflag_t)1<< 4) // type-narrowed "if" check on optional
-#define EX_DEAD_OWNER       ((exprflag_t)1<< 5) // node _was_ owner of TYPE_PTR
-#define EX_OWNER_MOVED      ((exprflag_t)1<< 6) // owner moved
-#define EX_ANALYZED         ((exprflag_t)1<< 7) // has been checked by the analyzer
+typedef u8 nodeflag_t;
+#define NF_RVALUE   ((nodeflag_t)1<< 0) // expression is used as an rvalue
+#define NF_OPTIONAL ((nodeflag_t)1<< 1) // type-narrowed from optional
+#define NF_EXITS    ((nodeflag_t)1<< 2) // block exits the function (has return)
+#define NF_CHECKED  ((nodeflag_t)1<< 3) // has been typecheck'ed (or doesn't need it)
+#define NF_UNKNOWN  ((nodeflag_t)1<< 4) // has or contains unresolved identifier
+
+// NODEFLAGS_BUBBLE are flags that "bubble" (transfer) from children to parents
+#define NODEFLAGS_BUBBLE  NF_UNKNOWN
 
 typedef struct {
   nodekind_t kind;
-  u8         _unused[sizeof(loc_t) - sizeof(nodekind_t)];
+  nodeflag_t flags;
+  u8         _unused[2];
+  u32        nrefs; // used by expr_t and usertype_t
   loc_t      loc;
 } node_t;
 
@@ -211,7 +179,11 @@ typedef struct {
 
 typedef struct {
   type_t;
-  u32 nrefs;
+  sym_t name;
+} namedtype_t;
+
+typedef struct {
+  type_t;
 } usertype_t;
 
 typedef struct {
@@ -256,8 +228,6 @@ typedef struct {
 typedef struct {
   stmt_t;
   type_t* nullable type;
-  u32              nrefs;
-  exprflag_t       flags;
 } expr_t;
 
 typedef struct { expr_t; u64 intval; } intlit_t;
@@ -390,6 +360,28 @@ typedef struct {
 // ———————— END IR ————————
 
 typedef struct {
+  input_t*  input;       // input source
+  const u8* inp;         // input buffer current pointer
+  const u8* inend;       // input buffer end
+  const u8* linestart;   // start of current line
+  tok_t     tok;         // recently parsed token (current token during scanning)
+  loc_t     loc;         // recently parsed token's source location
+  bool      insertsemi;  // insert a semicolon before next newline
+  u32       lineno;      // monotonic line number counter (!= tok.loc.line)
+} scanstate_t;
+
+typedef struct {
+  scanstate_t;
+  compiler_t* compiler;
+  const u8*   tokstart;    // start of current token
+  const u8*   tokend;      // end of previous token
+  usize       litlenoffs;  // subtracted from source span len in scanner_litlen()
+  u64         litint;      // parsed INTLIT
+  buf_t       litbuf;      // interpreted source literal (e.g. "foo\n")
+  sym_t       sym;         // identifier
+} scanner_t;
+
+typedef struct {
   scanner_t        scanner;
   memalloc_t       ma; // general allocator (== scanner.compiler->ma)
   memalloc_t       ast_ma; // AST allocator
@@ -404,7 +396,24 @@ typedef struct {
   ptrarray_t       typectxstack;
   expr_t* nullable dotctx; // for ".name" shorthand
   ptrarray_t       dotctxstack;
+  #if DEBUG
+    int traceindent;
+  #endif
 } parser_t;
+
+typedef struct {
+  compiler_t* compiler;
+  parser_t*   p;
+  memalloc_t  ma;     // p->scanner.compiler->ma
+  memalloc_t  ast_ma; // p->ast_ma
+  scope_t     scope;
+  err_t       err;
+  type_t*     typectx;
+  ptrarray_t  typectxstack;
+  #if DEBUG
+    int traceindent;
+  #endif
+} typecheck_t;
 
 typedef struct {
   compiler_t* compiler;
@@ -422,11 +431,31 @@ typedef struct {
   map_t       tmpmap;
 } cgen_t;
 
+typedef struct compiler {
+  memalloc_t     ma;          // memory allocator
+  const char*    triple;      // target triple
+  char*          cachedir;    // defaults to ".c0"
+  char*          objdir;      // "${cachedir}/obj"
+  char*          cflags;
+  diaghandler_t  diaghandler; // called when errors are encountered
+  void* nullable userdata;    // passed to diaghandler
+  locmap_t       locmap;      // maps input <—> loc_t
+  u32            errcount;    // number of errors encountered
+  diag_t         diag;        // most recent diagnostic message
+  buf_t          diagbuf;     // for diag.msg
+  map_t          typeidmap;
+  u32            intsize;     // byte size of "int" and "uint" types (register sized)
+  u32            ptrsize;     // byte size of pointer, e.g. 8 for i64
+  type_t*        addrtype;    // type for storing memory addresses, e.g. u64
+  bool           isbigendian;
+} compiler_t;
+
 
 extern node_t* last_resort_node;
 
 // universe constants
 extern type_t* type_void;
+extern type_t* type_unknown;
 extern type_t* type_bool;
 extern type_t* type_int;
 extern type_t* type_uint;
@@ -468,9 +497,9 @@ bool parser_init(parser_t* p, compiler_t* c);
 void parser_dispose(parser_t* p);
 unit_t* parser_parse(parser_t* p, memalloc_t ast_ma, input_t*);
 
-// analysis
-err_t analyze(parser_t*, unit_t* unit);
-err_t analyze2(compiler_t*, memalloc_t ir_ma, unit_t* unit);
+// post-parse passes
+err_t typecheck(parser_t*, unit_t* unit);
+err_t analyze(compiler_t*, unit_t* unit, memalloc_t ir_ma);
 
 // ir
 bool irfmt(buf_t* out, const irunit_t*, const locmap_t* nullable lm);
@@ -509,7 +538,9 @@ inline static bool nodekind_islocal(nodekind_t kind) {
 inline static bool nodekind_isprimtype(nodekind_t kind) {
   return TYPE_VOID <= kind && kind < TYPE_ARRAY; }
 inline static bool nodekind_isusertype(nodekind_t kind) {
-  return TYPE_ARRAY <= kind; }
+  return TYPE_ARRAY <= kind && kind < TYPE_UNKNOWN; }
+inline static bool nodekind_isspecialtype(nodekind_t kind) {
+  return TYPE_UNKNOWN <= kind; }
 inline static bool nodekind_isptrtype(nodekind_t kind) { return kind == TYPE_PTR; }
 inline static bool nodekind_isreftype(nodekind_t kind) { return kind == TYPE_REF; }
 inline static bool nodekind_isptrliketype(nodekind_t kind) {
@@ -563,14 +594,6 @@ bool expr_no_side_effects(const expr_t* n);
     const void*:   (const expr_t*)(ptr), \
     void*:         (expr_t*)(ptr) ) )
 
-// ownership
-inline static bool owner_islive(const void* expr) {
-  return (asexpr(expr)->flags & EX_DEAD_OWNER) == 0;
-}
-inline static void owner_setlive(void* expr, bool live) {
-  expr_t* n = asexpr(expr);
-  n->flags = COND_FLAG(n->flags, EX_DEAD_OWNER, !live);
-}
 
 // tokens
 const char* tok_name(tok_t); // e.g. TEQ => "TEQ"
