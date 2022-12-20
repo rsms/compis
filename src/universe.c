@@ -5,7 +5,7 @@
 #define DEFTYPE(_kind, _flags, _size, _isunsigned) \
   (type_t*)&(const type_t){ \
     .kind = (_kind), \
-    .flags = (_flags), \
+    .flags = NF_CHECKED | (_flags), \
     .size = (_size), \
     .align = (_size), \
     .isunsigned = (_isunsigned), \

@@ -39,20 +39,20 @@
   _( TYPE_I16 )\
   _( TYPE_I32 )\
   _( TYPE_I64 )\
+  _( TYPE_INT )\
   _( TYPE_F32 )\
   _( TYPE_F64 )\
-  _( TYPE_INT )\
   /* user types */\
   _( TYPE_ARRAY ) /* nodekind_is*type assumes this is the first user type */\
-  _( TYPE_ENUM )\
   _( TYPE_FUN )\
   _( TYPE_PTR )\
   _( TYPE_REF )\
   _( TYPE_OPTIONAL )\
   _( TYPE_STRUCT )\
+  _( TYPE_ALIAS )\
   /* special types replaced by typecheck */\
   _( TYPE_UNKNOWN ) /* nodekind_is*type assumes this is the first special type */\
-  _( TYPE_NAMED )\
+  _( TYPE_UNRESOLVED ) /* named type not yet resolved */ \
 // end FOREACH_NODEKIND_TYPE
 
 typedef u8 tok_t;
@@ -180,7 +180,13 @@ typedef struct {
 typedef struct {
   type_t;
   sym_t name;
-} namedtype_t;
+} unresolvedtype_t;
+
+typedef struct {
+  type_t;
+  sym_t   name;
+  type_t* elem;
+} aliastype_t;
 
 typedef struct {
   type_t;
@@ -221,8 +227,7 @@ typedef struct {
 
 typedef struct {
   stmt_t;
-  sym_t   name;
-  type_t* type;
+  aliastype_t type;
 } typedef_t;
 
 typedef struct {
@@ -270,9 +275,9 @@ typedef struct {
 typedef struct { // PARAM, VAR, LET
   expr_t;
   sym_t   nullable name;      // may be NULL for PARAM
+  loc_t            nameloc;
   expr_t* nullable init;      // may be NULL for VAR and PARAM
   bool             isthis;    // [PARAM only] it's the special "this" parameter
-  //ownership_t      ownership; // [type==TYPE_PTR only] ownership status
 } local_t;
 
 typedef struct { // fun is a declaration (stmt) or an expression depending on use
@@ -402,14 +407,15 @@ typedef struct {
 } parser_t;
 
 typedef struct {
-  compiler_t* compiler;
-  parser_t*   p;
-  memalloc_t  ma;     // p->scanner.compiler->ma
-  memalloc_t  ast_ma; // p->ast_ma
-  scope_t     scope;
-  err_t       err;
-  type_t*     typectx;
-  ptrarray_t  typectxstack;
+  compiler_t*     compiler;
+  parser_t*       p;
+  memalloc_t      ma;     // p->scanner.compiler->ma
+  memalloc_t      ast_ma; // p->ast_ma
+  scope_t         scope;
+  err_t           err;
+  fun_t* nullable fun;  // current function
+  type_t*         typectx;
+  ptrarray_t      typectxstack;
   #if DEBUG
     int traceindent;
   #endif
@@ -447,6 +453,8 @@ typedef struct compiler {
   u32            intsize;     // byte size of "int" and "uint" types (register sized)
   u32            ptrsize;     // byte size of pointer, e.g. 8 for i64
   type_t*        addrtype;    // type for storing memory addresses, e.g. u64
+  type_t*        inttype;     // type for "int"
+  type_t*        uinttype;    // type for "uint"
   bool           isbigendian;
 } compiler_t;
 
@@ -575,7 +583,10 @@ inline static bool type_isowner(const type_t* t) { // true for "*T" and "?*T"
 
 // types
 bool types_isconvertible(const type_t* dst, const type_t* src);
-bool types_iscompat(const type_t* dst, const type_t* src);
+bool _types_iscompat(const type_t* dst, const type_t* src);
+inline static bool types_iscompat(const type_t* dst, const type_t* src) {
+  return dst == src || _types_iscompat(dst, src);
+}
 sym_t nullable _typeid(type_t*);
 inline static sym_t nullable typeid(type_t* t) { return t->tid ? t->tid : _typeid(t); }
 bool typeid_append(buf_t* buf, type_t* t);

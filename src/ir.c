@@ -117,7 +117,7 @@ static void debug_graphviz(const irunit_t* u, memalloc_t ma, const locmap_t* lm)
 
   // invoke "dot" program
   buf_clear(&buf);
-  buf_print(&buf, "dot -Tpng -oir.png ir.dot");
+  buf_print(&buf, "dot -Tpng -oir.png ir.dot &");
   buf_nullterm(&buf);
   dlog("running '%s' ...", buf.chars);
   system(buf.chars);
@@ -335,10 +335,22 @@ static irblock_t* block_comment(ircons_t* c, irblock_t* b, const char* comment) 
 }
 
 
+static type_t* canonical_type(ircons_t* c, type_t* t) {
+  while (t->kind == TYPE_ALIAS)
+    t = assertnotnull(((aliastype_t*)t)->elem);
+  if (t->kind == TYPE_INT)
+    return t->isunsigned ? c->compiler->uinttype : c->compiler->inttype;
+  return t;
+}
+
+
 static irval_t* mkval(ircons_t* c, op_t op, loc_t loc, type_t* type) {
   irval_t* v = mem_alloct(c->ir_ma, irval_t);
   if UNLIKELY(v == NULL)
     return out_of_mem(c), &bad_irval;
+
+  type = canonical_type(c, type);
+
   v->id = c->f->vidgen++;
   v->op = op;
   v->loc = loc;
@@ -1964,14 +1976,14 @@ static irval_t* expr(ircons_t* c, void* expr_node) {
   case TYPE_F32:
   case TYPE_F64:
   case TYPE_ARRAY:
-  case TYPE_ENUM:
   case TYPE_FUN:
   case TYPE_PTR:
   case TYPE_REF:
   case TYPE_OPTIONAL:
   case TYPE_STRUCT:
+  case TYPE_ALIAS:
   case TYPE_UNKNOWN:
-  case TYPE_NAMED:
+  case TYPE_UNRESOLVED:
     break;
   }
   assertf(0, "unexpected node %s", nodekind_name(n->kind));
@@ -2075,7 +2087,5 @@ err_t analyze(compiler_t* compiler, unit_t* unit, memalloc_t ir_ma) {
   assertnotnull(u);
   dump_irunit(u, compiler->ma, &compiler->locmap);
   debug_graphviz(u, compiler->ma, &compiler->locmap);
-  dlog("sizeof(irval_t) %zu", sizeof(irval_t));
-  return ErrCanceled; // XXX
   return err;
 }

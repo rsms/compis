@@ -14,9 +14,16 @@ bool types_isconvertible(const type_t* dst, const type_t* src) {
 }
 
 
-bool types_iscompat(const type_t* dst, const type_t* src) {
+bool _types_iscompat(const type_t* dst, const type_t* src) {
   assertnotnull(dst);
   assertnotnull(src);
+
+  while (dst->kind == TYPE_ALIAS)
+    dst = assertnotnull(((aliastype_t*)dst)->elem);
+
+  while (src->kind == TYPE_ALIAS)
+    src = assertnotnull(((aliastype_t*)src)->elem);
+
   switch (dst->kind) {
     case TYPE_INT:
     case TYPE_I8:

@@ -38,12 +38,26 @@ void compiler_set_triple(compiler_t* c, const char* triple) {
   c->ptrsize = info.ptr_size;
   c->isbigendian = !info.is_little_endian;
   switch (info.ptr_size) {
-    case 1: c->addrtype = type_u8; break;
-    case 2: c->addrtype = type_u16; break;
-    case 4: c->addrtype = type_u32; break;
+    case 1:
+      c->addrtype = type_u8;
+      c->uinttype = type_u8;
+      c->inttype  = type_i8;
+      break;
+    case 2:
+      c->addrtype = type_u16;
+      c->uinttype = type_u16;
+      c->inttype  = type_i16;
+      break;
+    case 4:
+      c->addrtype = type_u32;
+      c->uinttype = type_u32;
+      c->inttype  = type_u32;
+      break;
     default:
       assert(info.ptr_size <= 8);
       c->addrtype = type_u64;
+      c->uinttype = type_u64;
+      c->inttype  = type_i64;
   }
 }
 
@@ -157,7 +171,6 @@ static err_t compile_co_to_c(compiler_t* c, input_t* input, const char* cfile) {
   if ((err = dump_ast((node_t*)unit)))
     goto end_parser;
 
-  dlog("abort");abort(); // XXX
 
   // bail on parse error
   if (c->errcount > errcount) {
@@ -176,6 +189,8 @@ static err_t compile_co_to_c(compiler_t* c, input_t* input, const char* cfile) {
     err = ErrCanceled;
     goto end_parser;
   }
+
+  // dlog("abort");abort(); // XXX
 
   // analyze (ir)
   dlog("————————— analyze —————————");

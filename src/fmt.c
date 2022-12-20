@@ -40,7 +40,7 @@ const char* nodekind_fmt(nodekind_t kind) {
       return "struct type";
     case TYPE_UNKNOWN:
       return "unknown type";
-    case TYPE_NAMED:
+    case TYPE_UNRESOLVED:
       return "named type";
     default:
       if (nodekind_istype(kind))
@@ -156,10 +156,11 @@ static void fmt(abuf_t* s, const node_t* nullable n, u32 indent, u32 maxdepth) {
   }
 
   case STMT_TYPEDEF:
-    abuf_fmt(s, "type %s", ((typedef_t*)n)->name);
-    if (maxdepth > 1) {
-      abuf_c(s, ' ');
-      fmt(s, (node_t*)((typedef_t*)n)->type, indent, maxdepth - 1);
+    if (maxdepth <= 1) {
+      abuf_fmt(s, "type %s", ((typedef_t*)n)->type.name);
+    } else {
+      abuf_str(s, "type ");
+      fmt(s, (node_t*)&((typedef_t*)n)->type, indent, maxdepth - 1);
     }
     break;
 
@@ -346,19 +347,22 @@ static void fmt(abuf_t* s, const node_t* nullable n, u32 indent, u32 maxdepth) {
     break;
   }
 
-  case TYPE_ENUM:
-    dlog("TODO %s", nodekind_name(n->kind));
-    abuf_str(s, "/* TODO fmt ");
-    abuf_str(s, nodekind_name(n->kind));
-    abuf_str(s, "*/");
+  case TYPE_ALIAS: {
+    const aliastype_t* at = (const aliastype_t*)n;
+    abuf_str(s, at->name);
+    if (maxdepth > 1) {
+      abuf_c(s, ' ');
+      fmt(s, (node_t*)at->elem, indent, maxdepth);
+    }
     break;
+  }
 
   case TYPE_UNKNOWN:
     abuf_str(s, "unknown");
     break;
 
-  case TYPE_NAMED:
-    abuf_str(s, ((namedtype_t*)n)->name);
+  case TYPE_UNRESOLVED:
+    abuf_str(s, ((unresolvedtype_t*)n)->name);
     break;
 
   case NODE_BAD:

@@ -32,7 +32,7 @@ typedef struct {
 //     { NK_NBAD, NK_NCOMMENT, NK_NUNIT, NK_NFUN, NK_NBLOCK },
 //     { "NBAD\0NCOMMENT\0NUNIT\0NFUN\0NBLOCK\0N?" }
 //   };
-#define NK_UNKNOWN_STR "NODE?"
+#define NK_UNKNOWN_STR "NODE_???"
 enum {
   #define _(NAME) NK_##NAME, NK__##NAME = NK_##NAME + strlen(#NAME),
   FOREACH_NODEKIND(_)
@@ -139,9 +139,7 @@ static void repr_nodearray(RPARAMS, const ptrarray_t* nodes) {
 
 static void repr_typedef(RPARAMS, const typedef_t* n) {
   CHAR(' ');
-  PRINT(n->name);
-  CHAR(' ');
-  repr_type(RARGS, n->type);
+  repr_type(RARGS, (type_t*)&n->type);
 }
 
 
@@ -239,9 +237,18 @@ static void repr_type(RPARAMS, const type_t* t) {
     CHAR(' ');
     repr_type(RARGSFL(fl | REPRFLAG_HEAD), ((const opttype_t*)t)->elem);
     break;
+  case TYPE_ALIAS:
+    CHAR(' '), PRINT(((aliastype_t*)t)->name);
+    if (isnew) {
+      CHAR(' ');
+      repr_type(RARGSFL(fl | REPRFLAG_HEAD), ((aliastype_t*)t)->elem);
+    }
+    break;
   case TYPE_ARRAY:
-  case TYPE_ENUM:
     dlog("TODO subtype %s", nodekind_name(t->kind));
+    break;
+  case TYPE_UNRESOLVED:
+    CHAR(' '), PRINT(((unresolvedtype_t*)t)->name);
     break;
   }
   REPR_END('>');
@@ -280,7 +287,11 @@ static void repr(RPARAMS, const node_t* nullable n) {
       indent += INDENT;
     } else if (node_islocal(n)) {
       CHAR(' '), PRINT(((local_t*)n)->name);
+    } else if (n->kind == EXPR_ID) {
+      CHAR(' '), PRINT(((idexpr_t*)n)->name);
     }
+  } else if (n->kind == TYPE_UNRESOLVED) {
+    CHAR(' '), PRINT(((unresolvedtype_t*)n)->name);
   }
 
   if (!isnew)
@@ -351,7 +362,6 @@ static void repr(RPARAMS, const node_t* nullable n) {
     break;
 
   case EXPR_ID:
-    CHAR(' '), PRINT(((idexpr_t*)n)->name);
     if (((idexpr_t*)n)->ref) {
       CHAR(' ');
       repr(RARGSFL(fl | REPRFLAG_HEAD), (const node_t*)((idexpr_t*)n)->ref);
@@ -461,12 +471,36 @@ origin_t node_origin(const locmap_t* lm, const node_t* n) {
     break;
 
   case EXPR_ID:
-    if (r.width == 0)
-      r.width = strlen(((idexpr_t*)n)->name);
+    r.width = strlen(((idexpr_t*)n)->name);
+    break;
+
+  case TYPE_UNRESOLVED:
+    r.width = strlen(((unresolvedtype_t*)n)->name);
     break;
 
   case EXPR_DEREF:
     return origin_union(r, node_origin(lm, (node_t*)((unaryop_t*)n)->expr));
+
+  case EXPR_LET:
+    return origin_make(lm, loc_union(((local_t*)n)->loc, ((local_t*)n)->nameloc));
+
+  case STMT_TYPEDEF: {
+    typedef_t* td = (typedef_t*)n;
+    if (loc_line(td->type.loc))
+      return origin_make(lm, td->type.loc);
+    return r;
+  }
+
+  case EXPR_BINOP: {
+    binop_t* op = (binop_t*)n;
+    if (loc_line(op->left->loc) == 0 || loc_line(op->right->loc) == 0)
+      return r;
+    origin_t left_origin = origin_make(lm, op->left->loc);
+    origin_t right_origin = origin_make(lm, op->right->loc);
+    r = origin_union(left_origin, right_origin);
+    r.focus_col = loc_col(n->loc);
+    return r;
+  }
 
   case EXPR_CALL: {
     const call_t* call = (call_t*)n;
@@ -479,8 +513,6 @@ origin_t node_origin(const locmap_t* lm, const node_t* n) {
     break;
   }
 
-  default:
-    dlog("TODO %s %s", __FUNCTION__, nodekind_name(n->kind));
   }
   return r;
 }

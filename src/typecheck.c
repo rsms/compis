@@ -14,12 +14,6 @@
 #endif
 
 
-typedef struct nref {
-  node_t* n;
-  struct nref* nullable parent;
-} nref_t;
-
-
 static const char* fmtnodex(typecheck_t* a, u32 bufindex, const void* nullable n, u32 depth) {
   buf_t* buf = &a->p->tmpbuf[bufindex];
   buf_clear(buf);
@@ -34,31 +28,44 @@ static const char* fmtnode(typecheck_t* a, u32 bufindex, const void* nullable n)
 
 
 #ifdef TRACE_TYPECHECK
-  #define trace_node(a, msg, n) ({ \
-    const node_t* __n = (const node_t*)(n); \
+  #define trace_node(a, msg, np) ({ \
+    const node_t* __n = *(const node_t**)(np); \
     trace("%s%-14s: %s", (msg), nodekind_name(__n->kind), fmtnode((a), 0, __n)); \
   })
+
   typedef struct {
     typecheck_t*   a;
-    const node_t* n;
-    const char*   msg;
+    const node_t** np;
+    const char*    msg;
   } nodetrace_t;
+
   static void _trace_cleanup(nodetrace_t* nt) {
     typecheck_t* a = nt->a;
     a->traceindent--;
-    trace("%s%-14s => %s", nt->msg, nodekind_name(nt->n->kind),
-      node_isexpr(nt->n) && asexpr(nt->n)->type ?
-        fmtnode(a, 0, asexpr(nt->n)->type) :
-        "NULL");
+    type_t* effective_type = NULL;
+    const node_t* n = *nt->np;
+    if (node_isexpr(n)) {
+      effective_type = asexpr(n)->type;
+    } else if (node_istype(n)) {
+      effective_type = (type_t*)n;
+    }
+    if (effective_type == type_unknown) {
+      trace("\e[1;31m%s type not resolved (%s)\e[0m",
+        nodekind_name(n->kind), fmtnode(a, 0, n));
+    }
+    trace("%s%-14s => %s", nt->msg, nodekind_name(n->kind),
+      effective_type ? fmtnode(a, 0, effective_type) : "NULL");
   }
-  #define TRACE_NODE(a, msg, n) \
-    trace_node((a), (msg), (n)); \
+
+  #define TRACE_NODE(a, msg, np) \
+    trace_node((a), (msg), (np)); \
     (a)->traceindent++; \
     nodetrace_t __nt __attribute__((__cleanup__(_trace_cleanup),__unused__)) = \
-      {(a), (const node_t*)(n), (msg)};
+      {(a), (const node_t**)(np), (msg)};
 
 #else
   #define trace_node(a,msg,n) ((void)0)
+  #define TRACE_NODE(a,msg,n) ((void)0)
 #endif
 
 
@@ -111,7 +118,7 @@ static void out_of_mem(typecheck_t* a) {
 static node_t* unbox_id(void* node) {
   node_t* n = node;
   while (n->kind == EXPR_ID)
-    n = ((idexpr_t*)n)->ref;
+    n = assertnotnull(((idexpr_t*)n)->ref);
   return n;
 }
 
@@ -183,6 +190,7 @@ static bool check_types_iscompat(
 
 
 static void typectx_push(typecheck_t* a, type_t* t) {
+  trace("typectx: %s -> %s", fmtnode(a, 0, a->typectx), fmtnode(a, 1, t));
   if UNLIKELY(!ptrarray_push(&a->typectxstack, a->ma, a->typectx))
     out_of_mem(a);
   a->typectx = t;
@@ -190,7 +198,9 @@ static void typectx_push(typecheck_t* a, type_t* t) {
 
 static void typectx_pop(typecheck_t* a) {
   assert(a->typectxstack.len > 0);
-  a->typectx = ptrarray_pop(&a->typectxstack);
+  type_t* t = ptrarray_pop(&a->typectxstack);
+  trace("typectx: %s <- %s", fmtnode(a, 1, t), fmtnode(a, 0, a->typectx));
+  a->typectx = t;
 }
 
 
@@ -205,14 +215,18 @@ static void leave_scope(typecheck_t* a) {
 }
 
 
-// static void* nullable lookup(typecheck_t* a, sym_t name) {
-//   node_t* n = scope_lookup(&a->scope, name, U32_MAX);
-//   if (n)
-//     return n;
-//   // look in package scope and its parent universe scope
-//   void** vp = map_lookup(&a->p->pkgdefs, name, strlen(name));
-//   return vp ? *vp : NULL;
-// }
+static node_t* nullable lookup(typecheck_t* a, sym_t name) {
+  node_t* n = scope_lookup(&a->scope, name, U32_MAX);
+  if (!n) {
+    // look in package scope and its parent universe scope
+    void** vp = map_lookup(&a->p->pkgdefs, name, strlen(name));
+    if (!vp)
+      return NULL;
+    n = *vp;
+  }
+  n->nrefs++;
+  return n;
+}
 
 
 static void define(typecheck_t* a, sym_t name, void* n) {
@@ -236,51 +250,37 @@ static void define(typecheck_t* a, sym_t name, void* n) {
 }
 
 
-#define DEF_SELF(self_node) \
-  nref_t self = { .n = ((node_t*)(self_node)), .parent = &parent }
-
-
-static void stmt(typecheck_t* a, stmt_t* n, nref_t parent);
-static void expr(typecheck_t* a, expr_t* n, nref_t parent);
-
-
-static void typedef_(typecheck_t* a, typedef_t* n, nref_t parent) {
-  dlog("TODO %s", __FUNCTION__);
-}
-
-
-static fun_t* nullable parent_fun(nref_t parent) {
-  while (parent.n->kind != EXPR_FUN) {
-    if (!parent.parent)
-      return NULL;
-    parent = *parent.parent;
-  }
-  return (fun_t*)parent.n;
-}
+static void type(typecheck_t* a, type_t** tp);
+static void stmt(typecheck_t* a, stmt_t* n);
+static void exprp(typecheck_t* a, expr_t** np);
+#define expr(a, n)  exprp(a, (expr_t**)&(n))
 
 
 static void check_unused(typecheck_t* a, const void* expr_node) {
   assert(node_isexpr(expr_node));
-  const expr_t* expr = expr_node;
-  if UNLIKELY(expr->nrefs == 0 && expr->kind != EXPR_IF && expr->kind != EXPR_ASSIGN)
-    warning(a, expr, "unused %s %s", nodekind_fmt(expr->kind), fmtnode(a, 0, expr));
+  const expr_t* n = expr_node;
+  if (nodekind_islocal(n->kind)) {
+    local_t* var = (local_t*)n;
+    if (var->name != sym__)
+      warning(a, var->nameloc, "unused %s %s", nodekind_fmt(n->kind), var->name);
+  } else if UNLIKELY(n->nrefs == 0 && n->kind != EXPR_IF && n->kind != EXPR_ASSIGN) {
+    warning(a, n, "unused %s %s", nodekind_fmt(n->kind), fmtnode(a, 0, n));
+  }
 }
 
 
-static void block_noscope(typecheck_t* a, block_t* n, nref_t parent) {
-  TRACE_NODE(a, "", (node_t*)n);
+static void block_noscope(typecheck_t* a, block_t* n) {
+  TRACE_NODE(a, "", &n);
 
   if (n->children.len == 0)
     return;
-
-  DEF_SELF(n);
 
   u32 count = n->children.len;
   u32 stmt_end = count - (u32)(n->flags & NF_RVALUE);
 
   for (u32 i = 0; i < stmt_end; i++) {
     stmt_t* cn = n->children.v[i];
-    stmt(a, cn, self);
+    stmt(a, cn);
 
     if (cn->kind == EXPR_RETURN) {
       // mark remaining expressions as unused
@@ -292,14 +292,14 @@ static void block_noscope(typecheck_t* a, block_t* n, nref_t parent) {
       stmt_end = count; // avoid rvalue branch later on
       n->type = ((expr_t*)cn)->type;
 
-      fun_t* fn = parent_fun(parent);
-      if UNLIKELY(!fn) {
+      if UNLIKELY(!a->fun) {
         error(a, cn, "return outside of function");
       } else if (n->type != type_void) {
-        funtype_t* ft = (funtype_t*)fn->type;
+        funtype_t* ft = (funtype_t*)a->fun->type;
         if UNLIKELY(ft->result == type_void) {
           error(a, cn, "function %s%sshould not return a value",
-            fn->name ? fn->name : "", fn->name ? " " : "");
+            a->fun->name ? a->fun->name : "",
+            a->fun->name ? " " : "");
         }
         // note: analysis of fun will check non-void types
       }
@@ -317,22 +317,23 @@ static void block_noscope(typecheck_t* a, block_t* n, nref_t parent) {
     expr_t* lastexpr = n->children.v[stmt_end];
     assert(nodekind_isexpr(lastexpr->kind));
     lastexpr->flags |= NF_RVALUE;
-    expr(a, lastexpr, self);
+    expr(a, lastexpr);
     lastexpr->nrefs = MAX(n->nrefs, lastexpr->nrefs);
     n->type = lastexpr->type;
   }
 }
 
 
-static void block(typecheck_t* a, block_t* n, nref_t parent) {
+static void block(typecheck_t* a, block_t* n) {
   enter_scope(a);
-  block_noscope(a, n, parent);
+  block_noscope(a, n);
   leave_scope(a);
 }
 
 
-static void fun(typecheck_t* a, fun_t* n, nref_t parent) {
-  DEF_SELF(n);
+static void fun(typecheck_t* a, fun_t* n) {
+  fun_t* outer_fun = a->fun;
+  a->fun = n;
 
   if (n->name && !n->methodof)
     define(a, n->name, n);
@@ -342,14 +343,14 @@ static void fun(typecheck_t* a, fun_t* n, nref_t parent) {
     enter_scope(a);
     for (u32 i = 0; i < n->params.len; i++) {
       local_t* param = n->params.v[i];
-      expr(a, (expr_t*)param, self);
+      expr(a, param);
     }
     if (!n->body) {
       scope_pop(&a->scope);
-      return;
+      goto end;
     }
   } else if (!n->body) {
-    return;
+    goto end;
   }
 
   funtype_t* ft = (funtype_t*)n->type;
@@ -360,7 +361,7 @@ static void fun(typecheck_t* a, fun_t* n, nref_t parent) {
   if (ft->result != type_void)
     n->body->flags |= NF_RVALUE;
   typectx_push(a, ft->result);
-  block(a, n->body, self);
+  block(a, n->body);
   typectx_pop(a);
   n->body->flags &= ~NF_RVALUE;
 
@@ -378,6 +379,9 @@ static void fun(typecheck_t* a, fun_t* n, nref_t parent) {
       error(a, origin, "unexpected result type %s, function returns %s", got, expect);
     }
   }
+
+end:
+  a->fun = outer_fun;
 }
 
 
@@ -447,20 +451,18 @@ expr_t* nullable typecheck_if_cond(parser_t* p, expr_t* cond) {
 #endif
 
 
-static void ifexpr(typecheck_t* a, ifexpr_t* n, nref_t parent) {
-  DEF_SELF(n);
-
+static void ifexpr(typecheck_t* a, ifexpr_t* n) {
   nodeflag_t extrafl = n->flags & NF_RVALUE;
 
   // "cond"
   assert(n->cond->flags & NF_RVALUE);
   enter_scope(a);
-  expr(a, n->cond, self);
+  expr(a, n->cond);
 
   // "then"
   enter_scope(a);
   n->thenb->flags |= extrafl;
-  block_noscope(a, n->thenb, self);
+  block_noscope(a, n->thenb);
 
   // "else"
   if (n->elseb) {
@@ -473,7 +475,7 @@ static void ifexpr(typecheck_t* a, ifexpr_t* n, nref_t parent) {
     // visit "else" branch
     enter_scope(a);
     n->elseb->flags |= extrafl;
-    block_noscope(a, n->elseb, self);
+    block_noscope(a, n->elseb);
     leave_scope(a);
 
     // restore stashed "then" scope
@@ -510,22 +512,29 @@ static void ifexpr(typecheck_t* a, ifexpr_t* n, nref_t parent) {
 }
 
 
-static void idexpr(typecheck_t* a, idexpr_t* n, nref_t parent) {
-  if (n->ref)
+static void idexpr(typecheck_t* a, idexpr_t* n) {
+  if (!n->ref) {
+    n->ref = lookup(a, n->name);
+    if UNLIKELY(!n->ref)
+      return;
+  }
+  if (node_istype(n->ref)) {
+    n->type = (type_t*)n->ref;
+  } else {
     n->type = asexpr(n->ref)->type;
+  }
 }
 
 
-static void local(typecheck_t* a, local_t* n, nref_t parent) {
+static void local(typecheck_t* a, local_t* n) {
   assertf(n->nrefs == 0 || n->name != sym__, "'_' local that is somehow referenced");
   define(a, n->name, n);
   if (!n->init)
     return;
-  DEF_SELF(n);
   typectx_push(a, n->type);
-  expr(a, n->init, self);
+  expr(a, n->init);
   typectx_pop(a);
-  if (n->type == type_void) {
+  if (n->type == type_unknown || n->type->kind == TYPE_UNRESOLVED) {
     n->type = n->init->type;
   } else {
     check_types_iscompat(a, n, n->type, n->init->type);
@@ -533,16 +542,15 @@ static void local(typecheck_t* a, local_t* n, nref_t parent) {
 }
 
 
-static void local_var(typecheck_t* a, local_t* n, nref_t parent) {
+static void local_var(typecheck_t* a, local_t* n) {
   assert(nodekind_isvar(n->kind));
-  local(a, n, parent);
+  local(a, n);
 }
 
 
-static void retexpr(typecheck_t* a, retexpr_t* n, nref_t parent) {
+static void retexpr(typecheck_t* a, retexpr_t* n) {
   if (n->value) {
-    DEF_SELF(n);
-    expr(a, n->value, self);
+    expr(a, n->value);
     n->type = n->value->type;
   } else {
     n->type = type_void;
@@ -628,13 +636,11 @@ err:
 }
 
 
-static void binop(typecheck_t* a, binop_t* n, nref_t parent) {
-  DEF_SELF(n);
-
-  expr(a, n->left, self);
+static void binop(typecheck_t* a, binop_t* n) {
+  expr(a, n->left);
 
   typectx_push(a, n->left->type);
-  expr(a, n->right, self);
+  expr(a, n->right);
   typectx_pop(a);
 
   switch (n->op) {
@@ -654,15 +660,14 @@ static void binop(typecheck_t* a, binop_t* n, nref_t parent) {
 }
 
 
-static void assign(typecheck_t* a, binop_t* n, nref_t parent) {
-  binop(a, n, parent);
+static void assign(typecheck_t* a, binop_t* n) {
+  binop(a, n);
   check_assign(a, n->left);
 }
 
 
-static void unaryop(typecheck_t* a, unaryop_t* n, nref_t parent) {
-  DEF_SELF(n);
-  expr(a, n->expr, self);
+static void unaryop(typecheck_t* a, unaryop_t* n) {
+  expr(a, n->expr);
   n->type = n->expr->type;
   if (n->op == TPLUSPLUS || n->op == TMINUSMINUS) {
     // TODO: specialized check here since it's not actually assignment (ownership et al)
@@ -671,9 +676,8 @@ static void unaryop(typecheck_t* a, unaryop_t* n, nref_t parent) {
 }
 
 
-static void deref(typecheck_t* a, unaryop_t* n, nref_t parent) {
-  DEF_SELF(n);
-  expr(a, n->expr, self);
+static void deref(typecheck_t* a, unaryop_t* n) {
+  expr(a, n->expr);
 
   ptrtype_t* t = (ptrtype_t*)n->expr->type;
   if UNLIKELY(t->kind != TYPE_REF && t->kind != TYPE_PTR) {
@@ -684,7 +688,7 @@ static void deref(typecheck_t* a, unaryop_t* n, nref_t parent) {
 }
 
 
-static void intlit(typecheck_t* a, intlit_t* n, nref_t parent) {
+static void intlit(typecheck_t* a, intlit_t* n) {
   if (n->type != type_unknown)
     return;
 
@@ -755,10 +759,8 @@ static type_t* basetype(type_t* t) {
 }
 
 
-static void member(typecheck_t* a, member_t* n, nref_t parent) {
-  DEF_SELF(n);
-
-  expr(a, n->recv, self);
+static void member(typecheck_t* a, member_t* n) {
+  expr(a, n->recv);
 
   if UNLIKELY(a->compiler->errcount)
     return;
@@ -793,7 +795,7 @@ static void error_field_type(typecheck_t* a, const expr_t* arg, const local_t* f
 }
 
 
-static void check_call_type_struct(typecheck_t* a, call_t* call, structtype_t* t, nref_t self){
+static void check_call_type_struct(typecheck_t* a, call_t* call, structtype_t* t){
   assert(call->args.len <= t->fields.len); // checked by validate_typecall_args
 
   u32 i = 0;
@@ -852,11 +854,11 @@ static void check_call_type_struct(typecheck_t* a, call_t* call, structtype_t* t
     if (arg->kind == EXPR_PARAM) {
       local_t* namedarg = (local_t*)arg;
       assertnotnull(namedarg->init); // checked by parser
-      expr(a, namedarg->init, self);
+      expr(a, namedarg->init);
       namedarg->type = namedarg->init->type;
     } else {
       assert(arg->kind == EXPR_ID); // for future dumb me
-      idexpr(a, (idexpr_t*)arg, self);
+      idexpr(a, (idexpr_t*)arg);
     }
 
     typectx_pop(a);
@@ -869,7 +871,8 @@ static void check_call_type_struct(typecheck_t* a, call_t* call, structtype_t* t
 }
 
 
-static void call_type_prim(typecheck_t* a, call_t* call, type_t* dst, nref_t self) {
+static void call_type_prim(typecheck_t* a, call_t** np, type_t* dst) {
+  call_t* call = *np;
   expr_t* arg = call->args.v[0];
 
   if UNLIKELY(!nodekind_isexpr(arg->kind))
@@ -881,14 +884,25 @@ static void call_type_prim(typecheck_t* a, call_t* call, type_t* dst, nref_t sel
   }
 
   typectx_push(a, dst);
-  expr(a, arg, self);
+  expr(a, arg);
   typectx_pop(a);
 
+  call->type = dst;
   type_t* src = arg->type;
 
   if UNLIKELY(types_iscompat(dst, src)) {
-    warning(a, call, "cast to same type %s", fmtnode(a, 0, dst));
-  } else if UNLIKELY(dst != src && !types_isconvertible(dst, src)) {
+    // eliminate type cast to same type, e.g. "i8(3)" => "3"
+    //   (EXPR_CALL
+    //     (EXPR ID i8 (TYPE i8))
+    //     (INTLIT 3 (TYPE i8)) )
+    //   =>
+    //   (INTLIT 3 (TYPE i8))
+    arg->nrefs = call->nrefs;
+    *(expr_t**)np = arg;
+    return;
+  }
+
+  if UNLIKELY(!types_isconvertible(dst, src)) {
     const char* dst_s = fmtnode(a, 0, dst);
     const char* src_s = fmtnode(a, 1, src);
     error(a, arg, "cannot convert value of type %s to type %s", src_s, dst_s);
@@ -931,7 +945,8 @@ static bool check_call_type_arity(
 }
 
 
-static void call_type(typecheck_t* a, call_t* call, type_t* t, nref_t self) {
+static void call_type(typecheck_t* a, call_t** np, type_t* t) {
+  call_t* call = *np;
   call->type = t;
   switch (t->kind) {
   case TYPE_VOID:
@@ -949,13 +964,13 @@ static void call_type(typecheck_t* a, call_t* call, type_t* t, nref_t self) {
   case TYPE_F64:
     if UNLIKELY(!check_call_type_arity(a, call, t, 1, 1))
       return;
-    return call_type_prim(a, call, t, self);
+    return call_type_prim(a, np, t);
 
   case TYPE_STRUCT: {
     u32 maxargs = ((structtype_t*)t)->fields.len;
     if UNLIKELY(!check_call_type_arity(a, call, t, 0, maxargs))
       return;
-    return check_call_type_struct(a, call, (structtype_t*)t, self);
+    return check_call_type_struct(a, call, (structtype_t*)t);
   }
 
   // TODO
@@ -963,10 +978,14 @@ static void call_type(typecheck_t* a, call_t* call, type_t* t, nref_t self) {
     if UNLIKELY(!check_call_type_arity(a, call, t, 1, U32_MAX))
       return;
     FALLTHROUGH;
-  case TYPE_ENUM:
   case TYPE_REF:
     trace("TODO IMPLEMENT %s", nodekind_name(t->kind));
     error(a, call->recv, "NOT IMPLEMENTED: %s", nodekind_name(t->kind));
+    return;
+
+  case TYPE_UNRESOLVED:
+    // this only happens when there was a type error
+    assert(a->compiler->errcount > 0);
     return;
 
   default:
@@ -976,7 +995,7 @@ static void call_type(typecheck_t* a, call_t* call, type_t* t, nref_t self) {
 }
 
 
-static void call_fun(typecheck_t* a, call_t* call, funtype_t* ft, nref_t self) {
+static void call_fun(typecheck_t* a, call_t* call, funtype_t* ft) {
   call->type = ft->result;
 
   u32 paramsc = ft->params.len;
@@ -1004,7 +1023,7 @@ static void call_fun(typecheck_t* a, call_t* call, funtype_t* ft, nref_t self) {
       // named argument
       local_t* namedarg = (local_t*)arg;
       assertnotnull(namedarg->init); // checked by parser
-      expr(a, namedarg->init, self);
+      expr(a, namedarg->init);
       arg->type = namedarg->init->type;
       seen_named_arg = true;
 
@@ -1025,7 +1044,7 @@ static void call_fun(typecheck_t* a, call_t* call, funtype_t* ft, nref_t self) {
         typectx_pop(a);
         break;
       }
-      expr(a, arg, self);
+      expr(a, arg);
     }
 
     typectx_pop(a);
@@ -1045,10 +1064,9 @@ static void call_fun(typecheck_t* a, call_t* call, funtype_t* ft, nref_t self) {
 }
 
 
-static void call(typecheck_t* a, call_t* n, nref_t parent) {
-  DEF_SELF(n);
-
-  expr(a, n->recv, self);
+static void call(typecheck_t* a, call_t** np) {
+  call_t* n = *np;
+  expr(a, n->recv);
 
   node_t* recv = unbox_id(n->recv);
   type_t* recvtype;
@@ -1056,22 +1074,60 @@ static void call(typecheck_t* a, call_t* n, nref_t parent) {
   if LIKELY(node_isexpr(recv)) {
     recvtype = ((expr_t*)recv)->type;
     if (recvtype->kind == TYPE_FUN)
-      return call_fun(a, n, (funtype_t*)recvtype, self);
+      return call_fun(a, n, (funtype_t*)recvtype);
   } else if LIKELY(node_istype(recv)) {
     recvtype = (type_t*)recv;
-    return call_type(a, n, recvtype, self);
+    return call_type(a, np, recvtype);
   }
 
   // error: bad recv
   n->type = a->typectx; // avoid cascading errors
   if (node_isexpr(recv)) {
-    error(a, n->recv,
-      "calling an expression of type %s, expected function or type",
+    error(a, n->recv, "calling an expression of type %s, expected function or type",
       fmtnode(a, 0, ((expr_t*)recv)->type));
   } else {
-    error(a, n->recv,
-      "calling %s; expected function or type", fmtnode(a, 0, recv));
+    error(a, n->recv, "calling %s; expected function or type", fmtnode(a, 0, recv));
   }
+}
+
+
+static void unresolvedtype(typecheck_t* a, unresolvedtype_t** tp) {
+  sym_t name = (*tp)->name;
+  type_t* t = (type_t*)lookup(a, name);
+
+  // dlog("resolve type \"%s\" => %s %s",
+  //   name, nodekind_name(t ? t->kind : 0), t ? fmtnode(a, 0, t) : "(null)");
+
+  if LIKELY(t && nodekind_istype(t->kind)) {
+    type(a, &t);
+    t->nrefs += (*tp)->nrefs;
+    *(type_t**)tp = t;
+    return;
+  }
+
+  // not found
+  if (!t) {
+    error(a, *tp, "unknown type \"%s\"", name);
+    return;
+  }
+
+  // not a type
+  error(a, *tp, "%s %s is not a type", nodekind_fmt(t->kind), name);
+  // redefine as "void" in current scope to minimize repetitive errors
+  if (!scope_define(&a->scope, a->ma, name, *tp))
+    out_of_mem(a);
+}
+
+
+static void typedef_(typecheck_t* a, typedef_t* n) {
+  aliastype_t* at = &n->type;
+  type(a, (type_t**)&at);
+}
+
+
+static void aliastype(typecheck_t* a, aliastype_t** tp) {
+  aliastype_t* t = *tp;
+  type(a, &t->elem);
 }
 
 
@@ -1079,46 +1135,72 @@ static void call(typecheck_t* a, call_t* n, nref_t parent) {
 // —————————————————————————————————————————————————————————————————————————————————
 
 
-static void stmt(typecheck_t* a, stmt_t* n, nref_t parent) {
-  if (n->kind == STMT_TYPEDEF) {
-    TRACE_NODE(a, "", (node_t*)n);
-    return typedef_(a, (typedef_t*)n, parent);
+static void type1(typecheck_t* a, type_t** tp) {
+  TRACE_NODE(a, "", tp);
+  switch ((*tp)->kind) {
+    case TYPE_UNRESOLVED: return unresolvedtype(a, (unresolvedtype_t**)tp);
+    case TYPE_ALIAS:      return aliastype(a, (aliastype_t**)tp);
   }
-  assertf(node_isexpr((node_t*)n), "unexpected node %s", nodekind_name(n->kind));
-  return expr(a, (expr_t*)n, parent);
+  dlog("TODO %s %s", __FUNCTION__, nodekind_name((*tp)->kind));
 }
 
 
-static void expr(typecheck_t* a, expr_t* n, nref_t parent) {
-  if (n->flags & NF_CHECKED)
+inline static void type(typecheck_t* a, type_t** tp) {
+  if ((*tp)->flags & NF_CHECKED)
     return;
+  (*tp)->flags |= NF_CHECKED;
+  return type1(a, tp);
+}
+
+
+static void stmt(typecheck_t* a, stmt_t* n) {
+  if (n->kind == STMT_TYPEDEF) {
+    if (n->flags & NF_CHECKED)
+      return;
+    n->flags |= NF_CHECKED;
+    TRACE_NODE(a, "", &n);
+    return typedef_(a, (typedef_t*)n);
+  }
+  assertf(node_isexpr((node_t*)n), "unexpected node %s", nodekind_name(n->kind));
+  return expr(a, n);
+}
+
+
+static void exprp(typecheck_t* a, expr_t** np) {
+  expr_t* n = *np;
+  if (n->flags & NF_CHECKED) {
+    assert((n->flags & NF_UNKNOWN) == 0);
+    return;
+  }
   n->flags |= NF_CHECKED;
 
-  TRACE_NODE(a, "", n);
+  TRACE_NODE(a, "", np);
+
+  type(a, &n->type);
 
   switch ((enum nodekind)n->kind) {
-  case EXPR_FUN:       return fun(a, (fun_t*)n, parent);
-  case EXPR_IF:        return ifexpr(a, (ifexpr_t*)n, parent);
-  case EXPR_ID:        return idexpr(a, (idexpr_t*)n, parent);
-  case EXPR_RETURN:    return retexpr(a, (retexpr_t*)n, parent);
-  case EXPR_BINOP:     return binop(a, (binop_t*)n, parent);
-  case EXPR_ASSIGN:    return assign(a, (binop_t*)n, parent);
-  case EXPR_BLOCK:     return block(a, (block_t*)n, parent);
-  case EXPR_CALL:      return call(a, (call_t*)n, parent);
-  case EXPR_MEMBER:    return member(a, (member_t*)n, parent);
-  case EXPR_DEREF:     return deref(a, (unaryop_t*)n, parent);
-  case EXPR_INTLIT:    return intlit(a, (intlit_t*)n, parent);
+  case EXPR_FUN:       return fun(a, (fun_t*)n);
+  case EXPR_IF:        return ifexpr(a, (ifexpr_t*)n);
+  case EXPR_ID:        return idexpr(a, (idexpr_t*)n);
+  case EXPR_RETURN:    return retexpr(a, (retexpr_t*)n);
+  case EXPR_BINOP:     return binop(a, (binop_t*)n);
+  case EXPR_ASSIGN:    return assign(a, (binop_t*)n);
+  case EXPR_BLOCK:     return block(a, (block_t*)n);
+  case EXPR_CALL:      return call(a, (call_t**)np);
+  case EXPR_MEMBER:    return member(a, (member_t*)n);
+  case EXPR_DEREF:     return deref(a, (unaryop_t*)n);
+  case EXPR_INTLIT:    return intlit(a, (intlit_t*)n);
 
   case EXPR_PREFIXOP:
   case EXPR_POSTFIXOP:
-    return unaryop(a, (unaryop_t*)n, parent);
+    return unaryop(a, (unaryop_t*)n);
 
   case EXPR_FIELD:
   case EXPR_PARAM:
-    return local(a, (local_t*)n, parent);
+    return local(a, (local_t*)n);
   case EXPR_VAR:
   case EXPR_LET:
-    return local_var(a, (local_t*)n, parent);
+    return local_var(a, (local_t*)n);
 
   // TODO
   case EXPR_FLOATLIT:
@@ -1143,14 +1225,14 @@ static void expr(typecheck_t* a, expr_t* n, nref_t parent) {
   case TYPE_F32:
   case TYPE_F64:
   case TYPE_ARRAY:
-  case TYPE_ENUM:
   case TYPE_FUN:
   case TYPE_PTR:
   case TYPE_REF:
   case TYPE_OPTIONAL:
   case TYPE_STRUCT:
+  case TYPE_ALIAS:
   case TYPE_UNKNOWN:
-  case TYPE_NAMED:
+  case TYPE_UNRESOLVED:
     break;
   }
   assertf(0, "unexpected node %s", nodekind_name(n->kind));
@@ -1174,9 +1256,8 @@ err_t typecheck(parser_t* p, unit_t* unit) {
 
   enter_scope(&a);
 
-  nref_t self = { .n = (node_t*)unit };
   for (u32 i = 0; i < unit->children.len; i++)
-    stmt(&a, unit->children.v[i], self);
+    stmt(&a, unit->children.v[i]);
 
   leave_scope(&a);
 

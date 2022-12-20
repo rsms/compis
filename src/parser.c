@@ -182,38 +182,64 @@ static void fastforward_semi(parser_t* p) {
 }
 
 
-ATTR_FORMAT(printf,3,4)
-static void error_loc(parser_t* p, loc_t loc, const char* fmt, ...) {
-  if (p->scanner.inp == p->scanner.inend && p->scanner.tok == TEOF)
-    return;
-  origin_t origin = origin_make(locmap(p), loc);
-  va_list ap;
-  va_start(ap, fmt);
-  report_diagv(p->scanner.compiler, origin, DIAG_ERR, fmt, ap);
-  va_end(ap);
-}
+// const origin_t to_origin(parser_t* p, T origin)
+// where T is one of: origin_t | loc_t | node_t* (default)
+#define to_origin(p, origin) ({ \
+  __typeof__(origin) __tmp1 = origin; \
+  __typeof__(origin)* __tmp = &__tmp1; \
+  const origin_t __origin = _Generic(__tmp, \
+          origin_t*:  *(origin_t*)__tmp, \
+    const origin_t*:  *(origin_t*)__tmp, \
+          loc_t*:     origin_make(locmap(p), *(loc_t*)__tmp), \
+    const loc_t*:     origin_make(locmap(p), *(loc_t*)__tmp), \
+    default: (*__tmp ? node_origin(locmap(p), *(node_t**)__tmp) : curr_origin(p)) \
+  ); \
+  __origin; \
+})
 
 
-ATTR_FORMAT(printf,3,4)
-static void error(parser_t* p, const void* nullable n, const char* fmt, ...) {
-  if (p->scanner.inp == p->scanner.inend && p->scanner.tok == TEOF)
-    return;
-  origin_t origin = n ? node_origin(locmap(p), n) : curr_origin(p);
-  va_list ap;
-  va_start(ap, fmt);
-  report_diagv(p->scanner.compiler, origin, DIAG_ERR, fmt, ap);
-  va_end(ap);
-}
+// void diag(parser_t* p, T origin, diagkind_t diagkind, const char* fmt, ...)
+// where T is one of: origin_t | loc_t | node_t* | expr_t*
+#define diag(p, origin, diagkind, fmt, args...) \
+  report_diag((p)->scanner.compiler, to_origin((p), (origin)), (diagkind), (fmt), ##args)
+
+#define error(p, origin, fmt, args...)    diag(p, origin, DIAG_ERR, (fmt), ##args)
+#define warning(p, origin, fmt, args...)  diag(p, origin, DIAG_WARN, (fmt), ##args)
+#define help(p, origin, fmt, args...)     diag(p, origin, DIAG_HELP, (fmt), ##args)
 
 
-ATTR_FORMAT(printf,3,4)
-static void warning(parser_t* p, const void* nullable n, const char* fmt, ...) {
-  origin_t origin = n ? node_origin(locmap(p), n) : curr_origin(p);
-  va_list ap;
-  va_start(ap, fmt);
-  report_diagv(p->scanner.compiler, origin, DIAG_WARN, fmt, ap);
-  va_end(ap);
-}
+// ATTR_FORMAT(printf,3,4)
+// static void error_loc(parser_t* p, loc_t loc, const char* fmt, ...) {
+//   if (p->scanner.inp == p->scanner.inend && p->scanner.tok == TEOF)
+//     return;
+//   origin_t origin = origin_make(locmap(p), loc);
+//   va_list ap;
+//   va_start(ap, fmt);
+//   report_diagv(p->scanner.compiler, origin, DIAG_ERR, fmt, ap);
+//   va_end(ap);
+// }
+
+
+// ATTR_FORMAT(printf,3,4)
+// static void error(parser_t* p, const void* nullable n, const char* fmt, ...) {
+//   if (p->scanner.inp == p->scanner.inend && p->scanner.tok == TEOF)
+//     return;
+//   origin_t origin = n ? node_origin(locmap(p), n) : curr_origin(p);
+//   va_list ap;
+//   va_start(ap, fmt);
+//   report_diagv(p->scanner.compiler, origin, DIAG_ERR, fmt, ap);
+//   va_end(ap);
+// }
+
+
+// ATTR_FORMAT(printf,3,4)
+// static void warning(parser_t* p, const void* nullable n, const char* fmt, ...) {
+//   origin_t origin = n ? node_origin(locmap(p), n) : curr_origin(p);
+//   va_list ap;
+//   va_start(ap, fmt);
+//   report_diagv(p->scanner.compiler, origin, DIAG_WARN, fmt, ap);
+//   va_end(ap);
+// }
 
 
 static void out_of_mem(parser_t* p) {
@@ -354,6 +380,9 @@ static void leave_scope(parser_t* p) {
 }
 
 
+//
+// TODO: do we even need scope, lookup & define during parsing?
+//
 static node_t* nullable lookup(parser_t* p, sym_t name) {
   node_t* n = scope_lookup(&p->scope, name, U32_MAX);
   if (!n) {
@@ -363,12 +392,7 @@ static node_t* nullable lookup(parser_t* p, sym_t name) {
       return NULL;
     n = *vp;
   }
-  // increase reference count
-  if (node_isexpr(n)) {
-    ((expr_t*)n)->nrefs++;
-  } else if (node_isusertype(n)) {
-    ((usertype_t*)n)->nrefs++;
-  }
+  n->nrefs++;
   return n;
 }
 
@@ -405,13 +429,17 @@ static void define(parser_t* p, sym_t name, node_t* n) {
     void** vp = map_assign(&p->pkgdefs, p->ma, name, strlen(name));
     if (!vp)
       return out_of_mem(p);
-    if (*vp)
+    if (*vp) {
+      existing = *vp;
       goto err_duplicate;
+    }
     *vp = n;
   }
   return;
 err_duplicate:
   error(p, n, "redefinition of \"%s\"", name);
+  if (loc_line(existing->loc))
+    help(p, existing, "\"%s\" previously defined here", name);
 }
 
 
@@ -534,17 +562,19 @@ static type_t* type(parser_t* p, prec_t prec) {
 
 static type_t* named_type(parser_t* p, sym_t name, const node_t* nullable origin) {
   const node_t* ref = lookup(p, name);
+
   if UNLIKELY(!ref) {
     trace("unknown type \"%s\"", name);
-    namedtype_t* t = mknode(p, namedtype_t, TYPE_NAMED);
+    unresolvedtype_t* t = mknode(p, unresolvedtype_t, TYPE_UNRESOLVED);
     t->flags |= NF_UNKNOWN;
     t->name = name;
     return (type_t*)t;
-  } else if UNLIKELY(!node_istype(ref)) {
-    error(p, origin, "%s is not a type", name);
-  } else {
-    return (type_t*)ref;
   }
+
+  if LIKELY(node_istype(ref))
+    return (type_t*)ref;
+
+  error(p, origin, "%s is not a type", name);
   return type_void;
 }
 
@@ -740,16 +770,20 @@ static type_t* type_optional(parser_t* p) {
 static stmt_t* stmt_typedef(parser_t* p) {
   typedef_t* n = mknode(p, typedef_t, STMT_TYPEDEF);
   next(p);
-  n->name = p->scanner.sym;
+
+  n->type.kind = TYPE_ALIAS;
+  n->type.loc = currloc(p);
+  n->type.name = p->scanner.sym;
   bool nameok = expect(p, TID, "");
   if (nameok)
-    define(p, n->name, (node_t*)n);
-  n->type = type(p, PREC_COMMA);
-  bubble_flags(n, n->type);
-  if (nameok && !scope_define(&p->scope, p->ma, n->name, n->type))
-    out_of_mem(p);
-  if (n->type->kind == TYPE_STRUCT)
-    ((structtype_t*)n->type)->name = n->name;
+    define(p, n->type.name, (node_t*)&n->type);
+
+  n->type.elem = type(p, PREC_COMMA);
+  bubble_flags(n, n->type.elem);
+
+  if (n->type.elem->kind == TYPE_STRUCT)
+    ((structtype_t*)n->type.elem)->name = n->type.name;
+
   return (stmt_t*)n;
 }
 
@@ -791,6 +825,7 @@ static expr_t* expr_var(parser_t* p, const parselet_t* pl, nodeflag_t fl) {
     return mkbad(p);
   } else {
     n->name = p->scanner.sym;
+    n->nameloc = currloc(p);
     next(p);
   }
   bool ok = true;
@@ -835,8 +870,10 @@ static block_t* block(parser_t* p, nodeflag_t fl) {
   block_t* n = mkexpr(p, block_t, EXPR_BLOCK, fl);
   next(p);
 
+  if ((fl & NF_RVALUE) == 0)
+    n->type = type_void;
+
   fl &= ~NF_RVALUE;
-  u32 exit_expr_index = 0;
   bool reported_unreachable = false;
 
   if (currtok(p) != TRBRACE && currtok(p) != TEOF) {
@@ -854,7 +891,6 @@ static block_t* block(parser_t* p, nodeflag_t fl) {
           warning(p, (node_t*)cn, "unreachable code");
         }
       } else if (cn->kind == EXPR_RETURN) {
-        exit_expr_index = n->children.len - 1;
         n->flags |= NF_EXITS;
       }
 
@@ -1051,8 +1087,9 @@ static expr_t* expr_return(parser_t* p, const parselet_t* pl, nodeflag_t fl) {
 
 
 static expr_t* intlit(parser_t* p, nodeflag_t fl, bool isneg) {
-  intlit_t* n = mkexpr(p, intlit_t, EXPR_INTLIT, fl | NF_CHECKED);
+  intlit_t* n = mkexpr(p, intlit_t, EXPR_INTLIT, fl);
   n->intval = p->scanner.litint;
+  loc_set_width(&n->loc, scanner_lit(&p->scanner).len);
   next(p);
   return (expr_t*)n;
 }
@@ -1400,15 +1437,6 @@ static expr_t* expr_postfix_call(
     args(p, n, recvtype, fl);
   expect(p, TRPAREN, "to end function call");
 
-  // eliminate type casts of same type, e.g. "(TYPE i8 (INTLIT 3)) => (INTLIT 3)"
-  dlog("TODO move to typecheck");
-  if (recvtype->kind != TYPE_FUN &&
-      n->args.len == 1 &&
-      types_iscompat(((expr_t*)n->args.v[0])->type, n->type))
-  {
-    return n->args.v[0];
-  }
-
   return (expr_t*)n;
 }
 
@@ -1712,10 +1740,10 @@ static void add_method(parser_t* p, fun_t* fun, loc_t name_loc) {
 
   if UNLIKELY(existing) {
     const char* s = fmtnode(p, 0, fun->methodof);
-    error_loc(p, name_loc, "duplicate %s \"%s\" for type %s",
+    error(p, name_loc, "duplicate %s \"%s\" for type %s",
       (existing->kind == EXPR_FUN) ? "method" : "member", fun->name, s);
     if (loc_line(existing->loc))
-      warning(p, (node_t*)existing, "previously defined here");
+      help(p, existing, "\"%s\" previously defined here", fun->name);
     return;
   }
 
@@ -1742,12 +1770,12 @@ static void fun_name(parser_t* p, fun_t* fun, type_t* nullable recv) {
     // resolve receiver, e.g. "Foo" in "Foo.bar"
     recv = (type_t*)lookup(p, fun->name);
     if UNLIKELY(!recv) {
-      error_loc(p, name_loc, "undeclared identifier \"%s\"", fun->name);
+      error(p, name_loc, "undeclared identifier \"%s\"", fun->name);
       return;
     }
     if UNLIKELY(!nodekind_istype(recv->kind)) {
       const char* s = fmtnode(p, 0, recv);
-      error_loc(p, name_loc, "%s is not a type", s);
+      error(p, name_loc, "%s is not a type", s);
       return;
     }
     fun->methodof = recv;

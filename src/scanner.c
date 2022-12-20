@@ -219,6 +219,7 @@ static bool utf8seq(scanner_t* s) {
 static void intern_identifier(scanner_t* s) {
   slice_t lit = scanner_lit(s);
   s->sym = sym_intern(lit.chars, lit.len);
+  loc_set_width(&s->loc, lit.len);
 }
 
 
@@ -235,6 +236,7 @@ static void identifier_utf8(scanner_t* s) {
   }
   s->tok = TID;
   intern_identifier(s);
+  // TODO: loc_set_width(&s->loc, utf8_len);
 }
 
 
@@ -311,6 +313,7 @@ static void scan1(scanner_t* s) {
   s->tokstart = s->inp;
   loc_set_line(&s->loc, s->lineno);
   loc_set_col(&s->loc, (u32)(uintptr)(s->tokstart - s->linestart) + 1);
+  loc_set_width(&s->loc, 0);
 
   bool insertsemi = s->insertsemi;
   s->insertsemi = false;

@@ -127,10 +127,10 @@ static void add_srcline(
   } else if (origin.focus_col < endcol) {
     // focus point is inside the source span, e.g.
     //   let foo = bar(1, 2, 3)
-    //             ~↑~
-    u32 leadw = origin.focus_col - (origin.column - 1);
+    //                ~~~~^~~~~
+    u32 leadw = origin.focus_col - origin.column;
     abuf_fill(s, '~', leadw);
-    abuf_str(s, "↑");
+    abuf_str(s, "^");
     abuf_fill(s, '~', (origin.width - 1) - leadw);
   } else {
     // focus point is after the source span, e.g.
@@ -145,7 +145,6 @@ static void add_srcline(
 
 static void add_srclines(compiler_t* c, origin_t origin, abuf_t* s) {
   const input_t* input = assertnotnull(origin.input);
-  c->diag.srclines = "";
 
   if (abuf_avail(s) < 4 || origin.line == 0 || input->data.size == 0)
     return;
@@ -210,6 +209,7 @@ void report_diagv(
   compiler_t* c, origin_t origin, diagkind_t kind, const char* fmt, va_list ap)
 {
   va_list ap2;
+  buf_clear(&c->diagbuf);
   buf_reserve(&c->diagbuf, 1024);
 
   for (;;) {
@@ -240,7 +240,8 @@ void report_diagv(
     abuf_c(&s, '\0');
 
     // populate c->diag.srclines
-    if (origin.input)
+    c->diag.srclines = "";
+    if (origin.input && origin.line)
       add_srclines(c, origin, &s);
 
     usize len = abuf_terminate(&s);

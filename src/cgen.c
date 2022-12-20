@@ -227,7 +227,7 @@ static const char* operator(op_t op) {
 
 
 static bool type_is_interned_def(const type_t* t) {
-  return t->kind == TYPE_STRUCT || t->kind == TYPE_OPTIONAL;
+  return t->kind == TYPE_STRUCT || t->kind == TYPE_OPTIONAL || t->kind == TYPE_ALIAS;
 }
 
 
@@ -410,17 +410,29 @@ static void ptrtype(cgen_t* g, const ptrtype_t* t) {
 }
 
 
+static sym_t gen_alias_typename(cgen_t* g, const type_t* t) {
+  return ((aliastype_t*)t)->name;
+}
+
+static void gen_alias_typedef(cgen_t* g, const type_t* tp, sym_t typename) {
+  const aliastype_t* t = (const aliastype_t*)tp;
+  PRINT("typedef "); type(g, t->elem); PRINTF(" %s;", typename);
+}
+
+static void aliastype(cgen_t* g, const aliastype_t* t) {
+  PRINT(intern_typedef(g, (type_t*)t, gen_alias_typename, gen_alias_typedef));
+}
+
+
 static sym_t gen_opt_typename(cgen_t* g, const type_t* t) {
   char namebuf[64];
   return sym_snprintf(namebuf, sizeof(namebuf), ANON_PREFIX "opt%x", g->anon_idgen++);
 }
 
-
 static void gen_opt_typedef(cgen_t* g, const type_t* tp, sym_t typename) {
   const opttype_t* t = (const opttype_t*)tp;
   PRINT("typedef struct{bool ok; "); type(g, t->elem); PRINTF(" v;} %s;", typename);
 }
-
 
 static void opttype(cgen_t* g, const opttype_t* t) {
   if (type_isptrlike(t->elem)) {
@@ -463,21 +475,23 @@ static void type(cgen_t* g, const type_t* t) {
   switch (t->kind) {
   case TYPE_VOID: PRINT("void"); break;
   case TYPE_BOOL: PRINT("bool"); break;
-  case TYPE_INT:  PRINT(t->isunsigned ? "unsigned int" : "int"); break;
   case TYPE_I8:   PRINT(t->isunsigned ? "uint8_t"  : "int8_t"); break;
   case TYPE_I16:  PRINT(t->isunsigned ? "uint16_t" : "int16_t"); break;
   case TYPE_I32:  PRINT(t->isunsigned ? "uint32_t" : "int32_t"); break;
   case TYPE_I64:  PRINT(t->isunsigned ? "uint64_t" : "int64_t"); break;
+  case TYPE_INT:  PRINT(t->isunsigned ? "unsigned int" : "int"); break;
   case TYPE_F32:  PRINT("float"); break;
   case TYPE_F64:  PRINT("double"); break;
-  case TYPE_STRUCT:   return structtype(g, (const structtype_t*)t);
   case TYPE_FUN:      return funtype(g, (const funtype_t*)t, NULL);
   case TYPE_PTR:      return ptrtype(g, (const ptrtype_t*)t);
   case TYPE_REF:      return reftype(g, (const reftype_t*)t);
   case TYPE_OPTIONAL: return opttype(g, (const opttype_t*)t);
+  case TYPE_STRUCT:   return structtype(g, (const structtype_t*)t);
+  case TYPE_ALIAS:    return aliastype(g, (const aliastype_t*)t);
+  case TYPE_ARRAY:    panic("TODO %s", nodekind_name(t->kind));
+
   default:
-    dlog("unexpected type %s", nodekind_name(t->kind));
-    error(g, t, "unexpected type %s", nodekind_name(t->kind));
+    panic("unexpected type_t %s (%u)", nodekind_name(t->kind), t->kind);
   }
 }
 
@@ -1456,15 +1470,16 @@ static void forexpr(cgen_t* g, const forexpr_t* n) {
 
 
 static void typedef_(cgen_t* g, const typedef_t* n) {
-  if (type_is_interned_def(n->type)) {
+  type_t* t = n->type.elem;
+  if (type_is_interned_def(t)) {
     usize outbuf_len = g->outbuf.len;
-    type(g, n->type);
+    type(g, t);
     g->outbuf.len = outbuf_len; // undo printing of "T;"
   } else {
     PRINT("typedef ");
-    type(g, n->type);
+    type(g, t);
     CHAR(' ');
-    id(g, n->name);
+    id(g, n->type.name);
   }
 }
 
@@ -1510,14 +1525,14 @@ static void expr(cgen_t* g, const expr_t* n) {
   case TYPE_F32:
   case TYPE_F64:
   case TYPE_ARRAY:
-  case TYPE_ENUM:
   case TYPE_FUN:
   case TYPE_PTR:
   case TYPE_REF:
   case TYPE_OPTIONAL:
   case TYPE_STRUCT:
+  case TYPE_ALIAS:
   case TYPE_UNKNOWN:
-  case TYPE_NAMED:
+  case TYPE_UNRESOLVED:
     break;
   }
   debugdie(g, n, "unexpected node %s", nodekind_name(n->kind));
