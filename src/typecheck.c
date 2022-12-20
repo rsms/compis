@@ -7,7 +7,7 @@
 
 #ifdef TRACE_TYPECHECK
   #define trace(fmt, va...)  \
-    _dlog(4, "T", __FILE__, __LINE__, "%*s" fmt, a->traceindent*2, "", ##va)
+    _dlog(4, "TC", __FILE__, __LINE__, "%*s" fmt, a->traceindent*2, "", ##va)
   #define tracex(fmt, va...) _dlog(4, "A", __FILE__, __LINE__, fmt, ##va)
 #else
   #define trace(fmt, va...) ((void)0)
@@ -72,6 +72,11 @@ static const char* fmtnode(typecheck_t* a, u32 bufindex, const void* nullable n)
 static void seterr(typecheck_t* a, err_t err) {
   if (!a->err)
     a->err = err;
+}
+
+
+static bool noerror(typecheck_t* a) {
+  return (!a->err) & (a->compiler->errcount == 0);
 }
 
 
@@ -190,6 +195,8 @@ static bool check_types_iscompat(
 
 
 static void typectx_push(typecheck_t* a, type_t* t) {
+  if (t->kind == TYPE_UNKNOWN)
+    t = type_void;
   trace("typectx: %s -> %s", fmtnode(a, 0, a->typectx), fmtnode(a, 1, t));
   if UNLIKELY(!ptrarray_push(&a->typectxstack, a->ma, a->typectx))
     out_of_mem(a);
@@ -261,10 +268,11 @@ static void check_unused(typecheck_t* a, const void* expr_node) {
   const expr_t* n = expr_node;
   if (nodekind_islocal(n->kind)) {
     local_t* var = (local_t*)n;
-    if (var->name != sym__)
+    if (var->name != sym__ && noerror(a))
       warning(a, var->nameloc, "unused %s %s", nodekind_fmt(n->kind), var->name);
   } else if UNLIKELY(n->nrefs == 0 && n->kind != EXPR_IF && n->kind != EXPR_ASSIGN) {
-    warning(a, n, "unused %s %s", nodekind_fmt(n->kind), fmtnode(a, 0, n));
+    if (noerror(a))
+      warning(a, n, "unused %s %s", nodekind_fmt(n->kind), fmtnode(a, 0, n));
   }
 }
 
@@ -515,8 +523,10 @@ static void ifexpr(typecheck_t* a, ifexpr_t* n) {
 static void idexpr(typecheck_t* a, idexpr_t* n) {
   if (!n->ref) {
     n->ref = lookup(a, n->name);
-    if UNLIKELY(!n->ref)
+    if UNLIKELY(!n->ref) {
+      error(a, n, "unknown identifier \"%s\"", n->name);
       return;
+    }
   }
   if (node_istype(n->ref)) {
     n->type = (type_t*)n->ref;
@@ -528,7 +538,6 @@ static void idexpr(typecheck_t* a, idexpr_t* n) {
 
 static void local(typecheck_t* a, local_t* n) {
   assertf(n->nrefs == 0 || n->name != sym__, "'_' local that is somehow referenced");
-  define(a, n->name, n);
   if (!n->init)
     return;
   typectx_push(a, n->type);
@@ -539,6 +548,7 @@ static void local(typecheck_t* a, local_t* n) {
   } else {
     check_types_iscompat(a, n, n->type, n->init->type);
   }
+  define(a, n->name, n);
 }
 
 
@@ -1057,7 +1067,7 @@ static void call_fun(typecheck_t* a, call_t* call, funtype_t* ft) {
     }
   }
 
-  if ((call->flags & NF_RVALUE) == 0 && type_isowner(call->type)) {
+  if ((call->flags & NF_RVALUE) == 0 && type_isowner(call->type) && noerror(a)) {
     // return value is owner, but it is not used (call is not rvalue)
     warning(a, call, "unused result; ownership transferred from function call");
   }

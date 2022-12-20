@@ -32,7 +32,7 @@ typedef enum {
 
 #if defined(TRACE_PARSE) && DEBUG
   #define trace(fmt, va...)  \
-    _dlog(1, "P", __FILE__, __LINE__, "%*s" fmt, p->traceindent*2, "", ##va)
+    _dlog(2, "P", __FILE__, __LINE__, "%*s" fmt, p->traceindent*2, "", ##va)
   static void _traceindent_decr(parser_t** cp) { (*cp)->traceindent--; }
   #define TRACE_SCOPE() \
     p->traceindent++; \

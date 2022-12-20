@@ -76,7 +76,7 @@ static const char* fmtnodex(ircons_t* c, u32 bufidx, const void* nullable n, u32
 
 #ifdef TRACE_ANALYSIS
   #define trace(fmt, va...)  \
-    _dlog(2, "A", __FILE__, __LINE__, "%*s" fmt, c->traceindent*2, "", ##va)
+    _dlog(1, "IR", __FILE__, __LINE__, "%*s" fmt, c->traceindent*2, "", ##va)
   // static void trace_node(ircons_t* c, const char* msg, const node_t* n)
   #define trace_node(msg, n) \
     trace("%s%-14s: %s", (msg), nodekind_name((n)->kind), fmtnode(0, (n)))
