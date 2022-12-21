@@ -32,10 +32,11 @@ _( OP_DROP, 0 )
 _( OP_OCHECK, 0 )     // test if T? has value
 
 // unary
-_( OP_INC, 0 ) // ++
-_( OP_DEC, 0 ) // --
-_( OP_INV, 0 ) // ~
-_( OP_NOT, 0 ) // !
+_( OP_INC,  0 ) // ++
+_( OP_DEC,  0 ) // --
+_( OP_INV,  0 ) // ~
+_( OP_NOT,  0 ) // !
+_( OP_CAST, 0 ) // T(x)
 
 // binary, arithmetic
 _( OP_ADD, 0 ) // +

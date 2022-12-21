@@ -150,7 +150,6 @@ static void x_semi_end(cgen_t* g, sizetuple_t startlens) {
 
 
 static void type(cgen_t* g, const type_t*);
-static void stmt(cgen_t* g, const stmt_t*);
 static void expr(cgen_t* g, const expr_t*);
 static void expr_as_value(cgen_t* g, const expr_t* n);
 
@@ -173,6 +172,7 @@ static const char* operator(op_t op) {
   case OP_STORE:
   case OP_VAR:
   case OP_ZERO:
+  case OP_CAST:
     break;
 
   // unary
@@ -231,6 +231,13 @@ static bool type_is_interned_def(const type_t* t) {
       || t->kind == TYPE_OPTIONAL
       || t->kind == TYPE_ALIAS
       ;
+}
+
+
+static const type_t* unwind_aliastypes(const type_t* t) {
+  while (t->kind == TYPE_ALIAS)
+    t = assertnotnull(((aliastype_t*)t)->elem);
+  return t;
 }
 
 
@@ -518,7 +525,11 @@ static void expr_as_value(cgen_t* g, const expr_t* n) {
 
 
 static void zeroinit(cgen_t* g, const type_t* t) {
+  t = unwind_aliastypes(t);
   switch (t->kind) {
+  case TYPE_VOID:
+    CHAR('0');
+    break;
   case TYPE_BOOL:
     PRINT("false");
     break;
@@ -913,6 +924,8 @@ static void member_name(cgen_t* g, const type_t* recv, sym_t member) {
 
 
 static void fun_name(cgen_t* g, const fun_t* fun) {
+  const char* pkgname = "main"; // TODO FIXME
+  PRINTF("%s·", pkgname);
   if (fun->methodof) {
     member_name(g, fun->methodof, fun->name);
   } else {
@@ -1040,34 +1053,32 @@ static void structinit(cgen_t* g, const structtype_t* t, const ptrarray_t* args)
 }
 
 
-static void typecall(cgen_t* g, const call_t* n, const type_t* t) {
+static void primtype_cast(cgen_t* g, const type_t* t, const expr_t* nullable val) {
+  const type_t* basetype = unwind_aliastypes(t);
+
   // skip redundant "(T)v" when v is T
+  if (val && (val->type == t || val->type == basetype))
+    return expr_as_value(g, val);
+
+  CHAR('('); type(g, t); CHAR(')');
+
+  if (val) {
+    expr_as_value(g, val);
+  } else {
+    zeroinit(g, t);
+  }
+}
+
+
+static void typecall(cgen_t* g, const call_t* n, const type_t* t) {
   if (type_isprim(t)) {
-    assert(n->args.len == 1);
-    const expr_t* arg = n->args.v[0];
-    if (arg->type == t)
-      return expr(g, arg);
+    assert(n->args.len < 2);
+    return primtype_cast(g, t, n->args.len ? n->args.v[0] : NULL);
   }
 
   CHAR('('); type(g, t); CHAR(')');
 
   switch (t->kind) {
-  case TYPE_VOID: PRINT("((void)0)"); break;
-  case TYPE_BOOL:
-  case TYPE_INT:
-  case TYPE_I8:
-  case TYPE_I16:
-  case TYPE_I32:
-  case TYPE_I64:
-  case TYPE_F32:
-  case TYPE_F64:
-    if (n->args.len == 0) {
-      zeroinit(g, t);
-    } else {
-      assert(n->args.len == 1);
-      expr_as_value(g, n->args.v[0]);
-    }
-    break;
   case TYPE_STRUCT:
     structinit(g, (const structtype_t*)t, &n->args);
     break;
@@ -1078,10 +1089,40 @@ static void typecall(cgen_t* g, const call_t* n, const type_t* t) {
 }
 
 
+static void call_fn_recv(cgen_t* g, const call_t* n, expr_t** selfp, bool* isselfrefp) {
+  switch (n->recv->kind) {
+    case EXPR_MEMBER: {
+      member_t* m = (member_t*)n->recv;
+      fun_t* fn = (fun_t*)m->target;
+      if (fn->kind != EXPR_FUN)
+        break;
+      funtype_t* ft = (funtype_t*)fn->type;
+      if (ft->params.len > 0 && ((const local_t*)ft->params.v[0])->isthis) {
+        const local_t* thisparam = ft->params.v[0];
+        *isselfrefp = thisparam->type->kind == TYPE_REF;
+        *selfp = m->recv;
+      }
+      assert(fn->name != sym__);
+      fun_name(g, fn);
+      return;
+    }
+    case EXPR_ID: {
+      const idexpr_t* id = (const idexpr_t*)n->recv;
+      if (id->ref->kind == EXPR_FUN)
+        return fun_name(g, (fun_t*)id->ref);
+      break;
+    }
+    case EXPR_FUN:
+      return fun_name(g, (fun_t*)n->recv);
+  }
+  expr(g, n->recv);
+}
+
+
 static void call(cgen_t* g, const call_t* n) {
   // type call?
   const idexpr_t* idrecv = (const idexpr_t*)n->recv;
-  if (n->recv->kind == EXPR_ID && nodekind_istype(idrecv->ref->kind))
+  if (idrecv->kind == EXPR_ID && nodekind_istype(idrecv->ref->kind))
     return typecall(g, n, (const type_t*)idrecv->ref);
   if (nodekind_istype(n->recv->kind))
     return typecall(g, n, (const type_t*)n->recv);
@@ -1097,20 +1138,7 @@ static void call(cgen_t* g, const call_t* n) {
   // recv
   expr_t* self = NULL;
   bool isselfref = false;
-  if (n->recv->kind == EXPR_MEMBER && ((member_t*)n->recv)->target->kind == EXPR_FUN) {
-    member_t* m = (member_t*)n->recv;
-    fun_t* fn = (fun_t*)m->target;
-    funtype_t* ft = (funtype_t*)fn->type;
-    if (ft->params.len > 0 && ((const local_t*)ft->params.v[0])->isthis) {
-      const local_t* thisparam = ft->params.v[0];
-      isselfref = thisparam->type->kind == TYPE_REF;
-      self = m->recv;
-    }
-    assert(fn->name != sym__);
-    fun_name(g, fn);
-  } else {
-    expr(g, n->recv);
-  }
+  call_fn_recv(g, n, &self, &isselfref);
 
   // args
   CHAR('(');
@@ -1132,6 +1160,12 @@ static void call(cgen_t* g, const call_t* n) {
 
   if (owner_sink)
     drop_end(g);
+}
+
+
+static void typecons(cgen_t* g, const typecons_t* n) {
+  assert(type_isprim(unwind_aliastypes(n->type)));
+  return primtype_cast(g, n->type, n->expr);
 }
 
 
@@ -1500,6 +1534,7 @@ static void expr(cgen_t* g, const expr_t* n) {
   case EXPR_PARAM:     return param(g, (const local_t*)n);
   case EXPR_BLOCK:     return block(g, (const block_t*)n, 0);
   case EXPR_CALL:      return call(g, (const call_t*)n);
+  case EXPR_TYPECONS:  return typecons(g, (const typecons_t*)n);
   case EXPR_MEMBER:    return member(g, (const member_t*)n);
   case EXPR_IF:        return ifexpr(g, (const ifexpr_t*)n);
   case EXPR_FOR:       return forexpr(g, (const forexpr_t*)n);
@@ -1565,10 +1600,15 @@ static void unit(cgen_t* g, const unit_t* n) {
   // function prototypes
   g->inputid = init_inputid;
   g->lineno = init_lineno;
+  PRINT("\n/* function prototypes */"); g->lineno++;
   for (u32 i = 0; i < n->children.len; i++) {
     const fun_t* fn = n->children.v[i];
     if (fn->kind == EXPR_FUN) {
-      startline(g, fn->loc);
+      if (fn->body) {
+        CHAR('\n'); g->lineno++;
+      } else {
+        startline(g, fn->loc);
+      }
       fun_proto(g, fn);
       CHAR(';');
     }

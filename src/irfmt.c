@@ -30,8 +30,12 @@ static void val(fmtctx_t* ctx, const irval_t* v, bool isdot) {
   u32 start = ctx->out.len + 1;
   PRINTF(isdot ? "\n" : "\n    ");
 
+  // showtype: enable to include syntax-formatted type after name
+  // e.g. "v1 int = ..." instead of "v1 = ..."
+  const bool showtype = true;
+
   if (!ismemonly(v)) {
-    if (isdot) {
+    if (isdot || !showtype) {
       PRINTF("v%-2u = ", v->id);
     } else {
       PRINTF("v%-2u ", v->id);
@@ -59,6 +63,10 @@ static void val(fmtctx_t* ctx, const irval_t* v, bool isdot) {
   case OP_DROP:
     if (isdot && v->var.src)
       PRINTF(" (%s)", v->var.src);
+    break;
+  case OP_FUN:
+    const irfun_t* f = assertnotnull(v->aux.ptr);
+    PRINTF(" %s", f->name);
     break;
   }
 

@@ -177,10 +177,17 @@ static void repr_call(RPARAMS, const call_t* n) {
   repr(RARGSFL(fl | REPRFLAG_SHORT), (const node_t*)n->recv);
   if (n->args.len == 0)
     return;
-  CHAR(' ');
   for (usize i = 0; i < n->args.len; i++) {
-    if (i) CHAR(' ');
+    CHAR(' ');
     repr(RARGS, (const node_t*)n->args.v[i]);
+  }
+}
+
+
+static void repr_typecons(RPARAMS, const typecons_t* n) {
+  if (n->expr) {
+    CHAR(' ');
+    repr(RARGS, (const node_t*)n->expr);
   }
 }
 
@@ -315,10 +322,11 @@ static void repr(RPARAMS, const node_t* nullable n) {
 
   switch (n->kind) {
 
-  case NODE_UNIT:    repr_nodearray(RARGS, &((unit_t*)n)->children); break;
-  case STMT_TYPEDEF: repr_typedef(RARGS, (typedef_t*)n); break;
-  case EXPR_FUN:     repr_fun(RARGS, (fun_t*)n); break;
-  case EXPR_CALL:    repr_call(RARGS, (call_t*)n); break;
+  case NODE_UNIT:     repr_nodearray(RARGS, &((unit_t*)n)->children); break;
+  case STMT_TYPEDEF:  repr_typedef(RARGS, (typedef_t*)n); break;
+  case EXPR_FUN:      repr_fun(RARGS, (fun_t*)n); break;
+  case EXPR_CALL:     repr_call(RARGS, (call_t*)n); break;
+  case EXPR_TYPECONS: repr_typecons(RARGS, (typecons_t*)n); break;
 
   case EXPR_RETURN:
     if (((const retexpr_t*)n)->value)

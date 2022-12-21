@@ -1154,6 +1154,13 @@ static irval_t* move_or_copy(
 }
 
 
+static type_t* unwind_aliastypes(type_t* t) {
+  while (t->kind == TYPE_ALIAS)
+    t = assertnotnull(((aliastype_t*)t)->elem);
+  return t;
+}
+
+
 //—————————————————————————————————————————————————————————————————————————————————————
 
 
@@ -1171,6 +1178,7 @@ static irval_t* intconst(ircons_t* c, type_t* t, u64 value, loc_t loc) {
   // - fast for functions with few constants, which is the common case
   // - degrades for functions with many constants
   //   - could do binary search if we bookkeep ending index
+  t = unwind_aliastypes(t);
   irblock_t* b0 = entry_block(c->f);
   u32 i = 0;
   for (; i < b0->values.len; i++) {
@@ -1261,9 +1269,21 @@ static irval_t* retexpr(ircons_t* c, retexpr_t* n) {
 }
 
 
+static irval_t* typecons(ircons_t* c, typecons_t* n) {
+  if (n->expr == NULL)
+    return pushval(c, c->b, OP_ZERO, n->loc, n->type);
+  irval_t* src = load_expr(c, n->expr);
+  irval_t* v = pushval(c, c->b, OP_CAST, n->loc, n->type);
+  pusharg(v, src);
+  return v;
+}
+
+
 static irval_t* call(ircons_t* c, call_t* n) {
   irval_t* recv = load_expr(c, n->recv);
+
   dlog("TODO call args");
+
   irval_t* v = pushval(c, c->b, OP_CALL, n->loc, n->type);
   pusharg(v, recv);
   if (type_isowner(v->type))
@@ -1862,8 +1882,8 @@ static irval_t* funexpr(ircons_t* c, fun_t* n) {
   irfun_t* f = fun(c, n, NULL);
   irval_t* v = pushval(c, c->b, OP_FUN, n->loc, n->type);
   v->aux.ptr = f;
-  if (n->name)
-    comment(c, v, n->name);
+  if (f->name)
+    comment(c, v, f->name);
   return v;
 }
 
@@ -1921,8 +1941,11 @@ static irval_t* load_rvalue(ircons_t* c, expr_t* origin, expr_t* n) {
 
 
 static irval_t* load_expr(ircons_t* c, expr_t* n) {
-  if (n->kind == EXPR_ID)
-    return load_rvalue(c, n, asexpr(((idexpr_t*)n)->ref));
+  if (n->kind == EXPR_ID) {
+    node_t* rvalue = ((idexpr_t*)n)->ref;
+    assert(node_isexpr(rvalue));
+    return load_rvalue(c, n, (expr_t*)rvalue);
+  }
   return expr(c, n);
 }
 
@@ -1936,6 +1959,7 @@ static irval_t* expr(ircons_t* c, void* expr_node) {
   case EXPR_BINOP:     return binop(c, (binop_t*)n);
   case EXPR_BLOCK:     return blockexpr(c, (block_t*)n);
   case EXPR_CALL:      return call(c, (call_t*)n);
+  case EXPR_TYPECONS:  return typecons(c, (typecons_t*)n);
   case EXPR_DEREF:     return deref(c, n, (unaryop_t*)n);
   case EXPR_FLOATLIT:  return floatlit(c, (floatlit_t*)n);
   case EXPR_ID:        return idexpr(c, (idexpr_t*)n);
@@ -2001,25 +2025,28 @@ static irunit_t* unit(ircons_t* c, unit_t* n) {
 
   for (u32 i = 0; i < n->children.len && c->compiler->errcount == 0; i++) {
     stmt_t* cn = n->children.v[i];
-    TRACE_NODE("stmt ", cn);
-    switch (cn->kind) {
-      case STMT_TYPEDEF:
-        // ignore
-        break;
-      case EXPR_FUN:
-        fun(c, (fun_t*)cn, NULL);
-        break;
-      default:
-        assertf(0, "unexpected node %s", nodekind_name(cn->kind));
+    {
+      TRACE_NODE("stmt ", cn);
+      switch (cn->kind) {
+        case STMT_TYPEDEF:
+          // ignore
+          break;
+        case EXPR_FUN:
+          fun(c, (fun_t*)cn, NULL);
+          break;
+        default:
+          assertf(0, "unexpected node %s", nodekind_name(cn->kind));
+      }
     }
 
     // flush funqueue
     for (u32 i = 0; i < c->funqueue.len; i++) {
-      fun_t* n = c->funqueue.v[i];
-      irfun_t** fp = (irfun_t**)map_lookup_ptr(&c->funm, n);
+      fun_t* cn = c->funqueue.v[i];
+      irfun_t** fp = (irfun_t**)map_lookup_ptr(&c->funm, cn);
       assertnotnull(fp);
       assertnotnull(*fp);
-      fun(c, n, *fp);
+      TRACE_NODE("stmt ", cn);
+      fun(c, cn, *fp);
     }
     c->funqueue.len = 0;
   }

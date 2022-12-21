@@ -69,9 +69,23 @@ static const char* fmtnode(typecheck_t* a, u32 bufindex, const void* nullable n)
 #endif
 
 
+inline static const type_t* unwind_alias_const(const type_t* t) {
+  while (t->kind == TYPE_ALIAS)
+    t = assertnotnull(((aliastype_t*)t)->elem);
+  return t;
+}
+
+
+inline static type_t* unwind_alias(type_t* t) {
+  while (t->kind == TYPE_ALIAS)
+    t = assertnotnull(((aliastype_t*)t)->elem);
+  return t;
+}
+
+
 bool types_isconvertible(const type_t* dst, const type_t* src) {
-  assertnotnull(dst);
-  assertnotnull(src);
+  dst = unwind_alias_const(assertnotnull(dst));
+  src = unwind_alias_const(assertnotnull(src));
   if (dst == src)
     return true;
   if (type_isprim(dst) && type_isprim(src))
@@ -81,15 +95,8 @@ bool types_isconvertible(const type_t* dst, const type_t* src) {
 
 
 bool _types_iscompat(const compiler_t* c, const type_t* dst, const type_t* src) {
-  assertnotnull(dst);
-  assertnotnull(src);
-
-  while (dst->kind == TYPE_ALIAS)
-    dst = assertnotnull(((aliastype_t*)dst)->elem);
-
-  while (src->kind == TYPE_ALIAS)
-    src = assertnotnull(((aliastype_t*)src)->elem);
-
+  dst = unwind_alias_const(assertnotnull(dst));
+  src = unwind_alias_const(assertnotnull(src));
   switch (dst->kind) {
     case TYPE_INT:
       dst = canonical_primtype(c, dst);
@@ -669,16 +676,18 @@ static void idexpr(typecheck_t* a, idexpr_t* n) {
 
 static void local(typecheck_t* a, local_t* n) {
   assertf(n->nrefs == 0 || n->name != sym__, "'_' local that is somehow referenced");
-  if (!n->init)
-    return;
-  typectx_push(a, n->type);
-  expr(a, n->init);
-  typectx_pop(a);
-  if (n->type == type_unknown || n->type->kind == TYPE_UNRESOLVED) {
-    n->type = n->init->type;
-  } else {
-    check_types_iscompat(a, n, n->type, n->init->type);
+  if (n->init) {
+    typectx_push(a, n->type);
+    expr(a, n->init);
+    typectx_pop(a);
+    if (n->type == type_unknown || n->type->kind == TYPE_UNRESOLVED) {
+      n->type = n->init->type;
+    } else {
+      check_types_iscompat(a, n, n->type, n->init->type);
+    }
   }
+  if UNLIKELY(n->type == type_void)
+    error(a, n, "cannot define %s of type void", nodekind_fmt(n->kind));
   define(a, n->name, n);
 }
 
@@ -836,20 +845,31 @@ static void intlit(typecheck_t* a, intlit_t* n) {
   u64 isneg = 0; // TODO
 
   type_t* type = a->typectx;
+  type_t* basetype = unwind_alias(type);
+
   u64 maxval;
   u64 uintval = n->intval;
   if (isneg)
     uintval &= ~0x1000000000000000; // clear negative bit
 
-  bool u = type->isunsigned;
+  bool u = basetype->isunsigned;
 
-  switch (type->kind) {
+  switch (basetype->kind) {
   case TYPE_I8:  maxval = u ? 0xffllu               : 0x7fllu+isneg; break;
   case TYPE_I16: maxval = u ? 0xffffllu             : 0x7fffllu+isneg; break;
   case TYPE_I32: maxval = u ? 0xffffffffllu         : 0x7fffffffllu+isneg; break;
   case TYPE_I64: maxval = u ? 0xffffffffffffffffllu : 0x7fffffffffffffffllu+isneg; break;
+  case TYPE_INT:
+    switch (a->compiler->intsize) {
+      case 8/8:  maxval = u ? 0xffllu               : 0x7fllu+isneg; break;
+      case 16/8: maxval = u ? 0xffffllu             : 0x7fffllu+isneg; break;
+      case 32/8: maxval = u ? 0xffffffffllu         : 0x7fffffffllu+isneg; break;
+      case 64/8: maxval = u ? 0xffffffffffffffffllu : 0x7fffffffffffffffllu+isneg; break;
+      default:   assertf(0, "%u", a->compiler->intsize);
+    }
+    break;
   default:
-    // all other type contexts results in: int, uint, i64 or u64 depending on value
+    // all other type contexts results in int, uint, i64 or u64 (depending on value)
     if (a->compiler->intsize == 8) {
       if (isneg) {
         type = type_int;
@@ -921,6 +941,43 @@ static void member(typecheck_t* a, member_t* n) {
 }
 
 
+static void finalize_typecons(typecheck_t* a, typecons_t** np) {
+  type_t* t = (*np)->type;
+
+  if (!type_isprim(unwind_alias(t)))
+    return;
+
+  expr_t* expr = (*np)->expr;
+  if (!expr)
+    return;
+
+  if (types_iscompat(a->compiler, t, expr->type)) {
+    // eliminate type cast to equivalent type, e.g. "i8(3)" => "3"
+    expr->nrefs += MAX(1, (*np)->nrefs) - 1;
+    *(expr_t**)np = expr;
+    return;
+  }
+
+  if UNLIKELY(!types_isconvertible(t, expr->type)) {
+    const char* dst_s = fmtnode(a, 0, t);
+    const char* src_s = fmtnode(a, 1, expr->type);
+    error(a, *np, "cannot convert value of type %s to type %s", src_s, dst_s);
+    return;
+  }
+}
+
+
+static void typecons(typecheck_t* a, typecons_t** np) {
+  typecons_t* n = *np;
+  if (n->expr) {
+    typectx_push(a, n->type);
+    expr(a, n->expr);
+    typectx_pop(a);
+  }
+  return finalize_typecons(a, np);
+}
+
+
 // —————————————————————————————————————————————————————————————————————————————————
 // call
 
@@ -933,6 +990,25 @@ static void error_field_type(typecheck_t* a, const expr_t* arg, const local_t* f
     origin = assertnotnull(((local_t*)arg)->init);
   error(a, origin, "passing value of type %s for field \"%s\" of type %s",
     got, f->name, expect);
+}
+
+
+static void convert_call_to_typecons(typecheck_t* a, call_t** np, type_t* t) {
+  static_assert(sizeof(typecons_t) <= sizeof(call_t), "");
+
+  ptrarray_t args = (*np)->args;
+  typecons_t* tc = (typecons_t*)*np;
+
+  tc->kind = EXPR_TYPECONS;
+  tc->type = t;
+  if (type_isprim(unwind_alias(t))) {
+    assert(args.len == 1);
+    tc->expr = args.v[0];
+  } else {
+    tc->args = args;
+  }
+
+  return finalize_typecons(a, (typecons_t**)np);
 }
 
 
@@ -1014,13 +1090,14 @@ static void check_call_type_struct(typecheck_t* a, call_t* call, structtype_t* t
 
 static void call_type_prim(typecheck_t* a, call_t** np, type_t* dst) {
   call_t* call = *np;
+  assert(call->args.len == 1);
   expr_t* arg = call->args.v[0];
 
   if UNLIKELY(!nodekind_isexpr(arg->kind))
     return error(a, arg, "invalid value");
 
   if UNLIKELY(arg->kind == EXPR_PARAM) {
-    return error(a, arg, "%s type constructor does not accept named arguments",
+    return error(a, arg, "%s type cast does not accept named arguments",
       fmtnode(a, 0, dst));
   }
 
@@ -1029,25 +1106,8 @@ static void call_type_prim(typecheck_t* a, call_t** np, type_t* dst) {
   typectx_pop(a);
 
   call->type = dst;
-  type_t* src = arg->type;
 
-  if UNLIKELY(types_iscompat(a->compiler, dst, src)) {
-    // eliminate type cast to same type, e.g. "i8(3)" => "3"
-    //   (EXPR_CALL
-    //     (EXPR ID i8 (TYPE i8))
-    //     (INTLIT 3 (TYPE i8)) )
-    //   =>
-    //   (INTLIT 3 (TYPE i8))
-    arg->nrefs = call->nrefs;
-    *(expr_t**)np = arg;
-    return;
-  }
-
-  if UNLIKELY(!types_isconvertible(dst, src)) {
-    const char* dst_s = fmtnode(a, 0, dst);
-    const char* src_s = fmtnode(a, 1, src);
-    error(a, arg, "cannot convert value of type %s to type %s", src_s, dst_s);
-  }
+  return convert_call_to_typecons(a, np, dst);
 }
 
 
@@ -1056,21 +1116,30 @@ static void error_call_type_arity(
 {
   assert(minargs > call->args.len || call->args.len > maxargs);
   const char* typstr = fmtnode(a, 1, t);
+
+  const char* logical_op = "type cast";
+  type_t* basetype = unwind_alias(t);
+  if (basetype->kind == TYPE_STRUCT || basetype->kind == TYPE_ARRAY)
+    logical_op = "type constructor";
+
   if (call->args.len < minargs) {
     const void* origin = call->recv;
     if (call->args.len > 0)
       origin = call->args.v[call->args.len - 1];
-    error(a, origin, "not enough arguments for %s type constructor, expecting%s %u",
-      typstr, minargs != maxargs ? " at least" : "", minargs);
+    error(a, origin, "not enough arguments for %s %s, expecting%s %u",
+      typstr, logical_op, minargs != maxargs ? " at least" : "", minargs);
     return;
   }
+
   const node_t* arg = call->args.v[maxargs];
   const char* argstr = fmtnode(a, 0, arg);
   if (maxargs == 0) {
     // e.g. "void(x)"
-    error(a, arg, "unexpected value %s; %s type accepts no arguments", argstr, typstr);
+    error(a, arg, "unexpected value %s; %s %s accepts no arguments",
+      argstr, typstr, logical_op);
   } else {
-    error(a, arg, "unexpected extra value %s in %s type constructor", argstr, typstr);
+    error(a, arg, "unexpected extra value %s in %s %s",
+      argstr, typstr, logical_op);
   }
 }
 
@@ -1089,11 +1158,23 @@ static bool check_call_type_arity(
 static void call_type(typecheck_t* a, call_t** np, type_t* t) {
   call_t* call = *np;
   call->type = t;
+
+  // unwrap alias
+  type_t* origt = t; // original type
+  t = unwind_alias(t);
+
   switch (t->kind) {
-  case TYPE_VOID:
+  case TYPE_VOID: {
     // no arguments
-    check_call_type_arity(a, call, t, 0, 0);
+    if UNLIKELY(!check_call_type_arity(a, call, origt, 0, 0))
+      return;
+    // convert to typecons
+    typecons_t* tc = (typecons_t*)*np;
+    tc->kind = EXPR_TYPECONS;
+    tc->type = origt;
+    tc->expr = NULL;
     return;
+  }
 
   case TYPE_BOOL:
   case TYPE_INT:
@@ -1103,23 +1184,26 @@ static void call_type(typecheck_t* a, call_t** np, type_t* t) {
   case TYPE_I64:
   case TYPE_F32:
   case TYPE_F64:
-    if UNLIKELY(!check_call_type_arity(a, call, t, 1, 1))
+    if UNLIKELY(!check_call_type_arity(a, call, origt, 1, 1))
       return;
-    return call_type_prim(a, np, t);
+    return call_type_prim(a, np, origt);
 
   case TYPE_STRUCT: {
     u32 maxargs = ((structtype_t*)t)->fields.len;
-    if UNLIKELY(!check_call_type_arity(a, call, t, 0, maxargs))
+    if UNLIKELY(!check_call_type_arity(a, call, origt, 0, maxargs))
       return;
     return check_call_type_struct(a, call, (structtype_t*)t);
   }
 
   // TODO
   case TYPE_ARRAY:
-    if UNLIKELY(!check_call_type_arity(a, call, t, 1, U32_MAX))
+    if UNLIKELY(!check_call_type_arity(a, call, origt, 1, U32_MAX))
       return;
     FALLTHROUGH;
+  case TYPE_FUN:
+  case TYPE_PTR:
   case TYPE_REF:
+  case TYPE_OPTIONAL:
     trace("TODO IMPLEMENT %s", nodekind_name(t->kind));
     error(a, call->recv, "NOT IMPLEMENTED: %s", nodekind_name(t->kind));
     return;
@@ -1269,6 +1353,8 @@ static void typedef_(typecheck_t* a, typedef_t* n) {
 static void aliastype(typecheck_t* a, aliastype_t** tp) {
   aliastype_t* t = *tp;
   type(a, &t->elem);
+  if UNLIKELY(t->elem == type_void)
+    return error(a, t, "cannot alias type void");
 }
 
 
@@ -1328,6 +1414,7 @@ static void exprp(typecheck_t* a, expr_t** np) {
   case EXPR_ASSIGN:    return assign(a, (binop_t*)n);
   case EXPR_BLOCK:     return block(a, (block_t*)n);
   case EXPR_CALL:      return call(a, (call_t**)np);
+  case EXPR_TYPECONS:  return typecons(a, (typecons_t**)np);
   case EXPR_MEMBER:    return member(a, (member_t*)n);
   case EXPR_DEREF:     return deref(a, (unaryop_t*)n);
   case EXPR_INTLIT:    return intlit(a, (intlit_t*)n);

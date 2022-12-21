@@ -13,6 +13,7 @@
   _( EXPR_FUN )/* nodekind_isexpr assumes this is first expr kind */\
   _( EXPR_BLOCK )\
   _( EXPR_CALL )\
+  _( EXPR_TYPECONS )\
   _( EXPR_ID )\
   _( EXPR_FIELD )\
   _( EXPR_PARAM )\
@@ -245,6 +246,14 @@ typedef struct { expr_t; op_t op; expr_t* left; expr_t* right; } binop_t;
 typedef struct { expr_t; expr_t* recv; ptrarray_t args; } call_t;
 typedef struct { expr_t; expr_t* nullable value; } retexpr_t;
 
+typedef struct {
+  expr_t;
+  union {
+    expr_t* nullable expr; // argument for primitive types
+    ptrarray_t       args; // arguments for all other types
+  };
+} typecons_t;
+
 typedef struct { // block is a declaration (stmt) or an expression depending on use
   expr_t;
   ptrarray_t children;
@@ -371,6 +380,8 @@ typedef struct {
   const u8* inp;         // input buffer current pointer
   const u8* inend;       // input buffer end
   const u8* linestart;   // start of current line
+  const u8* tokstart;    // start of current token
+  const u8* tokend;      // end of previous token
   tok_t     tok;         // recently parsed token (current token during scanning)
   loc_t     loc;         // recently parsed token's source location
   bool      insertsemi;  // insert a semicolon before next newline
@@ -380,8 +391,6 @@ typedef struct {
 typedef struct {
   scanstate_t;
   compiler_t* compiler;
-  const u8*   tokstart;    // start of current token
-  const u8*   tokend;      // end of previous token
   usize       litlenoffs;  // subtracted from source span len in scanner_litlen()
   u64         litint;      // parsed INTLIT
   buf_t       litbuf;      // interpreted source literal (e.g. "foo\n")

@@ -1,0 +1,6 @@
+fun foo() void {
+  let a = void()   // error: cannot define binding of type void
+  let z = MyVoid() // (no error since we get error for alias)
+}
+
+type MyVoid void // error: cannot alias type void

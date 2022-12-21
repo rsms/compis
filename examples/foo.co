@@ -234,9 +234,9 @@
 // }
 
 
-fun foo(x int, y MyInt) int {
+fun foo(x MyInt, y i8) int {
   if y > 0 {
-    x = y + 1
+    x = MyInt(y) + 1
   }
   return twice(x)
 }

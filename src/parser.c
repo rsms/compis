@@ -1410,21 +1410,62 @@ static void args(parser_t* p, call_t* n, type_t* recvtype, nodeflag_t fl) {
 }
 
 
+static expr_t* typecons(parser_t* p, type_t* t, nodeflag_t fl) {
+  assert((t->flags & NF_UNKNOWN) == 0);
+  typecons_t* n = mkexpr(p, typecons_t, EXPR_TYPECONS, fl);
+  next(p); // consume "("
+  n->type = t;
+
+  if (currtok(p) != TRPAREN) {
+    n->expr = expr(p, PREC_COMMA, fl | NF_RVALUE);
+    n->expr->nrefs++;
+  }
+
+  if LIKELY(currtok(p) == TRPAREN) {
+    next(p);
+    return (expr_t*)n;
+  }
+
+  // error
+  // e.g. "int(1,2)"
+  if (currtok(p) == TCOMMA) {
+    scanstate_t scanstate = save_scanstate(p);
+    next(p);
+    if (currtok(p) == TRPAREN || currtok(p) == TSEMI) {
+      restore_scanstate(p, scanstate);
+      expect_fail(p, TRPAREN, "to end type cast");
+    } else {
+      error(p, NULL, "unexpected extra value in type cast");
+    }
+  } else {
+    expect_fail(p, TRPAREN, "to end type cast");
+  }
+  fastforward_semi(p);
+  return (expr_t*)n;
+}
+
+
 // call = expr "(" args? ")"
 static expr_t* expr_postfix_call(
   parser_t* p, const parselet_t* pl, expr_t* recv, nodeflag_t fl)
 {
+  type_t* recvtype = recv->type;
+
+  // common case of primitive typecast
+  idexpr_t* id = (idexpr_t*)recv;
+  if (id->kind == EXPR_ID && id->ref && nodekind_isprimtype(id->ref->kind))
+    return typecons(p, (type_t*)id->ref, fl);
+
   call_t* n = mkexpr(p, call_t, EXPR_CALL, fl);
   next(p);
   n->recv = recv;
-  type_t* recvtype = recv->type;
   recv->flags |= NF_RVALUE;
   bubble_flags(n, recv);
 
   if (recv->type && recv->type->kind == TYPE_FUN) {
     funtype_t* ft = (funtype_t*)recv->type;
     n->type = ft->result;
-  } else if (recv->type && nodekind_istype(recv->type->kind)) {
+  } else if (recv->type && nodekind_istype(recvtype->kind)) {
     n->type = recv->type;
     recvtype = recv->type;
   } else {

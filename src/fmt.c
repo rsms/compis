@@ -215,6 +215,15 @@ static void fmt(abuf_t* s, const node_t* nullable n, u32 indent, u32 maxdepth) {
     break;
   }
 
+  case EXPR_TYPECONS: {
+    const typecons_t* tc = (const typecons_t*)n;
+    fmt(s, (const node_t*)tc->type, indent, maxdepth);
+    abuf_c(s, '(');
+    fmt(s, (const node_t*)tc->expr, indent, maxdepth);
+    abuf_c(s, ')');
+    break;
+  }
+
   case EXPR_MEMBER:
     fmt(s, (node_t*)((const member_t*)n)->recv, indent, maxdepth);
     abuf_c(s, '.');
