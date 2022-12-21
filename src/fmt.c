@@ -174,10 +174,11 @@ static void fmt(abuf_t* s, const node_t* nullable n, u32 indent, u32 maxdepth) {
 
   case EXPR_FUN: {
     fun_t* fn = (fun_t*)n;
+    funtype_t* ft = (funtype_t*)fn->type;
     abuf_fmt(s, "fun %s(", fn->name);
-    fmt_nodelist(s, &fn->params, ", ", indent, maxdepth);
+    fmt_nodelist(s, &ft->params, ", ", indent, maxdepth);
     abuf_str(s, ") ");
-    fmt(s, (node_t*)((funtype_t*)fn->type)->result, indent, maxdepth);
+    fmt(s, (node_t*)ft->result, indent, maxdepth);
     if (fn->body) {
       abuf_c(s, ' ');
       fmt(s, (node_t*)fn->body, indent, maxdepth);

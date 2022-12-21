@@ -227,7 +227,10 @@ static const char* operator(op_t op) {
 
 
 static bool type_is_interned_def(const type_t* t) {
-  return t->kind == TYPE_STRUCT || t->kind == TYPE_OPTIONAL || t->kind == TYPE_ALIAS;
+  return t->kind == TYPE_STRUCT
+      || t->kind == TYPE_OPTIONAL
+      || t->kind == TYPE_ALIAS
+      ;
 }
 
 
@@ -549,7 +552,7 @@ static void zeroinit(cgen_t* g, const type_t* t) {
 
 static void expr_or_zeroinit(cgen_t* g, const type_t* t, const expr_t* nullable n) {
   if (n) {
-    assert(types_iscompat(t, n->type));
+    assert(types_iscompat(g->compiler, t, n->type));
     return expr(g, n);
   }
   zeroinit(g, t);
@@ -635,14 +638,14 @@ static void cleanups(cgen_t* g, const ptrarray_t* cleanup) {
 
 
 static sizetuple_t x_semi_begin(cgen_t* g, loc_t loc) {
-  if (loc_line(loc) != g->lineno && loc_line(loc) == 0)
+  if (loc_line(loc) != g->lineno && loc_line(loc))
     return x_semi_begin_startline(g, loc);
   return x_semi_begin_char(g, ' ');
 }
 
 
 static void startline_if_needed(cgen_t* g, loc_t loc) {
-  if (loc_line(loc) != g->lineno && loc_line(loc) == 0)
+  if (loc_line(loc) != g->lineno && loc_line(loc))
     startline(g, loc);
 }
 
@@ -918,18 +921,17 @@ static void fun_name(cgen_t* g, const fun_t* fun) {
 }
 
 
-static void fun(cgen_t* g, const fun_t* fun) {
-  // if (type_isowner(((funtype_t*)fun->type)->result))
-  //   PRINT("__attribute__((__return_typestate__(unconsumed))) ");
+static void fun_proto(cgen_t* g, const fun_t* fun) {
+  funtype_t* ft = (funtype_t*)fun->type;
 
-  type(g, ((funtype_t*)fun->type)->result);
+  type(g, ft->result);
   CHAR(' ');
   fun_name(g, fun);
   CHAR('(');
-  if (fun->params.len > 0) {
+  if (ft->params.len > 0) {
     g->scopenest++;
-    for (u32 i = 0; i < fun->params.len; i++) {
-      local_t* param = fun->params.v[i];
+    for (u32 i = 0; i < ft->params.len; i++) {
+      local_t* param = ft->params.v[i];
       if (i) PRINT(", ");
       // if (!type_isprim(param->type) && !param->ismut)
       //   PRINT("const ");
@@ -944,13 +946,26 @@ static void fun(cgen_t* g, const fun_t* fun) {
     PRINT("void");
   }
   CHAR(')');
-  if (fun->body) {
-    blockflag_t fl = 0;
-    if (((funtype_t*)fun->type)->result != type_void)
-      fl |= BLOCKFLAG_RET; // return last expression
-    CHAR(' ');
-    block(g, fun->body, fl);
-  }
+}
+
+
+static void fun(cgen_t* g, const fun_t* fun) {
+  // if (type_isowner(((funtype_t*)fun->type)->result))
+  //   PRINT("__attribute__((__return_typestate__(unconsumed))) ");
+
+  fun_proto(g, fun);
+
+  if (!fun->body)
+    return;
+
+  funtype_t* ft = (funtype_t*)fun->type;
+
+  blockflag_t blockflags = 0;
+  if (ft->result != type_void)
+    blockflags |= BLOCKFLAG_RET; // return last expression
+
+  CHAR(' ');
+  block(g, fun->body, blockflags);
 }
 
 
@@ -1084,14 +1099,15 @@ static void call(cgen_t* g, const call_t* n) {
   bool isselfref = false;
   if (n->recv->kind == EXPR_MEMBER && ((member_t*)n->recv)->target->kind == EXPR_FUN) {
     member_t* m = (member_t*)n->recv;
-    fun_t* f = (fun_t*)m->target;
-    if (f->params.len > 0 && ((const local_t*)f->params.v[0])->isthis) {
-      const local_t* thisparam = f->params.v[0];
+    fun_t* fn = (fun_t*)m->target;
+    funtype_t* ft = (funtype_t*)fn->type;
+    if (ft->params.len > 0 && ((const local_t*)ft->params.v[0])->isthis) {
+      const local_t* thisparam = ft->params.v[0];
       isselfref = thisparam->type->kind == TYPE_REF;
       self = m->recv;
     }
-    assert(f->name != sym__);
-    fun_name(g, f);
+    assert(fn->name != sym__);
+    fun_name(g, fn);
   } else {
     expr(g, n->recv);
   }
@@ -1470,17 +1486,7 @@ static void forexpr(cgen_t* g, const forexpr_t* n) {
 
 
 static void typedef_(cgen_t* g, const typedef_t* n) {
-  type_t* t = n->type.elem;
-  if (type_is_interned_def(t)) {
-    usize outbuf_len = g->outbuf.len;
-    type(g, t);
-    g->outbuf.len = outbuf_len; // undo printing of "T;"
-  } else {
-    PRINT("typedef ");
-    type(g, t);
-    CHAR(' ');
-    id(g, n->type.name);
-  }
+  intern_typedef(g, (type_t*)&n->type, gen_alias_typename, gen_alias_typedef);
 }
 
 
@@ -1539,34 +1545,51 @@ static void expr(cgen_t* g, const expr_t* n) {
 }
 
 
-static void stmt(cgen_t* g, const stmt_t* n) {
-  sizetuple_t startlens = x_semi_begin_startline(g, n->loc);
-
-  switch (n->kind) {
-  case EXPR_FUN:
-    fun(g, (const fun_t*)n);
-    if (((const fun_t*)n)->body) {
-      // no semicolon after function body
-      x_semi_cancel(&startlens);
-    }
-    break;
-  case STMT_TYPEDEF:
-    typedef_(g, (const typedef_t*)n);
-    break;
-  default:
-    if (nodekind_isexpr(n->kind)) {
-      expr(g, (expr_t*)n);
-      break;
-    }
-    debugdie(g, n, "unexpected stmt node %s", nodekind_name(n->kind));
-  }
-  x_semi_end(g, startlens);
-}
-
-
 static void unit(cgen_t* g, const unit_t* n) {
-  for (u32 i = 0; i < n->children.len; i++)
-    stmt(g, n->children.v[i]);
+  if (n->children.len == 0)
+    return;
+
+  u32 init_inputid = g->inputid;
+  u32 init_lineno = g->lineno;
+
+  // typedefs
+  for (u32 i = 0; i < n->children.len; i++) {
+    const typedef_t* td = n->children.v[i];
+    if (td->kind == STMT_TYPEDEF) {
+      sizetuple_t startlens = x_semi_begin_startline(g, td->loc);
+      typedef_(g, td);
+      x_semi_end(g, startlens);
+    }
+  }
+
+  // function prototypes
+  g->inputid = init_inputid;
+  g->lineno = init_lineno;
+  for (u32 i = 0; i < n->children.len; i++) {
+    const fun_t* fn = n->children.v[i];
+    if (fn->kind == EXPR_FUN) {
+      startline(g, fn->loc);
+      fun_proto(g, fn);
+      CHAR(';');
+    }
+  }
+
+  // function implementations
+  g->inputid = init_inputid;
+  g->lineno = init_lineno;
+  for (u32 i = 0; i < n->children.len; i++) {
+    const fun_t* fn = n->children.v[i];
+    if (fn->kind == EXPR_FUN) {
+      if (fn->body == NULL) {
+        // declaration-only function already generated
+        continue;
+      }
+      startline(g, fn->loc);
+      fun(g, fn);
+    } else if (fn->kind != STMT_TYPEDEF) {
+      debugdie(g, n, "unexpected unit-level node %s", nodekind_name(n->kind));
+    }
+  }
 }
 
 
@@ -1584,6 +1607,7 @@ err_t cgen_generate(cgen_t* g, const unit_t* n) {
   g->headnest = 0;
 
   PRINT("#include <c0prelude.h>\n");
+
   input_t* input = loc_input(n->loc, locmap(g));
   if (input) {
     g->inputid = loc_inputid(n->loc);

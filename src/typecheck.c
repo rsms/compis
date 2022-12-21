@@ -69,6 +69,90 @@ static const char* fmtnode(typecheck_t* a, u32 bufindex, const void* nullable n)
 #endif
 
 
+bool types_isconvertible(const type_t* dst, const type_t* src) {
+  assertnotnull(dst);
+  assertnotnull(src);
+  if (dst == src)
+    return true;
+  if (type_isprim(dst) && type_isprim(src))
+    return true;
+  return false;
+}
+
+
+bool _types_iscompat(const compiler_t* c, const type_t* dst, const type_t* src) {
+  assertnotnull(dst);
+  assertnotnull(src);
+
+  while (dst->kind == TYPE_ALIAS)
+    dst = assertnotnull(((aliastype_t*)dst)->elem);
+
+  while (src->kind == TYPE_ALIAS)
+    src = assertnotnull(((aliastype_t*)src)->elem);
+
+  switch (dst->kind) {
+    case TYPE_INT:
+      dst = canonical_primtype(c, dst);
+      src = canonical_primtype(c, src);
+      FALLTHROUGH;
+    case TYPE_I8:
+    case TYPE_I16:
+    case TYPE_I32:
+    case TYPE_I64:
+      return (dst == src) && (dst->isunsigned == src->isunsigned);
+    case TYPE_PTR:
+      // *T <= *T
+      // &T <= *T
+      return (
+        (src->kind == TYPE_PTR || src->kind == TYPE_REF) &&
+        types_iscompat(c, ((ptrtype_t*)dst)->elem, ((ptrtype_t*)src)->elem));
+    case TYPE_REF: {
+      // &T    <= &T
+      // mut&T <= &T
+      // mut&T <= mut&T
+      // &T    x= mut&T
+      // &T    <= *T
+      // mut&T <= *T
+      const reftype_t* d = (const reftype_t*)dst;
+      if (src->kind == TYPE_PTR)
+        return types_iscompat(c, d->elem, ((const ptrtype_t*)src)->elem);
+      const reftype_t* s = (const reftype_t*)src;
+      return (
+        src->kind == TYPE_REF &&
+        (s->ismut == d->ismut || s->ismut || !d->ismut) &&
+        types_iscompat(c, d->elem, s->elem) );
+    }
+    case TYPE_OPTIONAL: {
+      // ?T <= T
+      // ?T <= ?T
+      const opttype_t* d = (const opttype_t*)dst;
+      if (src->kind == TYPE_OPTIONAL)
+        src = ((const opttype_t*)src)->elem;
+      return types_iscompat(c, d->elem, src);
+    }
+  }
+  return dst == src;
+}
+
+
+bool intern_usertype(compiler_t* c, usertype_t** tp) {
+  assert(nodekind_isusertype((*tp)->kind));
+  usertype_t** p = (usertype_t**)map_assign_ptr(
+    &c->typeidmap, c->ma, typeid((type_t*)*tp));
+  if UNLIKELY(!p) {
+    report_diag(c, (origin_t){0}, DIAG_ERR, "out of memory (%s)", __FUNCTION__);
+    return false;
+  }
+  if (*p) {
+    assert((*p)->kind == (*tp)->kind);
+    *tp = *p;
+    return true;
+  }
+  *p = *tp;
+  return false;
+}
+
+
 static void seterr(typecheck_t* a, err_t err) {
   if (!a->err)
     a->err = err;
@@ -186,7 +270,8 @@ static bool check_types_iscompat(
   typecheck_t* a, const void* nullable origin_node,
   const type_t* nullable x, const type_t* nullable y)
 {
-  if UNLIKELY(!!x * !!y && !types_iscompat(x, y)) { // "!!x * !!y": ignore NULL
+  if UNLIKELY(!!x * !!y && !types_iscompat(a->compiler, x, y)) {
+    // "!!x * !!y": ignore NULL
     error_incompatible_types(a, origin_node, x, y);
     return false;
   }
@@ -339,6 +424,43 @@ static void block(typecheck_t* a, block_t* n) {
 }
 
 
+/* TODO typecheck "this" parameter
+
+static type_t* this_param_type(parser_t* p, type_t* recvt, bool ismut) {
+  if (!ismut) {
+    // pass certain types as value instead of pointer when access is read-only
+    if (nodekind_isprimtype(recvt->kind)) // e.g. int, i32
+      return recvt;
+    if (recvt->kind == TYPE_STRUCT) {
+      // small structs
+      structtype_t* st = (structtype_t*)recvt;
+      usize ptrsize = p->scanner.compiler->ptrsize;
+      if (st->align <= ptrsize && st->size <= ptrsize*2)
+        return recvt;
+    }
+  }
+  // pointer type
+  reftype_t* t = mkreftype(p, ismut);
+  t->elem = recvt;
+  bubble_flags(t, t->elem);
+  return (type_t*)t;
+}
+
+
+static void this_param(
+  parser_t* p, funtype_t* ft, type_t* nullable recvt, local_t* param, bool ismut)
+{
+  if UNLIKELY(!recvt) {
+    param->type = type_void;
+    param->nrefs = 1; // prevent "unused parameter" warning
+    error(p, (node_t*)param, "unexpected \"this\" parameter for plain function");
+    return;
+  }
+  param->isthis = true;
+  param->type = this_param_type(p, recvt, ismut);
+}*/
+
+
 static void fun(typecheck_t* a, fun_t* n) {
   fun_t* outer_fun = a->fun;
   a->fun = n;
@@ -346,11 +468,15 @@ static void fun(typecheck_t* a, fun_t* n) {
   if (n->name && !n->methodof)
     define(a, n->name, n);
 
+  funtype_t* ft = (funtype_t*)n->type;
+
   // parameters
-  if (n->params.len > 0) {
+  if (ft->params.len > 0) {
     enter_scope(a);
-    for (u32 i = 0; i < n->params.len; i++) {
-      local_t* param = n->params.v[i];
+    for (u32 i = 0; i < ft->params.len; i++) {
+      local_t* param = ft->params.v[i];
+      if (param->isthis)
+        dlog("TODO typecheck \"this\" parameter");
       expr(a, param);
     }
     if (!n->body) {
@@ -361,7 +487,6 @@ static void fun(typecheck_t* a, fun_t* n) {
     goto end;
   }
 
-  funtype_t* ft = (funtype_t*)n->type;
   assert(ft->kind == TYPE_FUN);
 
   // body
@@ -373,11 +498,14 @@ static void fun(typecheck_t* a, fun_t* n) {
   typectx_pop(a);
   n->body->flags &= ~NF_RVALUE;
 
-  if (n->params.len > 0)
+  if (ft->params.len > 0)
     leave_scope(a);
 
   // check type of return value
-  if UNLIKELY(ft->result != type_void && !types_iscompat(ft->result, n->body->type)) {
+  if UNLIKELY(
+    ft->result != type_void &&
+    !types_iscompat(a->compiler, ft->result, n->body->type))
+  {
     const char* expect = fmtnode(a, 0, ft->result);
     const char* got = fmtnode(a, 1, n->body->type);
     node_t* origin = (node_t*)n->body;
@@ -389,6 +517,9 @@ static void fun(typecheck_t* a, fun_t* n) {
   }
 
 end:
+  // // TODO: intern funtype_t that previously had unresolved types/ids
+  // if ((ft->flags & NF_UNKNOWN) == 0)
+  //   intern_usertype(p->scanner.compiler, (usertype_t**)&ft);
   a->fun = outer_fun;
 }
 
@@ -501,7 +632,7 @@ static void ifexpr(typecheck_t* a, ifexpr_t* n) {
     if (n->elseb && n->elseb->type != type_void) {
       // "if ... else" => T
       n->type = n->thenb->type;
-      if UNLIKELY(!types_iscompat(n->thenb->type, n->elseb->type)) {
+      if UNLIKELY(!types_iscompat(a->compiler, n->thenb->type, n->elseb->type)) {
         // TODO: type union
         const char* t1 = fmtnode(a, 0, n->thenb->type);
         const char* t2 = fmtnode(a, 1, n->elseb->type);
@@ -873,7 +1004,7 @@ static void check_call_type_struct(typecheck_t* a, call_t* call, structtype_t* t
 
     typectx_pop(a);
 
-    if UNLIKELY(!types_iscompat(f->type, arg->type))
+    if UNLIKELY(!types_iscompat(a->compiler, f->type, arg->type))
       error_field_type(a, arg, f);
   }
 
@@ -900,7 +1031,7 @@ static void call_type_prim(typecheck_t* a, call_t** np, type_t* dst) {
   call->type = dst;
   type_t* src = arg->type;
 
-  if UNLIKELY(types_iscompat(dst, src)) {
+  if UNLIKELY(types_iscompat(a->compiler, dst, src)) {
     // eliminate type cast to same type, e.g. "i8(3)" => "3"
     //   (EXPR_CALL
     //     (EXPR ID i8 (TYPE i8))
@@ -1060,7 +1191,7 @@ static void call_fun(typecheck_t* a, call_t* call, funtype_t* ft) {
     typectx_pop(a);
 
     // check type
-    if UNLIKELY(!types_iscompat(param->type, arg->type)) {
+    if UNLIKELY(!types_iscompat(a->compiler, param->type, arg->type)) {
       const char* got = fmtnode(a, 0, arg->type);
       const char* expect = fmtnode(a, 1, param->type);
       error(a, arg, "passing value of type %s to parameter of type %s", got, expect);

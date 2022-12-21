@@ -149,14 +149,14 @@ static void fun(fmtctx_t* ctx, const irfun_t* f) {
   if (ctx->out.len) CHAR('\n');
   PRINTF("fun %s(", f->name);
   if (f->ast) {
-    for (u32 i = 0; i < f->ast->params.len; i++) {
-      const local_t* param = f->ast->params.v[i];
+    funtype_t* ft = (funtype_t*)f->ast->type;
+    for (u32 i = 0; i < ft->params.len; i++) {
+      const local_t* param = ft->params.v[i];
       if (i) PRINT(", ");
       node_fmt(&ctx->out, (node_t*)param, 0);
     }
     PRINT(") ");
-    const type_t* restype = ((funtype_t*)f->ast->type)->result;
-    node_fmt(&ctx->out, (node_t*)restype, 0);
+    node_fmt(&ctx->out, (node_t*)ft->result, 0);
     CHAR(' ');
     PRINT("{");
   } else {

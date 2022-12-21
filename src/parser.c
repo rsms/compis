@@ -487,7 +487,8 @@ static bool check_types_compat(
   const type_t* nullable y,
   const node_t* nullable origin)
 {
-  if UNLIKELY(!!x * !!y && !types_iscompat(x, y)) { // "!!x * !!y": ignore NULL
+  if UNLIKELY(!!x * !!y && !types_iscompat(p->scanner.compiler, x, y)) {
+    // "!!x * !!y": ignore NULL
     const char* xs = fmtnode(p, 0, x);
     const char* ys = fmtnode(p, 1, y);
     error(p, origin, "incompatible types, %s and %s", xs, ys);
@@ -564,7 +565,7 @@ static type_t* named_type(parser_t* p, sym_t name, const node_t* nullable origin
   const node_t* ref = lookup(p, name);
 
   if UNLIKELY(!ref) {
-    trace("unknown type \"%s\"", name);
+    trace("type \"%s\" not yet known", name);
     unresolvedtype_t* t = mknode(p, unresolvedtype_t, TYPE_UNRESOLVED);
     t->flags |= NF_UNKNOWN;
     t->name = name;
@@ -673,7 +674,7 @@ static bool struct_fieldset(parser_t* p, structtype_t* st) {
     if (currtok(p) != TCOMMA)
       break;
     next(p);
-    if UNLIKELY(!types_iscompat(f->type, f->init->type)) {
+    if UNLIKELY(!types_iscompat(p->scanner.compiler, f->type, f->init->type)) {
       const char* got = fmtnode(p, 0, f->init->type);
       const char* expect = fmtnode(p, 1, f->type);
       error(p, (node_t*)f->init,
@@ -694,7 +695,7 @@ static type_t* type_struct(parser_t* p) {
   next(p);
   while (currtok(p) != TRBRACE) {
     if (currtok(p) == TFUN) {
-      fun_t* fn = fun(p, 0, (type_t*)st, /*requirename*/true);
+      fun_t* fn = fun(p, 0, /*recvt*/(type_t*)st, /*requirename*/true);
       // Append the function to the unit, not to the structtype.
       // This simplifies both the general implementation and code generation.
       push_child(p, &p->unit->children, fn);
@@ -790,9 +791,8 @@ static stmt_t* stmt_typedef(parser_t* p) {
 
 static bool resolve_id(parser_t* p, idexpr_t* n) {
   n->ref = lookup(p, n->name);
-  if UNLIKELY(!n->ref) {
-    // error(p, (node_t*)n, "undeclared identifier \"%s\"", n->name);
-    trace("unknown identifier \"%s\"", n->name);
+  if (!n->ref) {
+    trace("identifier \"%s\" not yet known", n->name);
     n->type = type_unknown;
   } else if (node_isexpr(n->ref)) {
     n->type = ((expr_t*)n->ref)->type;
@@ -1481,46 +1481,12 @@ static expr_t* expr_dotmember(parser_t* p, const parselet_t* pl, nodeflag_t fl) 
 }
 
 
-static type_t* this_param_type(parser_t* p, type_t* recvt, bool ismut) {
-  if (!ismut) {
-    // pass certain types as value instead of pointer when access is read-only
-    if (nodekind_isprimtype(recvt->kind)) // e.g. int, i32
-      return recvt;
-    if (recvt->kind == TYPE_STRUCT) {
-      // small structs
-      structtype_t* st = (structtype_t*)recvt;
-      usize ptrsize = p->scanner.compiler->ptrsize;
-      if (st->align <= ptrsize && st->size <= ptrsize*2)
-        return recvt;
-    }
-  }
-  // pointer type
-  reftype_t* t = mkreftype(p, ismut);
-  t->elem = recvt;
-  bubble_flags(t, t->elem);
-  return (type_t*)t;
-}
-
-
-static void this_param(parser_t* p, fun_t* fun, local_t* param, bool ismut) {
-  if UNLIKELY(!fun->methodof) {
-    param->type = type_void;
-    param->nrefs = 1; // prevent "unused parameter" warning
-    error(p, (node_t*)param, "\"this\" parameter of non-method function");
-    return;
-  }
-  param->isthis = true;
-  param->type = this_param_type(p, fun->methodof, ismut);
-}
-
-
-static bool fun_params(parser_t* p, fun_t* fun) {
+static bool funtype_params(parser_t* p, funtype_t* ft, type_t* nullable recvt) {
   // params = "(" param (sep param)* sep? ")"
   // param  = Id Type? | Type
   // sep    = "," | ";"
   //
   // e.g.  (T)  (x T)  (x, y T)  (T1, T2, T3)
-
 
   bool isnametype = false; // when at least one param has type; e.g. "x T"
 
@@ -1536,11 +1502,12 @@ static bool fun_params(parser_t* p, fun_t* fun) {
       goto oom;
     param->type = NULL; // clear type_void set by mkexpr for later check
 
-    if (!ptrarray_push(&fun->params, p->ast_ma, param))
+    if (!ptrarray_push(&ft->params, p->ast_ma, param))
       goto oom;
 
+    // "mut this"?
     bool this_ismut = false;
-    if (currtok(p) == TMUT && fun->params.len == 1 && lookahead_issym(p, sym_this)) {
+    if (currtok(p) == TMUT && ft->params.len == 1 && lookahead_issym(p, sym_this)) {
       this_ismut = true;
       next(p);
     }
@@ -1552,10 +1519,12 @@ static bool fun_params(parser_t* p, fun_t* fun) {
       next(p);
 
       // check for "this" as first argument
-      if (param->name == sym_this && fun->params.len == 1) {
+      if (param->name == sym_this && ft->params.len == 1) {
         isnametype = true;
-        this_param(p, fun, param, this_ismut);
-        bubble_flags(fun, param);
+        param->isthis = true;
+        param->ismut = this_ismut;
+        param->type = recvt;
+        // note: intentionally NOT bubble_flags to ft or param
         goto loopend;
       }
 
@@ -1579,7 +1548,7 @@ static bool fun_params(parser_t* p, fun_t* fun) {
           typeq.len = 0;
       }
 
-      bubble_flags(fun, param);
+      bubble_flags(ft, param);
     } else {
       // definitely a type
       param->name = sym__;
@@ -1587,7 +1556,7 @@ static bool fun_params(parser_t* p, fun_t* fun) {
         goto oom;
       param->type = type(p, PREC_LOWEST);
       bubble_flags(param, param->type);
-      bubble_flags(fun, param);
+      bubble_flags(ft, param);
     }
 
   loopend:
@@ -1595,15 +1564,27 @@ static bool fun_params(parser_t* p, fun_t* fun) {
       case TCOMMA:
       case TSEMI:
         next(p); // consume "," or ";"
-        if (currtok(p) == TRPAREN)
-          goto finish; // trailing "," or ";"
+        if (currtok(p) == TRPAREN) {
+          // trailing "," or ";"
+          // e.g.
+          //   fun foo(
+          //     a int <implicit ";">
+          //     b int <implicit ";">  <— trailing semicolon
+          //   )
+          // e.g.
+          //   fun foo(
+          //     a int,
+          //     b int,  <— trailing comma
+          //   )
+          goto finish;
+        }
         break; // continue reading more
       case TRPAREN:
         goto finish;
       default:
         unexpected(p, "expecting ',' ';' or ')'");
-        fastforward(p, (const tok_t[]){ TRPAREN, TSEMI, 0 });
-        goto finish;
+        fastforward(p, (const tok_t[]){ TRPAREN, 0 });
+        goto error;
     }
   }
 finish:
@@ -1612,8 +1593,8 @@ finish:
     // Error if at least one param has type, but last one doesn't, e.g. "(x, y int, z)"
     if UNLIKELY(typeq.len > 0) {
       error(p, NULL, "expecting type");
-      for (u32 i = 0; i < fun->params.len; i++) {
-        local_t* param = (local_t*)fun->params.v[i];
+      for (u32 i = 0; i < ft->params.len; i++) {
+        local_t* param = (local_t*)ft->params.v[i];
         if (!param->type)
           param->type = type_void;
         bubble_flags(param, param->type);
@@ -1621,8 +1602,8 @@ finish:
     }
   } else {
     // type-only form, e.g. "(T, T, Y)"
-    for (u32 i = 0; i < fun->params.len; i++) {
-      local_t* param = (local_t*)fun->params.v[i];
+    for (u32 i = 0; i < ft->params.len; i++) {
+      local_t* param = (local_t*)ft->params.v[i];
       if (param->type)
         continue;
       // make type from id
@@ -1632,81 +1613,54 @@ finish:
     }
   }
   ptrarray_dispose(&typeq, p->ast_ma);
-  return isnametype;
+  if (isnametype)
+    ft->flags |= NF_NAMEDPARAMS;
+  return true;
 oom:
   out_of_mem(p);
+error:
+  ptrarray_dispose(&typeq, p->ast_ma);
   return false;
 }
 
 
-// T** typeidmap_assign(parser_t*, sym_t tid, T, nodekind_t)
-#define typeidmap_assign(p, tid, T, kind) \
-  (T**)_typeidmap_assign((p), (tid), (kind))
-static type_t** _typeidmap_assign(parser_t* p, sym_t tid, nodekind_t kind) {
-  compiler_t* c = p->scanner.compiler;
-  type_t** tp = (type_t**)map_assign_ptr(&c->typeidmap, c->ma, tid);
-  if UNLIKELY(!tp) {
-    out_of_mem(p);
-    return (type_t**)&last_resort_node;
-  }
-  if (*tp)
-    assert((*tp)->kind == kind);
-  return tp;
-}
-
-
-static sym_t typeid_fun(parser_t* p, const ptrarray_t* params, type_t* result) {
-  buf_t* buf = &p->tmpbuf[0];
-  buf_clear(buf);
-  buf_push(buf, TYPEID_PREFIX(TYPE_FUN));
-  if UNLIKELY(!buf_print_leb128_u32(buf, params->len))
-    goto fail;
-  for (u32 i = 0; i < params->len; i++) {
-    local_t* param = params->v[i];
-    assert(param->kind == EXPR_PARAM);
-    if UNLIKELY(!typeid_append(buf, assertnotnull(param->type)))
-      goto fail;
-  }
-  if UNLIKELY(!typeid_append(buf, result))
-    goto fail;
-  return sym_intern(buf->p, buf->len);
-fail:
-  out_of_mem(p);
-  return sym__;
-}
-
-
-static funtype_t* funtype(parser_t* p, ptrarray_t* params, type_t* result) {
-  dlog("TODO move funtype interning to typecheck");
-  // // build typeid
-  // sym_t tid = typeid_fun(p, params, result);
-
-  // // find existing function type
-  // funtype_t** typeidmap_slot = typeidmap_assign(p, tid, funtype_t, TYPE_FUN);
-  // if (*typeidmap_slot)
-  //   return *typeidmap_slot;
-
-  // build function type
+static funtype_t* funtype(parser_t* p, loc_t loc, type_t* nullable recvt) {
   funtype_t* ft = mknode(p, funtype_t, TYPE_FUN);
+  ft->loc = loc;
   ft->size = p->scanner.compiler->ptrsize;
-  ft->align = ft->size;
+  ft->align = p->scanner.compiler->ptrsize;
   ft->isunsigned = true;
-  ft->result = result;
-  bubble_flags(ft, result);
-  if UNLIKELY(!ptrarray_reserve(&ft->params, p->ast_ma, params->len)) {
-    out_of_mem(p);
+
+  // parameters
+  ft->paramsloc = currloc(p);
+  if UNLIKELY(!expect(p, TLPAREN, "for parameters")) {
+    fastforward(p, (const tok_t[]){ TLBRACE, TSEMI, 0 });
     return ft;
   }
-  ft->params.len = params->len;
-  for (u32 i = 0; i < params->len; i++) {
-    local_t* param = params->v[i];
-    assert(param->kind == EXPR_PARAM);
-    ft->params.v[i] = param;
-    bubble_flags(ft, param);
+  if (currtok(p) != TRPAREN)
+    funtype_params(p, ft, recvt);
+  expect(p, TRPAREN, "to end parameters");
+
+  // result type
+  // no result type implies "void", e.g. "fun foo() {}" => "fun foo() void {}"
+  if (currtok(p) != TLBRACE) {
+    ft->result = type(p, PREC_MEMBER);
+    bubble_flags(ft, ft->result);
+  } else {
+    ft->result = type_void;
   }
 
-  // *typeidmap_slot = ft;
+  if ((ft->flags & NF_UNKNOWN) == 0)
+    intern_usertype(p->scanner.compiler, (usertype_t**)&ft);
+
   return ft;
+}
+
+
+static type_t* type_fun(parser_t* p) {
+  loc_t loc = currloc(p);
+  next(p); // consume TFUN
+  return (type_t*)funtype(p, loc, /*recvt*/NULL);
 }
 
 
@@ -1751,101 +1705,14 @@ static void add_method(parser_t* p, fun_t* fun, loc_t name_loc) {
 }
 
 
-static void fun_name(parser_t* p, fun_t* fun, type_t* nullable recv) {
-  fun->name = p->scanner.sym;
-  loc_t name_loc = currloc(p);
-  next(p);
-
-  if (recv) {
-    // function defined inside type context, e.g. "type Foo { fun bar(){} }"
-    fun->methodof = recv;
-  } else {
-    if (currtok(p) != TDOT) {
-      // plain function name, e.g. "foo"
-      return;
-    }
-    // method function name, e.g. "Foo.bar"
-    next(p);
-
-    // resolve receiver, e.g. "Foo" in "Foo.bar"
-    recv = (type_t*)lookup(p, fun->name);
-    if UNLIKELY(!recv) {
-      error(p, name_loc, "undeclared identifier \"%s\"", fun->name);
-      return;
-    }
-    if UNLIKELY(!nodekind_istype(recv->kind)) {
-      const char* s = fmtnode(p, 0, recv);
-      error(p, name_loc, "%s is not a type", s);
-      return;
-    }
-    fun->methodof = recv;
-
-    // method name, e.g. "bar" in "Foo.bar"
-    fun->name = p->scanner.sym;
-    name_loc = currloc(p);
-    if (!expect(p, TID, "after '.'"))
-      return;
-  }
-
-  // add name => fun to recv's method map
-  add_method(p, fun, name_loc);
-}
-
-
-static bool fun_prototype(
-  parser_t* p, fun_t* n, type_t* nullable methodof, bool requirename)
-{
-  if (currtok(p) == TID) {
-    fun_name(p, n, methodof);
-  } else if (requirename) {
-    error(p, NULL, "missing function name");
-  }
-
-  // parameters
-  if UNLIKELY(!expect(p, TLPAREN, "for parameters")) {
-    fastforward(p, (const tok_t[]){ TLBRACE, TSEMI, 0 });
-    n->type = mkbad(p);
-    return false;
-  }
-  bool has_named_params = false;
-  if (currtok(p) != TRPAREN)
-    has_named_params = fun_params(p, n);
-  expect(p, TRPAREN, "to end parameters");
-
-  // result type
-  type_t* result = type_void;
-  // check for "{}", e.g. "fun foo() {}" => "fun foo() void {}"
-  if (currtok(p) != TLBRACE) {
-    result = type(p, PREC_MEMBER);
-    bubble_flags(n, result);
-  }
-
-  n->type = (type_t*)funtype(p, &n->params, result);
-  bubble_flags(n->type, n);
-
-  return has_named_params;
-}
-
-
-static type_t* type_fun(parser_t* p) {
-  fun_t f = { .kind = EXPR_FUN, .loc = currloc(p) };
-  next(p);
-  fun_prototype(p, &f, NULL, /*requirename*/false);
-  return (type_t*)f.type;
-}
-
-
 static void fun_body(parser_t* p, fun_t* n, nodeflag_t fl) {
-  bool hasthis = n->params.len && ((local_t*)n->params.v[0])->isthis;
-  if (hasthis) {
-    assertnotnull(n->methodof);
-    dotctx_push(p, n->params.v[0]);
-  }
+  funtype_t* ft = (funtype_t*)n->type;
+
+  if (funtype_hasthis(ft))
+    dotctx_push(p, ft->params.v[0]);
 
   fun_t* outer_fun = p->fun;
   p->fun = n;
-
-  funtype_t* ft = (funtype_t*)n->type;
 
   fl |= NF_RVALUE;
   if (ft->result == type_void)
@@ -1866,7 +1733,7 @@ static void fun_body(parser_t* p, fun_t* n, nodeflag_t fl) {
 
   p->fun = outer_fun;
 
-  if (hasthis)
+  if (funtype_hasthis(ft))
     dotctx_pop(p);
 }
 
@@ -1874,43 +1741,71 @@ static void fun_body(parser_t* p, fun_t* n, nodeflag_t fl) {
 // fundef = "fun" name "(" params? ")" result ( ";" | "{" body "}")
 // result = params
 // body   = (stmt ";")*
-static fun_t* fun(
-  parser_t* p, nodeflag_t fl, type_t* nullable methodof, bool requirename)
-{
+static fun_t* fun(parser_t* p, nodeflag_t fl, type_t* nullable recvt, bool requirename) {
   fun_t* n = mkexpr(p, fun_t, EXPR_FUN, fl);
   next(p);
-  bool has_named_params = fun_prototype(p, n, methodof, requirename);
+  n->methodof = recvt;
+
+  // name
+  if (currtok(p) == TID) {
+    n->name = p->scanner.sym;
+    loc_t name_loc = currloc(p);
+    next(p);
+    if (n->methodof == NULL && currtok(p) == TDOT) {
+      // method function name, e.g. "Foo.bar"
+      next(p); // consume "."
+      // resolve receiver, e.g. "Foo" in "Foo.bar"
+      n->methodof = (type_t*)lookup(p, n->name);
+      if (!n->methodof) {
+        n->methodof = type_unknown;
+        n->flags |= NF_UNKNOWN;
+      } else if UNLIKELY(!nodekind_istype(n->methodof->kind)) {
+        error(p, name_loc, "%s is not a type", fmtnode(p, 0, n->methodof));
+      } else {
+        // add {name => fun} to recv's method map
+        add_method(p, n, name_loc);
+      }
+    }
+  } else if (requirename) {
+    error(p, NULL, "missing function name");
+  }
+
+  n->type = (type_t*)funtype(p, n->loc, n->methodof);
+  bubble_flags(n, n->type);
 
   // define named function
   if (n->name && n->type->kind != NODE_BAD && !n->methodof)
     define(p, n->name, (node_t*)n);
 
+  // no body?
+  if (currtok(p) == TSEMI)
+    return n;
+
   // define named parameters
-  if (has_named_params) {
+  funtype_t* ft = (funtype_t*)n->type;
+  if (ft->flags & NF_NAMEDPARAMS) {
     enter_scope(p);
-    for (u32 i = 0; i < n->params.len; i++)
-      define(p, ((local_t*)n->params.v[i])->name, n->params.v[i]);
+    for (u32 i = 0; i < ft->params.len; i++)
+      define(p, ((local_t*)ft->params.v[i])->name, ft->params.v[i]);
+  } else if UNLIKELY(ft->params.len > 0) {
+    error(p, NULL, "function without named parameters can't have a body");
+    help(p, ft->paramsloc, "name parameter%s \"_\"", ft->params.len > 1 ? "s" : "");
   }
 
-  // body?
-  if (currtok(p) != TSEMI) {
-    if UNLIKELY(!has_named_params && n->params.len > 0)
-      error(p, NULL, "function without named arguments can't have a body");
-    fun_body(p, n, fl);
-  }
+  fun_body(p, n, fl);
 
-  if (has_named_params)
+  if (ft->flags & NF_NAMEDPARAMS)
     leave_scope(p);
 
   return n;
 }
 
 static expr_t* expr_fun(parser_t* p, const parselet_t* pl, nodeflag_t fl) {
-  return (expr_t*)fun(p, fl, NULL, /*requirename*/false);
+  return (expr_t*)fun(p, fl, /*recvt*/NULL, /*requirename*/false);
 }
 
 static stmt_t* stmt_fun(parser_t* p) {
-  return (stmt_t*)fun(p, 0, NULL, /*requirename*/true);
+  return (stmt_t*)fun(p, 0, /*recvt*/NULL, /*requirename*/true);
 }
 
 

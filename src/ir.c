@@ -20,6 +20,7 @@ typedef struct {
   err_t       err;         // result of build process
   u32         condnest;    // >0 when inside conditional ("if", "for", etc)
   buf_t       tmpbuf[2];   // general-purpose scratch buffers
+  ptrarray_t  funqueue;    // [fun_t*] queue of functions awaiting build
   map_t       funm;        // {fun_t* => irfun_t*} for breaking cycles
   map_t       vars;        // {sym_t => irval_t*} (moved to defvars by end_block)
   maparray_t  defvars;     // {[block_id] => map_t}
@@ -155,7 +156,7 @@ static bool dump_irunit(const irunit_t* u, memalloc_t ma, const locmap_t* lm) {
 
 
 static void assert_types_iscompat(ircons_t* c, const type_t* x, const type_t* y) {
-  assertf(types_iscompat(x, y), "%s != %s", fmtnode(0, x), fmtnode(1, y));
+  assertf(types_iscompat(c->compiler, x, y), "%s != %s", fmtnode(0, x), fmtnode(1, y));
 }
 
 
@@ -335,21 +336,12 @@ static irblock_t* block_comment(ircons_t* c, irblock_t* b, const char* comment) 
 }
 
 
-static type_t* canonical_type(ircons_t* c, type_t* t) {
-  while (t->kind == TYPE_ALIAS)
-    t = assertnotnull(((aliastype_t*)t)->elem);
-  if (t->kind == TYPE_INT)
-    return t->isunsigned ? c->compiler->uinttype : c->compiler->inttype;
-  return t;
-}
-
-
 static irval_t* mkval(ircons_t* c, op_t op, loc_t loc, type_t* type) {
   irval_t* v = mem_alloct(c->ir_ma, irval_t);
   if UNLIKELY(v == NULL)
     return out_of_mem(c), &bad_irval;
 
-  type = canonical_type(c, type);
+  type = (type_t*)canonical_primtype(c->compiler, type);
 
   v->id = c->f->vidgen++;
   v->op = op;
@@ -1737,14 +1729,19 @@ static void check_borrowing(ircons_t* c, irfun_t* f) {
 }
 
 
-static irfun_t* fun(ircons_t* c, fun_t* n) {
+static bool addfun(ircons_t* c, fun_t* n, irfun_t** fp) {
+  // make sure *fp is initialized no matter what happens
+  *fp = &bad_irfun;
+
   // functions may refer to themselves, so we record "ongoing" functions in a map
-  irfun_t** fp = (irfun_t**)map_assign_ptr(&c->funm, c->ma, n);
-  if UNLIKELY(!fp)
-    return out_of_mem(c), &bad_irfun;
-  if (*fp) {
-    // fun already built or in progress of being built
-    return *fp;
+  irfun_t** funmp = (irfun_t**)map_assign_ptr(&c->funm, c->ma, n);
+  if UNLIKELY(!funmp)
+    return out_of_mem(c), false;
+
+  // stop short if function is already built or in progress of being built
+  if (*funmp) {
+    *fp = *funmp;
+    return false;
   }
 
   // allocate irfun_t
@@ -1752,32 +1749,35 @@ static irfun_t* fun(ircons_t* c, fun_t* n) {
   if UNLIKELY(!f)
     return out_of_mem(c), &bad_irfun;
   *fp = f;
+  *funmp = f;
   f->name = mem_strdup(c->ir_ma, slice_cstr(n->name), 0);
   f->ast = n;
 
   // add to current unit
   if UNLIKELY(!ptrarray_push(&c->unit->functions, c->ir_ma, f)) {
     out_of_mem(c);
-    goto end;
+    return false;
   }
 
   // just a declaration?
   if (n->body == NULL)
-    return f;
+    return false;
 
-  // save current function build state
+  // handle function refs and nested function definitions
   if (c->f != &bad_irfun) {
-    // TODO: a better strategy would be to use a queue of functions:
-    // - at the unit level:
-    //   - initialize with all functions in the unit
-    //   - while queue is not empty:
-    //     - deque first and generate function
-    // - when encountering a local function, prepend it to the queue
-    //
-    // This approach would save us from this complicated state saving stuff.
-    //
-    panic("TODO implement queue of functions");
+    trace("funqueue push %s", fmtnode(0, n));
+    if UNLIKELY(!ptrarray_push(&c->funqueue, c->ma, n))
+      out_of_mem(c);
+    return false;
   }
+
+  return true;
+}
+
+
+static irfun_t* fun(ircons_t* c, fun_t* n, irfun_t* nullable f) {
+  if (f == NULL && !addfun(c, n, &f))
+    return f;
 
   c->f = f;
   c->condnest = 0;
@@ -1793,9 +1793,11 @@ static irfun_t* fun(ircons_t* c, fun_t* n) {
   // enter function scope
   owners_enter_scope(c);
 
+  funtype_t* ft = (funtype_t*)n->type;
+
   // define arguments
-  for (u32 i = 0; i < n->params.len; i++) {
-    local_t* param = n->params.v[i];
+  for (u32 i = 0; i < ft->params.len; i++) {
+    local_t* param = ft->params.v[i];
     if (param->name == sym__)
       continue;
     irval_t* v = pushval(c, c->b, OP_ARG, param->loc, param->type);
@@ -1810,7 +1812,7 @@ static irfun_t* fun(ircons_t* c, fun_t* n) {
   }
 
   // check if function has implicit return value
-  if (((funtype_t*)n->type)->result != type_void && n->body->children.len) {
+  if (ft->result != type_void && n->body->children.len) {
     expr_t* lastexpr = n->body->children.v[n->body->children.len-1];
     if (lastexpr->kind != EXPR_RETURN)
       n->body->flags |= NF_RVALUE;
@@ -1851,14 +1853,13 @@ static irfun_t* fun(ircons_t* c, fun_t* n) {
 
   //check_borrowing(c, f);
 
-end:
   c->f = &bad_irfun;
   return f;
 }
 
 
 static irval_t* funexpr(ircons_t* c, fun_t* n) {
-  irfun_t* f = fun(c, n);
+  irfun_t* f = fun(c, n, NULL);
   irval_t* v = pushval(c, c->b, OP_FUN, n->loc, n->type);
   v->aux.ptr = f;
   if (n->name)
@@ -2006,11 +2007,21 @@ static irunit_t* unit(ircons_t* c, unit_t* n) {
         // ignore
         break;
       case EXPR_FUN:
-        fun(c, (fun_t*)cn);
+        fun(c, (fun_t*)cn, NULL);
         break;
       default:
         assertf(0, "unexpected node %s", nodekind_name(cn->kind));
     }
+
+    // flush funqueue
+    for (u32 i = 0; i < c->funqueue.len; i++) {
+      fun_t* n = c->funqueue.v[i];
+      irfun_t** fp = (irfun_t**)map_lookup_ptr(&c->funm, n);
+      assertnotnull(fp);
+      assertnotnull(*fp);
+      fun(c, n, *fp);
+    }
+    c->funqueue.len = 0;
   }
 
   c->unit = &bad_irunit;
@@ -2066,6 +2077,7 @@ static err_t ircons(
   for (usize i = 0; i < countof(c.tmpbuf); i++)
     buf_dispose(&c.tmpbuf[i]);
 
+  ptrarray_dispose(&c.funqueue, c.ma);
   ptrarray_dispose(&c.owners.entries, c.ma);
   bitset_dispose(c.deadset, c.ma);
 

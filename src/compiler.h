@@ -143,11 +143,12 @@ enum nodekind {
 };
 
 typedef u8 nodeflag_t;
-#define NF_RVALUE   ((nodeflag_t)1<< 0) // expression is used as an rvalue
-#define NF_OPTIONAL ((nodeflag_t)1<< 1) // type-narrowed from optional
-#define NF_EXITS    ((nodeflag_t)1<< 2) // block exits the function (has return)
-#define NF_CHECKED  ((nodeflag_t)1<< 3) // has been typecheck'ed (or doesn't need it)
-#define NF_UNKNOWN  ((nodeflag_t)1<< 4) // has or contains unresolved identifier
+#define NF_RVALUE      ((nodeflag_t)1<< 0) // expression is used as an rvalue
+#define NF_OPTIONAL    ((nodeflag_t)1<< 1) // type-narrowed from optional
+#define NF_EXITS       ((nodeflag_t)1<< 2) // block exits the function (has return)
+#define NF_CHECKED     ((nodeflag_t)1<< 3) // has been typecheck'ed (or doesn't need it)
+#define NF_UNKNOWN     ((nodeflag_t)1<< 4) // has or contains unresolved identifier
+#define NF_NAMEDPARAMS ((nodeflag_t)1<< 5) // function has named parameters
 
 // NODEFLAGS_BUBBLE are flags that "bubble" (transfer) from children to parents
 #define NODEFLAGS_BUBBLE  NF_UNKNOWN
@@ -199,7 +200,8 @@ typedef struct {
 
 typedef struct {
   usertype_t;
-  ptrarray_t params; // local_t*[]
+  ptrarray_t params;    // local_t*[]
+  loc_t      paramsloc; // location of "(" ...
   type_t*    result;
 } funtype_t;
 
@@ -278,11 +280,11 @@ typedef struct { // PARAM, VAR, LET
   loc_t            nameloc;
   expr_t* nullable init;      // may be NULL for VAR and PARAM
   bool             isthis;    // [PARAM only] it's the special "this" parameter
+  bool             ismut;     // [PARAM only] true if "this" parameter is "mut"
 } local_t;
 
 typedef struct { // fun is a declaration (stmt) or an expression depending on use
   expr_t;
-  ptrarray_t        params;   // local_t*[]
   sym_t nullable    name;     // NULL if anonymous
   block_t* nullable body;     // NULL if function is a prototype
   type_t* nullable  methodof; // non-NULL for methods: type "this" is a method of
@@ -580,17 +582,32 @@ inline static bool type_isopt(const type_t* nullable t) {
 inline static bool type_isowner(const type_t* t) { // true for "*T" and "?*T"
   return type_isptr(type_isopt(t) ? ((opttype_t*)t)->elem : t);
 }
+inline static bool funtype_hasthis(const funtype_t* ft) {
+  return ft->params.len && ((local_t*)ft->params.v[0])->isthis;
+}
 
 // types
 bool types_isconvertible(const type_t* dst, const type_t* src);
-bool _types_iscompat(const type_t* dst, const type_t* src);
-inline static bool types_iscompat(const type_t* dst, const type_t* src) {
-  return dst == src || _types_iscompat(dst, src);
+bool _types_iscompat(const compiler_t* c, const type_t* dst, const type_t* src);
+inline static bool types_iscompat(
+  const compiler_t* c, const type_t* dst, const type_t* src)
+{
+  return dst == src || _types_iscompat(c, dst, src);
 }
+
+static sym_t nullable typeid(type_t* t);
 sym_t nullable _typeid(type_t*);
 inline static sym_t nullable typeid(type_t* t) { return t->tid ? t->tid : _typeid(t); }
-bool typeid_append(buf_t* buf, type_t* t);
 #define TYPEID_PREFIX(typekind)  ('A'+(typekind)-TYPE_VOID)
+
+// intern_usertype interns *tp in c->typeidmap.
+// returns true if *tp was replaced by existing type, false if added to c->typeidmap.
+bool intern_usertype(compiler_t* c, usertype_t** tp);
+
+inline static const type_t* canonical_primtype(const compiler_t* c, const type_t* t) {
+  return (t->kind == TYPE_INT) ? (t->isunsigned ? c->uinttype : c->inttype)
+                               : t;
+}
 
 // expr_no_side_effects returns true if materializing n has no side effects
 bool expr_no_side_effects(const expr_t* n);
