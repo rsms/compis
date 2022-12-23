@@ -241,6 +241,11 @@ fun foo(x MyInt, y i8) int {
   return twice(x)
 }
 
+
+fun bar(x MyInt, y i8) int {
+  return 0
+}
+
 fun twice(x int) int {
   x * 2
 }

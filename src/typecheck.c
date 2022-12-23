@@ -69,6 +69,10 @@ static const char* fmtnode(typecheck_t* a, u32 bufindex, const void* nullable n)
 #endif
 
 
+#define CHECK_ONCE(node) \
+  ( ((node)->flags & NF_CHECKED) == 0 && ((node)->flags |= NF_CHECKED) )
+
+
 inline static const type_t* unwind_alias_const(const type_t* t) {
   while (t->kind == TYPE_ALIAS)
     t = assertnotnull(((aliastype_t*)t)->elem);
@@ -151,6 +155,9 @@ bool intern_usertype(compiler_t* c, usertype_t** tp) {
     return false;
   }
   if (*p) {
+    if (*tp == *p)
+      return false;
+    dlog("%s replace %p with existing %p", __FUNCTION__, *tp, *p);
     assert((*p)->kind == (*tp)->kind);
     *tp = *p;
     return true;
@@ -468,6 +475,23 @@ static void this_param(
 }*/
 
 
+
+static void funtype(typecheck_t* a, funtype_t** np) {
+  funtype_t* ft = *np;
+  typectx_push(a, type_void);
+  for (u32 i = 0; i < ft->params.len; i++) {
+    local_t* param = ft->params.v[i];
+    if (param->isthis)
+      dlog("TODO typecheck \"this\" parameter");
+    type(a, &param->type);
+  }
+  type(a, &ft->result);
+  typectx_pop(a);
+  // TODO: consider NOT interning function types with parameters that have initializers
+  intern_usertype(a->compiler, (usertype_t**)np);
+}
+
+
 static void fun(typecheck_t* a, fun_t* n) {
   fun_t* outer_fun = a->fun;
   a->fun = n;
@@ -475,58 +499,63 @@ static void fun(typecheck_t* a, fun_t* n) {
   if (n->name && !n->methodof)
     define(a, n->name, n);
 
+  // check function type first
+  if CHECK_ONCE(n->type)
+    funtype(a, (funtype_t**)&n->type);
+
   funtype_t* ft = (funtype_t*)n->type;
+  assert(ft->kind == TYPE_FUN);
 
   // parameters
   if (ft->params.len > 0) {
     enter_scope(a);
     for (u32 i = 0; i < ft->params.len; i++) {
       local_t* param = ft->params.v[i];
-      if (param->isthis)
-        dlog("TODO typecheck \"this\" parameter");
-      expr(a, param);
+      if CHECK_ONCE(param) {
+        if (param->isthis)
+          dlog("TODO typecheck \"this\" parameter");
+        expr(a, param);
+      } else if (n->body && param->name != sym__) {
+        // Must define in scope, even if we have checked param already.
+        // This can happen because multiple functions with the same signatue
+        // may share one funtype_t, which holds the parameters.
+        define(a, param->name, param);
+      }
     }
-    if (!n->body) {
-      scope_pop(&a->scope);
-      goto end;
-    }
-  } else if (!n->body) {
-    goto end;
   }
 
-  assert(ft->kind == TYPE_FUN);
+  // result type
+  type(a, &ft->result);
 
   // body
-  n->body->flags |= NF_EXITS;
-  if (ft->result != type_void)
-    n->body->flags |= NF_RVALUE;
-  typectx_push(a, ft->result);
-  block(a, n->body);
-  typectx_pop(a);
-  n->body->flags &= ~NF_RVALUE;
+  if (n->body) {
+    n->body->flags |= NF_EXITS;
+    if (ft->result != type_void)
+      n->body->flags |= NF_RVALUE;
+    typectx_push(a, ft->result);
+    block(a, n->body);
+    typectx_pop(a);
+    n->body->flags &= ~NF_RVALUE;
 
-  if (ft->params.len > 0)
-    leave_scope(a);
-
-  // check type of return value
-  if UNLIKELY(
-    ft->result != type_void &&
-    !types_iscompat(a->compiler, ft->result, n->body->type))
-  {
-    const char* expect = fmtnode(a, 0, ft->result);
-    const char* got = fmtnode(a, 1, n->body->type);
-    node_t* origin = (node_t*)n->body;
-    while (origin->kind == EXPR_BLOCK && ((block_t*)origin)->children.len > 0)
-      origin = ((block_t*)origin)->children.v[((block_t*)origin)->children.len-1];
-    if (origin) {
-      error(a, origin, "unexpected result type %s, function returns %s", got, expect);
+    // check body type vs function result type
+    if UNLIKELY(
+      ft->result != type_void &&
+      !types_iscompat(a->compiler, ft->result, n->body->type))
+    {
+      const char* expect = fmtnode(a, 0, ft->result);
+      const char* got = fmtnode(a, 1, n->body->type);
+      node_t* origin = (node_t*)n->body;
+      while (origin->kind == EXPR_BLOCK && ((block_t*)origin)->children.len > 0)
+        origin = ((block_t*)origin)->children.v[((block_t*)origin)->children.len-1];
+      if (origin) {
+        error(a, origin, "unexpected result type %s, function returns %s", got, expect);
+      }
     }
   }
 
-end:
-  // // TODO: intern funtype_t that previously had unresolved types/ids
-  // if ((ft->flags & NF_UNKNOWN) == 0)
-  //   intern_usertype(p->scanner.compiler, (usertype_t**)&ft);
+  if (ft->params.len > 0)
+    scope_pop(&a->scope);
+
   a->fun = outer_fun;
 }
 
@@ -1367,6 +1396,7 @@ static void type1(typecheck_t* a, type_t** tp) {
   switch ((*tp)->kind) {
     case TYPE_UNRESOLVED: return unresolvedtype(a, (unresolvedtype_t**)tp);
     case TYPE_ALIAS:      return aliastype(a, (aliastype_t**)tp);
+    case TYPE_FUN:        return funtype(a, (funtype_t**)tp);
   }
   dlog("TODO %s %s", __FUNCTION__, nodekind_name((*tp)->kind));
 }
@@ -1395,10 +1425,8 @@ static void stmt(typecheck_t* a, stmt_t* n) {
 
 static void exprp(typecheck_t* a, expr_t** np) {
   expr_t* n = *np;
-  if (n->flags & NF_CHECKED) {
-    assert((n->flags & NF_UNKNOWN) == 0);
+  if (n->flags & NF_CHECKED)
     return;
-  }
   n->flags |= NF_CHECKED;
 
   TRACE_NODE(a, "", np);

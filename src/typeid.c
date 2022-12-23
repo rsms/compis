@@ -31,6 +31,14 @@ static void structtype(buf_t* buf, structtype_t* t) {
 }
 
 
+static void aliastype(buf_t* buf, aliastype_t* t) {
+  usize namelen = strlen(t->name);
+  buf_print_leb128_u32(buf, (u32)namelen);
+  buf_append(buf, t->name, namelen);
+  // append(buf, assertnotnull(t->elem));
+}
+
+
 static void append(buf_t* buf, type_t* t) {
   if (type_isprim(t)) {
     buf_push(buf, (u8)t->tid[0]);
@@ -52,7 +60,7 @@ static void append(buf_t* buf, type_t* t) {
     case TYPE_REF:      append(buf, ((reftype_t*)t)->elem); break;
     case TYPE_OPTIONAL: append(buf, ((opttype_t*)t)->elem); break;
     case TYPE_STRUCT:   structtype(buf, (structtype_t*)t); break;
-    case TYPE_ALIAS:    panic("TODO %s", nodekind_name(t->kind));
+    case TYPE_ALIAS:    aliastype(buf, (aliastype_t*)t); break;
     default:            assertf(0, "unexpected %s", nodekind_name(t->kind));
   }
 
