@@ -234,24 +234,54 @@
 // }
 
 
-fun foo(x MyInt, y i8) int {
-  if y > 0 {
-    x = MyInt(y) + 1
-  }
-  return twice(x)
+// fun foo(x MyInt, y i8) int {
+//   if y > 0 {
+//     x = MyInt(y) + 1
+//   }
+//   return twice(x)
+// }
+//
+// fun bar(x MyInt, y i8) int {
+//   return 0
+// }
+//
+// fun twice(x int) int {
+//   x * 2
+// }
+//
+// type MyInt MyInt2
+// type MyInt2 int
+
+
+type Thing {
+  x, y, z u32 = 3, 4, 5
+  pretty bool
+  ref &int
+  // fptr fun(int)int
+
+  fun get_x(this) u32 { .x }
 }
 
-
-fun bar(x MyInt, y i8) int {
-  return 0
+fun Thing.foo(this, x int) int {
+  int(.get_x()) * x
 }
-
-fun twice(x int) int {
-  x * 2
+fun foo2(this &Thing, x int) int {
+  int(this.get_x()) * x
 }
+// fun Thing.bar(this) u32 { .x * .y }
+// fun Thing.set_x(mut this, x u32) u32 { .x = x }
 
-type MyInt MyInt2
-type MyInt2 int
+// fun call_type_fun(x, y int, t Thing) int {
+//   t.foo(int(x)) * y
+// }
+
+
+// fun bar(x, y int) int {
+//   let a = Thing(u32(x), pretty: true, y: 5)
+//   //a.fptr(x)
+//   a.set_x(9)
+//   int(a.x) + a.foo(x) * y
+// }
 
 
 /// TODO ownership test these:

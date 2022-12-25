@@ -190,13 +190,15 @@ static err_t compile_co_to_c(compiler_t* c, input_t* input, const char* cfile) {
     goto end_parser;
   }
 
-  // dlog("abort");abort(); // XXX
+  dlog("abort");abort(); // XXX
 
   // analyze (ir)
   dlog("————————— analyze —————————");
   memalloc_t ir_ma = ast_ma;
-  if (( err = analyze(c, unit, ir_ma) ))
+  if (( err = analyze(c, unit, ir_ma) )) {
+    dlog("analyze: err=%s", err_str(err));
     goto end_parser;
+  }
 
   // generate C code
   dlog("————————— cgen —————————");

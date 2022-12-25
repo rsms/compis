@@ -145,6 +145,7 @@ static void next(parser_t* p) {
 
 
 // static tok_t lookahead(parser_t* p, u32 distance) {
+//   assert(distance > 0);
 //   scanstate_t scanstate = save_scanstate(p);
 //   while (distance--)
 //     next(p);
@@ -353,6 +354,16 @@ static reftype_t* mkreftype(parser_t* p, bool ismut) {
 }
 
 
+static type_t* mkunresolvedtype(parser_t* p, sym_t name, loc_t loc) {
+  unresolvedtype_t* t = mknode(p, unresolvedtype_t, TYPE_UNRESOLVED);
+  t->flags |= NF_UNKNOWN;
+  t->name = name;
+  if (loc)
+    t->loc = loc;
+  return (type_t*)t;
+}
+
+
 node_t* clone_node(parser_t* p, const node_t* n) {
   switch (n->kind) {
   case EXPR_FIELD:
@@ -458,6 +469,8 @@ static void push_child(parser_t* p, ptrarray_t* children, void* child) {
 
 
 static void typectx_push(parser_t* p, type_t* t) {
+  assertnotnull(t);
+  assertnotnull(p->typectx);
   if UNLIKELY(!ptrarray_push(&p->typectxstack, p->ma, p->typectx))
     out_of_mem(p);
   p->typectx = t;
@@ -519,9 +532,19 @@ static stmt_t* stmt(parser_t* p, prec_t prec) {
 }
 
 
+static expr_t* expr_infix(parser_t* p, prec_t prec, expr_t* n, nodeflag_t fl) {
+  for (;;) {
+    const parselet_t*parselet = &expr_parsetab[currtok(p)];
+    if (parselet->infix == NULL || parselet->prec < prec)
+      return n;
+    log_pratt_infix(p, "expr", parselet->infix, parselet->prec, prec);
+    n = parselet->infix(p, parselet, n, fl);
+  }
+}
+
+
 static expr_t* expr(parser_t* p, prec_t prec, nodeflag_t fl) {
-  tok_t tok = currtok(p);
-  const parselet_t* parselet = &expr_parsetab[tok];
+  const parselet_t* parselet = &expr_parsetab[currtok(p)];
   LOG_PRATT(p, "prefix expr");
   if UNLIKELY(!parselet->prefix) {
     unexpected(p, "where an expression is expected");
@@ -529,14 +552,14 @@ static expr_t* expr(parser_t* p, prec_t prec, nodeflag_t fl) {
     return mkbad(p);
   }
   expr_t* n = parselet->prefix(p, parselet, fl);
-  for (;;) {
-    tok = currtok(p);
-    parselet = &expr_parsetab[tok];
-    if (parselet->infix == NULL || parselet->prec < prec)
-      return n;
-    log_pratt_infix(p, "expr", parselet->infix, parselet->prec, prec);
-    n = parselet->infix(p, parselet, n, fl);
-  }
+  return expr_infix(p, prec, n, fl);
+  // for (;;) {
+  //   parselet = &expr_parsetab[currtok(p)];
+  //   if (parselet->infix == NULL || parselet->prec < prec)
+  //     return n;
+  //   log_pratt_infix(p, "expr", parselet->infix, parselet->prec, prec);
+  //   n = parselet->infix(p, parselet, n, fl);
+  // }
 }
 
 
@@ -561,27 +584,16 @@ static type_t* type(parser_t* p, prec_t prec) {
 }
 
 
-static type_t* named_type(parser_t* p, sym_t name, const node_t* nullable origin) {
-  const node_t* ref = lookup(p, name);
-
-  if UNLIKELY(!ref) {
-    trace("type \"%s\" not yet known", name);
-    unresolvedtype_t* t = mknode(p, unresolvedtype_t, TYPE_UNRESOLVED);
-    t->flags |= NF_UNKNOWN;
-    t->name = name;
-    return (type_t*)t;
-  }
-
-  if LIKELY(node_istype(ref))
-    return (type_t*)ref;
-
-  error(p, origin, "%s is not a type", name);
-  return type_void;
+static type_t* named_type(parser_t* p, sym_t name, loc_t loc) {
+  const node_t* t = lookup(p, name);
+  if UNLIKELY(!t || !node_istype(t))
+    return mkunresolvedtype(p, name, loc);
+  return (type_t*)t;
 }
 
 
 static type_t* type_id(parser_t* p) {
-  type_t* t = named_type(p, p->scanner.sym, NULL);
+  type_t* t = named_type(p, p->scanner.sym, 0);
   next(p);
   return t;
 }
@@ -589,7 +601,7 @@ static type_t* type_id(parser_t* p) {
 
 fun_t* nullable lookup_method(parser_t* p, type_t* recv, sym_t name) {
   // find method map for recv
-  void** mmp = map_lookup_ptr(&p->methodmap, recv);
+  void** mmp = map_lookup_ptr(&p->recvtmap, recv);
   if (!mmp)
     return NULL; // no methods on recv
   map_t* mm = assertnotnull(*mmp);
@@ -608,16 +620,6 @@ local_t* nullable lookup_struct_field(structtype_t* st, sym_t name) {
       return f;
   }
   return NULL;
-}
-
-
-expr_t* nullable lookup_member(parser_t* p, type_t* recv, sym_t name) {
-  if (recv->kind == TYPE_STRUCT) {
-    local_t* field = lookup_struct_field((structtype_t*)recv, name);
-    if (field)
-      return (expr_t*)field;
-  }
-  return (expr_t*)lookup_method(p, recv, name);
 }
 
 
@@ -674,12 +676,6 @@ static bool struct_fieldset(parser_t* p, structtype_t* st) {
     if (currtok(p) != TCOMMA)
       break;
     next(p);
-    if UNLIKELY(!types_iscompat(p->scanner.compiler, f->type, f->init->type)) {
-      const char* got = fmtnode(p, 0, f->init->type);
-      const char* expect = fmtnode(p, 1, f->type);
-      error(p, (node_t*)f->init,
-        "field initializer of type %s where type %s is expected", got, expect);
-    }
   }
   if (i < st->fields.len)
     error(p, NULL, "missing field initializer");
@@ -687,12 +683,10 @@ static bool struct_fieldset(parser_t* p, structtype_t* st) {
 }
 
 
-static fun_t* fun(parser_t*, nodeflag_t, type_t* nullable methodof, bool requirename);
+static fun_t* fun(parser_t*, nodeflag_t, type_t* nullable recvt, bool requirename);
 
 
-static type_t* type_struct(parser_t* p) {
-  structtype_t* st = mknode(p, structtype_t, TYPE_STRUCT);
-  next(p);
+static type_t* type_struct1(parser_t* p, structtype_t* st) {
   while (currtok(p) != TRBRACE) {
     if (currtok(p) == TFUN) {
       fun_t* fn = fun(p, 0, /*recvt*/(type_t*)st, /*requirename*/true);
@@ -716,6 +710,13 @@ static type_t* type_struct(parser_t* p) {
   }
   st->size = ALIGN2(st->size, st->align);
   return (type_t*)st;
+}
+
+
+static type_t* type_struct(parser_t* p) {
+  structtype_t* st = mknode(p, structtype_t, TYPE_STRUCT);
+  next(p);
+  return type_struct1(p, st);
 }
 
 
@@ -774,16 +775,27 @@ static stmt_t* stmt_typedef(parser_t* p) {
 
   n->type.kind = TYPE_ALIAS;
   n->type.loc = currloc(p);
-  n->type.name = p->scanner.sym;
-  bool nameok = expect(p, TID, "");
-  if (nameok)
-    define(p, n->type.name, (node_t*)&n->type);
 
-  n->type.elem = type(p, PREC_COMMA);
-  bubble_flags(n, n->type.elem);
+  sym_t name = p->scanner.sym;
+  if (expect(p, TID, ""))
+    define(p, name, (node_t*)&n->type);
 
-  if (n->type.elem->kind == TYPE_STRUCT)
-    ((structtype_t*)n->type.elem)->name = n->type.name;
+  // special path for struct to avoid (typedef (alias x (struct x))),
+  // instead we simply get (typedef (struct x))
+  if (currtok(p) == TLBRACE) {
+    n->type.kind = TYPE_STRUCT;
+    n->type.loc = currloc(p);
+    next(p);
+    n->structtype.name = name;
+    type_struct1(p, &n->structtype);
+    bubble_flags(n, &n->structtype);
+  } else {
+    n->aliastype.name = name;
+    n->aliastype.elem = type(p, PREC_COMMA);
+    bubble_flags(n, n->aliastype.elem);
+    if (n->aliastype.elem->kind == TYPE_STRUCT)
+      ((structtype_t*)n->aliastype.elem)->name = n->aliastype.name;
+  }
 
   return (stmt_t*)n;
 }
@@ -1341,22 +1353,25 @@ static expr_t* expr_group(parser_t* p, const parselet_t* pl, nodeflag_t fl) {
 // named_param_or_id = id ":" expr | id
 static expr_t* named_param_or_id(parser_t* p, nodeflag_t fl) {
   assert(currtok(p) == TID);
-  idexpr_t* n = (idexpr_t*)_mkexpr(
-    p, MAX(sizeof(idexpr_t),sizeof(local_t)), EXPR_ID, fl);
+
+  usize nodesize = MAX(sizeof(idexpr_t), sizeof(local_t));
+  idexpr_t* n = (idexpr_t*)_mkexpr(p, nodesize, EXPR_ID, fl);
   n->name = p->scanner.sym;
   next(p);
-  if (currtok(p) == TCOLON) {
-    next(p);
-    sym_t name = n->name;
-    local_t* local = (local_t*)n;
-    local->kind = EXPR_PARAM;
-    local->name = name;
-    local->init = expr(p, PREC_COMMA, fl);
-    local->type = local->init->type;
-    bubble_flags(local, local->init);
-  } else {
+
+  if (currtok(p) != TCOLON) {
     resolve_id(p, n);
+    return expr_infix(p, PREC_COMMA, (expr_t*)n, fl);
   }
+
+  next(p);
+  sym_t name = n->name;
+  local_t* local = (local_t*)n;
+  local->kind = EXPR_PARAM;
+  local->name = name;
+  local->init = expr(p, PREC_COMMA, fl);
+  local->type = local->init->type;
+  bubble_flags(local, local->init);
   return (expr_t*)n;
 }
 
@@ -1391,8 +1406,10 @@ static void args(parser_t* p, call_t* n, type_t* recvtype, nodeflag_t fl) {
 
     expr_t* arg;
     if (currtok(p) == TID) {
+      // name:value
       arg = named_param_or_id(p, fl);
     } else {
+      // value
       arg = expr(p, PREC_COMMA, fl);
     }
 
@@ -1410,7 +1427,7 @@ static void args(parser_t* p, call_t* n, type_t* recvtype, nodeflag_t fl) {
 }
 
 
-static expr_t* typecons(parser_t* p, type_t* t, nodeflag_t fl) {
+static expr_t* prim_typecons(parser_t* p, type_t* t, nodeflag_t fl) {
   assert((t->flags & NF_UNKNOWN) == 0);
   typecons_t* n = mkexpr(p, typecons_t, EXPR_TYPECONS, fl);
   next(p); // consume "("
@@ -1419,6 +1436,7 @@ static expr_t* typecons(parser_t* p, type_t* t, nodeflag_t fl) {
   if (currtok(p) != TRPAREN) {
     n->expr = expr(p, PREC_COMMA, fl | NF_RVALUE);
     n->expr->nrefs++;
+    bubble_flags(n, n->expr);
   }
 
   if LIKELY(currtok(p) == TRPAREN) {
@@ -1454,7 +1472,7 @@ static expr_t* expr_postfix_call(
   // common case of primitive typecast
   idexpr_t* id = (idexpr_t*)recv;
   if (id->kind == EXPR_ID && id->ref && nodekind_isprimtype(id->ref->kind))
-    return typecons(p, (type_t*)id->ref, fl);
+    return prim_typecons(p, (type_t*)id->ref, fl);
 
   call_t* n = mkexpr(p, call_t, EXPR_CALL, fl);
   next(p);
@@ -1501,7 +1519,7 @@ static expr_t* expr_postfix_member(
 {
   member_t* n = mkexpr(p, member_t, EXPR_MEMBER, fl);
   next(p);
-  left->flags |= NF_RVALUE;
+  left->flags |= NF_RVALUE * (nodeflag_t)(left != p->dotctx);
   n->recv = left;
   n->name = p->scanner.sym;
   bubble_flags(n, n->recv);
@@ -1560,11 +1578,13 @@ static bool funtype_params(parser_t* p, funtype_t* ft, type_t* nullable recvt) {
       next(p);
 
       // check for "this" as first argument
-      if (param->name == sym_this && ft->params.len == 1) {
+      if (param->name == sym_this && ft->params.len == 1 && recvt) {
         isnametype = true;
         param->isthis = true;
         param->ismut = this_ismut;
         param->type = recvt;
+        // param->type = this_type(p, recvt, this_ismut);
+        bubble_flags(param, param->type);
         // note: intentionally NOT bubble_flags to ft or param
         goto loopend;
       }
@@ -1589,7 +1609,6 @@ static bool funtype_params(parser_t* p, funtype_t* ft, type_t* nullable recvt) {
           typeq.len = 0;
       }
 
-      bubble_flags(ft, param);
     } else {
       // definitely a type
       param->name = sym__;
@@ -1597,10 +1616,10 @@ static bool funtype_params(parser_t* p, funtype_t* ft, type_t* nullable recvt) {
         goto oom;
       param->type = type(p, PREC_LOWEST);
       bubble_flags(param, param->type);
-      bubble_flags(ft, param);
     }
 
   loopend:
+    bubble_flags(ft, param);
     switch (currtok(p)) {
       case TCOMMA:
       case TSEMI:
@@ -1627,7 +1646,7 @@ static bool funtype_params(parser_t* p, funtype_t* ft, type_t* nullable recvt) {
         fastforward(p, (const tok_t[]){ TRPAREN, 0 });
         goto error;
     }
-  }
+  } // while(!EOF)
 finish:
   if (isnametype) {
     // name-and-type form; e.g. "(x, y T, z Y)".
@@ -1648,7 +1667,7 @@ finish:
       if (param->type)
         continue;
       // make type from id
-      param->type = named_type(p, param->name, (node_t*)param);
+      param->type = named_type(p, param->name, param->nameloc);
       param->name = sym__;
       bubble_flags(param, param->type);
     }
@@ -1671,6 +1690,7 @@ static funtype_t* funtype(parser_t* p, loc_t loc, type_t* nullable recvt) {
   ft->size = p->scanner.compiler->ptrsize;
   ft->align = p->scanner.compiler->ptrsize;
   ft->isunsigned = true;
+  ft->result = type_void;
 
   // parameters
   ft->paramsloc = currloc(p);
@@ -1687,8 +1707,6 @@ static funtype_t* funtype(parser_t* p, loc_t loc, type_t* nullable recvt) {
   if (currtok(p) != TLBRACE) {
     ft->result = type(p, PREC_MEMBER);
     bubble_flags(ft, ft->result);
-  } else {
-    ft->result = type_void;
   }
 
   if ((ft->flags & NF_UNKNOWN) == 0)
@@ -1705,9 +1723,9 @@ static type_t* type_fun(parser_t* p) {
 }
 
 
-static map_t* nullable get_or_create_methodmap(parser_t* p, const type_t* t) {
+static map_t* nullable get_or_create_recvtmap(parser_t* p, const type_t* t) {
   // get or create method map for type
-  void** mmp = map_assign_ptr(&p->methodmap, p->ma, t);
+  void** mmp = map_assign_ptr(&p->recvtmap, p->ma, t);
   if UNLIKELY(!mmp)
     return out_of_mem(p), NULL;
   if (!*mmp) {
@@ -1718,27 +1736,33 @@ static map_t* nullable get_or_create_methodmap(parser_t* p, const type_t* t) {
 }
 
 
-static void add_method(parser_t* p, fun_t* fun, loc_t name_loc) {
-  assertnotnull(fun->methodof);
+static void typefun_add(parser_t* p, type_t* recvt, sym_t name, fun_t* fun, loc_t loc) {
   assertnotnull(fun->name);
-  assert(fun->name != sym__);
-  map_t* mm = get_or_create_methodmap(p, fun->methodof);
+  assert(fun->recvt == NULL || fun->recvt == recvt);
+  assert(name != sym__);
+
+  if (fun->name == sym__)
+    fun->name = name;
+
+  fun->recvt = recvt;
+
+  map_t* mm = get_or_create_recvtmap(p, recvt);
   if UNLIKELY(!mm)
     return;
-  void** mp = map_assign_ptr(mm, p->ma, fun->name);
+  void** mp = map_assign_ptr(mm, p->ma, name);
   if UNLIKELY(!mp)
     return out_of_mem(p);
 
   expr_t* existing = *mp;
-  if (!existing && fun->methodof->kind == TYPE_STRUCT)
-    existing = (expr_t*)lookup_struct_field((structtype_t*)fun->methodof, fun->name);
+  if (!existing && recvt->kind == TYPE_STRUCT)
+    existing = (expr_t*)lookup_struct_field((structtype_t*)recvt, name);
 
   if UNLIKELY(existing) {
-    const char* s = fmtnode(p, 0, fun->methodof);
-    error(p, name_loc, "duplicate %s \"%s\" for type %s",
-      (existing->kind == EXPR_FUN) ? "method" : "member", fun->name, s);
+    const char* s = fmtnode(p, 0, recvt);
+    error(p, loc, "duplicate %s \"%s\" for type %s",
+      (existing->kind == EXPR_FUN) ? "method" : "member", name, s);
     if (loc_line(existing->loc))
-      help(p, existing, "\"%s\" previously defined here", fun->name);
+      help(p, existing, "\"%s\" previously defined here", name);
     return;
   }
 
@@ -1749,8 +1773,20 @@ static void add_method(parser_t* p, fun_t* fun, loc_t name_loc) {
 static void fun_body(parser_t* p, fun_t* n, nodeflag_t fl) {
   funtype_t* ft = (funtype_t*)n->type;
 
-  if (funtype_hasthis(ft))
-    dotctx_push(p, ft->params.v[0]);
+  if (funtype_hasthis(ft)) {
+    assert(ft->params.len > 0);
+    local_t* thisparam = ft->params.v[0];
+    assert(thisparam->kind == EXPR_PARAM);
+
+    // idexpr_t* id = mkexpr(p, idexpr_t, EXPR_ID, fl);
+    // id->loc = 0;
+    // id->name = thisparam->name;
+    // id->type = thisparam->type;
+    // id->ref = (node_t*)thisparam;
+    // dotctx_push(p, (expr_t*)id);
+
+    dotctx_push(p, (expr_t*)thisparam);
+  }
 
   fun_t* outer_fun = p->fun;
   p->fun = n;
@@ -1785,37 +1821,48 @@ static void fun_body(parser_t* p, fun_t* n, nodeflag_t fl) {
 static fun_t* fun(parser_t* p, nodeflag_t fl, type_t* nullable recvt, bool requirename) {
   fun_t* n = mkexpr(p, fun_t, EXPR_FUN, fl);
   next(p);
-  n->methodof = recvt;
+  n->recvt = recvt;
 
   // name
   if (currtok(p) == TID) {
     n->name = p->scanner.sym;
-    loc_t name_loc = currloc(p);
+    n->nameloc = currloc(p);
     next(p);
-    if (n->methodof == NULL && currtok(p) == TDOT) {
-      // method function name, e.g. "Foo.bar"
+    if (n->recvt == NULL && currtok(p) == TDOT) {
+      // type function, e.g. "Foo.bar"
       next(p); // consume "."
-      // resolve receiver, e.g. "Foo" in "Foo.bar"
-      n->methodof = (type_t*)lookup(p, n->name);
-      if (!n->methodof) {
-        n->methodof = type_unknown;
-        n->flags |= NF_UNKNOWN;
-      } else if UNLIKELY(!nodekind_istype(n->methodof->kind)) {
-        error(p, name_loc, "%s is not a type", fmtnode(p, 0, n->methodof));
+      sym_t recv_name = n->name; // e.g. "Foo" in "Foo.bar"
+      loc_t recv_nameloc = n->nameloc;
+      n->name = p->scanner.sym;
+      n->nameloc = currloc(p);
+      expect(p, TID, "");
+
+      // Require that type functions be defined after the receiver type is defined.
+      // Allowing forward definition of types here would be confusing in practice.
+      node_t* t = lookup(p, recv_name);
+      if LIKELY(t && node_istype(t)) {
+        n->recvt = (type_t*)t;
       } else {
-        // add {name => fun} to recv's method map
-        add_method(p, n, name_loc);
+        n->recvt = mkunresolvedtype(p, recv_name, recv_nameloc);
+        if (!t) {
+          error(p, recv_nameloc, "no such type \"%s\"", recv_name);
+        } else {
+          error(p, recv_nameloc, "%s is not a type", recv_name);
+        }
       }
     }
+    if (n->recvt)
+      typefun_add(p, n->recvt, n->name, n, n->nameloc);
   } else if (requirename) {
     error(p, NULL, "missing function name");
   }
 
-  n->type = (type_t*)funtype(p, n->loc, n->methodof);
+  // parameters and result type
+  n->type = (type_t*)funtype(p, n->loc, n->recvt);
   bubble_flags(n, n->type);
 
   // define named function
-  if (n->name && n->type->kind != NODE_BAD && !n->methodof)
+  if (n->name && n->type->kind != NODE_BAD && !n->recvt)
     define(p, n->name, (node_t*)n);
 
   // no body?
@@ -1861,9 +1908,15 @@ unit_t* parser_parse(parser_t* p, memalloc_t ast_ma, input_t* input) {
   enter_scope(p);
 
   while (currtok(p) != TEOF) {
-    stmt_t* n = stmt(p, PREC_LOWEST);
-    push_child(p, &unit->children, n);
-    bubble_flags(unit, n);
+    void** np = ptrarray_alloc(&unit->children, p->ast_ma, 1);
+    if UNLIKELY(!np) {
+      out_of_mem(p);
+      break;
+    }
+
+    *np = stmt(p, PREC_LOWEST);
+    bubble_flags(unit, *np);
+
     if (!expect_token(p, TSEMI, "")) {
       fastforward_semi(p);
     } else {
@@ -1929,7 +1982,7 @@ bool parser_init(parser_t* p, compiler_t* c) {
   p->pkgdefs.parent = universe();
   if (!map_init(&p->tmpmap, c->ma, 32))
     goto err2;
-  if (!map_init(&p->methodmap, c->ma, 32))
+  if (!map_init(&p->recvtmap, c->ma, 32))
     goto err3;
 
   for (usize i = 0; i < countof(p->tmpbuf); i++)
@@ -1957,7 +2010,7 @@ void parser_dispose(parser_t* p) {
     buf_dispose(&p->tmpbuf[i]);
   map_dispose(&p->pkgdefs, p->ma);
   map_dispose(&p->tmpmap, p->ma);
-  map_dispose(&p->methodmap, p->ma);
+  map_dispose(&p->recvtmap, p->ma);
   ptrarray_dispose(&p->typectxstack, p->ma);
   ptrarray_dispose(&p->dotctxstack, p->ma);
   scanner_dispose(&p->scanner);

@@ -230,7 +230,11 @@ typedef struct {
 
 typedef struct {
   stmt_t;
-  aliastype_t type;
+  union {
+    type_t       type;
+    aliastype_t  aliastype;
+    structtype_t structtype;
+  };
 } typedef_t;
 
 typedef struct {
@@ -285,18 +289,19 @@ typedef struct {
 
 typedef struct { // PARAM, VAR, LET
   expr_t;
-  sym_t   nullable name;      // may be NULL for PARAM
-  loc_t            nameloc;
-  expr_t* nullable init;      // may be NULL for VAR and PARAM
-  bool             isthis;    // [PARAM only] it's the special "this" parameter
-  bool             ismut;     // [PARAM only] true if "this" parameter is "mut"
+  sym_t   nullable name;    // may be NULL for PARAM
+  loc_t            nameloc; // source location of name
+  expr_t* nullable init;    // may be NULL for VAR and PARAM
+  bool             isthis;  // [PARAM only] it's the special "this" parameter
+  bool             ismut;   // [PARAM only] true if "this" parameter is "mut"
 } local_t;
 
 typedef struct { // fun is a declaration (stmt) or an expression depending on use
   expr_t;
-  sym_t nullable    name;     // NULL if anonymous
-  block_t* nullable body;     // NULL if function is a prototype
-  type_t* nullable  methodof; // non-NULL for methods: type "this" is a method of
+  sym_t nullable    name;    // NULL if anonymous
+  loc_t             nameloc; // source location of name
+  block_t* nullable body;    // NULL if function is a prototype
+  type_t* nullable  recvt;   // non-NULL for type functions (type of "this")
 } fun_t;
 
 // ———————— END AST ————————
@@ -399,15 +404,15 @@ typedef struct {
 
 typedef struct {
   scanner_t        scanner;
-  memalloc_t       ma; // general allocator (== scanner.compiler->ma)
+  memalloc_t       ma;     // general allocator (== scanner.compiler->ma)
   memalloc_t       ast_ma; // AST allocator
   scope_t          scope;
   map_t            pkgdefs;
   buf_t            tmpbuf[2];
   map_t            tmpmap;
-  map_t            methodmap; // maps type_t* -> ptrarray_t of methods (fun_t*[])
-  fun_t* nullable  fun;  // current function
-  unit_t* nullable unit; // current unit
+  map_t            recvtmap; // maps type_t* -> ptrarray_t of methods (fun_t*[])
+  fun_t* nullable  fun;      // current function
+  unit_t* nullable unit;     // current unit
   type_t*          typectx;
   ptrarray_t       typectxstack;
   expr_t* nullable dotctx; // for ".name" shorthand
@@ -546,7 +551,6 @@ node_t* clone_node(parser_t* p, const node_t* n);
     sizeof(*(nptr))) )
 local_t* nullable lookup_struct_field(structtype_t* st, sym_t name);
 fun_t* nullable lookup_method(parser_t* p, type_t* recv, sym_t name);
-expr_t* nullable lookup_member(parser_t* p, type_t* recv, sym_t name);
 
 inline static bool nodekind_istype(nodekind_t kind) { return kind >= TYPE_VOID; }
 inline static bool nodekind_isexpr(nodekind_t kind) {
@@ -607,7 +611,7 @@ inline static bool types_iscompat(
 static sym_t nullable typeid(type_t* t);
 sym_t nullable _typeid(type_t*);
 inline static sym_t nullable typeid(type_t* t) { return t->tid ? t->tid : _typeid(t); }
-#define TYPEID_PREFIX(typekind)  ('A'+(typekind)-TYPE_VOID)
+#define TYPEID_PREFIX(typekind)  ('A'+((typekind)-TYPE_VOID))
 
 // intern_usertype interns *tp in c->typeidmap.
 // returns true if *tp was replaced by existing type, false if added to c->typeidmap.

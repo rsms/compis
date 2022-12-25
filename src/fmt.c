@@ -156,12 +156,8 @@ static void fmt(abuf_t* s, const node_t* nullable n, u32 indent, u32 maxdepth) {
   }
 
   case STMT_TYPEDEF:
-    if (maxdepth <= 1) {
-      abuf_fmt(s, "type %s", ((typedef_t*)n)->type.name);
-    } else {
-      abuf_str(s, "type ");
-      fmt(s, (node_t*)&((typedef_t*)n)->type, indent, maxdepth - 1);
-    }
+    abuf_fmt(s, "type ");
+    fmt(s, (node_t*)&((typedef_t*)n)->type, indent, maxdepth);
     break;
 
   case EXPR_VAR:

@@ -926,8 +926,8 @@ static void member_name(cgen_t* g, const type_t* recv, sym_t member) {
 static void fun_name(cgen_t* g, const fun_t* fun) {
   const char* pkgname = "main"; // TODO FIXME
   PRINTF("%s·", pkgname);
-  if (fun->methodof) {
-    member_name(g, fun->methodof, fun->name);
+  if (fun->recvt) {
+    member_name(g, fun->recvt, fun->name);
   } else {
     id(g, fun->name);
   }

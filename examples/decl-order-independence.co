@@ -1,0 +1,13 @@
+fun foo(x MyInt, y i8) int {
+  if y > 0 {
+    x = MyInt(y) + 1
+  }
+  return twice(x)
+}
+
+fun twice(x int) int {
+  x * 2
+}
+
+type MyInt MyInt2
+type MyInt2 int

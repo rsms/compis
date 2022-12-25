@@ -161,6 +161,8 @@ static void assert_types_iscompat(ircons_t* c, const type_t* x, const type_t* y)
 
 
 static void seterr(ircons_t* c, err_t err) {
+  if (!c->err)
+    dlog("error set to: %d \"%s\"", err, err_str(err));
   c->err += (err * !c->err); // only set if c->err==0 (first error "wins")
 }
 
@@ -1980,8 +1982,9 @@ static irval_t* expr(ircons_t* c, void* expr_node) {
   case EXPR_PREFIXOP:  // return prefixop(c, (unaryop_t*)n);
   case EXPR_POSTFIXOP: // return postfixop(c, (unaryop_t*)n);
   case EXPR_FOR:
-    c->err = ErrCanceled;
-    return push_TODO_val(c, c->b, type_void, "expr(%s)", nodekind_name(n->kind));
+    irval_t* v = push_TODO_val(c, c->b, type_void, "expr(%s)", nodekind_name(n->kind));
+    seterr(c, ErrCanceled);
+    return v;
 
   // We should never see these kinds of nodes
   case NODEKIND_COUNT:

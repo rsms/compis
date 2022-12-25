@@ -115,8 +115,11 @@ static void repr_type(RPARAMS, const type_t* t);
 
 
 static bool seen(repr_t* r, const void* n) {
-  if (nodekind_isprimtype(((const node_t*)n)->kind))
+  nodekind_t kind = ((const node_t*)n)->kind;
+  if (nodekind_isprimtype(kind) || kind == TYPE_UNKNOWN) {
+    // atoms/leaves (has no fields)
     return false;
+  }
   const void** vp = (const void**)map_assign_ptr(&r->seen, r->outbuf.ma, n);
   if (vp && !*vp) {
     *vp = n;
@@ -156,6 +159,11 @@ static void repr_struct(RPARAMS, const structtype_t* n, bool isnew) {
 
 
 static void repr_fun(RPARAMS, const fun_t* n) {
+  if (n->recvt) {
+    REPR_BEGIN('(', "recvt ");
+    repr_type(RARGSFL(fl | REPRFLAG_HEAD), n->recvt);
+    REPR_END(')');
+  }
   if (n->body)
     CHAR(' '), repr(RARGS, (node_t*)n->body);
 }
@@ -194,18 +202,25 @@ static void repr_typecons(RPARAMS, const typecons_t* n) {
 
 static void flags(RPARAMS, const node_t* n) {
   // {flags}
-  if (n->flags & (NF_RVALUE | NF_OPTIONAL | NF_UNKNOWN)) {
+  nodeflag_t flags = n->flags;
+
+  // don't include NF_UNKNOWN for TYPE_UNKNOWN (always and obviously true)
+  flags &= ~(NF_UNKNOWN * (nodeflag_t)(n->kind == TYPE_UNKNOWN));
+
+  if (flags & (NF_RVALUE | NF_OPTIONAL | NF_UNKNOWN)) {
     PRINT(" {");
-    if (n->flags & NF_RVALUE)   CHAR('r');
-    if (n->flags & NF_OPTIONAL) CHAR('o');
-    if (n->flags & NF_UNKNOWN) CHAR('u');
+    if (flags & NF_RVALUE)   CHAR('r');
+    if (flags & NF_OPTIONAL) CHAR('o');
+    if (flags & NF_UNKNOWN) CHAR('u');
     CHAR('}');
   }
 }
 
 
 static void repr_type(RPARAMS, const type_t* t) {
-  REPR_BEGIN('<', nodekind_name(t->kind));
+  assert(node_istype((node_t*)t));
+  const char* kindname = STRTAB_GET(nodekind_strtab, t->kind);
+  REPR_BEGIN('<', kindname + strlen("TYPE_"));
   bool isnew = !seen(r, t);
 
   // {flags}
@@ -224,11 +239,8 @@ static void repr_type(RPARAMS, const type_t* t) {
     repr_struct(RARGS, (const structtype_t*)t, isnew);
     break;
   case TYPE_FUN:
-    if (isnew) {
+    if (isnew)
       repr_funtype(RARGS, (const funtype_t*)t);
-    } else {
-      CHAR('\'');
-    }
     break;
   case TYPE_PTR:
     CHAR(' ');
@@ -283,6 +295,8 @@ static void repr(RPARAMS, const node_t* nullable n) {
   }
 
   const char* kindname = STRTAB_GET(nodekind_strtab, n->kind);
+  if (nodekind_isexpr(n->kind))
+    kindname += strlen("EXPR_");
   REPR_BEGIN('(', kindname);
 
   bool isnew = !seen(r, n);
@@ -290,7 +304,19 @@ static void repr(RPARAMS, const node_t* nullable n) {
   // name up front of functions and variables, even if seen
   if (node_isexpr(n)) {
     if (n->kind == EXPR_FUN && ((fun_t*)n)->name) {
-      CHAR(' '), PRINT(((fun_t*)n)->name);
+      fun_t* fn = (fun_t*)n;
+      CHAR(' ');
+      if (fn->recvt) {
+        if (fn->recvt->kind == TYPE_STRUCT) {
+          PRINT(((structtype_t*)fn->recvt)->name);
+        } else if (fn->recvt->kind == TYPE_ALIAS) {
+          PRINT(((aliastype_t*)fn->recvt)->name);
+        } else {
+          repr_type(RARGSFL(fl | REPRFLAG_HEAD), fn->recvt);
+        }
+        CHAR('.');
+      }
+      PRINT(fn->name);
       indent += INDENT;
     } else if (node_islocal(n)) {
       CHAR(' '), PRINT(((local_t*)n)->name);
@@ -427,7 +453,6 @@ static void repr(RPARAMS, const node_t* nullable n) {
   case EXPR_LET:
   case EXPR_VAR: {
     const local_t* var = (const local_t*)n;
-    CHAR(' '); PRINT(var->name);
     if (var->init) {
       CHAR(' ');
       repr(RARGS, (const node_t*)var->init);

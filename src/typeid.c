@@ -10,6 +10,16 @@
 static void append(buf_t* buf, type_t* t);
 
 
+static nodekind_t tidc_nodekind(char c) {
+  switch (c) {
+  #define _(NAME) case TYPEID_PREFIX(NAME): return NAME;
+  FOREACH_NODEKIND_TYPE(_)
+  #undef _
+  }
+  return NODE_BAD;
+}
+
+
 static void funtype(buf_t* buf, funtype_t* t) {
   buf_print_leb128_u32(buf, t->params.len);
   for (u32 i = 0; i < t->params.len; i++) {
@@ -46,6 +56,7 @@ static void append(buf_t* buf, type_t* t) {
   }
 
   if (t->tid) {
+    // assert(t->kind != TYPE_UNKNOWN);
     buf_print(buf, t->tid);
     return;
   }
@@ -86,13 +97,13 @@ sym_t _typeid(type_t* t) {
 
   assertnotnull(t->tid); // else append failed
 
-  #if DEBUG
-    char tmp[128];
-    abuf_t s = abuf_make(tmp, sizeof(tmp));
-    abuf_repr(&s, t->tid, strlen(t->tid));
-    abuf_terminate(&s);
-    dlog("_typeid(%s) => \"%s\"", nodekind_name(t->kind), tmp);
-  #endif
+  // #if DEBUG
+  //   char tmp[128];
+  //   abuf_t s = abuf_make(tmp, sizeof(tmp));
+  //   abuf_repr(&s, t->tid, strlen(t->tid));
+  //   abuf_terminate(&s);
+  //   dlog("_typeid(%s) => \"%s\"", nodekind_name(t->kind), tmp);
+  // #endif
 
   return t->tid;
 }
