@@ -243,7 +243,7 @@ typedef struct {
 } expr_t;
 
 typedef struct { expr_t; u64 intval; } intlit_t;
-typedef struct { expr_t; union { double f64val; float f32val; }; } floatlit_t;
+typedef struct { expr_t; double f64val; } floatlit_t;
 typedef struct { expr_t; sym_t name; node_t* nullable ref; } idexpr_t;
 typedef struct { expr_t; op_t op; expr_t* expr; } unaryop_t;
 typedef struct { expr_t; op_t op; expr_t* left; expr_t* right; } binop_t;
@@ -413,8 +413,6 @@ typedef struct {
   map_t            recvtmap; // maps type_t* -> ptrarray_t of methods (fun_t*[])
   fun_t* nullable  fun;      // current function
   unit_t* nullable unit;     // current unit
-  type_t*          typectx;
-  ptrarray_t       typectxstack;
   expr_t* nullable dotctx; // for ".name" shorthand
   ptrarray_t       dotctxstack;
   #if DEBUG

@@ -1225,11 +1225,9 @@ static void intlit(cgen_t* g, const intlit_t* n) {
 
 
 static void floatlit(cgen_t* g, const floatlit_t* n) {
-  if (n->type->kind == TYPE_F64) {
-    PRINTF("%f", n->f64val);
-  } else {
-    PRINTF("%ff", n->f32val);
-  }
+  PRINTF("%f", n->f64val);
+  if (n->type->kind == TYPE_F32)
+    CHAR('f');
 }
 
 

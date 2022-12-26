@@ -309,12 +309,9 @@ static void fmt(abuf_t* s, const node_t* nullable n, u32 indent, u32 maxdepth) {
     break;
   }
 
-  case EXPR_FLOATLIT: {
-    const floatlit_t* lit = (const floatlit_t*)n;
-    double f64val = lit->type == type_f64 ? lit->f64val : (double)lit->f32val;
-    abuf_f64(s, f64val, -1);
+  case EXPR_FLOATLIT:
+    abuf_f64(s, ((const floatlit_t*)n)->f64val, -1);
     break;
-  }
 
   case TYPE_VOID:    abuf_str(s, "void"); break;
   case TYPE_BOOL:    abuf_str(s, "bool"); break;

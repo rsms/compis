@@ -1,0 +1,5 @@
+type Thing {
+  x int
+  fun get_x(this) u32 { .x }
+  y int // error: fields cannot be defined after type functions
+}

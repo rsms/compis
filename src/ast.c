@@ -219,8 +219,15 @@ static void flags(RPARAMS, const node_t* n) {
 
 static void repr_type(RPARAMS, const type_t* t) {
   assert(node_istype((node_t*)t));
-  const char* kindname = STRTAB_GET(nodekind_strtab, t->kind);
-  REPR_BEGIN('<', kindname + strlen("TYPE_"));
+
+  const char* kindname;
+  if (t->kind == TYPE_UNKNOWN) {
+    kindname = "?";
+  } else {
+    kindname = STRTAB_GET(nodekind_strtab, t->kind) + strlen("TYPE_");
+  }
+
+  REPR_BEGIN('<', kindname);
   bool isnew = !seen(r, t);
 
   // {flags}
@@ -383,11 +390,7 @@ static void repr(RPARAMS, const node_t* nullable n) {
   }
 
   case EXPR_FLOATLIT:
-    if (((const floatlit_t*)n)->type == type_f64) {
-      PRINTF(" %f", ((const floatlit_t*)n)->f64val);
-    } else {
-      PRINTF(" %f", ((const floatlit_t*)n)->f32val);
-    }
+    PRINTF(" %f", ((const floatlit_t*)n)->f64val);
     break;
 
   case EXPR_MEMBER:

@@ -3,6 +3,8 @@
 #include "c0lib.h"
 #include "compiler.h"
 
+#include <stdlib.h> // strtof
+
 #define TRACE_TYPECHECK
 
 #ifdef TRACE_TYPECHECK
@@ -198,7 +200,7 @@ bool intern_usertype(compiler_t* c, usertype_t** tp) {
   if (*p) {
     if (*tp == *p)
       return false;
-    dlog("%s replace %p with existing %p", __FUNCTION__, *tp, *p);
+    //dlog("%s replace %p with existing %p", __FUNCTION__, *tp, *p);
     assert((*p)->kind == (*tp)->kind);
     *tp = *p;
     return true;
@@ -400,10 +402,15 @@ static void define(typecheck_t* a, sym_t name, void* n) {
 }
 
 
-static void type(typecheck_t* a, type_t** tp);
+static void _type(typecheck_t* a, type_t** tp);
 static void stmt(typecheck_t* a, stmt_t* n);
 static void exprp(typecheck_t* a, expr_t** np);
 #define expr(a, n)  exprp(a, (expr_t**)&(n))
+
+inline static void type(typecheck_t* a, type_t** tp) {
+  if ( *tp != type_unknown && ((*tp)->flags & NF_CHECKED) == 0 )
+    _type(a, tp);
+}
 
 
 static void check_unused(typecheck_t* a, const void* expr_node) {
@@ -413,7 +420,7 @@ static void check_unused(typecheck_t* a, const void* expr_node) {
     local_t* var = (local_t*)n;
     if (var->name != sym__ && noerror(a))
       warning(a, var->nameloc, "unused %s %s", nodekind_fmt(n->kind), var->name);
-  } else if UNLIKELY(n->nrefs == 0 && n->kind != EXPR_IF && n->kind != EXPR_ASSIGN) {
+  } else if UNLIKELY(n->nrefs == 0 && expr_no_side_effects(n)) {
     if (noerror(a))
       warning(a, n, "unused %s %s", nodekind_fmt(n->kind), fmtnode(a, 0, n));
   }
@@ -506,33 +513,33 @@ static void this_type(typecheck_t* a, local_t* local) {
 static void local(typecheck_t* a, local_t* n) {
   assertf(n->nrefs == 0 || n->name != sym__, "'_' local that is somehow referenced");
 
-  if ((n->type->flags & NF_CHECKED) == 0)
-    type(a, &n->type);
+  type(a, &n->type);
 
-  if UNLIKELY(n->type == type_void)
-    error(a, n, "cannot define %s of type void", nodekind_fmt(n->kind));
+  if (n->init) {
+    typectx_push(a, n->type);
+    expr(a, n->init);
+    typectx_pop(a);
+
+    if (n->type == type_unknown || n->type->kind == TYPE_UNRESOLVED) {
+      n->type = n->init->type;
+    } else if UNLIKELY(!types_iscompat(a->compiler, n->type, n->init->type)) {
+      error(a, n->init, "%s initializer of type %s where type %s is expected",
+        nodekind_fmt(n->kind), fmtnode(a, 0, n->init->type), fmtnode(a, 1, n->type));
+    }
+  }
 
   if (n->isthis)
     this_type(a, n);
 
-  if (!n->init)
-    return;
+  if UNLIKELY(n->type == type_void || n->type == type_unknown)
+    error(a, n, "cannot define %s of type void", nodekind_fmt(n->kind));
+}
 
-  typectx_push(a, n->type);
-  expr(a, n->init);
-  typectx_pop(a);
 
-  if (n->type == type_unknown || n->type->kind == TYPE_UNRESOLVED) {
-    n->type = n->init->type;
-    return;
-  }
-
-  if UNLIKELY(!types_iscompat(a->compiler, n->type, n->init->type)) {
-    const char* got = fmtnode(a, 0, n->init->type);
-    const char* expect = fmtnode(a, 1, n->type);
-    error(a, n->init, "%s initializer of type %s where type %s is expected",
-      nodekind_fmt(n->kind), got, expect);
-  }
+static void local_var(typecheck_t* a, local_t* n) {
+  assert(nodekind_isvar(n->kind));
+  local(a, n);
+  define(a, n->name, n);
 }
 
 
@@ -551,9 +558,7 @@ static void structtype(typecheck_t* a, structtype_t** np) {
   }
 
   st->align = align;
-  st->size = size;
-
-  assertf(ALIGN2(size,(usize)align) == size, "size %zu not aligned to %u", size, align);
+  st->size = ALIGN2(size, (usize)align);
 }
 
 
@@ -792,13 +797,6 @@ static void idexpr(typecheck_t* a, idexpr_t* n) {
 }
 
 
-static void local_var(typecheck_t* a, local_t* n) {
-  assert(nodekind_isvar(n->kind));
-  local(a, n);
-  define(a, n->name, n);
-}
-
-
 static void retexpr(typecheck_t* a, retexpr_t* n) {
   if (n->value) {
     expr(a, n->value);
@@ -935,6 +933,31 @@ static void deref(typecheck_t* a, unaryop_t* n) {
     error(a, n, "dereferencing non-reference value of type %s", fmtnode(a, 0, t));
   } else {
     n->type = t->elem;
+  }
+}
+
+
+static void floatlit(typecheck_t* a, floatlit_t* n) {
+  if (a->typectx == type_f32) {
+    n->type = type_f32;
+    // FIXME: better way to check f32 value (than via sprintf & strtof)
+    buf_t* buf = &a->p->tmpbuf[0];
+    buf->len = 0;
+    if UNLIKELY(!buf_printf(buf, "%g", n->f64val))
+      out_of_mem(a);
+    float f = strtof(buf->chars, NULL);
+    if UNLIKELY(f == HUGE_VALF) {
+      // e.g. 1.e39
+      error(a, n, "32-bit floating-point constant too large");
+      n->f64val = 0.0;
+    }
+  } else {
+    n->type = type_f64;
+    if UNLIKELY(n->f64val == HUGE_VAL) {
+      // e.g. 1.e309
+      error(a, n, "64-bit floating-point constant too large");
+      n->f64val = 0.0;
+    }
   }
 }
 
@@ -1482,7 +1505,7 @@ static void unresolvedtype(typecheck_t* a, unresolvedtype_t** tp) {
 
 static void typedef_(typecheck_t* a, typedef_t* n) {
   type_t* t = &n->type;
-  type(a, (type_t**)&t);
+  type(a, &t);
 }
 
 
@@ -1494,18 +1517,23 @@ static void aliastype(typecheck_t* a, aliastype_t** tp) {
 }
 
 
-static void unknowntype(typecheck_t* a, type_t** tp) {
-  assertf(a->typectx != type_unknown,
-    "unknown type inside unknown (unresolved) typectx");
-  *tp = a->typectx;
-}
+// static void unknowntype(typecheck_t* a, type_t** tp) {
+//   assertf(a->typectx != type_unknown, "unknown type inside unresolved typectx");
+//   *tp = a->typectx;
+// }
 
 
 // end call
 // —————————————————————————————————————————————————————————————————————————————————
 
 
-static void type1(typecheck_t* a, type_t** tp) {
+static void _type(typecheck_t* a, type_t** tp) {
+  type_t* t = *tp;
+
+  if (t->flags & NF_CHECKED)
+    return;
+  t->flags |= NF_CHECKED;
+
   TRACE_NODE(a, "", tp);
   switch ((*tp)->kind) {
     case TYPE_UNRESOLVED: return unresolvedtype(a, (unresolvedtype_t**)tp);
@@ -1514,18 +1542,8 @@ static void type1(typecheck_t* a, type_t** tp) {
     case TYPE_STRUCT:     return structtype(a, (structtype_t**)tp);
     case TYPE_REF:        return type(a, &((reftype_t*)(*tp))->elem);
     case TYPE_PTR:        return type(a, &((ptrtype_t*)(*tp))->elem);
-    case TYPE_UNKNOWN:    return unknowntype(a, tp);
   }
   dlog("TODO %s %s", __FUNCTION__, nodekind_name((*tp)->kind));
-}
-
-
-inline static void type(typecheck_t* a, type_t** tp) {
-  type_t* t = *tp;
-  if (t->flags & NF_CHECKED)
-    return;
-  t->flags |= NF_CHECKED;
-  return type1(a, tp);
 }
 
 
@@ -1550,7 +1568,8 @@ static void exprp(typecheck_t* a, expr_t** np) {
 
   TRACE_NODE(a, "", np);
 
-  type(a, &n->type);
+  if ( (n->type != type_unknown) && ((n->type->flags & NF_CHECKED) == 0) )
+    type(a, &n->type);
 
   switch ((enum nodekind)n->kind) {
   case EXPR_FUN:       return fun(a, (fun_t*)n);
@@ -1565,6 +1584,7 @@ static void exprp(typecheck_t* a, expr_t** np) {
   case EXPR_MEMBER:    return member(a, (member_t*)n);
   case EXPR_DEREF:     return deref(a, (unaryop_t*)n);
   case EXPR_INTLIT:    return intlit(a, (intlit_t*)n);
+  case EXPR_FLOATLIT:  return floatlit(a, (floatlit_t*)n);
 
   case EXPR_PREFIXOP:
   case EXPR_POSTFIXOP:
@@ -1578,8 +1598,6 @@ static void exprp(typecheck_t* a, expr_t** np) {
     return local_var(a, (local_t*)n);
 
   // TODO
-  case EXPR_FLOATLIT:
-  case EXPR_BOOLLIT:
   case EXPR_FOR:
     panic("TODO %s", nodekind_name(n->kind));
     break;
@@ -1590,6 +1608,7 @@ static void exprp(typecheck_t* a, expr_t** np) {
   case NODE_COMMENT:
   case NODE_UNIT:
   case STMT_TYPEDEF:
+  case EXPR_BOOLLIT:
   case TYPE_VOID:
   case TYPE_BOOL:
   case TYPE_INT:
@@ -1624,10 +1643,7 @@ err_t typecheck(parser_t* p, unit_t* unit) {
     .ast_ma = p->ast_ma,
     .scope = p->scope,
     .typectx = type_void,
-    .typectxstack = a.p->typectxstack,
   };
-
-  ptrarray_clear(&a.typectxstack);
 
   enter_scope(&a);
 
@@ -1636,9 +1652,10 @@ err_t typecheck(parser_t* p, unit_t* unit) {
 
   leave_scope(&a);
 
+  ptrarray_dispose(&a.typectxstack, a.ma);
+
   // update borrowed containers owned by p (in case they grew)
   p->scope = a.scope;
-  p->typectxstack = a.p->typectxstack;
 
   return a.err;
 }

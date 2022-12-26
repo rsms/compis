@@ -1,0 +1,5 @@
+fun float_limits() {
+  let _     = 1.0    // type defaults to f64
+  let _     = 1.e309 // error: 64-bit floating-point constant too large
+  let _ f32 = 1.e39  // error: 32-bit floating-point constant too large
+}

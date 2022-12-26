@@ -468,20 +468,6 @@ static void push_child(parser_t* p, ptrarray_t* children, void* child) {
 }
 
 
-static void typectx_push(parser_t* p, type_t* t) {
-  assertnotnull(t);
-  assertnotnull(p->typectx);
-  if UNLIKELY(!ptrarray_push(&p->typectxstack, p->ma, p->typectx))
-    out_of_mem(p);
-  p->typectx = t;
-}
-
-static void typectx_pop(parser_t* p) {
-  assert(p->typectxstack.len > 0);
-  p->typectx = ptrarray_pop(&p->typectxstack);
-}
-
-
 static void dotctx_push(parser_t* p, expr_t* nullable n) {
   if UNLIKELY(!ptrarray_push(&p->dotctxstack, p->ma, p->dotctx))
     out_of_mem(p);
@@ -491,23 +477,6 @@ static void dotctx_push(parser_t* p, expr_t* nullable n) {
 static void dotctx_pop(parser_t* p) {
   assert(p->dotctxstack.len > 0);
   p->dotctx = ptrarray_pop(&p->dotctxstack);
-}
-
-
-static bool check_types_compat(
-  parser_t* p,
-  const type_t* nullable x,
-  const type_t* nullable y,
-  const node_t* nullable origin)
-{
-  if UNLIKELY(!!x * !!y && !types_iscompat(p->scanner.compiler, x, y)) {
-    // "!!x * !!y": ignore NULL
-    const char* xs = fmtnode(p, 0, x);
-    const char* ys = fmtnode(p, 1, y);
-    error(p, origin, "incompatible types, %s and %s", xs, ys);
-    return false;
-  }
-  return true;
 }
 
 
@@ -629,7 +598,11 @@ static bool struct_fieldset(parser_t* p, structtype_t* st) {
   for (;;) {
     local_t* f = mknode(p, local_t, EXPR_FIELD);
     f->name = p->scanner.sym;
-    expect(p, TID, "");
+
+    if UNLIKELY(!expect(p, TID, "")) {
+      fastforward_semi(p);
+      return false;
+    }
 
     node_t* existing = (node_t*)lookup_struct_field(st, f->name);
     if LIKELY(!existing)
@@ -668,9 +641,7 @@ static bool struct_fieldset(parser_t* p, structtype_t* st) {
       break;
     }
     local_t* f = st->fields.v[i++];
-    typectx_push(p, f->type);
     f->init = expr(p, PREC_COMMA, NF_RVALUE);
-    typectx_pop(p);
     bubble_flags(f, f->init);
     bubble_flags(st, f->init);
     if (currtok(p) != TCOMMA)
@@ -688,19 +659,43 @@ static fun_t* fun(parser_t*, nodeflag_t, type_t* nullable recvt, bool requirenam
 
 static type_t* type_struct1(parser_t* p, structtype_t* st) {
   while (currtok(p) != TRBRACE) {
-    if (currtok(p) == TFUN) {
-      fun_t* fn = fun(p, 0, /*recvt*/(type_t*)st, /*requirename*/true);
-      // Append the function to the unit, not to the structtype.
-      // This simplifies both the general implementation and code generation.
-      push_child(p, &p->unit->children, fn);
-      bubble_flags(p->unit, fn);
-    } else {
-      st->hasinit |= struct_fieldset(p, st);
-    }
+    if (currtok(p) == TFUN)
+      goto funs;
+    st->hasinit |= struct_fieldset(p, st);
     if (currtok(p) != TSEMI)
       break;
     next(p);
   }
+  goto end_fields_and_funs;
+funs:
+  assert(currtok(p) == TFUN);
+  u32 first_fn_index = p->unit->children.len;
+  fun_t* fn;
+  for (;;) {
+    fn = fun(p, 0, /*recvt*/(type_t*)st, /*requirename*/true);
+    // Append the function to the unit, not to the structtype.
+    // This simplifies both the general implementation and code generation.
+    push_child(p, &p->unit->children, fn);
+    bubble_flags(p->unit, fn);
+    if (currtok(p) != TSEMI)
+      break;
+    next(p);
+    if UNLIKELY(currtok(p) != TFUN) {
+      if (currtok(p) != TID)
+        break;
+      fun_t* fn1 = p->unit->children.v[first_fn_index];
+      error(p, NULL, "fields cannot be defined after type functions");
+      if (loc_line(fn1->loc)) {
+        help(p, fn1->loc, "define the field \"%s\" before this function",
+          p->scanner.sym);
+      } else if (loc_line(fn->loc)) {
+        help(p, fn->loc, "a function was defined here");
+      }
+      fastforward(p, (const tok_t[]){ TRBRACE, 0 });
+      break;
+    }
+  }
+end_fields_and_funs:
   expect(p, TRBRACE, "to end struct");
   for (u32 i = 0; i < st->fields.len; i++) {
     local_t* f = st->fields.v[i];
@@ -811,7 +806,7 @@ static bool resolve_id(parser_t* p, idexpr_t* n) {
   } else if (nodekind_istype(n->ref->kind)) {
     n->type = (type_t*)n->ref;
   } else {
-    error(p, (node_t*)n, "cannot use %s \"%s\" as an expression",
+    error(p, n, "cannot use %s \"%s\" as an expression",
       nodekind_fmt(n->ref->kind), n->name);
     return false;
   }
@@ -843,9 +838,7 @@ static expr_t* expr_var(parser_t* p, const parselet_t* pl, nodeflag_t fl) {
   bool ok = true;
   if (currtok(p) == TASSIGN) {
     next(p);
-    typectx_push(p, type_void);
     n->init = expr(p, PREC_ASSIGN, fl | NF_RVALUE);
-    typectx_pop(p);
     n->type = n->init->type;
     bubble_flags(n, n->init);
   } else {
@@ -853,11 +846,8 @@ static expr_t* expr_var(parser_t* p, const parselet_t* pl, nodeflag_t fl) {
     bubble_flags(n, n->type);
     if (currtok(p) == TASSIGN) {
       next(p);
-      typectx_push(p, n->type);
       n->init = expr(p, PREC_ASSIGN, fl | NF_RVALUE);
-      typectx_pop(p);
       bubble_flags(n, n->init);
-      ok = check_types_compat(p, n->type, n->init->type, (node_t*)n->init);
     }
   }
 
@@ -975,7 +965,7 @@ static expr_t* nullable check_if_cond(parser_t* p, expr_t* cond) {
       // e.g. "if x { ... }"
       idexpr_t* id = (idexpr_t*)cond;
       if (!node_isexpr(id->ref)) {
-        error(p, (node_t*)cond, "conditional is not an expression");
+        error(p, cond, "conditional is not an expression");
         return NULL;
       }
 
@@ -1108,32 +1098,18 @@ static expr_t* intlit(parser_t* p, nodeflag_t fl, bool isneg) {
 
 
 static expr_t* floatlit(parser_t* p, nodeflag_t fl, bool isneg) {
-  floatlit_t* n = mkexpr(p, floatlit_t, EXPR_FLOATLIT, fl | NF_CHECKED);
+  floatlit_t* n = mkexpr(p, floatlit_t, EXPR_FLOATLIT, fl);
   char* endptr = NULL;
 
   // note: scanner always starts float litbuf with '+'
   if (isneg)
     p->scanner.litbuf.chars[0] = '-';
 
-  dlog("TODO move to typecheck");
-  if (p->typectx == type_f32) {
-    n->type = type_f32;
-    n->f32val = strtof(p->scanner.litbuf.chars, &endptr);
-    if (endptr != p->scanner.litbuf.chars + p->scanner.litbuf.len) {
-      error(p, (node_t*)n, "invalid floating-point constant");
-    } else if (n->f32val == HUGE_VALF) {
-      error(p, (node_t*)n, "32-bit floating-point constant too large");
-    }
-  } else {
-    n->type = type_f64;
-    n->f64val = strtod(p->scanner.litbuf.chars, &endptr);
-    if (endptr != p->scanner.litbuf.chars + p->scanner.litbuf.len) {
-      error(p, (node_t*)n, "invalid floating-point constant");
-    } else if (n->f64val == HUGE_VAL) {
-      // e.g. 1.e999
-      error(p, (node_t*)n, "64-bit floating-point constant too large");
-    }
+  n->f64val = strtod(p->scanner.litbuf.chars, &endptr);
+  if UNLIKELY(endptr != p->scanner.litbuf.chars + p->scanner.litbuf.len) {
+    error(p, n, "invalid floating-point constant");
   }
+  // note: typecheck checks for overflow (HUGE_VAL)
 
   next(p);
   return (expr_t*)n;
@@ -1200,9 +1176,7 @@ static expr_t* expr_infix_op(
   left->flags |= NF_RVALUE;
   n->left = left;
 
-  typectx_push(p, left->type);
   n->right = expr(p, pl->prec, fl | NF_RVALUE);
-  typectx_pop(p);
 
   n->type = left->type;
   bubble_flags(n, n->left);
@@ -1282,7 +1256,7 @@ static expr_t* expr_deref(parser_t* p, const parselet_t* pl, nodeflag_t fl) {
 
   if UNLIKELY(t->kind != TYPE_REF && t->kind != TYPE_PTR) {
     const char* ts = fmtnode(p, 0, t);
-    error(p, (node_t*)n, "dereferencing non-reference value of type %s", ts);
+    error(p, n, "dereferencing non-reference value of type %s", ts);
   } else {
     n->type = t->elem;
   }
@@ -1301,16 +1275,16 @@ static expr_t* expr_ref1(parser_t* p, bool ismut, nodeflag_t fl) {
 
   if UNLIKELY(n->expr->type->kind == TYPE_REF) {
     const char* ts = fmtnode(p, 0, n->expr->type);
-    error(p, (node_t*)n, "referencing reference type %s", ts);
+    error(p, n, "referencing reference type %s", ts);
   } else if UNLIKELY(!expr_isstorage(n->expr)) {
     const char* ts = fmtnode(p, 0, n->expr->type);
-    error(p, (node_t*)n, "referencing ephemeral value of type %s", ts);
+    error(p, n, "referencing ephemeral value of type %s", ts);
   } else if UNLIKELY(ismut && !expr_ismut(n->expr)) {
     const char* s = fmtnode(p, 0, n->expr);
     nodekind_t k = n->expr->kind;
     if (k == EXPR_ID)
       k = ((idexpr_t*)n->expr)->ref->kind;
-    error(p, (node_t*)n, "mutable reference to immutable %s %s", nodekind_fmt(k), s);
+    error(p, n, "mutable reference to immutable %s %s", nodekind_fmt(k), s);
   }
 
   reftype_t* t = mkreftype(p, ismut);
@@ -1397,12 +1371,10 @@ static void args(parser_t* p, call_t* n, type_t* recvtype, nodeflag_t fl) {
     paramc = st->fields.len;
   }
 
-  typectx_push(p, type_void);
   fl |= NF_RVALUE;
 
   for (u32 paramidx = 0; ;paramidx++) {
     type_t* t = (paramidx < paramc) ? paramv[paramidx]->type : type_void;
-    typectx_push(p, t);
 
     expr_t* arg;
     if (currtok(p) == TID) {
@@ -1413,7 +1385,6 @@ static void args(parser_t* p, call_t* n, type_t* recvtype, nodeflag_t fl) {
       arg = expr(p, PREC_COMMA, fl);
     }
 
-    typectx_pop(p);
 
     push_child(p, &n->args, arg);
     bubble_flags(n, arg);
@@ -1423,7 +1394,6 @@ static void args(parser_t* p, call_t* n, type_t* recvtype, nodeflag_t fl) {
     next(p);
   }
 
-  typectx_pop(p);
 }
 
 
@@ -1487,7 +1457,7 @@ static expr_t* expr_postfix_call(
     n->type = recv->type;
     recvtype = recv->type;
   } else {
-    error(p, (node_t*)n, "calling %s; expected function or type",
+    error(p, n, "calling %s; expected function or type",
       recv->type ? nodekind_fmt(recv->type->kind) : nodekind_fmt(recv->kind));
   }
 
@@ -1795,7 +1765,6 @@ static void fun_body(parser_t* p, fun_t* n, nodeflag_t fl) {
   if (ft->result == type_void)
     fl &= ~NF_RVALUE;
 
-  typectx_push(p, ft->result);
   enter_scope(p);
 
   n->body = any_as_block(p, fl);
@@ -1806,7 +1775,6 @@ static void fun_body(parser_t* p, fun_t* n, nodeflag_t fl) {
   bubble_flags(n, n->body);
 
   leave_scope(p);
-  typectx_pop(p);
 
   p->fun = outer_fun;
 
@@ -1990,8 +1958,7 @@ bool parser_init(parser_t* p, compiler_t* c) {
 
   p->ma = p->scanner.compiler->ma;
 
-  // note: p->typectxstack & dotctxstack are valid when zero initialized
-  p->typectx = type_void;
+  // note: dotctxstack is valid when zero initialized
   p->dotctx = NULL;
 
   return true;
@@ -2011,7 +1978,6 @@ void parser_dispose(parser_t* p) {
   map_dispose(&p->pkgdefs, p->ma);
   map_dispose(&p->tmpmap, p->ma);
   map_dispose(&p->recvtmap, p->ma);
-  ptrarray_dispose(&p->typectxstack, p->ma);
   ptrarray_dispose(&p->dotctxstack, p->ma);
   scanner_dispose(&p->scanner);
 }

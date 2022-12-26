@@ -13,7 +13,7 @@
   }
 
 type_t* type_void = DEFTYPE(TYPE_VOID, NF_CHECKED, 0, false);
-type_t* type_unknown = DEFTYPE(TYPE_UNKNOWN, NF_UNKNOWN, 0, false);
+type_t* type_unknown = DEFTYPE(TYPE_UNKNOWN, NF_CHECKED | NF_UNKNOWN, 0, false);
 
 type_t* type_bool  = DEFTYPE(TYPE_BOOL, NF_CHECKED, 1, true);
 
