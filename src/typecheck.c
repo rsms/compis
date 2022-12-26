@@ -498,8 +498,8 @@ static void this_type(typecheck_t* a, local_t* local) {
     if (recvt->kind == TYPE_STRUCT) {
       // small structs
       structtype_t* st = (structtype_t*)recvt;
-      usize maxsize = a->compiler->ptrsize * 2;
-      if (st->align <= a->compiler->ptrsize && st->size <= maxsize)
+      u64 maxsize = (u64)a->compiler->ptrsize * 2;
+      if ((u32)st->align <= a->compiler->ptrsize && st->size <= maxsize)
         return;
     }
   }
@@ -546,19 +546,20 @@ static void local_var(typecheck_t* a, local_t* n) {
 static void structtype(typecheck_t* a, structtype_t** np) {
   structtype_t* st = *np;
 
-  u8    align = 0;
-  usize size = 0;
+  u8  align = 0;
+  u64 size = 0;
 
   for (u32 i = 0; i < st->fields.len; i++) {
     local_t* f = st->fields.v[i];
     local(a, f);
     type_t* ft = assertnotnull(f->type);
+    f->offset = ALIGN2(size, ft->align);
+    size = f->offset + ft->size;
     align = MAX(align, ft->align); // alignment of struct is max alignment of fields
-    size = ALIGN2(size, ft->align) + ft->size;
   }
 
   st->align = align;
-  st->size = ALIGN2(size, (usize)align);
+  st->size = ALIGN2(size, (u64)align);
 }
 
 

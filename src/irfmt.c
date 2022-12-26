@@ -55,7 +55,10 @@ static void val(fmtctx_t* ctx, const irval_t* v, bool isdot) {
     PRINTF(" %u", v->aux.i32val);
     break;
   case OP_ICONST:
-    PRINTF(" 0x%llu", v->aux.i64val);
+    PRINTF(" 0x%llx", v->aux.i64val);
+    break;
+  case OP_GEP:
+    PRINTF(" %llu", v->aux.i64val);
     break;
   case OP_FCONST:
     PRINTF(" %g", v->aux.f64val);

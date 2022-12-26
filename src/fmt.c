@@ -328,7 +328,7 @@ static void fmt(abuf_t* s, const node_t* nullable n, u32 indent, u32 maxdepth) {
     return funtype(s, (const funtype_t*)n, indent, maxdepth);
   case TYPE_ARRAY: {
     arraytype_t* a = (arraytype_t*)n;
-    abuf_fmt(s, "[%zu]", a->size);
+    abuf_fmt(s, "[%llu]", a->size);
     fmt(s, (node_t*)a->elem, indent, maxdepth);
     break;
   }

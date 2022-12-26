@@ -190,7 +190,7 @@ static err_t compile_co_to_c(compiler_t* c, input_t* input, const char* cfile) {
     goto end_parser;
   }
 
-  dlog("abort");abort(); // XXX
+  // dlog("abort");abort(); // XXX
 
   // analyze (ir)
   dlog("————————— analyze —————————");

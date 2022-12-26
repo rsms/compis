@@ -253,42 +253,29 @@
 // type MyInt2 int
 
 
-// type Thing {
-//   x, y, z u32 = 3, 4, 5
-//   pretty bool
-//   ref &int
-//   // fptr fun(int)int
+type Thing {
+  x, y, z u32 = 3, 4, 5
 
-//   fun get_x(this) u32 { .x }
-// }
-
-fun b(v f32) void
-
-fun a() {
-  let _ = 1.0    // type defaults to f64
-  b(1.2)
+  fun get_x(this) u32 { .x }
+  fun set_x(mut this, x u32) u32 { .x = x }
 }
 
-// fun Thing.foo(this, x int) int {
-//   int(.get_x()) * x
-// }
+fun Thing.foo(this, x int) int {
+  int(.get_x()) * x
+}
 // fun foo2(this &Thing, x int) int {
 //   int(this.get_x()) * x
 // }
-// fun Thing.bar(this) u32 { .x * .y }
-// fun Thing.set_x(mut this, x u32) u32 { .x = x }
 
-// fun call_type_fun(x, y int, t Thing) int {
-//   t.foo(int(x)) * y
-// }
+fun call_type_fun(x, y int, t Thing) int {
+  t.foo(int(x)) * y
+}
 
-
-// fun bar(x, y int) int {
-//   let a = Thing(u32(x), pretty: true, y: 5)
-//   //a.fptr(x)
-//   a.set_x(9)
-//   int(a.x) + a.foo(x) * y
-// }
+fun foo(x, y int) int {
+  let a = Thing(x: u32(x), y: 0)
+  a.set_x(9)
+  int(a.x) + a.foo(x) * y
+}
 
 
 /// TODO ownership test these:

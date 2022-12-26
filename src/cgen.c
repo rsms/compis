@@ -173,6 +173,7 @@ static const char* operator(op_t op) {
   case OP_VAR:
   case OP_ZERO:
   case OP_CAST:
+  case OP_GEP:
     break;
 
   // unary
@@ -270,7 +271,6 @@ static sym_t intern_typedef(
     headbuf.len = 0;
     g->headoffs = 0;
   }
-
   // save & replace outbuf
   buf_t outbuf = g->outbuf;
   g->outbuf = headbuf;
@@ -426,6 +426,7 @@ static sym_t gen_alias_typename(cgen_t* g, const type_t* t) {
 
 static void gen_alias_typedef(cgen_t* g, const type_t* tp, sym_t typename) {
   const aliastype_t* t = (const aliastype_t*)tp;
+  assertf(t->kind == TYPE_ALIAS, "%s", nodekind_name(t->kind));
   PRINT("typedef "); type(g, t->elem); PRINTF(" %s;", typename);
 }
 
@@ -1518,7 +1519,21 @@ static void forexpr(cgen_t* g, const forexpr_t* n) {
 
 
 static void typedef_(cgen_t* g, const typedef_t* n) {
-  intern_typedef(g, (type_t*)&n->type, gen_alias_typename, gen_alias_typedef);
+  gentypename_t gentypename;
+  gentypedef_t gentypedef;
+  switch (n->type.kind) {
+  case TYPE_STRUCT:
+    gentypename = gen_struct_typename;
+    gentypedef = gen_struct_typedef;
+    break;
+  case TYPE_ALIAS:
+    gentypename = gen_alias_typename;
+    gentypedef = gen_alias_typedef;
+    break;
+  default:
+    assertf(0, "unexpected %s", nodekind_name(n->type.kind));
+  }
+  intern_typedef(g, (type_t*)&n->type, gentypename, gentypedef);
 }
 
 

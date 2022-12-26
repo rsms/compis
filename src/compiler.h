@@ -173,7 +173,7 @@ typedef struct {
 
 typedef struct {
   node_t;
-  usize size;
+  u64   size;
   u8    align;
   bool  isunsigned; // only used by primitive types
   sym_t tid;
@@ -282,9 +282,9 @@ typedef struct {
 
 typedef struct {
   expr_t;
-  expr_t* recv;   // e.g. "x" in "x.y"
-  sym_t   name;   // e.g. "y" in "x.y"
-  expr_t* target; // e.g. "y" in "x.y"
+  expr_t*          recv;   // e.g. "x" in "x.y"
+  sym_t            name;   // e.g. "y" in "x.y"
+  expr_t* nullable target; // e.g. "y" in "x.y"
 } member_t;
 
 typedef struct { // PARAM, VAR, LET
@@ -294,6 +294,7 @@ typedef struct { // PARAM, VAR, LET
   expr_t* nullable init;    // may be NULL for VAR and PARAM
   bool             isthis;  // [PARAM only] it's the special "this" parameter
   bool             ismut;   // [PARAM only] true if "this" parameter is "mut"
+  u64              offset;  // [FIELD only] memory offset in bytes
 } local_t;
 
 typedef struct { // fun is a declaration (stmt) or an expression depending on use

@@ -1204,6 +1204,11 @@ static irval_t* idexpr(ircons_t* c, idexpr_t* n) {
 }
 
 
+static irval_t* param(ircons_t* c, local_t* n) {
+  return var_read(c, n->name, n->type, n->loc);
+}
+
+
 static irval_t* assign_local(ircons_t* c, local_t* dst, irval_t* v) {
   if (dst->name == sym__)
     return v;
@@ -1240,18 +1245,28 @@ static irval_t* vardef(ircons_t* c, local_t* n) {
 
 static irval_t* assign(ircons_t* c, binop_t* n) {
   irval_t* v = load_expr(c, n->right);
+  local_t* dst;
 
-  idexpr_t* id = (idexpr_t*)n->left;
-  assertf(id->kind == EXPR_ID, "TODO %s", nodekind_name(id->kind));
-  assert(node_islocal(id->ref));
-  sym_t varname = ((local_t*)id->ref)->name;
+  if (n->left->kind == EXPR_MEMBER) {
+    member_t* m = (member_t*)n->left;
+    assertnotnull(m->target);
+    assert(m->target->kind == EXPR_FIELD);
+    dst = (local_t*)m->target;
+  } else {
+    idexpr_t* id = (idexpr_t*)n->left;
+    assertf(id->kind == EXPR_ID, "%s", nodekind_name(id->kind));
+    assert(node_islocal(id->ref));
+    dst = (local_t*)id->ref;
+  }
+
+  sym_t varname = dst->name;
 
   irval_t* curr_owner = var_read(c, varname, v->type, (loc_t){0});
   v = move_or_copy(c, v, n->loc, curr_owner);
 
   comment(c, v, varname);
 
-  return assign_local(c, (local_t*)id->ref, v);
+  return assign_local(c, dst, v);
 }
 
 
@@ -1271,6 +1286,27 @@ static irval_t* retexpr(ircons_t* c, retexpr_t* n) {
 }
 
 
+static irval_t* member(ircons_t* c, member_t* n) {
+  assertnotnull(n->target);
+  irval_t* recv = load_expr(c, n->recv);
+
+  // TODO FIXME: this is incomplete
+
+  irval_t* v = pushval(c, c->b, OP_GEP, n->loc, n->type);
+  pusharg(v, recv);
+
+  assertnotnull(n->target);
+  if (n->target->kind == EXPR_FIELD) {
+    local_t* field = (local_t*)n->target;
+    v->aux.i64val = field->offset;
+  } else {
+    dlog("TODO target %s", nodekind_name(n->target->kind));
+  }
+
+  return v;
+}
+
+
 static irval_t* typecons(ircons_t* c, typecons_t* n) {
   if (n->expr == NULL)
     return pushval(c, c->b, OP_ZERO, n->loc, n->type);
@@ -1282,6 +1318,10 @@ static irval_t* typecons(ircons_t* c, typecons_t* n) {
 
 
 static irval_t* call(ircons_t* c, call_t* n) {
+  if (n->recv->kind == EXPR_ID && node_istype(((idexpr_t*)n->recv)->ref)) {
+    return push_TODO_val(c, c->b, n->type, "type call");
+  }
+
   irval_t* recv = load_expr(c, n->recv);
 
   dlog("TODO call args");
@@ -1968,6 +2008,7 @@ static irval_t* expr(ircons_t* c, void* expr_node) {
   case EXPR_FUN:       return funexpr(c, (fun_t*)n);
   case EXPR_IF:        return ifexpr(c, (ifexpr_t*)n);
   case EXPR_RETURN:    return retexpr(c, (retexpr_t*)n);
+  case EXPR_MEMBER:    return member(c, (member_t*)n);
 
   case EXPR_BOOLLIT:
   case EXPR_INTLIT:
@@ -1977,8 +2018,10 @@ static irval_t* expr(ircons_t* c, void* expr_node) {
   case EXPR_LET:
     return vardef(c, (local_t*)n);
 
+  case EXPR_PARAM:
+    return param(c, (local_t*)n);
+
   // TODO
-  case EXPR_MEMBER:    // return member(c, (member_t*)n);
   case EXPR_PREFIXOP:  // return prefixop(c, (unaryop_t*)n);
   case EXPR_POSTFIXOP: // return postfixop(c, (unaryop_t*)n);
   case EXPR_FOR:
@@ -1993,7 +2036,6 @@ static irval_t* expr(ircons_t* c, void* expr_node) {
   case NODE_UNIT:
   case STMT_TYPEDEF:
   case EXPR_FIELD:
-  case EXPR_PARAM:
   case TYPE_VOID:
   case TYPE_BOOL:
   case TYPE_INT:

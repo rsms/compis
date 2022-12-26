@@ -329,6 +329,8 @@ static void repr(RPARAMS, const node_t* nullable n) {
       CHAR(' '), PRINT(((local_t*)n)->name);
     } else if (n->kind == EXPR_ID) {
       CHAR(' '), PRINT(((idexpr_t*)n)->name);
+    } else if (n->kind == EXPR_MEMBER) {
+      CHAR(' '), PRINT(((member_t*)n)->name);
     }
   } else if (n->kind == TYPE_UNRESOLVED) {
     CHAR(' '), PRINT(((unresolvedtype_t*)n)->name);
@@ -394,8 +396,8 @@ static void repr(RPARAMS, const node_t* nullable n) {
     break;
 
   case EXPR_MEMBER:
-    CHAR(' '), PRINT(((const member_t*)n)->name);
-    CHAR(' '), repr(RARGS, (const node_t*)((const member_t*)n)->recv);
+    CHAR(' '), repr(RARGS, (node_t*)((member_t*)n)->recv);
+    CHAR(' '), repr(RARGS, (node_t*)((member_t*)n)->target);
     break;
 
   case EXPR_ID:

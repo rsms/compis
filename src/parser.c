@@ -568,14 +568,14 @@ static type_t* type_id(parser_t* p) {
 }
 
 
-fun_t* nullable lookup_method(parser_t* p, type_t* recv, sym_t name) {
-  // find method map for recv
+fun_t* nullable lookup_typefun(parser_t* p, type_t* recv, sym_t name) {
+  // find function map for recv
   void** mmp = map_lookup_ptr(&p->recvtmap, recv);
   if (!mmp)
-    return NULL; // no methods on recv
+    return NULL; // no functions on recv
   map_t* mm = assertnotnull(*mmp);
 
-  // find method of name
+  // find function by name
   void** mp = map_lookup_ptr(mm, name);
   return mp ? assertnotnull(*mp) : NULL;
 }
@@ -606,7 +606,7 @@ static bool struct_fieldset(parser_t* p, structtype_t* st) {
 
     node_t* existing = (node_t*)lookup_struct_field(st, f->name);
     if LIKELY(!existing)
-      existing = (node_t*)lookup_method(p, (type_t*)st, f->name);
+      existing = (node_t*)lookup_typefun(p, (type_t*)st, f->name);
     if UNLIKELY(existing) {
       const char* s = fmtnode(p, 0, st);
       error(p, f, "duplicate %s \"%s\" for type %s",
@@ -1694,7 +1694,7 @@ static type_t* type_fun(parser_t* p) {
 
 
 static map_t* nullable get_or_create_recvtmap(parser_t* p, const type_t* t) {
-  // get or create method map for type
+  // get or create function map for type
   void** mmp = map_assign_ptr(&p->recvtmap, p->ma, t);
   if UNLIKELY(!mmp)
     return out_of_mem(p), NULL;
@@ -1730,7 +1730,7 @@ static void typefun_add(parser_t* p, type_t* recvt, sym_t name, fun_t* fun, loc_
   if UNLIKELY(existing) {
     const char* s = fmtnode(p, 0, recvt);
     error(p, loc, "duplicate %s \"%s\" for type %s",
-      (existing->kind == EXPR_FUN) ? "method" : "member", name, s);
+      (existing->kind == EXPR_FUN) ? "function" : "member", name, s);
     if (loc_line(existing->loc))
       help(p, existing, "\"%s\" previously defined here", name);
     return;

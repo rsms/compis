@@ -23,6 +23,7 @@ _( OP_VAR, 0 )    // stack memory
 _( OP_STORE, 0 )  // T -> T
 _( OP_DEREF, 0 )  // *T -> T
 _( OP_ALIAS, 0 )  // T -> &T
+_( OP_GEP, 0 )    // get element pointer
 
 // ownership & lifetime
 _( OP_MOVE, 0 )       // *T -> *T
