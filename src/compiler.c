@@ -13,25 +13,38 @@
 extern const char* C0ROOT;
 
 
-static void set_cachedir(compiler_t* c, slice_t cachedir) {
-  c->cachedir = mem_strdup(c->ma, cachedir, 0);
-  safecheck(c->cachedir);
+static void mem_freecstr(memalloc_t ma, char* nullable cstr) {
+  if (cstr)
+    mem_freex(ma, MEM(cstr, strlen(cstr) + 1));
+}
+
+
+static void set_cstr(memalloc_t ma, char*nullable* dst, slice_t src) {
+  mem_freecstr(ma, *dst);
+  *dst = mem_strdup(ma, src, 0);
+  safecheck(*dst);
+}
+
+
+void compiler_set_cachedir(compiler_t* c, slice_t cachedir) {
+  set_cstr(c->ma, &c->cachedir, cachedir);
+  mem_freecstr(c->ma, c->objdir);
   c->objdir = mem_strcat(c->ma, cachedir, slice_cstr(PATH_SEPARATOR_STR "obj"));
   safecheck(c->objdir);
 }
 
 
-static void set_cflags(compiler_t* c) {
-  buf_t buf = buf_make(c->ma);
-  buf_printf(&buf, "-I%s/../../lib", C0ROOT);
-  bool ok = buf_nullterm(&buf);
+static void compiler_set_cflags(compiler_t* c) {
+  buf_clear(&c->diagbuf);
+  buf_printf(&c->diagbuf, "-I%s/../../lib", C0ROOT);
+  bool ok = buf_push(&c->diagbuf, '\0');
   safecheck(ok);
-  c->cflags = buf.chars;
+  set_cstr(c->ma, &c->cflags, buf_slice(c->diagbuf));
 }
 
 
 void compiler_set_triple(compiler_t* c, const char* triple) {
-  c->triple = triple;
+  set_cstr(c->ma, &c->triple, slice_cstr(triple));
   CoLLVMTargetInfo info;
   llvm_triple_info(triple, &info);
   c->intsize = info.ptr_size;
@@ -62,14 +75,20 @@ void compiler_set_triple(compiler_t* c, const char* triple) {
 }
 
 
-void compiler_init(compiler_t* c, memalloc_t ma, diaghandler_t dh) {
+void compiler_set_pkgname(compiler_t* c, slice_t pkgname) {
+  set_cstr(c->ma, &c->pkgname, pkgname);
+}
+
+
+void compiler_init(compiler_t* c, memalloc_t ma, diaghandler_t dh, slice_t pkgname) {
   memset(c, 0, sizeof(*c));
   c->ma = ma;
   c->diaghandler = dh;
   buf_init(&c->diagbuf, c->ma);
+  compiler_set_pkgname(c, pkgname);
   compiler_set_triple(c, llvm_host_triple());
-  set_cachedir(c, slice_cstr(".c0"));
-  set_cflags(c);
+  compiler_set_cachedir(c, slice_cstr(".c0"));
+  compiler_set_cflags(c);
   if (!map_init(&c->typeidmap, c->ma, 16))
     panic("out of memory");
 }
@@ -82,10 +101,39 @@ void compiler_dispose(compiler_t* c) {
 }
 
 
-void compiler_set_cachedir(compiler_t* c, slice_t cachedir) {
-  mem_freex(c->ma, MEM(c->cachedir, strlen(c->cachedir) + 1));
-  mem_freex(c->ma, MEM(c->objdir, strlen(c->objdir) + 1));
-  set_cachedir(c, cachedir);
+//————————————————————————————————————————————————————————————————————————————
+// name encoding
+
+
+static bool encode_recv_name(const compiler_t* c, buf_t* buf, const type_t* recv) {
+  if (recv->kind == TYPE_STRUCT) {
+    if (((structtype_t*)recv)->name)
+      return buf_print(buf, ((structtype_t*)recv)->name);
+  }
+  assertf(0,"TODO global variable %s", nodekind_name(recv->kind));
+  return buf_printf(buf, "TODO_%s_%s", __FUNCTION__, nodekind_name(recv->kind));
+}
+
+
+static bool encode_fun_name(const compiler_t* c, buf_t* buf, const fun_t* fn) {
+  if (!fn->nomangle) {
+    buf_print(buf, c->pkgname);
+    buf_print(buf, NS_SEP);
+    if (fn->recvt) {
+      encode_recv_name(c, buf, fn->recvt);
+      buf_print(buf, NS_SEP);
+    }
+  }
+  return buf_print(buf, fn->name);
+}
+
+
+bool compiler_encode_name(const compiler_t* c, buf_t* buf, const node_t* n) {
+  buf_reserve(buf, 32);
+  if (n->kind == EXPR_FUN)
+    return encode_fun_name(c, buf, (fun_t*)n);
+  assertf(0,"TODO global variable %s", nodekind_name(n->kind));
+  return buf_printf(buf, "TODO_%s_%s", __FUNCTION__, nodekind_name(n->kind));
 }
 
 
@@ -190,8 +238,6 @@ static err_t compile_co_to_c(compiler_t* c, input_t* input, const char* cfile) {
     goto end_parser;
   }
 
-  // dlog("abort");abort(); // XXX
-
   // analyze (ir)
   dlog("————————— analyze —————————");
   memalloc_t ir_ma = ast_ma;
@@ -199,6 +245,8 @@ static err_t compile_co_to_c(compiler_t* c, input_t* input, const char* cfile) {
     dlog("analyze: err=%s", err_str(err));
     goto end_parser;
   }
+
+  // dlog("abort");abort(); // XXX
 
   // generate C code
   dlog("————————— cgen —————————");

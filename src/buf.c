@@ -119,11 +119,6 @@ bool buf_fill(buf_t* b, u8 byte, usize len) {
 }
 
 
-bool buf_print(buf_t* b, const char* cstr) {
-  return buf_append(b, cstr, strlen(cstr));
-}
-
-
 bool buf_vprintf(buf_t* b, const char* fmt, va_list ap) {
   va_list ap2;
   usize needavail = strlen(fmt)*2;

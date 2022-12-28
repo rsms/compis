@@ -1,0 +1,27 @@
+type Thing {
+  x, y, z u32 = 3, 4, 5
+
+  fun get_x(this) u32 { .x }
+  fun set_x(mut this, x u32) { .x = x }
+}
+
+fun Thing.get_y(this) u32 { .y }
+fun Thing.set_y(mut this, y u32) { .y = y }
+
+fun Thing.foo(this, x int) int {
+  int(.get_x()) * x
+}
+
+fun call_type_fun(x, y int, t Thing) int {
+  t.foo(int(x)) * y
+}
+
+fun foo(x, y int) int {
+  let a = Thing(x: u32(x), y: 0)
+  a.set_x(9)
+  int(a.x) + a.foo(x) * y
+}
+
+// fun foo2(this &Thing, x int) int {
+//   int(this.get_x()) * x
+// }

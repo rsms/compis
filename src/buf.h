@@ -93,7 +93,9 @@ bool buf_insert(buf_t* b, usize index, const void* src, usize len);
 bool buf_fill(buf_t* b, u8 byte, usize len);
 
 // buf_print appends a null-terminated string
-bool buf_print(buf_t* b, const char* cstr);
+inline static bool buf_print(buf_t* b, const char* cstr) {
+  return buf_append(b, cstr, strlen(cstr));
+}
 
 // buf_printf appends a formatted string
 bool buf_printf(buf_t* b, const char* fmt, ...) ATTR_FORMAT(printf, 2, 3);

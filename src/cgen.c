@@ -64,8 +64,8 @@ static void _error(cgen_t* g, origin_t origin, const char* fmt, ...) {
 #endif
 
 
-#define INTERNAL_PREFIX "_c0·"
-#define ANON_PREFIX     "_·"
+#define INTERNAL_PREFIX "_c0" NS_SEP
+#define ANON_PREFIX     "_" NS_SEP
 #define ANON_FMT        ANON_PREFIX "%x"
 
 #define CHAR(ch)             ( buf_push(&g->outbuf, (ch)), ((void)0) )
@@ -484,15 +484,16 @@ static void optzero(cgen_t* g, const type_t* elem, bool isshort) {
 
 static void type(cgen_t* g, const type_t* t) {
   switch (t->kind) {
-  case TYPE_VOID: PRINT("void"); break;
-  case TYPE_BOOL: PRINT("bool"); break;
-  case TYPE_I8:   PRINT(t->isunsigned ? "uint8_t"  : "int8_t"); break;
-  case TYPE_I16:  PRINT(t->isunsigned ? "uint16_t" : "int16_t"); break;
-  case TYPE_I32:  PRINT(t->isunsigned ? "uint32_t" : "int32_t"); break;
-  case TYPE_I64:  PRINT(t->isunsigned ? "uint64_t" : "int64_t"); break;
-  case TYPE_INT:  PRINT(t->isunsigned ? "unsigned int" : "int"); break;
-  case TYPE_F32:  PRINT("float"); break;
-  case TYPE_F64:  PRINT("double"); break;
+  case TYPE_INT:
+    return type(g, t->isunsigned ? g->compiler->uinttype : g->compiler->inttype);
+  case TYPE_VOID:     PRINT("void"); break;
+  case TYPE_BOOL:     PRINT("bool"); break;
+  case TYPE_I8:       PRINT(t->isunsigned ? "u8"  : "i8"); break;
+  case TYPE_I16:      PRINT(t->isunsigned ? "u16" : "i16"); break;
+  case TYPE_I32:      PRINT(t->isunsigned ? "u32" : "i32"); break;
+  case TYPE_I64:      PRINT(t->isunsigned ? "u64" : "i64"); break;
+  case TYPE_F32:      PRINT("f32"); break;
+  case TYPE_F64:      PRINT("f64"); break;
   case TYPE_FUN:      return funtype(g, (const funtype_t*)t, NULL);
   case TYPE_PTR:      return ptrtype(g, (const ptrtype_t*)t);
   case TYPE_REF:      return reftype(g, (const reftype_t*)t);
@@ -905,33 +906,8 @@ static void id(cgen_t* g, sym_t nullable name) {
 }
 
 
-static sym_t member_recv_name(const type_t* recv) {
-  switch (recv->kind) {
-    case TYPE_STRUCT:
-      if (((structtype_t*)recv)->name)
-        return ((structtype_t*)recv)->name;
-      break;
-  }
-  dlog("TODO %s %s", __FUNCTION__, nodekind_name(recv->kind));
-  return sym__;
-}
-
-
-static void member_name(cgen_t* g, const type_t* recv, sym_t member) {
-  PRINT(member_recv_name(recv));
-  PRINT("·"); // U+00B7 MIDDLE DOT (UTF8: "\xC2\xB7")
-  PRINT(member);
-}
-
-
 static void fun_name(cgen_t* g, const fun_t* fun) {
-  const char* pkgname = "main"; // TODO FIXME
-  PRINTF("%s·", pkgname);
-  if (fun->recvt) {
-    member_name(g, fun->recvt, fun->name);
-  } else {
-    id(g, fun->name);
-  }
+  compiler_encode_name(g->compiler, &g->outbuf, (node_t*)fun);
 }
 
 

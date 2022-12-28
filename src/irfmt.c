@@ -4,9 +4,9 @@
 
 
 typedef struct {
-  buf_t    out;
-  locmap_t locmap; // read-only copy
-  bool     ok;
+  const compiler_t* c;
+  buf_t             out;
+  bool              ok;
 } fmtctx_t;
 
 
@@ -99,7 +99,7 @@ static void val(fmtctx_t* ctx, const irval_t* v, bool isdot) {
 
   if (loc_line(v->loc)) {
     TABULATE(start, COMMENT_COL + 25);
-    input_t* input = loc_input(v->loc, &ctx->locmap);
+    input_t* input = loc_input(v->loc, &ctx->c->locmap);
     if (input) {
       PRINTF(" %s:%u:%u", input->name, loc_line(v->loc), loc_col(v->loc));
     } else {
@@ -157,8 +157,16 @@ static void block(fmtctx_t* ctx, const irblock_t* b) {
 
 
 static void fun(fmtctx_t* ctx, const irfun_t* f) {
-  if (ctx->out.len) CHAR('\n');
-  PRINTF("fun %s(", f->name);
+  if (ctx->out.len)
+    CHAR('\n');
+
+  // PRINTF("fun %s" NS_SEP "%s(", ctx->pkgname, f->name);
+  // // TODO: include f->recvt name
+
+  PRINT("fun ");
+  compiler_encode_name(ctx->c, &ctx->out, (node_t*)f->ast);
+  CHAR('(');
+
   if (f->ast) {
     funtype_t* ft = (funtype_t*)f->ast->type;
     for (u32 i = 0; i < ft->params.len; i++) {
@@ -272,30 +280,33 @@ static void unit(fmtctx_t* ctx, const irunit_t* u) {
 }
 
 
-bool irfmt(buf_t* out, const irunit_t* u, const locmap_t* nullable lm) {
-  fmtctx_t ctx = { .ok = true, .out = *out };
-  if (lm)
-    ctx.locmap = *lm;
+static fmtctx_t fmtctx_make(const compiler_t* c, buf_t* out) {
+  return (fmtctx_t){
+    .c = c,
+    .ok = true,
+    .out = *out,
+  };
+}
+
+
+bool irfmt(const compiler_t* c, buf_t* out, const irunit_t* u) {
+  fmtctx_t ctx = fmtctx_make(c, out);
   unit(&ctx, u);
   *out = ctx.out;
   return ctx.ok && buf_nullterm(out);
 }
 
 
-bool irfmt_fun(buf_t* out, const irfun_t* f, const locmap_t* nullable lm) {
-  fmtctx_t ctx = { .ok = true, .out = *out };
-  if (lm)
-    ctx.locmap = *lm;
+bool irfmt_fun(const compiler_t* c, buf_t* out, const irfun_t* f) {
+  fmtctx_t ctx = fmtctx_make(c, out);
   fun(&ctx, f);
   *out = ctx.out;
   return ctx.ok && buf_nullterm(out);
 }
 
 
-bool irfmt_dot(buf_t* out, const irunit_t* u, const locmap_t* nullable lm) {
-  fmtctx_t ctx = { .ok = true, .out = *out };
-  if (lm)
-    ctx.locmap = *lm;
+bool irfmt_dot(const compiler_t* c, buf_t* out, const irunit_t* u) {
+  fmtctx_t ctx = fmtctx_make(c, out);
 
   #define DOT_FONT "fontname=\"JetBrains Mono NL, Menlo, Courier, monospace\";"
   buf_print(&ctx.out,

@@ -56,6 +56,8 @@
   _( TYPE_UNRESOLVED ) /* named type not yet resolved */ \
 // end FOREACH_NODEKIND_TYPE
 
+#define NS_SEP "·" // U+00B7 MIDDLE DOT (UTF8: "\xC2\xB7")
+
 typedef u8 tok_t;
 enum tok {
   #define _(NAME, ...) NAME,
@@ -299,10 +301,11 @@ typedef struct { // PARAM, VAR, LET
 
 typedef struct { // fun is a declaration (stmt) or an expression depending on use
   expr_t;
-  sym_t nullable    name;    // NULL if anonymous
-  loc_t             nameloc; // source location of name
-  block_t* nullable body;    // NULL if function is a prototype
-  type_t* nullable  recvt;   // non-NULL for type functions (type of "this")
+  sym_t nullable    name;     // NULL if anonymous
+  loc_t             nameloc;  // source location of name
+  block_t* nullable body;     // NULL if function is a prototype
+  type_t* nullable  recvt;    // non-NULL for type functions (type of "this")
+  bool              nomangle; // export with plain "C" name instead of Co encoding
 } fun_t;
 
 // ———————— END AST ————————
@@ -454,10 +457,11 @@ typedef struct {
 
 typedef struct compiler {
   memalloc_t     ma;          // memory allocator
-  const char*    triple;      // target triple
+  char*          triple;      // target triple
   char*          cachedir;    // defaults to ".c0"
   char*          objdir;      // "${cachedir}/obj"
   char*          cflags;
+  char*          pkgname;     // name of package being compiled
   diaghandler_t  diaghandler; // called when errors are encountered
   void* nullable userdata;    // passed to diaghandler
   locmap_t       locmap;      // maps input <—> loc_t
@@ -502,11 +506,12 @@ void input_close(input_t* input);
 filetype_t filetype_guess(const char* filename);
 
 // compiler
-void compiler_init(compiler_t* c, memalloc_t, diaghandler_t);
-void compiler_dispose(compiler_t* c);
-void compiler_set_triple(compiler_t* c, const char* triple);
-void compiler_set_cachedir(compiler_t* c, slice_t cachedir);
+void compiler_init(compiler_t*, memalloc_t, diaghandler_t, slice_t pkgname);
+void compiler_dispose(compiler_t*);
+void compiler_set_triple(compiler_t*, const char* triple);
+void compiler_set_cachedir(compiler_t*, slice_t cachedir);
 err_t compiler_compile(compiler_t*, promise_t*, input_t*, buf_t* ofile);
+bool compiler_encode_name(const compiler_t*, buf_t* dst, const node_t*);
 
 // scanner
 bool scanner_init(scanner_t* s, compiler_t* c);
@@ -525,9 +530,9 @@ err_t typecheck(parser_t*, unit_t* unit);
 err_t analyze(compiler_t*, unit_t* unit, memalloc_t ir_ma);
 
 // ir
-bool irfmt(buf_t* out, const irunit_t*, const locmap_t* nullable lm);
-bool irfmt_dot(buf_t* out, const irunit_t*, const locmap_t* nullable lm); // graphviz
-bool irfmt_fun(buf_t* out, const irfun_t*, const locmap_t* nullable lm);
+bool irfmt(const compiler_t*, buf_t*, const irunit_t*);
+bool irfmt_dot(const compiler_t*, buf_t*, const irunit_t*);
+bool irfmt_fun(const compiler_t*, buf_t*, const irfun_t*);
 
 // C code generator
 bool cgen_init(cgen_t* g, compiler_t* c, memalloc_t out_ma);

@@ -50,8 +50,10 @@ static err_t build_exe(const char** srcfilev, usize filecount) {
   if (filecount == 0)
     return ErrInvalid;
 
+  const char* pkgname = "main"; // TODO FIXME
+
   compiler_t c;
-  compiler_init(&c, memalloc_ctx(), &diaghandler);
+  compiler_init(&c, memalloc_ctx(), &diaghandler, slice_cstr(pkgname));
   // compiler_set_triple(&c, "aarch64-linux-unknown");
   dlog("compiler.triple: %s", c.triple);
 

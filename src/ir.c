@@ -98,11 +98,11 @@ static const char* fmtnodex(ircons_t* c, u32 bufidx, const void* nullable n, u32
 #endif
 
 
-static void debug_graphviz(const irunit_t* u, memalloc_t ma, const locmap_t* lm) {
-  buf_t buf = buf_make(ma);
+static void debug_graphviz(const compiler_t* c, const irunit_t* u) {
+  buf_t buf = buf_make(c->ma);
 
   // generate graphviz "dot" text data
-  if UNLIKELY(!irfmt_dot(&buf, u, lm)) {
+  if UNLIKELY(!irfmt_dot(c, &buf, u)) {
     fprintf(stderr, "(irfmt_dot failed)\n");
     buf_dispose(&buf);
     return;
@@ -127,9 +127,9 @@ end:
 }
 
 
-static bool dump_irunit(const irunit_t* u, memalloc_t ma, const locmap_t* lm) {
-  buf_t buf = buf_make(ma);
-  if (!irfmt(&buf, u, lm)) {
+static bool dump_irunit(const compiler_t* c, const irunit_t* u) {
+  buf_t buf = buf_make(c->ma);
+  if (!irfmt(c, &buf, u)) {
     fprintf(stderr, "(irfmt failed)\n");
     buf_dispose(&buf);
     return false;
@@ -2169,7 +2169,7 @@ err_t analyze(compiler_t* compiler, unit_t* unit, memalloc_t ir_ma) {
   irunit_t* u;
   err_t err = ircons(compiler, ir_ma, unit, &u);
   assertnotnull(u);
-  dump_irunit(u, compiler->ma, &compiler->locmap);
-  debug_graphviz(u, compiler->ma, &compiler->locmap);
+  dump_irunit(compiler, u);
+  debug_graphviz(compiler, u);
   return err;
 }

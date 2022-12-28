@@ -252,29 +252,21 @@
 // type MyInt MyInt2
 // type MyInt2 int
 
+fun printu32(u32) void
 
 type Thing {
   x, y, z u32 = 3, 4, 5
-
-  fun get_x(this) u32 { .x }
-  fun set_x(mut this, x u32) u32 { .x = x }
 }
 
-fun Thing.foo(this, x int) int {
-  int(.get_x()) * x
-}
-// fun foo2(this &Thing, x int) int {
-//   int(this.get_x()) * x
-// }
-
-fun call_type_fun(x, y int, t Thing) int {
-  t.foo(int(x)) * y
+fun Thing.drop(mut this) {
+  printu32(2)
 }
 
 fun foo(x, y int) int {
-  let a = Thing(x: u32(x), y: 0)
-  a.set_x(9)
-  int(a.x) + a.foo(x) * y
+  // printu32(1)
+  let a = Thing(x: u32(x))
+  // int(a.x) + y
+  0
 }
 
 
