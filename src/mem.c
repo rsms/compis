@@ -96,8 +96,11 @@ static bool bump_resize(bump_allocator_t* a, mem_t* m, usize size, bool zeroed) 
 
 static bool bump_free(bump_allocator_t* a, mem_t* m, usize size, bool zeroed) {
   // free tail only
-  if (a->ptr == m->p + m->size)
+  if (a->ptr == m->p + m->size) {
     a->ptr -= m->size;
+    if (a->flags & MEMALLOC_STORAGE_ZEROED)
+      memset(a->ptr, 0, m->size);
+  }
   *m = (mem_t){0};
   return true;
 }
