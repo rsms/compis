@@ -143,6 +143,7 @@ bool _types_iscompat(const compiler_t* c, const type_t* dst, const type_t* src) 
   src = unwrap_alias_const(assertnotnull(src));
   switch (dst->kind) {
     case TYPE_INT:
+    case TYPE_UINT:
       dst = canonical_primtype(c, dst);
       src = canonical_primtype(c, src);
       FALLTHROUGH;
@@ -150,7 +151,11 @@ bool _types_iscompat(const compiler_t* c, const type_t* dst, const type_t* src) 
     case TYPE_I16:
     case TYPE_I32:
     case TYPE_I64:
-      return (dst == src) && (dst->isunsigned == src->isunsigned);
+    case TYPE_U8:
+    case TYPE_U16:
+    case TYPE_U32:
+    case TYPE_U64:
+      return dst == src;
     case TYPE_PTR:
       // *T <= *T
       // &T <= *T
@@ -270,6 +275,20 @@ static reftype_t* mkreftype(typecheck_t* a, bool ismut) {
 }
 
 
+static char* mangle(typecheck_t* a, const node_t* n) {
+  buf_t* tmpbuf = &a->compiler->diagbuf;
+  buf_clear(tmpbuf);
+  compiler_mangle(a->compiler, tmpbuf, n);
+  char* s = mem_strdup(a->ast_ma, buf_slice(*tmpbuf), 0);
+  if UNLIKELY(!s) {
+    out_of_mem(a);
+    static char last_resort[1] = {0};
+    s = last_resort;
+  }
+  return s;
+}
+
+
 // true if constructing a type t has no side effects
 static bool type_cons_no_side_effects(const type_t* t) { switch (t->kind) {
   case TYPE_VOID:
@@ -364,6 +383,17 @@ static void enter_scope(typecheck_t* a) {
 
 static void leave_scope(typecheck_t* a) {
   scope_pop(&a->scope);
+}
+
+
+static void enter_ns(typecheck_t* a, void* node) {
+  if UNLIKELY(!ptrarray_push(&a->nspath, a->ma, node))
+    out_of_mem(a);
+}
+
+
+static void leave_ns(typecheck_t* a) {
+  ptrarray_pop(&a->nspath);
 }
 
 
@@ -546,17 +576,28 @@ static void local_var(typecheck_t* a, local_t* n) {
 static void structtype(typecheck_t* a, structtype_t** np) {
   structtype_t* st = *np;
 
+  st->nsparent = a->nspath.v[a->nspath.len - 1];
+
   u8  align = 0;
   u64 size = 0;
+
+  if (st->name)
+    st->mangledname = mangle(a, (node_t*)st);
+
+  enter_ns(a, st);
 
   for (u32 i = 0; i < st->fields.len; i++) {
     local_t* f = st->fields.v[i];
     local(a, f);
-    type_t* ft = assertnotnull(f->type);
-    f->offset = ALIGN2(size, ft->align);
-    size = f->offset + ft->size;
-    align = MAX(align, ft->align); // alignment of struct is max alignment of fields
+    assertnotnull(f->type);
+    if (type_isowner(f->type))
+      st->flags |= NF_SUBOWNERS;
+    f->offset = ALIGN2(size, f->type->align);
+    size = f->offset + f->type->size;
+    align = MAX(align, f->type->align); // alignment of struct is max alignment of fields
   }
+
+  leave_ns(a);
 
   st->align = align;
   st->size = ALIGN2(size, (u64)align);
@@ -581,6 +622,16 @@ static void funtype(typecheck_t* a, funtype_t** np) {
 }
 
 
+// static sym_t nullable nameof(const node_t* n) {
+//   switch (n->kind) {
+//   case TYPE_STRUCT: return ((structtype_t*)n)->name;
+//   case TYPE_ALIAS:  return ((aliastype_t*)n)->name;
+//   case EXPR_FUN:    return ((fun_t*)n)->name;
+//   default: return NULL;
+//   }
+// }
+
+
 static void fun(typecheck_t* a, fun_t* n) {
   fun_t* outer_fun = a->fun;
   a->fun = n;
@@ -588,8 +639,11 @@ static void fun(typecheck_t* a, fun_t* n) {
   if (n->recvt) {
     // type function
     type(a, &n->recvt);
+    n->nsparent = (node_t*)n->recvt;
+    enter_ns(a, n->recvt);
   } else {
     // plain function
+    n->nsparent = a->nspath.v[a->nspath.len - 1];
     if (n->name)
       define(a, n->name, n);
   }
@@ -622,14 +676,33 @@ static void fun(typecheck_t* a, fun_t* n) {
   // result type
   type(a, &ft->result);
 
+  // mangle name
+  n->mangledname = mangle(a, (node_t*)n);
+
+  // check signature of special "drop" function.
+  // basically a "poor human's drop trait."
+  if (n->recvt && n->name == sym_drop) {
+    bool ok = false;
+    if (ft->result == type_void && ft->params.len == 1) {
+      local_t* param0 = ft->params.v[0];
+      ok = param0->type->kind == TYPE_REF && ((reftype_t*)param0->type)->ismut;
+      if (ok)
+        n->recvt->flags |= NF_DROP;
+    }
+    if (!ok)
+      error(a, n, "invalid signature of \"drop\" function, expecting (mut this)void");
+  }
+
   // body
   if (n->body) {
     n->body->flags |= NF_EXITS;
     if (ft->result != type_void)
       n->body->flags |= NF_RVALUE;
+    enter_ns(a, n);
     typectx_push(a, ft->result);
     block(a, n->body);
     typectx_pop(a);
+    leave_ns(a);
     n->body->flags &= ~NF_RVALUE;
 
     // check body type vs function result type
@@ -647,6 +720,9 @@ static void fun(typecheck_t* a, fun_t* n) {
       }
     }
   }
+
+  if (n->recvt)
+    leave_ns(a);
 
   if (ft->params.len > 0)
     scope_pop(&a->scope);
@@ -977,22 +1053,18 @@ static void intlit(typecheck_t* a, intlit_t* n) {
   if (isneg)
     uintval &= ~0x1000000000000000; // clear negative bit
 
-  bool u = basetype->isunsigned;
-
+again:
   switch (basetype->kind) {
-  case TYPE_I8:  maxval = u ? 0xffllu               : 0x7fllu+isneg; break;
-  case TYPE_I16: maxval = u ? 0xffffllu             : 0x7fffllu+isneg; break;
-  case TYPE_I32: maxval = u ? 0xffffffffllu         : 0x7fffffffllu+isneg; break;
-  case TYPE_I64: maxval = u ? 0xffffffffffffffffllu : 0x7fffffffffffffffllu+isneg; break;
-  case TYPE_INT:
-    switch (a->compiler->intsize) {
-      case 8/8:  maxval = u ? 0xffllu               : 0x7fllu+isneg; break;
-      case 16/8: maxval = u ? 0xffffllu             : 0x7fffllu+isneg; break;
-      case 32/8: maxval = u ? 0xffffffffllu         : 0x7fffffffllu+isneg; break;
-      case 64/8: maxval = u ? 0xffffffffffffffffllu : 0x7fffffffffffffffllu+isneg; break;
-      default:   assertf(0, "%u", a->compiler->intsize);
-    }
-    break;
+  case TYPE_I8:   maxval = 0x7fllu+isneg; break;
+  case TYPE_I16:  maxval = 0x7fffllu+isneg; break;
+  case TYPE_I32:  maxval = 0x7fffffffllu+isneg; break;
+  case TYPE_I64:  maxval = 0x7fffffffffffffffllu+isneg; break;
+  case TYPE_U8:   maxval = 0xffllu; break;
+  case TYPE_U16:  maxval = 0xffffllu; break;
+  case TYPE_U32:  maxval = 0xffffffffllu; break;
+  case TYPE_U64:  maxval = 0xffffffffffffffffllu; break;
+  case TYPE_INT:  basetype = a->compiler->inttype; goto again;
+  case TYPE_UINT: basetype = a->compiler->uinttype; goto again;
   default:
     // all other type contexts results in int, uint, i64 or u64 (depending on value)
     if (a->compiler->intsize == 8) {
@@ -1543,6 +1615,7 @@ static void _type(typecheck_t* a, type_t** tp) {
     case TYPE_STRUCT:     return structtype(a, (structtype_t**)tp);
     case TYPE_REF:        return type(a, &((reftype_t*)(*tp))->elem);
     case TYPE_PTR:        return type(a, &((ptrtype_t*)(*tp))->elem);
+    case TYPE_OPTIONAL:   return type(a, &((opttype_t*)(*tp))->elem);
   }
   dlog("TODO %s %s", __FUNCTION__, nodekind_name((*tp)->kind));
 }
@@ -1612,11 +1685,16 @@ static void exprp(typecheck_t* a, expr_t** np) {
   case EXPR_BOOLLIT:
   case TYPE_VOID:
   case TYPE_BOOL:
-  case TYPE_INT:
   case TYPE_I8:
   case TYPE_I16:
   case TYPE_I32:
   case TYPE_I64:
+  case TYPE_INT:
+  case TYPE_U8:
+  case TYPE_U16:
+  case TYPE_U32:
+  case TYPE_U64:
+  case TYPE_UINT:
   case TYPE_F32:
   case TYPE_F64:
   case TYPE_ARRAY:
@@ -1647,13 +1725,16 @@ err_t typecheck(parser_t* p, unit_t* unit) {
   };
 
   enter_scope(&a);
+  enter_ns(&a, unit);
 
   for (u32 i = 0; i < unit->children.len; i++)
     stmt(&a, unit->children.v[i]);
 
+  leave_ns(&a);
   leave_scope(&a);
 
   ptrarray_dispose(&a.typectxstack, a.ma);
+  ptrarray_dispose(&a.nspath, a.ma);
 
   // update borrowed containers owned by p (in case they grew)
   p->scope = a.scope;

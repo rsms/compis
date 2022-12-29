@@ -27,6 +27,7 @@ typedef struct {
   maparray_t  pendingphis; // {[block_id] => map_t}
   maparray_t  freemaps;    // free map_t's (for defvars and pendingphis)
   bitset_t*   deadset;
+  ptrarray_t  dropstack;   // droparray_t*[]
 
   struct {
     ptrarray_t entries;
@@ -746,17 +747,22 @@ static void write_liveness_var(ircons_t* c, irval_t* owner, bool islive) {
 }
 
 
-static void owners_enter_scope(ircons_t* c) {
+static void owners_enter_scope(ircons_t* c, droparray_t* drops) {
   trace("\e[1;32m%s\e[0m", __FUNCTION__);
   if UNLIKELY(!ptrarray_push(&c->owners.entries, c->ma, (void*)(uintptr)c->owners.base))
     out_of_mem(c);
   c->owners.base = c->owners.entries.len - 1;
+
+  if UNLIKELY(!ptrarray_push(&c->dropstack, c->ma, drops))
+    out_of_mem(c);
 }
 
 static void owners_leave_scope(ircons_t* c) {
   trace("\e[1;32m%s\e[0m", __FUNCTION__);
   c->owners.entries.len = c->owners.base;
   c->owners.base = (u32)(uintptr)c->owners.entries.v[c->owners.base];
+
+  ptrarray_pop(&c->dropstack);
 }
 
 
@@ -811,7 +817,28 @@ static u32 owners_indexof(ircons_t* c, irval_t* v, u32 depth) {
 // }
 
 
+static void backpropagate_drop_to_ast(ircons_t* c, irval_t* v, irval_t* dropv) {
+  dlog("TODO backprop drop v%u", v->id);
+  assertf(c->dropstack.len, "drop outside owners scope");
+  droparray_t* drops = c->dropstack.v[c->dropstack.len - 1];
+
+  sym_t name = v->var.dst ? v->var.dst : v->var.src;
+  if (!name)
+    name = dropv->var.dst ? dropv->var.dst : dropv->var.src;
+  assertf(name != NULL,
+    "NOT IMPLEMENTED: %s of v%u without var name", __FUNCTION__, v->id);
+
+  // TODO FIXME ast_ma instead of ir_ma:
+  drop_t* d = droparray_alloc(drops, c->ir_ma, 1);
+  if UNLIKELY(!d)
+    return out_of_mem(c);
+  d->name = name;
+  d->type = v->type;
+}
+
+
 static void drop(ircons_t* c, irval_t* v, loc_t loc) {
+  irval_t* dropv;
   if (v->op == OP_MOVE && v->nuse == 0 && irval_block(c, v) == c->b) {
     // simplify MOVE;DROP in same block into DROP, e.g.
     //   v2 *int = MOVE v1
@@ -863,7 +890,6 @@ static void drop(ircons_t* c, irval_t* v, loc_t loc) {
     v->type = type_void;
     // note: arg 0 is already the value to drop
     v->var.src = v->var.dst;
-    trace("drop v%u (was v%u) in b%u", v->argv[0]->id, v->id, c->b->id);
 
     // Since declaration order matters (for drops), move the converted value to
     // the end of the current block to make sure this "MOVE -> DROP" optimization
@@ -873,14 +899,17 @@ static void drop(ircons_t* c, irval_t* v, loc_t loc) {
       assert(i != U32_MAX);
       ptrarray_move_to_end(&c->b->values, i);
     }
+    dropv = v;
+    v = v->argv[0];
   } else {
-    irval_t* dropv = pushval(c, c->b, OP_DROP, loc, type_void);
+    dropv = pushval(c, c->b, OP_DROP, loc, type_void);
     pusharg(dropv, v);
     dropv->var.src = v->var.dst;
     if (v->var.dst)
       comment(c, dropv, v->var.dst);
-    trace("drop v%u in b%u", v->id, c->b->id);
   }
+  trace("drop v%u in b%u", v->id, c->b->id);
+  backpropagate_drop_to_ast(c, v, dropv);
 }
 
 
@@ -1063,10 +1092,10 @@ static void move_owner(
       assert(type_isowner(replace_owner->type));
       u32 owners_index = owners_indexof(c, replace_owner, U32_MAX);
       if (owners_index != U32_MAX) {
-      assertf(owners_index != U32_MAX, "owner v%u not found", replace_owner->id);
-      c->owners.entries.v[owners_index] = new_owner;
-      deadset_add(c, &c->deadset, replace_owner->id);
-}
+        assertf(owners_index != U32_MAX, "owner v%u not found", replace_owner->id);
+        c->owners.entries.v[owners_index] = new_owner;
+        deadset_add(c, &c->deadset, replace_owner->id);
+      }
     } else {
       trace("\e[1;33m" "move owner: v%u -> v%u" "\e[0m", old_owner->id, new_owner->id);
       owners_add(c, new_owner);
@@ -1272,7 +1301,7 @@ static irval_t* assign(ircons_t* c, binop_t* n) {
 
 static irval_t* ret(ircons_t* c, irval_t* nullable v, loc_t loc) {
   c->b->kind = IR_BLOCK_RET;
-  if (v)
+  if (v && type_isowner(v->type))
     move_owner_outside(c, v);
   set_control(c, c->b, v);
   owners_unwind_all(c);
@@ -1353,7 +1382,8 @@ static irval_t* blockexpr0(ircons_t* c, block_t* n, bool isfunbody) {
         if (v->op != OP_MOVE)
           v = move_or_copy(c, v, cn->loc, NULL);
         // move to lvalue of block (NULL b/c unknown for now)
-        move_owner_outside(c, v);
+        if (type_isowner(v->type))
+          move_owner_outside(c, v);
       }
       commentf(c, v, "b%u", c->b->id);
       return v;
@@ -1392,7 +1422,7 @@ static irval_t* blockexpr(ircons_t* c, block_t* n) {
     seal_block(c, b);
   #endif
 
-  owners_enter_scope(c);
+  owners_enter_scope(c, &n->drops);
 
   irval_t* v = blockexpr0(c, n, /*isfunbody*/false);
 
@@ -1475,7 +1505,7 @@ static irval_t* ifexpr(ircons_t* c, ifexpr_t* n) {
   thenb->preds[0] = ifb; // then <- if
   start_block(c, thenb);
   seal_block(c, thenb);
-  owners_enter_scope(c);
+  owners_enter_scope(c, &n->thenb->drops);
   irval_t* thenv = blockexpr_noscope(c, n->thenb, /*isfunbody*/false);
   owners_unwind_scope(c, entry_deadset);
   owners_leave_scope(c);
@@ -1507,7 +1537,7 @@ static irval_t* ifexpr(ircons_t* c, ifexpr_t* n) {
     elseb->preds[0] = ifb; // else <- if
     start_block(c, elseb);
     seal_block(c, elseb);
-    owners_enter_scope(c);
+    owners_enter_scope(c, &n->elseb->drops);
     elsev = blockexpr_noscope(c, n->elseb, /*isfunbody*/false);
     owners_unwind_scope(c, entry_deadset);
     owners_leave_scope(c);
@@ -1853,7 +1883,7 @@ static irfun_t* fun(ircons_t* c, fun_t* n, irfun_t* nullable f) {
   seal_block(c, entryb); // entry block has no predecessors
 
   // enter function scope
-  owners_enter_scope(c);
+  owners_enter_scope(c, &n->body->drops);
 
   funtype_t* ft = (funtype_t*)n->type;
 
@@ -2038,11 +2068,16 @@ static irval_t* expr(ircons_t* c, void* expr_node) {
   case EXPR_FIELD:
   case TYPE_VOID:
   case TYPE_BOOL:
-  case TYPE_INT:
   case TYPE_I8:
   case TYPE_I16:
   case TYPE_I32:
   case TYPE_I64:
+  case TYPE_INT:
+  case TYPE_U8:
+  case TYPE_U16:
+  case TYPE_U32:
+  case TYPE_U64:
+  case TYPE_UINT:
   case TYPE_F32:
   case TYPE_F64:
   case TYPE_ARRAY:
@@ -2150,6 +2185,7 @@ static err_t ircons(
     buf_dispose(&c.tmpbuf[i]);
 
   ptrarray_dispose(&c.funqueue, c.ma);
+  ptrarray_dispose(&c.dropstack, c.ma);
   ptrarray_dispose(&c.owners.entries, c.ma);
   bitset_dispose(c.deadset, c.ma);
 

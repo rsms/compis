@@ -160,14 +160,11 @@ static void fun(fmtctx_t* ctx, const irfun_t* f) {
   if (ctx->out.len)
     CHAR('\n');
 
-  // PRINTF("fun %s" NS_SEP "%s(", ctx->pkgname, f->name);
-  // // TODO: include f->recvt name
-
   PRINT("fun ");
-  compiler_encode_name(ctx->c, &ctx->out, (node_t*)f->ast);
-  CHAR('(');
 
   if (f->ast) {
+    compiler_encode_name(ctx->c, &ctx->out, (node_t*)f->ast);
+    CHAR('(');
     funtype_t* ft = (funtype_t*)f->ast->type;
     for (u32 i = 0; i < ft->params.len; i++) {
       const local_t* param = ft->params.v[i];
@@ -176,14 +173,38 @@ static void fun(fmtctx_t* ctx, const irfun_t* f) {
     }
     PRINT(") ");
     node_fmt(&ctx->out, (node_t*)ft->result, 0);
-    CHAR(' ');
-    PRINT("{");
   } else {
-    PRINT(") {");
+    // best effort; name will be wrong for type functions (missing recvt)
+    PRINTF("%s" NS_SEP "%s(", ctx->c->pkgname, f->name);
+    if (f->blocks.len) {
+      const irblock_t* b = f->blocks.v[0];
+      for (u32 i = 0, n = 0; i < b->values.len; i++) {
+        const irval_t* v = b->values.v[i];
+        if (v->op == OP_ARG) {
+          if (n++) PRINT(", ");
+          node_fmt(&ctx->out, (node_t*)v->type, 0);
+        }
+      }
+    }
+    PRINT(") ");
+    const type_t* restype = type_void;
+    for (u32 i = 0; i < f->blocks.len; i++) {
+      const irblock_t* b = f->blocks.v[i];
+      if (b->kind == IR_BLOCK_RET) {
+        if (b->control)
+          restype = b->control->type;
+        break;
+      }
+    }
+    node_fmt(&ctx->out, (node_t*)restype, 0);
   }
-  for (u32 i = 0; i < f->blocks.len; i++)
-    block(ctx, f->blocks.v[i]);
-  PRINT("\n}");
+
+  if (f->blocks.len > 0) {
+    PRINT(" {");
+    for (u32 i = 0; i < f->blocks.len; i++)
+      block(ctx, f->blocks.v[i]);
+    PRINT("\n}");
+  }
 }
 
 
@@ -275,8 +296,11 @@ static void fun_dot(fmtctx_t* ctx, const irfun_t* f) {
 
 
 static void unit(fmtctx_t* ctx, const irunit_t* u) {
-  for (u32 i = 0; i < u->functions.len; i++)
-    fun(ctx, u->functions.v[i]);
+  for (u32 i = 0; i < u->functions.len; i++) {
+    const irfun_t* f = u->functions.v[i];
+    if (f->blocks.len > 0)
+      fun(ctx, f);
+  }
 }
 
 

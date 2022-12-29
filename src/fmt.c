@@ -303,7 +303,7 @@ static void fmt(abuf_t* s, const node_t* nullable n, u32 indent, u32 maxdepth) {
   case EXPR_INTLIT: {
     const intlit_t* lit = (const intlit_t*)n;
     u32 base = 10;
-    if (lit->type && lit->type->isunsigned)
+    if (lit->type && type_isunsigned(lit->type))
       base = 16;
     abuf_u64(s, lit->intval, base);
     break;
@@ -315,11 +315,16 @@ static void fmt(abuf_t* s, const node_t* nullable n, u32 indent, u32 maxdepth) {
 
   case TYPE_VOID:    abuf_str(s, "void"); break;
   case TYPE_BOOL:    abuf_str(s, "bool"); break;
-  case TYPE_INT:     abuf_str(s, ((type_t*)n)->isunsigned ? "uint" : "int"); break;
-  case TYPE_I8:      abuf_str(s, ((type_t*)n)->isunsigned ? "u8" : "i8"); break;
-  case TYPE_I16:     abuf_str(s, ((type_t*)n)->isunsigned ? "u16" : "i16"); break;
-  case TYPE_I32:     abuf_str(s, ((type_t*)n)->isunsigned ? "u32" : "i32"); break;
-  case TYPE_I64:     abuf_str(s, ((type_t*)n)->isunsigned ? "u64" : "i64"); break;
+  case TYPE_I8:      abuf_str(s, "i8"); break;
+  case TYPE_I16:     abuf_str(s, "i16"); break;
+  case TYPE_I32:     abuf_str(s, "i32"); break;
+  case TYPE_I64:     abuf_str(s, "i64"); break;
+  case TYPE_INT:     abuf_str(s, "int"); break;
+  case TYPE_U8:      abuf_str(s, "u8"); break;
+  case TYPE_U16:     abuf_str(s, "u16"); break;
+  case TYPE_U32:     abuf_str(s, "u32"); break;
+  case TYPE_U64:     abuf_str(s, "u64"); break;
+  case TYPE_UINT:    abuf_str(s, "uint"); break;
   case TYPE_F32:     abuf_str(s, "f32"); break;
   case TYPE_F64:     abuf_str(s, "f64"); break;
   case TYPE_STRUCT: return structtype(s, (const structtype_t*)n, indent, maxdepth);

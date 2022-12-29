@@ -10,10 +10,17 @@ bool cgen_init(cgen_t* g, compiler_t* c, memalloc_t out_ma) {
   memset(g, 0, sizeof(*g));
   g->compiler = c;
   buf_init(&g->outbuf, out_ma);
-  buf_init(&g->headbuf, out_ma);
-  if (!map_init(&g->typedefmap, g->compiler->ma, 32))
+
+  if UNLIKELY(!bufarray_alloc(&g->headbufs, g->compiler->ma, 1))
     return false;
+  buf_init(&g->headbufs.v[0], out_ma);
+
+  if (!map_init(&g->typedefmap, g->compiler->ma, 32)) {
+    bufarray_dispose(&g->headbufs, g->compiler->ma);
+    return false;
+  }
   if (!map_init(&g->tmpmap, g->compiler->ma, 32)) {
+    bufarray_dispose(&g->headbufs, g->compiler->ma);
     map_dispose(&g->typedefmap, g->compiler->ma);
     return false;
   }
@@ -24,8 +31,10 @@ bool cgen_init(cgen_t* g, compiler_t* c, memalloc_t out_ma) {
 void cgen_dispose(cgen_t* g) {
   map_dispose(&g->tmpmap, g->compiler->ma);
   map_dispose(&g->typedefmap, g->compiler->ma);
-  buf_dispose(&g->headbuf);
   buf_dispose(&g->outbuf);
+  for (u32 i = g->headbufs.len; i;)
+    buf_dispose(&g->headbufs.v[--i]);
+  bufarray_dispose(&g->headbufs, g->compiler->ma);
 }
 
 
@@ -257,63 +266,54 @@ static sym_t intern_typedef(
   sym_t* vp = (sym_t*)map_assign_ptr(&g->typedefmap, g->compiler->ma, key);
   if UNLIKELY(!vp)
     return seterr(g, ErrNoMem), sym__;
-  if (*vp)
+  if (*vp) {
+    // already generated
     return *vp;
+  }
 
-  buf_t headbuf = g->headbuf;
-  usize headoffs = g->headoffs;
+  dlog("%*.s%s %s %s",
+    (int)g->headnest*2, "", __FUNCTION__, nodekind_name(t->kind),
+    t->kind == TYPE_STRUCT && ((structtype_t*)t)->name ? ((structtype_t*)t)->name : "");
+
+  // save & reset lineno
   u32 lineno = g->lineno;
   g->lineno = 0;
 
-  if (g->headnest) {
-    // allocate buffer for potential nested call to intern_typedef by f
-    g->headbuf = buf_make(g->compiler->ma);
-    headbuf.len = 0;
-    g->headoffs = 0;
-  }
   // save & replace outbuf
   buf_t outbuf = g->outbuf;
-  g->outbuf = headbuf;
+  usize insert_offs = g->headoffs;
+  if (g->headnest) {
+    g->outbuf = buf_make(g->compiler->ma);
+  } else {
+    g->outbuf = g->headbufs.v[0];
+  }
+
   g->headnest++;
 
+  // generate, appending to g->outbuf
   if (startloc(g, t->loc))
     CHAR('\n');
-
   sym_t name = gentypename(g, t);
   *vp = name;
-
   gentypedef(g, t, name);
   PRINT("\n");
 
-  // restore outbuf
   g->headnest--;
-  headbuf = g->outbuf; // reload
+
+  // restore outbuf
+  buf_t buf = g->outbuf;
   g->outbuf = outbuf;
 
-  // in case this is a nested call to intern_typedef, insert into parent headbuf
   if (g->headnest) {
-    if (headoffs > 0 && g->outbuf.chars[headoffs - 1] != '\n') {
-      CHAR('\n');
-      headoffs++;
-    }
-    if (!buf_insert(&g->outbuf, headoffs, headbuf.p, headbuf.len))
+    if (!buf_insert(&g->outbuf, insert_offs, buf.p, buf.len))
       seterr(g, ErrNoMem);
-    g->headoffs = g->outbuf.len;
-    buf_dispose(&g->headbuf);
-  } else if (g->lineno != lineno) {
-    // // write "#line N" if it is not already in outbuf
-    // char tmp[24];
-    // usize len = snprintf(tmp, sizeof(tmp), "\n#line %u /*x*/\n", lineno);
-    // if (g->outbuf.len <= len ||
-    //   g->outbuf.chars[g->outbuf.len - len - 1] != '\n' ||
-    //   memcmp(&g->outbuf.chars[g->outbuf.len - len], tmp, len) != 0)
-    // {
-    //   PRINT(tmp);
-    // }
-    g->lineno = lineno;
+    buf_dispose(&buf);
+  } else {
+    g->headbufs.v[0] = buf;
   }
 
-  g->headbuf = headbuf;
+  g->headoffs = buf.len;
+  g->lineno = lineno;
 
   return name;
 }
@@ -354,8 +354,8 @@ static void fun(cgen_t* g, const fun_t* fun);
 
 static sym_t gen_struct_typename(cgen_t* g, const type_t* t) {
   const structtype_t* st = (const structtype_t*)t;
-  if (st->name)
-    return st->name;
+  if (st->mangledname)
+    return st->mangledname;
   char buf[strlen(ANON_PREFIX "structXXXXXXXX.")];
   return sym_snprintf(buf, sizeof(buf), ANON_PREFIX "struct%x", g->anon_idgen++);
 }
@@ -484,14 +484,18 @@ static void optzero(cgen_t* g, const type_t* elem, bool isshort) {
 
 static void type(cgen_t* g, const type_t* t) {
   switch (t->kind) {
-  case TYPE_INT:
-    return type(g, t->isunsigned ? g->compiler->uinttype : g->compiler->inttype);
   case TYPE_VOID:     PRINT("void"); break;
   case TYPE_BOOL:     PRINT("bool"); break;
-  case TYPE_I8:       PRINT(t->isunsigned ? "u8"  : "i8"); break;
-  case TYPE_I16:      PRINT(t->isunsigned ? "u16" : "i16"); break;
-  case TYPE_I32:      PRINT(t->isunsigned ? "u32" : "i32"); break;
-  case TYPE_I64:      PRINT(t->isunsigned ? "u64" : "i64"); break;
+  case TYPE_I8:       PRINT("i8"); break;
+  case TYPE_I16:      PRINT("i16"); break;
+  case TYPE_I32:      PRINT("i32"); break;
+  case TYPE_I64:      PRINT("i64"); break;
+  case TYPE_INT:      return type(g, g->compiler->inttype);
+  case TYPE_U8:       PRINT("u8"); break;
+  case TYPE_U16:      PRINT("u16"); break;
+  case TYPE_U32:      PRINT("u32"); break;
+  case TYPE_U64:      PRINT("u64"); break;
+  case TYPE_UINT:     return type(g, g->compiler->uinttype);
   case TYPE_F32:      PRINT("f32"); break;
   case TYPE_F64:      PRINT("f64"); break;
   case TYPE_FUN:      return funtype(g, (const funtype_t*)t, NULL);
@@ -528,6 +532,7 @@ static void expr_as_value(cgen_t* g, const expr_t* n) {
 
 static void zeroinit(cgen_t* g, const type_t* t) {
   t = unwind_aliastypes(t);
+again:
   switch (t->kind) {
   case TYPE_VOID:
     CHAR('0');
@@ -535,13 +540,28 @@ static void zeroinit(cgen_t* g, const type_t* t) {
   case TYPE_BOOL:
     PRINT("false");
     break;
+  case TYPE_UINT:
+    t = g->compiler->uinttype;
+    goto again;
   case TYPE_INT:
+    t = g->compiler->inttype;
+    goto again;
   case TYPE_I32:
-    PRINT(t->isunsigned ? "0u" : "0");
+    CHAR('0');
+    break;
+  case TYPE_U32:
+    PRINT("0u");
+    break;
+  case TYPE_I64:
+    PRINT("0ll");
+    break;
+  case TYPE_U64:
+    PRINT("0llu");
     break;
   case TYPE_I8:
+  case TYPE_U8:
   case TYPE_I16:
-  case TYPE_I64:
+  case TYPE_U16:
     CHAR('('); CHAR('('); type(g, t); PRINT(")0)");
     break;
   case TYPE_F32:
@@ -620,6 +640,7 @@ static void retexpr(cgen_t* g, const retexpr_t* n, const char* nullable tmp) {
 
 
 static void drop_begin(cgen_t* g, const expr_t* owner) {
+  // TODO FIXME
   PRINT(type_isopt(owner->type) ?
     INTERNAL_PREFIX "drop_opt(" :
     INTERNAL_PREFIX "drop(");
@@ -631,22 +652,136 @@ static void drop_end(cgen_t* g) {
 }
 
 
-static void cleanups(cgen_t* g, const ptrarray_t* cleanup) {
-  for (u32 i = 0; i < cleanup->len; i++) {
-    const expr_t* owner = cleanup->v[i];
+static void as_ptr(cgen_t* g, buf_t* buf, const type_t* t, const char* name) {
+  switch (t->kind) {
+    case TYPE_PTR:
+      buf_print(buf, name);
+      break;
+    case TYPE_OPTIONAL:
+      if (((const opttype_t*)t)->elem->kind == TYPE_PTR) {
+        buf_print(buf, name);
+      } else {
+        buf_push(buf, '&');
+        buf_print(buf, name);
+        buf_print(buf, ".v");
+      }
+      break;
+    default:
+      buf_push(buf, '&');
+      buf_print(buf, name);
+  }
+}
 
-    if (owner->kind == EXPR_CALL)
+
+// unwrap_ptr unwraps optional, ref and ptr
+// e.g. "?&T" => "&T" => "T"
+static const type_t* unwrap_ptr(const type_t* t) {
+  assertnotnull(t);
+  for (;;) switch (t->kind) {
+    case TYPE_OPTIONAL: t = assertnotnull(((opttype_t*)t)->elem); break;
+    case TYPE_REF:      t = assertnotnull(((reftype_t*)t)->elem); break;
+    case TYPE_PTR:      t = assertnotnull(((ptrtype_t*)t)->elem); break;
+    default:            return t;
+  }
+}
+
+
+static void gen_drop(cgen_t* g, const drop_t* d);
+
+
+static void gen_drop_custom(cgen_t* g, const drop_t* d, const type_t* bt) {
+  const char* mangledname = "?";
+  switch (bt->kind) {
+    case TYPE_STRUCT:
+      mangledname = ((structtype_t*)bt)->mangledname;
+      break;
+    default:
+      assertf(0, "unexpected %s", nodekind_name(bt->kind));
+  }
+
+  PRINTF("Nf%s4drop(", mangledname);
+  as_ptr(g, &g->outbuf, d->type, d->name);
+  PRINT(");");
+}
+
+
+static void gen_drop_struct_fields(cgen_t* g, const drop_t* d, const structtype_t* st) {
+  buf_t tmpbuf = buf_make(g->compiler->ma);
+  for (u32 i = st->fields.len; i; ) {
+    const local_t* f = st->fields.v[--i];
+    const type_t* ft = unwrap_ptr(f->type);
+
+    if (!type_isowner(ft))
       continue;
 
-    assert(nodekind_islocal(owner->kind));
-    const local_t* local = (const local_t*)owner;
+    buf_clear(&tmpbuf);
 
-    startlinex(g);
-    drop_begin(g, owner);
-    PRINT(local->name);
-    drop_end(g);
-    CHAR(';');
+    buf_push(&tmpbuf, '(');
+    as_ptr(g, &tmpbuf, d->type, d->name);
+    buf_printf(&tmpbuf, ")->%s", f->name);
+
+    if UNLIKELY(!buf_nullterm(&tmpbuf))
+      return seterr(g, ErrNoMem);
+
+    drop_t d2 = { .name = tmpbuf.chars, .type = f->type };
+    gen_drop(g, &d2);
   }
+  buf_dispose(&tmpbuf);
+}
+
+
+static void gen_drop_subowners(cgen_t* g, const drop_t* d, const type_t* bt) {
+  switch (bt->kind) {
+    case TYPE_STRUCT:
+      gen_drop_struct_fields(g, d, (structtype_t*)bt);
+      break;
+    default:
+      assertf(0, "unexpected %s", nodekind_name(bt->kind));
+  }
+}
+
+
+static void gen_drop_heapmem(cgen_t* g, const drop_t* d) {
+  startlinex(g);
+  PRINTF("/* free_heapmem(%s) */", d->name);
+}
+
+
+static void gen_drop(cgen_t* g, const drop_t* d) {
+  const type_t* bt = unwrap_ptr(d->type);
+  startlinex(g);
+
+  if (d->type->kind == TYPE_OPTIONAL) {
+    if (type_isptr(((opttype_t*)d->type)->elem)) {
+      PRINTF("if (%s) {", d->name);
+    } else {
+      PRINTF("if (%s.ok) {", d->name);
+    }
+
+    g->indent++;
+    startlinex(g);
+  }
+
+  if (bt->flags & NF_DROP)
+    gen_drop_custom(g, d, bt);
+
+  if (bt->flags & NF_SUBOWNERS)
+    gen_drop_subowners(g, d, bt);
+
+  if (type_isptr(d->type))
+    gen_drop_heapmem(g, d);
+
+  if (d->type->kind == TYPE_OPTIONAL) {
+    g->indent--;
+    startlinex(g);
+    CHAR('}');
+  }
+}
+
+
+static void gen_drops(cgen_t* g, const droparray_t* drops) {
+  for (u32 i = 0; i < drops->len; i++)
+    gen_drop(g, &drops->v[i]);
 }
 
 
@@ -732,11 +867,9 @@ static bool expr_contains_owners(const expr_t* n) {
 }
 
 
-static void cleanups_before_stmt(
-  cgen_t* g, const ptrarray_t* cleanup, const void* node)
-{
-  if (cleanup->len) {
-    cleanups(g, cleanup);
+static void drops_before_stmt(cgen_t* g, const droparray_t* drops, const void* node) {
+  if (drops->len) {
+    gen_drops(g, drops);
     startline(g, ((const node_t*)node)->loc);
   } else {
     startline_if_needed(g, ((const node_t*)node)->loc);
@@ -748,7 +881,7 @@ static void block(cgen_t* g, const block_t* n, blockflag_t fl) {
   g->scopenest++;
 
   if (n->flags & NF_RVALUE) {
-    if (n->cleanup.len == 0) {
+    if (n->drops.len == 0) {
       // simplify empty expression block
       if (n->children.len == 0) {
         PRINT("((void)0)");
@@ -783,8 +916,8 @@ static void block(cgen_t* g, const block_t* n, blockflag_t fl) {
     for (u32 i = 0, last = n->children.len - 1; i <= last; i++) {
       const expr_t* cn = n->children.v[i];
 
-      // before returning we need to generate cleanups, however the return value
-      // might use a local that is cleaned up, so we must generate cleanups _after_
+      // before returning we need to generate drops, however the return value
+      // might use a local that is cleaned up, so we must generate drops _after_
       // the return expression but _before_ returning.
       // To solve this we store the result of the return expression in a temporary.
       // Example:
@@ -809,18 +942,18 @@ static void block(cgen_t* g, const block_t* n, blockflag_t fl) {
           startline_if_needed(g, cn->loc);
           if (ret->value)
             expr(g, ret->value), CHAR(';');
-          cleanups(g, &n->cleanup);
-        } else if (n->cleanup.len && expr_contains_owners(cn)) {
+          gen_drops(g, &n->drops);
+        } else if (n->drops.len && expr_contains_owners(cn)) {
           startline_if_needed(g, cn->loc);
           fmt_tmp_id(tmp, sizeof(tmp), ret);
           // "T tmp = expr;"
           type(g, ret->type), PRINT(" const "), PRINT(tmp), PRINT(" = ");
           expr_or_zeroinit(g, ret->type, ret->value), CHAR(';');
-          cleanups(g, &n->cleanup);
+          gen_drops(g, &n->drops);
           startlinex(g);
           PRINT("return "), PRINT(tmp), CHAR(';');
         } else {
-          cleanups_before_stmt(g, &n->cleanup, cn);
+          drops_before_stmt(g, &n->drops, cn);
           retexpr(g, (const retexpr_t*)cn, NULL), CHAR(';');
         }
         break;
@@ -834,16 +967,16 @@ static void block(cgen_t* g, const block_t* n, blockflag_t fl) {
           x_semi_begin(g, cn->loc);
           if (cn->type == type_void) {
             expr(g, cn), CHAR(';');
-            cleanups(g, &n->cleanup);
-          } else if (n->cleanup.len && expr_contains_owners(cn)) {
+            gen_drops(g, &n->drops);
+          } else if (n->drops.len && expr_contains_owners(cn)) {
             fmt_tmp_id(tmp, sizeof(tmp), cn);
             // "T tmp = expr;"
             type(g, cn->type), PRINTF(" %s = ", tmp), expr(g, cn), CHAR(';');
-            cleanups(g, &n->cleanup);
+            gen_drops(g, &n->drops);
             startlinex(g);
             PRINT("return "), PRINT(tmp), CHAR(';');
           } else {
-            cleanups_before_stmt(g, &n->cleanup, cn);
+            drops_before_stmt(g, &n->drops, cn);
             PRINT("return "), expr(g, cn), CHAR(';');
           }
           break;
@@ -853,7 +986,7 @@ static void block(cgen_t* g, const block_t* n, blockflag_t fl) {
           // e.g. "fun foo(x int) int { { x } }"
           x_semi_begin(g, cn->loc);
           PRINT(block_resvar), PRINT(" = "), expr(g, cn), CHAR(';');
-          cleanups(g, &n->cleanup);
+          gen_drops(g, &n->drops);
           break;
         }
       }
@@ -866,7 +999,7 @@ static void block(cgen_t* g, const block_t* n, blockflag_t fl) {
       x_semi_end(g, startlens);
 
       if (i == last)
-        cleanups(g, &n->cleanup);
+        gen_drops(g, &n->drops);
     } // for
     g->indent--;
     if (start_lineno != g->lineno) {
@@ -875,8 +1008,8 @@ static void block(cgen_t* g, const block_t* n, blockflag_t fl) {
       CHAR(' ');
     }
   } else { // empty block
-    if (n->cleanup.len > 0) {
-      cleanups(g, &n->cleanup);
+    if (n->drops.len > 0) {
+      gen_drops(g, &n->drops);
       g->indent--;
       startlinex(g);
     } else {
@@ -907,7 +1040,9 @@ static void id(cgen_t* g, sym_t nullable name) {
 
 
 static void fun_name(cgen_t* g, const fun_t* fun) {
-  compiler_encode_name(g->compiler, &g->outbuf, (node_t*)fun);
+  // compiler_encode_name(g->compiler, &g->outbuf, (node_t*)fun);
+  // mangle(g->compiler, &g->outbuf, (node_t*)fun);
+  PRINT(assertnotnull(fun->mangledname));
 }
 
 
@@ -1185,7 +1320,7 @@ static void intlit(cgen_t* g, const intlit_t* n) {
     CHAR('('), type(g, n->type), CHAR(')');
 
   u64 u = n->intval;
-  if (!n->type->isunsigned && (u & 0x1000000000000000) ) {
+  if (!type_isunsigned(n->type) && (u & 0x1000000000000000) ) {
     u &= ~0x1000000000000000;
     CHAR('-');
   }
@@ -1196,7 +1331,7 @@ static void intlit(cgen_t* g, const intlit_t* n) {
 
   if (n->type->kind == TYPE_I64)
     PRINT("ll");
-  if (n->type->isunsigned)
+  if (type_isunsigned(n->type))
     CHAR('u');
 }
 
@@ -1547,11 +1682,16 @@ static void expr(cgen_t* g, const expr_t* n) {
   case EXPR_FIELD:
   case TYPE_VOID:
   case TYPE_BOOL:
-  case TYPE_INT:
   case TYPE_I8:
   case TYPE_I16:
   case TYPE_I32:
   case TYPE_I64:
+  case TYPE_INT:
+  case TYPE_U8:
+  case TYPE_U16:
+  case TYPE_U32:
+  case TYPE_U64:
+  case TYPE_UINT:
   case TYPE_F32:
   case TYPE_F64:
   case TYPE_ARRAY:
@@ -1626,7 +1766,6 @@ err_t cgen_generate(cgen_t* g, const unit_t* n) {
   // reset generator state
   g->err = 0;
   buf_clear(&g->outbuf);
-  buf_clear(&g->headbuf);
   map_clear(&g->typedefmap);
   map_clear(&g->tmpmap);
   g->anon_idgen = 0;
@@ -1646,13 +1785,22 @@ err_t cgen_generate(cgen_t* g, const unit_t* n) {
 
   usize headstart = g->outbuf.len;
 
+  for (u32 i = g->headbufs.len; i;)
+    buf_clear(&g->headbufs.v[--i]);
+  g->headbufs.len = 1;
+
   if (n->kind != NODE_UNIT)
     return ErrInvalid;
   unit(g, n);
 
-  if (g->headbuf.len > 0) {
-    if (!buf_insert(&g->outbuf, headstart, g->headbuf.p, g->headbuf.len))
+  for (u32 i = g->headbufs.len; i;) {
+    buf_t* buf = &g->headbufs.v[--i];
+    dlog("headbufs[%u].len = %zu", i, buf->len);
+    if (buf->len == 0)
+      continue;
+    if (!buf_insert(&g->outbuf, headstart, buf->p, buf->len))
       seterr(g, ErrNoMem);
+    headstart += buf->len;
   }
 
   // make sure outputs ends with LF

@@ -41,6 +41,11 @@
   _( TYPE_I32 )\
   _( TYPE_I64 )\
   _( TYPE_INT )\
+  _( TYPE_U8   )\
+  _( TYPE_U16  )\
+  _( TYPE_U32  )\
+  _( TYPE_U64  )\
+  _( TYPE_UINT )\
   _( TYPE_F32 )\
   _( TYPE_F64 )\
   /* user types */\
@@ -152,6 +157,8 @@ typedef u8 nodeflag_t;
 #define NF_CHECKED     ((nodeflag_t)1<< 3) // has been typecheck'ed (or doesn't need it)
 #define NF_UNKNOWN     ((nodeflag_t)1<< 4) // has or contains unresolved identifier
 #define NF_NAMEDPARAMS ((nodeflag_t)1<< 5) // function has named parameters
+#define NF_DROP        ((nodeflag_t)1<< 6) // type has drop() function
+#define NF_SUBOWNERS   ((nodeflag_t)1<< 7) // type has owning elements
 
 // NODEFLAGS_BUBBLE are flags that "bubble" (transfer) from children to parents
 #define NODEFLAGS_BUBBLE  NF_UNKNOWN
@@ -177,7 +184,6 @@ typedef struct {
   node_t;
   u64   size;
   u8    align;
-  bool  isunsigned; // only used by primitive types
   sym_t tid;
 } type_t;
 
@@ -188,8 +194,9 @@ typedef struct {
 
 typedef struct {
   type_t;
-  sym_t   name;
-  type_t* elem;
+  sym_t            name;
+  type_t*          elem;
+  node_t* nullable nsparent;
 } aliastype_t;
 
 typedef struct {
@@ -210,9 +217,11 @@ typedef struct {
 
 typedef struct {
   usertype_t;
-  sym_t nullable name;    // NULL if anonymous
-  ptrarray_t     fields;  // field_t*[]
-  bool           hasinit; // true if at least one field has an initializer
+  sym_t nullable   name;        // NULL if anonymous
+  char* nullable   mangledname; // mangled name, created in ast_ma by typecheck
+  ptrarray_t       fields;      // local_t*[]
+  node_t* nullable nsparent;
+  bool             hasinit;     // true if at least one field has an initializer
 } structtype_t;
 
 typedef struct {
@@ -240,6 +249,14 @@ typedef struct {
 } typedef_t;
 
 typedef struct {
+  sym_t   name;
+  type_t* type;
+} drop_t;
+
+typedef array_type(drop_t) droparray_t;
+DEF_ARRAY_TYPE_API(drop_t, droparray)
+
+typedef struct {
   stmt_t;
   type_t* nullable type;
 } expr_t;
@@ -262,9 +279,9 @@ typedef struct {
 
 typedef struct { // block is a declaration (stmt) or an expression depending on use
   expr_t;
-  ptrarray_t children;
-  ptrarray_t cleanup; // cleanup_t[]
-  scope_t    scope;
+  ptrarray_t  children;
+  droparray_t drops; // drop_t[]
+  scope_t     scope;
 } block_t;
 
 typedef struct {
@@ -301,11 +318,13 @@ typedef struct { // PARAM, VAR, LET
 
 typedef struct { // fun is a declaration (stmt) or an expression depending on use
   expr_t;
-  sym_t nullable    name;     // NULL if anonymous
-  loc_t             nameloc;  // source location of name
-  block_t* nullable body;     // NULL if function is a prototype
-  type_t* nullable  recvt;    // non-NULL for type functions (type of "this")
-  bool              nomangle; // export with plain "C" name instead of Co encoding
+  sym_t nullable    name;        // NULL if anonymous
+  loc_t             nameloc;     // source location of name
+  block_t* nullable body;        // NULL if function is a prototype
+  type_t* nullable  recvt;       // non-NULL for type functions (type of "this")
+  char* nullable    mangledname; // mangled name, created in ast_ma by typecheck
+  bool              nomangle;    // export with plain "C" name instead of Co encoding
+  node_t* nullable  nsparent;
 } fun_t;
 
 // ———————— END AST ————————
@@ -431,18 +450,22 @@ typedef struct {
   memalloc_t      ast_ma; // p->ast_ma
   scope_t         scope;
   err_t           err;
-  fun_t* nullable fun;  // current function
+  fun_t* nullable fun;    // current function
   type_t*         typectx;
   ptrarray_t      typectxstack;
+  ptrarray_t      nspath;
   #if DEBUG
     int traceindent;
   #endif
 } typecheck_t;
 
+typedef array_type(buf_t) bufarray_t;
+DEF_ARRAY_TYPE_API(buf_t, bufarray)
+
 typedef struct {
   compiler_t* compiler;
   buf_t       outbuf;
-  buf_t       headbuf;
+  bufarray_t  headbufs;
   usize       headoffs;
   u32         headnest;
   u32         inputid;
@@ -512,6 +535,7 @@ void compiler_set_triple(compiler_t*, const char* triple);
 void compiler_set_cachedir(compiler_t*, slice_t cachedir);
 err_t compiler_compile(compiler_t*, promise_t*, input_t*, buf_t* ofile);
 bool compiler_encode_name(const compiler_t*, buf_t* dst, const node_t*);
+bool compiler_mangle(const compiler_t*, buf_t* dst, const node_t*);
 
 // scanner
 bool scanner_init(scanner_t* s, compiler_t* c);
@@ -597,7 +621,11 @@ inline static bool type_isprim(const type_t* nullable t) {
 inline static bool type_isopt(const type_t* nullable t) {
   return assertnotnull(t)->kind == TYPE_OPTIONAL; }
 inline static bool type_isowner(const type_t* t) { // true for "*T" and "?*T"
-  return type_isptr(type_isopt(t) ? ((opttype_t*)t)->elem : t);
+  t = type_isopt(t) ? ((opttype_t*)t)->elem : t;
+  return ((t->flags & (NF_DROP | NF_SUBOWNERS)) != 0) | type_isptr(t);
+}
+inline static bool type_isunsigned(const type_t* t) {
+  return TYPE_U8 <= t->kind && t->kind <= TYPE_UINT;
 }
 inline static bool funtype_hasthis(const funtype_t* ft) {
   return ft->params.len && ((local_t*)ft->params.v[0])->isthis;
@@ -612,7 +640,6 @@ inline static bool types_iscompat(
   return dst == src || _types_iscompat(c, dst, src);
 }
 
-static sym_t nullable typeid(type_t* t);
 sym_t nullable _typeid(type_t*);
 inline static sym_t nullable typeid(type_t* t) { return t->tid ? t->tid : _typeid(t); }
 #define TYPEID_PREFIX(typekind)  ('A'+((typekind)-TYPE_VOID))
@@ -622,8 +649,9 @@ inline static sym_t nullable typeid(type_t* t) { return t->tid ? t->tid : _typei
 bool intern_usertype(compiler_t* c, usertype_t** tp);
 
 inline static const type_t* canonical_primtype(const compiler_t* c, const type_t* t) {
-  return (t->kind == TYPE_INT) ? (t->isunsigned ? c->uinttype : c->inttype)
-                               : t;
+  return t->kind == TYPE_UINT ? c->inttype :
+         t->kind == TYPE_INT ? c->uinttype :
+         t;
 }
 
 // expr_no_side_effects returns true if materializing n has no side effects
@@ -667,6 +695,7 @@ sym_t sym_intern(const void* key, usize keylen);
 sym_t sym_snprintf(char* buf, usize bufcap, const char* fmt, ...)ATTR_FORMAT(printf,3,4);
 extern sym_t sym__;    // "_"
 extern sym_t sym_this; // "this"
+extern sym_t sym_drop; // "drop"
 
 // scope
 void scope_clear(scope_t* s);

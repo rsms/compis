@@ -656,54 +656,78 @@ static bool struct_fieldset(parser_t* p, structtype_t* st) {
 
 static fun_t* fun(parser_t*, nodeflag_t, type_t* nullable recvt, bool requirename);
 
+// struct parser that allows inline "fun" definitions in struct
+// static type_t* type_struct1(parser_t* p, structtype_t* st) {
+//   while (currtok(p) != TRBRACE) {
+//     if (currtok(p) == TFUN)
+//       goto funs;
+//     st->hasinit |= struct_fieldset(p, st);
+//     if (currtok(p) != TSEMI)
+//       break;
+//     next(p);
+//   }
+//   goto end_fields_and_funs;
+// funs:
+//   assert(currtok(p) == TFUN);
+//   u32 first_fn_index = p->unit->children.len;
+//   fun_t* fn;
+//   for (;;) {
+//     fn = fun(p, 0, /*recvt*/(type_t*)st, /*requirename*/true);
+//     // Append the function to the unit, not to the structtype.
+//     // This simplifies both the general implementation and code generation.
+//     push_child(p, &p->unit->children, fn);
+//     bubble_flags(p->unit, fn);
+//     if (currtok(p) != TSEMI)
+//       break;
+//     next(p);
+//     if UNLIKELY(currtok(p) != TFUN) {
+//       if (currtok(p) != TID)
+//         break;
+//       fun_t* fn1 = p->unit->children.v[first_fn_index];
+//       error(p, NULL, "fields cannot be defined after type functions");
+//       if (loc_line(fn1->loc)) {
+//         help(p, fn1->loc, "define the field \"%s\" before this function",
+//           p->scanner.sym);
+//       } else if (loc_line(fn->loc)) {
+//         help(p, fn->loc, "a function was defined here");
+//       }
+//       fastforward(p, (const tok_t[]){ TRBRACE, 0 });
+//       break;
+//     }
+//   }
+// end_fields_and_funs:
+//   expect(p, TRBRACE, "to end struct");
+//   for (u32 i = 0; i < st->fields.len; i++) {
+//     local_t* f = st->fields.v[i];
+//     type_t* ft = assertnotnull(f->type);
+//     st->align = MAX(st->align, ft->align);
+//     st->size += ft->size;
+//   }
+//   st->size = ALIGN2(st->size, st->align);
+//   return (type_t*)st;
+// }
 
+
+// struct parser that prohibits inline "fun" definitions in struct
 static type_t* type_struct1(parser_t* p, structtype_t* st) {
+  bool reported_fun = false;
   while (currtok(p) != TRBRACE) {
-    if (currtok(p) == TFUN)
-      goto funs;
+    if UNLIKELY(currtok(p) == TFUN) {
+      if (!reported_fun) {
+        reported_fun = true;
+        error(p, NULL, "functions are not allowed in struct definitions");
+      }
+      fun(p, 0, /*recvt*/(type_t*)st, /*requirename*/false);
+      if (!expect(p, TSEMI, ""))
+        break;
+      continue;
+    }
     st->hasinit |= struct_fieldset(p, st);
     if (currtok(p) != TSEMI)
       break;
     next(p);
   }
-  goto end_fields_and_funs;
-funs:
-  assert(currtok(p) == TFUN);
-  u32 first_fn_index = p->unit->children.len;
-  fun_t* fn;
-  for (;;) {
-    fn = fun(p, 0, /*recvt*/(type_t*)st, /*requirename*/true);
-    // Append the function to the unit, not to the structtype.
-    // This simplifies both the general implementation and code generation.
-    push_child(p, &p->unit->children, fn);
-    bubble_flags(p->unit, fn);
-    if (currtok(p) != TSEMI)
-      break;
-    next(p);
-    if UNLIKELY(currtok(p) != TFUN) {
-      if (currtok(p) != TID)
-        break;
-      fun_t* fn1 = p->unit->children.v[first_fn_index];
-      error(p, NULL, "fields cannot be defined after type functions");
-      if (loc_line(fn1->loc)) {
-        help(p, fn1->loc, "define the field \"%s\" before this function",
-          p->scanner.sym);
-      } else if (loc_line(fn->loc)) {
-        help(p, fn->loc, "a function was defined here");
-      }
-      fastforward(p, (const tok_t[]){ TRBRACE, 0 });
-      break;
-    }
-  }
-end_fields_and_funs:
   expect(p, TRBRACE, "to end struct");
-  for (u32 i = 0; i < st->fields.len; i++) {
-    local_t* f = st->fields.v[i];
-    type_t* ft = assertnotnull(f->type);
-    st->align = MAX(st->align, ft->align);
-    st->size += ft->size;
-  }
-  st->size = ALIGN2(st->size, st->align);
   return (type_t*)st;
 }
 
@@ -1374,7 +1398,7 @@ static void args(parser_t* p, call_t* n, type_t* recvtype, nodeflag_t fl) {
   fl |= NF_RVALUE;
 
   for (u32 paramidx = 0; ;paramidx++) {
-    type_t* t = (paramidx < paramc) ? paramv[paramidx]->type : type_void;
+    // type_t* t = (paramidx < paramc) ? paramv[paramidx]->type : type_void;
 
     expr_t* arg;
     if (currtok(p) == TID) {
@@ -1384,7 +1408,6 @@ static void args(parser_t* p, call_t* n, type_t* recvtype, nodeflag_t fl) {
       // value
       arg = expr(p, PREC_COMMA, fl);
     }
-
 
     push_child(p, &n->args, arg);
     bubble_flags(n, arg);
@@ -1563,7 +1586,7 @@ static bool funtype_params(parser_t* p, funtype_t* ft, type_t* nullable recvt) {
         case TRPAREN:
         case TCOMMA:
         case TSEMI: // just a name, eg "x" in "(x, y)"
-          if (!ptrarray_push(&typeq, p->ast_ma, param))
+          if (!ptrarray_push(&typeq, p->ma, param))
             goto oom;
           break;
         default: // type follows name, eg "int" in "x int"
@@ -1642,14 +1665,14 @@ finish:
       bubble_flags(param, param->type);
     }
   }
-  ptrarray_dispose(&typeq, p->ast_ma);
+  ptrarray_dispose(&typeq, p->ma);
   if (isnametype)
     ft->flags |= NF_NAMEDPARAMS;
   return true;
 oom:
   out_of_mem(p);
 error:
-  ptrarray_dispose(&typeq, p->ast_ma);
+  ptrarray_dispose(&typeq, p->ma);
   return false;
 }
 
@@ -1659,7 +1682,6 @@ static funtype_t* funtype(parser_t* p, loc_t loc, type_t* nullable recvt) {
   ft->loc = loc;
   ft->size = p->scanner.compiler->ptrsize;
   ft->align = p->scanner.compiler->ptrsize;
-  ft->isunsigned = true;
   ft->result = type_void;
 
   // parameters

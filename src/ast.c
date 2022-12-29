@@ -235,13 +235,6 @@ static void repr_type(RPARAMS, const type_t* t) {
     flags(RARGS, (node_t*)t);
 
   switch (t->kind) {
-  case TYPE_INT:
-  case TYPE_I8:
-  case TYPE_I16:
-  case TYPE_I32:
-  case TYPE_I64:
-    PRINT(t->isunsigned ? " u" : " s");
-    break;
   case TYPE_STRUCT:
     repr_struct(RARGS, (const structtype_t*)t, isnew);
     break;
@@ -281,14 +274,14 @@ static void repr_type(RPARAMS, const type_t* t) {
 }
 
 
-static void cleanup(RPARAMS, const ptrarray_t* cleanup) {
-  if (cleanup->len == 0)
+static void drops(RPARAMS, const droparray_t* drops) {
+  if (drops->len == 0)
     return;
-  REPR_BEGIN('(', "cleanup");
-  for (u32 i = 0; i < cleanup->len; i++) {
-    const local_t* owner = cleanup->v[i];
+  REPR_BEGIN('(', "drops");
+  for (u32 i = 0; i < drops->len; i++) {
+    drop_t* d = &drops->v[i];
     CHAR(' ');
-    PRINT(owner->name);
+    PRINT(d->name);
   }
   REPR_END(')');
 }
@@ -371,7 +364,7 @@ static void repr(RPARAMS, const node_t* nullable n) {
   case EXPR_BLOCK: {
     const block_t* b = (const block_t*)n;
     repr_nodearray(RARGS, &b->children);
-    cleanup(RARGS, &b->cleanup);
+    drops(RARGS, &b->drops);
     break;
   }
 
@@ -382,7 +375,7 @@ static void repr(RPARAMS, const node_t* nullable n) {
   case EXPR_INTLIT: {
     u64 u = ((intlit_t*)n)->intval;
     CHAR(' ');
-    if (!((intlit_t*)n)->type->isunsigned && (u & 0x1000000000000000)) {
+    if (!type_isunsigned(((intlit_t*)n)->type) && (u & 0x1000000000000000)) {
       u &= ~0x1000000000000000;
       CHAR('-');
     }

@@ -238,6 +238,7 @@ static err_t compile_co_to_c(compiler_t* c, input_t* input, const char* cfile) {
     goto end_parser;
   }
 
+
   // analyze (ir)
   dlog("————————— analyze —————————");
   memalloc_t ir_ma = ast_ma;
@@ -245,8 +246,14 @@ static err_t compile_co_to_c(compiler_t* c, input_t* input, const char* cfile) {
     dlog("analyze: err=%s", err_str(err));
     goto end_parser;
   }
+  dlog("————————— AST —————————"); // for drops
+  if ((err = dump_ast((node_t*)unit)))
+    goto end_parser;
+  if (c->errcount > errcount) {
+    err = ErrCanceled;
+    goto end_parser;
+  }
 
-  // dlog("abort");abort(); // XXX
 
   // generate C code
   dlog("————————— cgen —————————");
@@ -263,6 +270,8 @@ static err_t compile_co_to_c(compiler_t* c, input_t* input, const char* cfile) {
     err = writefile(cfile, 0660, buf_slice(g.outbuf));
   }
   cgen_dispose(&g);
+
+  // dlog("abort");abort(); // XXX
 
 end_parser:
   parser_dispose(&parser);

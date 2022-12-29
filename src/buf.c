@@ -155,6 +155,14 @@ bool buf_print_u64(buf_t* b, u64 n, u32 base) {
 }
 
 
+bool buf_print_u32(buf_t* b, u32 n, u32 base) {
+  if UNLIKELY(!buf_reserve(b, 32))
+    return false;
+  b->len += sfmtu64(b->chars + b->len, (u64)n, base);
+  return true;
+}
+
+
 bool buf_print_leb128_u32(buf_t* b, u32 n) {
   if (!buf_reserve(b, LEB128_NBYTE_32))
     return false;

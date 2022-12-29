@@ -252,80 +252,34 @@
 // type MyInt MyInt2
 // type MyInt2 int
 
+
+// trait Drop {
+//   fun drop(mut this) void
+// }
+
+
 fun printu32(u32) void
+
+type Stuff {
+  x int
+}
 
 type Thing {
   x, y, z u32 = 3, 4, 5
+  stuff ?Stuff
 }
 
 fun Thing.drop(mut this) {
   printu32(2)
 }
 
+fun Stuff.drop(mut this) {
+  printu32(3)
+}
+
 fun foo(x, y int) int {
-  // printu32(1)
+  printu32(1)
   let a = Thing(x: u32(x))
-  // int(a.x) + y
   0
 }
-
-
-/// TODO ownership test these:
-
-/*
-fun ownership_drop_in_scope(x *int, y *int) *int {
-  b0:
-    v0  *int = ARG    0         # [1] x {dst=x}           examples/foo.co:21:29
-    v1  *int = ARG    1         # [1] y {dst=y}           examples/foo.co:21:32
-    v2  *int = MOVE   v0        # [0] {dst=k src=x}       examples/foo.co:23:5
-    DROP   v0                   # [0]                     examples/foo.co:25:3
-  ret v1
-}
-*/
-
-// fun ir_params(x, y int) int {
-//   x * y
-// }
-
-// fun ir_redundant_local(x, y int) int {
-//   var b = y // storage unused
-//   x * b     // b just points to y, not local storage
-// }
-
-// fun ir_if_then_result_ret(x, y int) int {
-//   if x > y {
-//     return x - y
-//   }
-//   x + y
-// }
-
-// fun ir_cond_assign(x, y int) int {
-//   var a = x
-//   if x > y {
-//     a = y
-//     if x < y {
-//       a = x
-//     }
-//   }
-//   a
-// }
-
-// fun ir_if_else_result(x, y int) int {
-//   if x > y {
-//     x - y
-//   } else {
-//     x + y
-//   }
-// }
-
-// fun ir_if_else_result2(x, y int) int {
-//   2 * if x > y {
-//     x - y
-//   } else {
-//     x + y + 2 + 4 + 1
-//   }
-// }
-
-// fun ownership_drop_param(x *int) {
-// }
 

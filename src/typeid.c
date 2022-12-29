@@ -10,14 +10,14 @@
 static void append(buf_t* buf, type_t* t);
 
 
-static nodekind_t tidc_nodekind(char c) {
-  switch (c) {
-  #define _(NAME) case TYPEID_PREFIX(NAME): return NAME;
-  FOREACH_NODEKIND_TYPE(_)
-  #undef _
-  }
-  return NODE_BAD;
-}
+// static nodekind_t tidc_nodekind(char c) {
+//   switch (c) {
+//   #define _(NAME) case TYPEID_PREFIX(NAME): return NAME;
+//   FOREACH_NODEKIND_TYPE(_)
+//   #undef _
+//   }
+//   return NODE_BAD;
+// }
 
 
 static void funtype(buf_t* buf, funtype_t* t) {
@@ -45,7 +45,7 @@ static void aliastype(buf_t* buf, aliastype_t* t) {
   usize namelen = strlen(t->name);
   buf_print_leb128_u32(buf, (u32)namelen);
   buf_append(buf, t->name, namelen);
-  // append(buf, assertnotnull(t->elem));
+  // TODO: fully-qualified name
 }
 
 
