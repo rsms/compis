@@ -61,8 +61,6 @@
   _( TYPE_UNRESOLVED ) /* named type not yet resolved */ \
 // end FOREACH_NODEKIND_TYPE
 
-#define NS_SEP "·" // U+00B7 MIDDLE DOT (UTF8: "\xC2\xB7")
-
 typedef u8 tok_t;
 enum tok {
   #define _(NAME, ...) NAME,
@@ -534,7 +532,7 @@ void compiler_dispose(compiler_t*);
 void compiler_set_triple(compiler_t*, const char* triple);
 void compiler_set_cachedir(compiler_t*, slice_t cachedir);
 err_t compiler_compile(compiler_t*, promise_t*, input_t*, buf_t* ofile);
-bool compiler_encode_name(const compiler_t*, buf_t* dst, const node_t*);
+bool compiler_fully_qualified_name(const compiler_t*, buf_t* dst, const node_t*);
 bool compiler_mangle(const compiler_t*, buf_t* dst, const node_t*);
 
 // scanner

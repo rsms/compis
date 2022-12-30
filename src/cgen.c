@@ -73,8 +73,9 @@ static void _error(cgen_t* g, origin_t origin, const char* fmt, ...) {
 #endif
 
 
-#define INTERNAL_PREFIX "_c0" NS_SEP
-#define ANON_PREFIX     "_" NS_SEP
+#define INTERNAL_SEP    "·" // U+00B7 MIDDLE DOT (UTF8: "\xC2\xB7")
+#define INTERNAL_PREFIX "_c0" INTERNAL_SEP
+#define ANON_PREFIX     "_" INTERNAL_SEP
 #define ANON_FMT        ANON_PREFIX "%x"
 
 #define CHAR(ch)             ( buf_push(&g->outbuf, (ch)), ((void)0) )

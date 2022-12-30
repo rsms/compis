@@ -163,7 +163,7 @@ static void fun(fmtctx_t* ctx, const irfun_t* f) {
   PRINT("fun ");
 
   if (f->ast) {
-    compiler_encode_name(ctx->c, &ctx->out, (node_t*)f->ast);
+    compiler_fully_qualified_name(ctx->c, &ctx->out, (node_t*)f->ast);
     CHAR('(');
     funtype_t* ft = (funtype_t*)f->ast->type;
     for (u32 i = 0; i < ft->params.len; i++) {
@@ -175,7 +175,7 @@ static void fun(fmtctx_t* ctx, const irfun_t* f) {
     node_fmt(&ctx->out, (node_t*)ft->result, 0);
   } else {
     // best effort; name will be wrong for type functions (missing recvt)
-    PRINTF("%s" NS_SEP "%s(", ctx->c->pkgname, f->name);
+    PRINTF("%s.%s(", ctx->c->pkgname, f->name);
     if (f->blocks.len) {
       const irblock_t* b = f->blocks.v[0];
       for (u32 i = 0, n = 0; i < b->values.len; i++) {
@@ -218,7 +218,7 @@ static void block_dot_nodes(fmtctx_t* ctx, const char* ns, const irblock_t* b) {
     b_bgcolor = "#77ccff";
   }
 
-  PRINTF("  %sb%u [shape=\"none\", label=<<table border=\"0\" cellborder=\"1\" cellspacing=\"0\"><tr><td bgcolor=\"%s\" align=\"center\" colspan=\"1\"><font color=\"black\">%u</font></td></tr>",
+  PRINTF("  \"%s.b%u\" [shape=\"none\", label=<<table border=\"0\" cellborder=\"1\" cellspacing=\"0\"><tr><td bgcolor=\"%s\" align=\"center\" colspan=\"1\"><font color=\"black\">%u</font></td></tr>",
     ns, b->id, b_bgcolor, b->id);
 
   if (b->values.len) {
@@ -262,20 +262,22 @@ static void block_dot_edges(fmtctx_t* ctx, const char* ns, const irblock_t* b) {
   switch (b->kind) {
     case IR_BLOCK_GOTO: {
       assertf(b->succs[0], "b%u", b->id);
-      PRINTF("  %sb%u -> %sb%u;\n", ns, b->id, ns, b->succs[0]->id);
+      PRINTF("  \"%s.b%u\" -> \"%s.b%u\";\n", ns, b->id, ns, b->succs[0]->id);
       break;
     }
     case IR_BLOCK_SWITCH: {
       assertnotnull(b->succs[0]);
       assertnotnull(b->succs[1]);
-      PRINTF("  %sb%u -> %sb%u [label=\" 0 \"];\n", ns, b->id, ns, b->succs[0]->id);
-      PRINTF("  %sb%u -> %sb%u [label=\" 1 \"];\n", ns, b->id, ns, b->succs[1]->id);
+      PRINTF("  \"%s.b%u\" -> \"%s.b%u\" [label=\" 0 \"];\n",
+        ns, b->id, ns, b->succs[0]->id);
+      PRINTF("  \"%s.b%u\" -> \"%s.b%u\" [label=\" 1 \"];\n",
+        ns, b->id, ns, b->succs[1]->id);
       break;
     }
     // case IR_BLOCK_RET: {
-    //   // PRINTF("  %sexit [style=invis];\n", ns);
-    //   PRINTF("  %sexit [label=end, shape=plain];\n", ns);
-    //   PRINTF("  %sb%u -> %sexit [label=\"return\"];\n", ns, b->id, ns);
+    //   // PRINTF("  \"%s.exit\" [style=invis];\n", ns);
+    //   PRINTF("  \"%s.exit\" [label=end, shape=plain];\n", ns);
+    //   PRINTF("  \"%s.b%u\" -> \"%sexit\" [label=\"return\"];\n", ns, b->id, ns);
     //   break;
     // }
   }
@@ -283,15 +285,20 @@ static void block_dot_edges(fmtctx_t* ctx, const char* ns, const irblock_t* b) {
 
 
 static void fun_dot(fmtctx_t* ctx, const irfun_t* f) {
+  buf_t namebuf = buf_make(ctx->out.ma);
+  compiler_fully_qualified_name(ctx->c, &namebuf, (node_t*)f->ast);
+  buf_nullterm(&namebuf);
+  const char* name = namebuf.chars;
   if (f->blocks.len == 0) {
     // declaration only, no body
-    PRINTF("  %sb0 [label=\"decl-only\";shape=none];\n", f->name);
+    PRINTF("  \"%s.b0\" [label=\"decl-only\";shape=none];\n", name);
   } else {
     for (u32 i = 0; i < f->blocks.len; i++)
-      block_dot_nodes(ctx, f->name, f->blocks.v[i]);
+      block_dot_nodes(ctx, name, f->blocks.v[i]);
     for (u32 i = 0; i < f->blocks.len; i++)
-      block_dot_edges(ctx, f->name, f->blocks.v[i]);
+      block_dot_edges(ctx, name, f->blocks.v[i]);
   }
+  buf_dispose(&namebuf);
 }
 
 
@@ -365,9 +372,11 @@ bool irfmt_dot(const compiler_t* c, buf_t* out, const irunit_t* u) {
       buf_printf(&ctx.out,
         "subgraph cluster%p {\n"
         "penwidth=1; color=\"#ffffff77\"; margin=4;\n"
-        "label=\"%s\"; labeljust=l;\n"
         "fontcolor=\"#ffffff77\"; " DOT_FONT " fontsize=14;\n"
-        , f, f->name);
+        "labeljust=l; label=\""
+        , f);
+      compiler_fully_qualified_name(ctx.c, &ctx.out, (node_t*)f->ast);
+      buf_print(&ctx.out, "\"\n");
     }
     fun_dot(&ctx, f);
     if (nfuns > 1)

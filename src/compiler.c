@@ -105,7 +105,7 @@ void compiler_dispose(compiler_t* c) {
 // name encoding
 
 
-static bool encode_recv_name(const compiler_t* c, buf_t* buf, const type_t* recv) {
+static bool fqn_recv(const compiler_t* c, buf_t* buf, const type_t* recv) {
   if (recv->kind == TYPE_STRUCT) {
     if (((structtype_t*)recv)->name)
       return buf_print(buf, ((structtype_t*)recv)->name);
@@ -115,23 +115,24 @@ static bool encode_recv_name(const compiler_t* c, buf_t* buf, const type_t* recv
 }
 
 
-static bool encode_fun_name(const compiler_t* c, buf_t* buf, const fun_t* fn) {
+static bool fqn_fun(const compiler_t* c, buf_t* buf, const fun_t* fn) {
   if (!fn->nomangle) {
     buf_print(buf, c->pkgname);
-    buf_print(buf, NS_SEP);
+    buf_push(buf, '.');
     if (fn->recvt) {
-      encode_recv_name(c, buf, fn->recvt);
-      buf_print(buf, NS_SEP);
+      fqn_recv(c, buf, fn->recvt);
+      buf_push(buf, '.');
     }
   }
   return buf_print(buf, fn->name);
 }
 
 
-bool compiler_encode_name(const compiler_t* c, buf_t* buf, const node_t* n) {
+bool compiler_fully_qualified_name(const compiler_t* c, buf_t* buf, const node_t* n) {
+  // TODO: use n->nsparent when available
   buf_reserve(buf, 32);
   if (n->kind == EXPR_FUN)
-    return encode_fun_name(c, buf, (fun_t*)n);
+    return fqn_fun(c, buf, (fun_t*)n);
   assertf(0,"TODO global variable %s", nodekind_name(n->kind));
   return buf_printf(buf, "TODO_%s_%s", __FUNCTION__, nodekind_name(n->kind));
 }
