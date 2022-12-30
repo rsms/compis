@@ -27,6 +27,7 @@ bool map_reserve(map_t* m, memalloc_t ma, u32 additional_space);
 
 mapent_t* nullable map_assign_ent(
   map_t* m, memalloc_t ma, const void* key, usize keysize);
+void map_del_ent(map_t* m, mapent_t* ent);
 
 void** nullable map_assign(map_t* m, memalloc_t ma, const void* key, usize keysize);
 void** nullable map_lookup(const map_t* m, const void* key, usize keysize);
@@ -41,6 +42,10 @@ bool map_del_ptr(map_t* m, const void* key);
 //   dlog("%*.s => %zx", (int)e->keysize, (const char*)e->key, e->value);
 inline static const mapent_t* nullable map_it(const map_t* m) { return m->entries-1; }
 bool map_itnext(const map_t* m, const mapent_t** ep);
+inline static mapent_t* nullable map_it_mut(map_t* m) { return m->entries-1; }
+inline static bool map_itnext_mut(map_t* m, mapent_t** ep) {
+  return map_itnext(m, (const mapent_t**)ep);
+}
 
 // MAP_STORAGE_X calculates the number of bytes needed to store len entries
 #define MAP_STORAGE_X(len) \

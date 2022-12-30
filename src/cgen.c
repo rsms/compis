@@ -10,17 +10,11 @@ bool cgen_init(cgen_t* g, compiler_t* c, memalloc_t out_ma) {
   memset(g, 0, sizeof(*g));
   g->compiler = c;
   buf_init(&g->outbuf, out_ma);
+  buf_init(&g->headbuf, out_ma);
 
-  if UNLIKELY(!bufarray_alloc(&g->headbufs, g->compiler->ma, 1))
+  if (!map_init(&g->typedefmap, g->compiler->ma, 32))
     return false;
-  buf_init(&g->headbufs.v[0], out_ma);
-
-  if (!map_init(&g->typedefmap, g->compiler->ma, 32)) {
-    bufarray_dispose(&g->headbufs, g->compiler->ma);
-    return false;
-  }
   if (!map_init(&g->tmpmap, g->compiler->ma, 32)) {
-    bufarray_dispose(&g->headbufs, g->compiler->ma);
     map_dispose(&g->typedefmap, g->compiler->ma);
     return false;
   }
@@ -32,9 +26,7 @@ void cgen_dispose(cgen_t* g) {
   map_dispose(&g->tmpmap, g->compiler->ma);
   map_dispose(&g->typedefmap, g->compiler->ma);
   buf_dispose(&g->outbuf);
-  for (u32 i = g->headbufs.len; i;)
-    buf_dispose(&g->headbufs.v[--i]);
-  bufarray_dispose(&g->headbufs, g->compiler->ma);
+  buf_dispose(&g->headbuf);
 }
 
 
@@ -286,7 +278,7 @@ static sym_t intern_typedef(
   if (g->headnest) {
     g->outbuf = buf_make(g->compiler->ma);
   } else {
-    g->outbuf = g->headbufs.v[0];
+    g->outbuf = g->headbuf;
   }
 
   g->headnest++;
@@ -310,7 +302,7 @@ static sym_t intern_typedef(
       seterr(g, ErrNoMem);
     buf_dispose(&buf);
   } else {
-    g->headbufs.v[0] = buf;
+    g->headbuf = buf;
   }
 
   g->headoffs = buf.len;
@@ -737,7 +729,8 @@ static void gen_drop_subowners(cgen_t* g, const drop_t* d, const type_t* bt) {
       gen_drop_struct_fields(g, d, (structtype_t*)bt);
       break;
     default:
-      assertf(0, "unexpected %s", nodekind_name(bt->kind));
+      if (!type_isprim(bt))
+        assertf(0, "NOT IMPLEMENTED %s", nodekind_name(bt->kind));
   }
 }
 
@@ -766,8 +759,7 @@ static void gen_drop(cgen_t* g, const drop_t* d) {
   if (bt->flags & NF_DROP)
     gen_drop_custom(g, d, bt);
 
-  if (bt->flags & NF_SUBOWNERS)
-    gen_drop_subowners(g, d, bt);
+  gen_drop_subowners(g, d, bt);
 
   if (type_isptr(d->type))
     gen_drop_heapmem(g, d);
@@ -1786,22 +1778,15 @@ err_t cgen_generate(cgen_t* g, const unit_t* n) {
 
   usize headstart = g->outbuf.len;
 
-  for (u32 i = g->headbufs.len; i;)
-    buf_clear(&g->headbufs.v[--i]);
-  g->headbufs.len = 1;
+  buf_clear(&g->headbuf);
 
   if (n->kind != NODE_UNIT)
     return ErrInvalid;
   unit(g, n);
 
-  for (u32 i = g->headbufs.len; i;) {
-    buf_t* buf = &g->headbufs.v[--i];
-    dlog("headbufs[%u].len = %zu", i, buf->len);
-    if (buf->len == 0)
-      continue;
-    if (!buf_insert(&g->outbuf, headstart, buf->p, buf->len))
+  if (g->headbuf.len > 0) {
+    if (!buf_insert(&g->outbuf, headstart, g->headbuf.p, g->headbuf.len))
       seterr(g, ErrNoMem);
-    headstart += buf->len;
   }
 
   // make sure outputs ends with LF

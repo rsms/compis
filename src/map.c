@@ -257,6 +257,34 @@ void** nullable map_lookup(const map_t* m, const void* key, usize keysize) {
 }
 
 
+static void map_del_ent1(map_t* m, mapent_t* ent) {
+  m->len--;
+  ent->key = DELMARK;
+  ent->keysize = 0;
+}
+
+
+void map_del_ent(map_t* m, mapent_t* ent) {
+  #if DEBUG
+  {
+    // can't use lookup since key might be ptr or bytes; we don't know
+    bool ok = false;
+    for (const mapent_t* e = map_it(m); map_itnext(m, &e); ) {
+      if (e == ent) {
+        ok = true;
+        break;
+      }
+    }
+    assertf(ok, "ent not in map");
+  }
+  #endif
+
+  if (m->len == 1)
+    return map_clear(m); // clear all DELMARK entries
+  map_del_ent1(m, ent);
+}
+
+
 static bool map_del1(map_t* m, void* nullable vp) {
   if UNLIKELY(vp == NULL)
     return false;
@@ -265,9 +293,7 @@ static bool map_del1(map_t* m, void* nullable vp) {
     return true;
   }
   mapent_t* ent = vp - offsetof(mapent_t,value);
-  m->len--;
-  ent->key = DELMARK;
-  ent->keysize = 0;
+  map_del_ent1(m, ent);
   return true;
 }
 

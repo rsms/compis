@@ -573,9 +573,7 @@ static void local_var(typecheck_t* a, local_t* n) {
 }
 
 
-static void structtype(typecheck_t* a, structtype_t** np) {
-  structtype_t* st = *np;
-
+static void structtype(typecheck_t* a, structtype_t* st) {
   st->nsparent = a->nspath.v[a->nspath.len - 1];
 
   u8  align = 0;
@@ -590,8 +588,17 @@ static void structtype(typecheck_t* a, structtype_t** np) {
     local_t* f = st->fields.v[i];
     local(a, f);
     assertnotnull(f->type);
-    if (type_isowner(f->type))
+    if (type_isowner(f->type)) {
+      // note: this is optimistic; types aren't marked "DROP" until a
+      // custom drop function is implemented, so at this point f->type
+      // may be "not owner" since we haven't visited it's drop function yet.
+      // e.g.
+      //   type A {}
+      //   type B { a A }         <—— currently checking B
+      //   fun A.drop(mut this){} <—— not yet visited
+      // For this reason, we add struct types to a.postanalyze later on.
       st->flags |= NF_SUBOWNERS;
+    }
     f->offset = ALIGN2(size, f->type->align);
     size = f->offset + f->type->size;
     align = MAX(align, f->type->align); // alignment of struct is max alignment of fields
@@ -601,8 +608,12 @@ static void structtype(typecheck_t* a, structtype_t** np) {
 
   st->align = align;
   st->size = ALIGN2(size, (u64)align);
-}
 
+  if (!(st->flags & NF_SUBOWNERS)) {
+    if UNLIKELY(!map_assign_ptr(&a->postanalyze, a->ma, st))
+      out_of_mem(a);
+  }
+}
 
 
 static void funtype1(typecheck_t* a, funtype_t** np, type_t* thistype) {
@@ -1612,7 +1623,7 @@ static void _type(typecheck_t* a, type_t** tp) {
     case TYPE_UNRESOLVED: return unresolvedtype(a, (unresolvedtype_t**)tp);
     case TYPE_ALIAS:      return aliastype(a, (aliastype_t**)tp);
     case TYPE_FUN:        return funtype(a, (funtype_t**)tp);
-    case TYPE_STRUCT:     return structtype(a, (structtype_t**)tp);
+    case TYPE_STRUCT:     return structtype(a, (structtype_t*)*tp);
     case TYPE_REF:        return type(a, &((reftype_t*)(*tp))->elem);
     case TYPE_PTR:        return type(a, &((ptrtype_t*)(*tp))->elem);
     case TYPE_OPTIONAL:   return type(a, &((opttype_t*)(*tp))->elem);
@@ -1712,6 +1723,56 @@ static void exprp(typecheck_t* a, expr_t** np) {
 }
 
 
+static void postanalyze_any(typecheck_t* a, node_t* n);
+
+
+static void postanalyze_dependency(typecheck_t* a, void* np) {
+  node_t* n = np;
+  if (n->kind != TYPE_STRUCT)
+    return;
+  void** vp = map_assign_ptr(&a->postanalyze, a->ma, n);
+  if UNLIKELY(!vp)
+    return out_of_mem(a);
+  if (*vp == (void*)1)
+    return;
+  postanalyze_any(a, n);
+}
+
+
+static void postanalyze_structtype(typecheck_t* a, structtype_t* st) {
+  for (u32 i = 0; i < st->fields.len; i++) {
+    local_t* f = st->fields.v[i];
+    postanalyze_dependency(a, f->type);
+    if (type_isowner(f->type))
+      st->flags |= NF_SUBOWNERS;
+  }
+}
+
+
+static void postanalyze_any(typecheck_t* a, node_t* n) {
+  trace("postanalyze %s %s", nodekind_name(n->kind), fmtnode(a, 0, n));
+  switch (n->kind) {
+  case TYPE_STRUCT: return postanalyze_structtype(a, (structtype_t*)n);
+  case TYPE_ALIAS:  return postanalyze_any(a, (node_t*)((aliastype_t*)n)->elem);
+  }
+}
+
+
+static void postanalyze(typecheck_t* a) {
+  // Keep going until map only has null entries.
+  // postanalyze_any may cause additions to the map.
+again:
+  mapent_t* e = map_it_mut(&a->postanalyze);
+  while (map_itnext_mut(&a->postanalyze, &e)) {
+    if (e->value != (void*)1) {
+      e->value = (void*)1;
+      postanalyze_any(a, (node_t*)e->key);
+      goto again;
+    }
+  }
+}
+
+
 err_t typecheck(parser_t* p, unit_t* unit) {
   scope_clear(&p->scope);
 
@@ -1724,6 +1785,9 @@ err_t typecheck(parser_t* p, unit_t* unit) {
     .typectx = type_void,
   };
 
+  if (!map_init(&a.postanalyze, a.ma, 32))
+    return ErrNoMem;
+
   enter_scope(&a);
   enter_ns(&a, unit);
 
@@ -1733,8 +1797,11 @@ err_t typecheck(parser_t* p, unit_t* unit) {
   leave_ns(&a);
   leave_scope(&a);
 
-  ptrarray_dispose(&a.typectxstack, a.ma);
+  postanalyze(&a);
+
   ptrarray_dispose(&a.nspath, a.ma);
+  ptrarray_dispose(&a.typectxstack, a.ma);
+  map_dispose(&a.postanalyze, a.ma);
 
   // update borrowed containers owned by p (in case they grew)
   p->scope = a.scope;

@@ -239,6 +239,7 @@ static err_t compile_co_to_c(compiler_t* c, input_t* input, const char* cfile) {
     goto end_parser;
   }
 
+  // dlog("abort");abort(); // XXX
 
   // analyze (ir)
   dlog("————————— analyze —————————");
@@ -272,7 +273,6 @@ static err_t compile_co_to_c(compiler_t* c, input_t* input, const char* cfile) {
   }
   cgen_dispose(&g);
 
-  // dlog("abort");abort(); // XXX
 
 end_parser:
   parser_dispose(&parser);

@@ -452,18 +452,16 @@ typedef struct {
   type_t*         typectx;
   ptrarray_t      typectxstack;
   ptrarray_t      nspath;
+  map_t           postanalyze; // a set, keys only
   #if DEBUG
     int traceindent;
   #endif
 } typecheck_t;
 
-typedef array_type(buf_t) bufarray_t;
-DEF_ARRAY_TYPE_API(buf_t, bufarray)
-
 typedef struct {
   compiler_t* compiler;
   buf_t       outbuf;
-  bufarray_t  headbufs;
+  buf_t       headbuf;
   usize       headoffs;
   u32         headnest;
   u32         inputid;
