@@ -1514,6 +1514,7 @@ static expr_t* expr_postfix_member(
   next(p);
   left->flags |= NF_RVALUE * (nodeflag_t)(left != p->dotctx);
   n->recv = left;
+  left->nrefs++;
   n->name = p->scanner.sym;
   bubble_flags(n, n->recv);
   expect(p, TID, "");

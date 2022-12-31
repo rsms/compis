@@ -201,7 +201,9 @@ static err_t build_args(
 // _link is a helper wrapper for calling the various object-specific linker functions
 // It has been adapted from lld::safeLldMain in lld/tools/lld/lld.cpp
 // Always sets errmsg
-static err_t link_main(LinkFun linkf, llvm::ArrayRef<const char*> args) {
+static err_t link_main(
+  LinkFun linkf, llvm::ArrayRef<const char*> args, bool print_args)
+{
   if (_lld_is_corrupt)
     return ErrMFault;
 
@@ -217,8 +219,10 @@ static err_t link_main(LinkFun linkf, llvm::ArrayRef<const char*> args) {
       }
       s += arg;
     }
-    // Note: std::ostringstream with std::copy somehow adds an extra empty item at the end.
-    fprintf(stderr, "invoking lld: '%s'\n", s.c_str());
+    // Note: std::ostringstream with std::copy somehow adds an extra
+    // empty item at the end.
+    if (print_args)
+      fprintf(stderr, "invoking '%s'\n", s.c_str());
   }
   #endif
 
@@ -298,7 +302,7 @@ err_t llvm_link(const CoLLVMLink* optionsptr) {
     args.emplace_back(options.infilev[i]);
 
   // invoke linker
-  return link_main(linkfn, args);
+  return link_main(linkfn, args, options.print_lld_args);
 }
 
 

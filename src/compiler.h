@@ -452,7 +452,7 @@ typedef struct {
   type_t*         typectx;
   ptrarray_t      typectxstack;
   ptrarray_t      nspath;
-  map_t           postanalyze; // a set, keys only
+  map_t           postanalyze; // set of nodes to analyze at the very end (keys only)
   #if DEBUG
     int traceindent;
   #endif
@@ -494,6 +494,9 @@ typedef struct compiler {
   type_t*        inttype;     // type for "int"
   type_t*        uinttype;    // type for "uint"
   bool           isbigendian;
+  bool           opt_printast;
+  bool           opt_printir;
+  bool           opt_genirdot;
 } compiler_t;
 
 

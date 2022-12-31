@@ -17,6 +17,10 @@ extern CoLLVMOS host_os; // defined in main.c
 
 // cli options
 static const char* opt_outfile = "a.out";
+static bool opt_printast = false;
+static bool opt_printir = false;
+static bool opt_genirdot = false;
+static bool opt_logld = false;
 
 
 static void diaghandler(const diag_t* d, void* nullable userdata) {
@@ -54,6 +58,9 @@ static err_t build_exe(const char** srcfilev, usize filecount) {
 
   compiler_t c;
   compiler_init(&c, memalloc_ctx(), &diaghandler, slice_cstr(pkgname));
+  c.opt_printast = opt_printast;
+  c.opt_printir = opt_printir;
+  c.opt_genirdot = opt_genirdot;
   // compiler_set_triple(&c, "aarch64-linux-unknown");
   dlog("compiler.triple: %s", c.triple);
 
@@ -74,6 +81,7 @@ static err_t build_exe(const char** srcfilev, usize filecount) {
 
   // compile object files
   for (usize i = 0; i < filecount; i++) {
+    log("compile %s", fv[i].input->name);
     if (( err = compiler_compile(&c, &fv[i].promise, fv[i].input, &fv[i].ofile) ))
       break;
   }
@@ -90,10 +98,12 @@ static err_t build_exe(const char** srcfilev, usize filecount) {
     goto end;
 
   // link executable
+  log("link %s", opt_outfile);
   CoLLVMLink link = {
     .target_triple = c.triple,
     .outfile = opt_outfile,
     .infilec = filecount,
+    .print_lld_args = opt_logld,
   };
   // (linker wants an array of cstring pointers)
   link.infilev = mem_alloctv(c.ma, const char*, filecount);
@@ -120,6 +130,10 @@ static void usage(const char* prog) {
     "usage: c0 %s [options] <source> ...\n"
     "options:\n"
     "  -o <file>  Write executable to <file> instead of %s\n"
+    "  -A         Print AST to stderr\n"
+    "  -R         Print IR SSA to stderr\n"
+    "  -D         Write IR SSA as Graphviz .dot file\n"
+    "  -K         Print linker invocation to stderr\n"
     "  -h         Print help on stdout and exit\n"
     "",
     prog,
@@ -131,8 +145,12 @@ static int parse_cli_options(int argc, const char** argv) {
   extern char* optarg; // global state in libc... coolcoolcool
   extern int optind, optopt;
   int nerrs = 0;
-  for (int c; (c = getopt(argc, (char*const*)argv, "o:h")) != -1; ) switch (c) {
+  for (int c; (c = getopt(argc, (char*const*)argv, "o:ARDKh")) != -1; ) switch (c) {
     case 'o': opt_outfile = optarg; break;
+    case 'A': opt_printast = true; break;
+    case 'R': opt_printir = true; break;
+    case 'D': opt_genirdot = true; break;
+    case 'K': opt_logld = true; break;
     case 'h': usage(argv[0]); exit(0);
     case ':': warnx("missing value for -%c", optopt); nerrs++; break;
     case '?': warnx("unrecognized option -%c", optopt); nerrs++; break;

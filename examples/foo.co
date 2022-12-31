@@ -280,7 +280,9 @@ fun Stuff.drop(mut this) {
 fun foo(x, y int) int {
   printu32(1)
   let a = Thing(x: u32(x))
-  a.stuff = Stuff()
-  0
+  if x > 1 {
+    a.stuff = Stuff()
+  }
+  x * y * int(a.z)
 }
 

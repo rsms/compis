@@ -7,11 +7,12 @@
 
 #define TRACE_TYPECHECK
 
-#ifdef TRACE_TYPECHECK
+#if defined(TRACE_TYPECHECK) && DEBUG
   #define trace(fmt, va...)  \
     _dlog(4, "TC", __FILE__, __LINE__, "%*s" fmt, a->traceindent*2, "", ##va)
   #define tracex(fmt, va...) _dlog(4, "A", __FILE__, __LINE__, fmt, ##va)
 #else
+  #undef TRACE_TYPECHECK
   #define trace(fmt, va...) ((void)0)
 #endif
 
@@ -443,14 +444,14 @@ inline static void type(typecheck_t* a, type_t** tp) {
 }
 
 
-static void check_unused(typecheck_t* a, const void* expr_node) {
+static void report_unused(typecheck_t* a, const void* expr_node) {
   assert(node_isexpr(expr_node));
   const expr_t* n = expr_node;
   if (nodekind_islocal(n->kind)) {
     local_t* var = (local_t*)n;
     if (var->name != sym__ && noerror(a))
       warning(a, var->nameloc, "unused %s %s", nodekind_fmt(n->kind), var->name);
-  } else if UNLIKELY(n->nrefs == 0 && expr_no_side_effects(n)) {
+  } else if UNLIKELY(expr_no_side_effects(n)) {
     if (noerror(a))
       warning(a, n, "unused %s %s", nodekind_fmt(n->kind), fmtnode(a, 0, n));
   }
@@ -495,8 +496,8 @@ static void block_noscope(typecheck_t* a, block_t* n) {
       break;
     }
 
-    if (nodekind_isexpr(cn->kind))
-      check_unused(a, cn);
+    if (cn->nrefs == 0 && nodekind_isexpr(cn->kind))
+      report_unused(a, cn);
   }
 
   // if the block is rvalue, treat last entry as implicitly-returned expression

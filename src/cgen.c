@@ -1636,6 +1636,7 @@ static void typedef_(cgen_t* g, const typedef_t* n) {
     break;
   default:
     assertf(0, "unexpected %s", nodekind_name(n->type.kind));
+    panic("typedef kind");
   }
   intern_typedef(g, (type_t*)&n->type, gentypename, gentypedef);
 }

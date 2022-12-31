@@ -211,7 +211,7 @@ static void flags(RPARAMS, const node_t* n) {
     PRINT(" {");
     if (flags & NF_RVALUE)   CHAR('r');
     if (flags & NF_OPTIONAL) CHAR('o');
-    if (flags & NF_UNKNOWN) CHAR('u');
+    if (flags & NF_UNKNOWN)  CHAR('u');
     CHAR('}');
   }
 }
@@ -325,6 +325,7 @@ static void repr(RPARAMS, const node_t* nullable n) {
     } else if (n->kind == EXPR_MEMBER) {
       CHAR(' '), PRINT(((member_t*)n)->name);
     }
+    PRINTF(" #%u", n->nrefs);
   } else if (n->kind == TYPE_UNRESOLVED) {
     CHAR(' '), PRINT(((unresolvedtype_t*)n)->name);
   }

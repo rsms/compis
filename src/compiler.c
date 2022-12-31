@@ -196,6 +196,19 @@ static err_t dump_ast(const node_t* ast) {
 }
 
 
+#if DEBUG
+  #define DUMP_AST() { \
+    dlog("————————— AST —————————"); \
+    if ((err = dump_ast((node_t*)unit))) \
+      goto end_parser; \
+  }
+  #define PRINT_AST() DUMP_AST()
+#else
+  #define DUMP_AST()  ((void)0)
+  #define PRINT_AST() if (c->opt_printast) { dump_ast((node_t*)unit); }
+#endif
+
+
 static err_t compile_co_to_c(compiler_t* c, input_t* input, const char* cfile) {
   // format intermediate C filename cfile
   dlog("[compile_co_to_c] cfile: %s", cfile);
@@ -216,24 +229,18 @@ static err_t compile_co_to_c(compiler_t* c, input_t* input, const char* cfile) {
     goto end;
   }
   unit_t* unit = parser_parse(&parser, ast_ma, input);
-  dlog("————————— AST —————————");
-  if ((err = dump_ast((node_t*)unit)))
-    goto end_parser;
-
-
-  // bail on parse error
   if (c->errcount > errcount) {
+    PRINT_AST();
     err = ErrCanceled;
     goto end_parser;
   }
+  DUMP_AST();
 
   // typecheck
   dlog("————————— typecheck —————————");
   if (( err = typecheck(&parser, unit) ))
     goto end_parser;
-  dlog("————————— AST —————————");
-  if ((err = dump_ast((node_t*)unit)))
-    goto end_parser;
+  PRINT_AST();
   if (c->errcount > errcount) {
     err = ErrCanceled;
     goto end_parser;
@@ -248,9 +255,6 @@ static err_t compile_co_to_c(compiler_t* c, input_t* input, const char* cfile) {
     dlog("analyze: err=%s", err_str(err));
     goto end_parser;
   }
-  dlog("————————— AST —————————"); // for drops
-  if ((err = dump_ast((node_t*)unit)))
-    goto end_parser;
   if (c->errcount > errcount) {
     err = ErrCanceled;
     goto end_parser;

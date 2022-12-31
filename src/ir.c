@@ -4,6 +4,9 @@
 #include <stdlib.h> // for debug_graphviz hack
 
 #define TRACE_ANALYSIS
+#if !DEBUG
+  #undef TRACE_ANALYSIS
+#endif
 
 
 typedef array_type(map_t) maparray_t;
@@ -92,10 +95,9 @@ static const char* fmtnodex(ircons_t* c, u32 bufidx, const void* nullable n, u32
     trace_node(prefix, (node_t*)n); \
     TRACE_SCOPE();
 #else
-  #define trace(fmt, va...) ((void)0)
-  #define trace_node(msg,n) ((void)0)
+  #define trace(fmt, va...)     ((void)0)
   #define TRACE_NODE(prefix, n) ((void)0)
-  #define TRACE_INDENT_INCR_SCOPE() ((void)0)
+  #define TRACE_SCOPE()         ((void)0)
 #endif
 
 
@@ -1048,10 +1050,8 @@ static void owners_drop_lost(
   ircons_t*       c,
   const bitset_t* entry_deadset,
   const bitset_t* exit_deadset,
-  loc_t        loc
-  #ifdef TRACE_ANALYSIS
-  ,const char*    trace_msg
-  #endif
+  loc_t           loc,
+  const char*     trace_msg
   )
 {
   // drops values which lost ownership since entry_deadset. loc is used for DROPs.
@@ -2092,6 +2092,7 @@ static irval_t* expr(ircons_t* c, void* expr_node) {
     break;
   }
   assertf(0, "unexpected node %s", nodekind_name(n->kind));
+  panic("ircons: bad expr %u", n->kind);
 }
 
 
@@ -2205,7 +2206,9 @@ err_t analyze(compiler_t* compiler, unit_t* unit, memalloc_t ir_ma) {
   irunit_t* u;
   err_t err = ircons(compiler, ir_ma, unit, &u);
   assertnotnull(u);
-  dump_irunit(compiler, u);
-  debug_graphviz(compiler, u);
+  if (compiler->opt_printir)
+    dump_irunit(compiler, u);
+  if (compiler->opt_genirdot)
+    debug_graphviz(compiler, u);
   return err;
 }

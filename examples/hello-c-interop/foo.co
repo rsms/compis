@@ -1,0 +1,7 @@
+type IVec2 {
+  x, y int
+}
+fun foo(x, y int) int {
+  let v = IVec2(x, y)
+  v.x * v.y
+}

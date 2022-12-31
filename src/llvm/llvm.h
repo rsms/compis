@@ -209,6 +209,7 @@ typedef struct {
   u32                  infilec; // input file count
   int                  lto_level;
   bool                 strip_dead;
+  bool                 print_lld_args;
 } CoLLVMLink;
 
 typedef enum CoLLVMWriteIRFlags {
