@@ -113,18 +113,22 @@ static void debug_graphviz(const compiler_t* c, const irunit_t* u) {
   // dlog("dot:\n———————————\n%s\n———————————", buf.chars);
 
   // write .dot file
+  log("irdot ir.dot");
   err_t err = writefile("ir.dot", 0664, buf_slice(buf));
   if (err) {
     fprintf(stderr, "failed to write file ir.dot: %s", err_str(err));
     goto end;
   }
 
-  // invoke "dot" program
-  buf_clear(&buf);
-  buf_print(&buf, "dot -Tpng -oir.png ir.dot &");
-  buf_nullterm(&buf);
-  dlog("running '%s' ...", buf.chars);
-  system(buf.chars);
+  #if DEBUG
+    // invoke "dot" program
+    buf_clear(&buf);
+    buf_print(&buf, "dot -Tpng -oir.png ir.dot &");
+    buf_nullterm(&buf);
+    dlog("running '%s' ...", buf.chars);
+    system(buf.chars);
+  #endif
+
 end:
   buf_dispose(&buf);
 }
