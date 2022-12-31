@@ -10,7 +10,7 @@ const char* err_str(err_t e) {
   case ErrSysOp:        return "invalid syscall op or syscall op data";
   case ErrBadfd:        return "invalid file descriptor";
   case ErrBadName:      return "invalid or misformed name";
-  case ErrNotFound:     return "resource not found";
+  case ErrNotFound:     return "not found";
   case ErrNameTooLong:  return "name too long";
   case ErrCanceled:     return "operation canceled";
   case ErrNotSupported: return "not supported";

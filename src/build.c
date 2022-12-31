@@ -21,6 +21,7 @@ static bool opt_printast = false;
 static bool opt_printir = false;
 static bool opt_genirdot = false;
 static bool opt_logld = false;
+static bool opt_nomain = false;
 
 
 static void diaghandler(const diag_t* d, void* nullable userdata) {
@@ -61,6 +62,7 @@ static err_t build_exe(const char** srcfilev, usize filecount) {
   c.opt_printast = opt_printast;
   c.opt_printir = opt_printir;
   c.opt_genirdot = opt_genirdot;
+  c.nomain = opt_nomain;
   // compiler_set_triple(&c, "aarch64-linux-unknown");
   dlog("compiler.triple: %s", c.triple);
 
@@ -145,12 +147,13 @@ static int parse_cli_options(int argc, const char** argv) {
   extern char* optarg; // global state in libc... coolcoolcool
   extern int optind, optopt;
   int nerrs = 0;
-  for (int c; (c = getopt(argc, (char*const*)argv, "o:ARDKh")) != -1; ) switch (c) {
+  for (int c; (c = getopt(argc, (char*const*)argv, "o:ARDKMh")) != -1; ) switch (c) {
     case 'o': opt_outfile = optarg; break;
     case 'A': opt_printast = true; break;
     case 'R': opt_printir = true; break;
     case 'D': opt_genirdot = true; break;
     case 'K': opt_logld = true; break;
+    case 'M': opt_nomain = true; break;
     case 'h': usage(argv[0]); exit(0);
     case ':': warnx("missing value for -%c", optopt); nerrs++; break;
     case '?': warnx("unrecognized option -%c", optopt); nerrs++; break;
@@ -178,7 +181,7 @@ int build_main(int argc, const char** argv) {
 
   err_t err = build_exe(argv, (usize)argc);
   if (err && err != ErrCanceled)
-    log("failed to build: %s", err_str(err));
+    dlog("failed to build: %s", err_str(err));
 
   return err == 0 ? 0 : 1;
 }

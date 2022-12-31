@@ -9,6 +9,7 @@ static memalloc_t sym_ma;
 sym_t sym__;    // "_"
 sym_t sym_this; // "this"
 sym_t sym_drop; // "drop"
+sym_t sym_main; // "main"
 
 
 static sym_t defsym(const char* cstr) {
@@ -29,6 +30,7 @@ void sym_init(memalloc_t ma) {
   sym__ = defsym("_");
   sym_this = defsym("this");
   sym_drop = defsym("drop");
+  sym_main = defsym("main");
 }
 
 

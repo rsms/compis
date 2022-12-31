@@ -467,6 +467,7 @@ typedef struct {
   u32         inputid;
   err_t       err;
   u32         anon_idgen;
+  bool        hasmain;    // has main.main
   usize       indent;
   u32         lineno;
   u32         scopenest;
@@ -494,6 +495,7 @@ typedef struct compiler {
   type_t*        inttype;     // type for "int"
   type_t*        uinttype;    // type for "uint"
   bool           isbigendian;
+  bool           nomain;      // don't auto-generate C ABI "main" for main.main
   bool           opt_printast;
   bool           opt_printir;
   bool           opt_genirdot;
@@ -695,6 +697,7 @@ sym_t sym_snprintf(char* buf, usize bufcap, const char* fmt, ...)ATTR_FORMAT(pri
 extern sym_t sym__;    // "_"
 extern sym_t sym_this; // "this"
 extern sym_t sym_drop; // "drop"
+extern sym_t sym_main; // "main"
 
 // scope
 void scope_clear(scope_t* s);

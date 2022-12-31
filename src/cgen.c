@@ -1076,6 +1076,14 @@ static void fun(cgen_t* g, const fun_t* fun) {
   if (!fun->body)
     return;
 
+  // is this the "main.main" function?
+  if (!g->hasmain && !fun->recvt && fun->name == sym_main &&
+      fun->nsparent && fun->nsparent->kind == NODE_UNIT &&
+      strcmp(g->compiler->pkgname, "main") == 0 )
+  {
+    g->hasmain = true;
+  }
+
   funtype_t* ft = (funtype_t*)fun->type;
 
   blockflag_t blockflags = 0;
@@ -1756,6 +1764,18 @@ static void unit(cgen_t* g, const unit_t* n) {
 }
 
 
+static void gen_main(cgen_t* g) {
+  PRINT(
+    "\n"
+    "\n"
+    "#line 0 \"<builtin>\"\n"
+    "int main(int argc, char* argv[]) {\n"
+    "  return (int)NfM4main4main();\n"
+    "}"
+  );
+}
+
+
 err_t cgen_generate(cgen_t* g, const unit_t* n) {
   // reset generator state
   g->err = 0;
@@ -1784,6 +1804,9 @@ err_t cgen_generate(cgen_t* g, const unit_t* n) {
   if (n->kind != NODE_UNIT)
     return ErrInvalid;
   unit(g, n);
+
+  if (g->hasmain && !g->compiler->nomain)
+    gen_main(g);
 
   if (g->headbuf.len > 0) {
     if (!buf_insert(&g->outbuf, headstart, g->headbuf.p, g->headbuf.len))
