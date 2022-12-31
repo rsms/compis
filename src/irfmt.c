@@ -25,6 +25,10 @@ static bool ismemonly(const irval_t* v) {
   return v->type == type_void;
 }
 
+static bool has_side_effects(const irval_t* v) {
+  return v->op == OP_MOVE;
+}
+
 
 static void val(fmtctx_t* ctx, const irval_t* v, bool isdot) {
   u32 start = ctx->out.len + 1;
@@ -225,7 +229,7 @@ static void block_dot_nodes(fmtctx_t* ctx, const char* ns, const irblock_t* b) {
     PRINT("<tr><td align=\"left\" balign=\"left\">");
     for (u32 i = 0; i < b->values.len; i++) {
       const irval_t* v = b->values.v[i];
-      bool dimmed = !ismemonly(v) && v->nuse == 0;
+      bool dimmed = !ismemonly(v) && v->nuse == 0 && !has_side_effects(v);
       if (dimmed)
         PRINT("<font color=\"#ffffff99\">");
       val(ctx, v, /*isdot*/true);
