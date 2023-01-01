@@ -283,7 +283,5 @@ fun foo(x, y int) int {
   if x > 1 {
     a.stuff = Stuff()
   }
-  let k i8
-  k = 3
   x * y * int(a.z)
 }
