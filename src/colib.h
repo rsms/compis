@@ -131,16 +131,16 @@ typedef double             f64;
 //—————————————————————————————————————————————————————————————————————————————————————
 // endianess
 
-// C0_LITTLE_ENDIAN=0|1
-#ifndef C0_LITTLE_ENDIAN
+// CO_LITTLE_ENDIAN=0|1
+#ifndef CO_LITTLE_ENDIAN
   #if defined(__LITTLE_ENDIAN__) || \
       (defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__)
-    #define C0_LITTLE_ENDIAN 1
+    #define CO_LITTLE_ENDIAN 1
   #elif defined(__BIG_ENDIAN__) || defined(__ARMEB__) \
         (defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__)
-    #define C0_LITTLE_ENDIAN 0
+    #define CO_LITTLE_ENDIAN 0
   #else
-    #error "Can't determine endianness, please define C0_LITTLE_ENDIAN=0|1"
+    #error "Can't determine endianness, please define CO_LITTLE_ENDIAN=0|1"
   #endif
 #endif
 
@@ -181,7 +181,7 @@ typedef double             f64;
   #define offsetof(st, m) ((usize)&(((st*)0)->m))
 #endif
 
-#define c0_same_type(a, b) __builtin_types_compatible_p(__typeof__(a), __typeof__(b))
+#define co_same_type(a, b) __builtin_types_compatible_p(__typeof__(a), __typeof__(b))
 
 // container_of returns a pointer to the parent struct of one of its members (ptr).
 #define container_of(ptr, struct_type, struct_member) ({ \
@@ -215,10 +215,10 @@ typedef double             f64;
 #define __VARG_CONCAT_X(a,b) a##b
 #define __VARG_CONCAT(a,b)   __VARG_CONCAT_X(a,b)
 
-// int c0_clz(ANYUINT x) counts leading zeroes in x,
+// int co_clz(ANYUINT x) counts leading zeroes in x,
 // starting at the most significant bit position.
 // If x is 0, the result is undefined.
-#define c0_clz(x) ( \
+#define co_clz(x) ( \
   _Generic((x), \
     i8:   __builtin_clz,   u8:    __builtin_clz, \
     i16:  __builtin_clz,   u16:   __builtin_clz, \
@@ -228,10 +228,10 @@ typedef double             f64;
   )(x) - ( 32 - MIN_X(4, (int)sizeof(__typeof__(x)))*8 ) \
 )
 
-// int c0_ctz(ANYUINT x) counts trailing zeroes in x,
+// int co_ctz(ANYUINT x) counts trailing zeroes in x,
 // starting at the least significant bit position.
 // If x is 0, the result is undefined.
-#define c0_ctz(x) _Generic((x), \
+#define co_ctz(x) _Generic((x), \
   i8:   __builtin_ctz,   u8:    __builtin_ctz, \
   i16:  __builtin_ctz,   u16:   __builtin_ctz, \
   i32:  __builtin_ctz,   u32:   __builtin_ctz, \
@@ -239,18 +239,18 @@ typedef double             f64;
   long long:  __builtin_ctzll, unsigned long long:   __builtin_ctzll)(x)
 
 
-// int c0_fls(ANYINT n) finds the Find Last Set bit (last = most-significant)
-// (Note that this is not the same as c0_ffs(x)-1).
-// e.g. c0_fls(0b1111111111111111) = 15
-// e.g. c0_fls(0b1000000000000000) = 15
-// e.g. c0_fls(0b1000000000000000) = 15
-// e.g. c0_fls(0b1000) = 3
-#define c0_fls(x)  ( (x) ? (int)(sizeof(__typeof__(x)) * 8) - c0_clz(x) : 0 )
+// int co_fls(ANYINT n) finds the Find Last Set bit (last = most-significant)
+// (Note that this is not the same as co_ffs(x)-1).
+// e.g. co_fls(0b1111111111111111) = 15
+// e.g. co_fls(0b1000000000000000) = 15
+// e.g. co_fls(0b1000000000000000) = 15
+// e.g. co_fls(0b1000) = 3
+#define co_fls(x)  ( (x) ? (int)(sizeof(__typeof__(x)) * 8) - co_clz(x) : 0 )
 
 // int ILOG2(ANYINT n) calculates the log of base 2, rounding down.
 // e.g. ILOG2(15) = 3, ILOG2(16) = 4.
 // Result is undefined if n is 0.
-#define ILOG2(n) (c0_fls(n) - 1)
+#define ILOG2(n) (co_fls(n) - 1)
 
 // ANYINT FLOOR_POW2(ANYINT x) rounds down x to nearest power of two.
 // Returns 1 if x is 0.
@@ -341,9 +341,9 @@ typedef double             f64;
   #endif
   #undef DEBUG
   #undef NDEBUG
-  #undef C0_SAFE
+  #undef CO_SAFE
   #define DEBUG 1
-  #define C0_SAFE 1
+  #define CO_SAFE 1
 
   #define _assertfail(fmt, args...) \
     _panic(__FILE__, __LINE__, __FUNCTION__, "Assertion failed: " fmt, args)
@@ -441,7 +441,7 @@ typedef double             f64;
   #define assert_no_mul_overflow(a, b) ((void)0)
 #endif /* !defined(NDEBUG) */
 
-// C0_SAFE -- checks enabled in "debug" and "safe" builds (but not in "fast" builds.)
+// CO_SAFE -- checks enabled in "debug" and "safe" builds (but not in "fast" builds.)
 //
 // void safecheck(COND)                         stripped from non-safe builds
 // void safecheckf(COND, const char* fmt, ...)  stripped from non-safe builds
@@ -450,9 +450,9 @@ typedef double             f64;
 // typeof(EXPR) safecheckexpr(EXPR, EXPECT)     included in non-safe builds w/o check
 // typeof(EXPR) safechecknotnull(EXPR)          included in non-safe builds w/o check
 //
-#if defined(C0_SAFE)
-  #undef C0_SAFE
-  #define C0_SAFE 1
+#if defined(CO_SAFE)
+  #undef CO_SAFE
+  #define CO_SAFE 1
   #define safefail(fmt, args...) _panic(__FILE__, __LINE__, __FUNCTION__, fmt, ##args)
   #define safecheckf(cond, fmt, args...)  ( (cond) ? ((void)0) : safefail(fmt, ##args) )
   #define safecheckxf safecheckf

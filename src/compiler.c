@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-#include "c0lib.h"
+#include "colib.h"
 #include "compiler.h"
 #include "path.h"
 #include "abuf.h"
@@ -10,7 +10,7 @@
 #include <err.h>
 
 // build.c
-extern const char* C0ROOT;
+extern const char* COROOT;
 
 
 static void mem_freecstr(memalloc_t ma, char* nullable cstr) {
@@ -36,7 +36,7 @@ void compiler_set_cachedir(compiler_t* c, slice_t cachedir) {
 
 static void compiler_set_cflags(compiler_t* c) {
   buf_clear(&c->diagbuf);
-  buf_printf(&c->diagbuf, "-I%s/../../lib", C0ROOT);
+  buf_printf(&c->diagbuf, "-I%s/../../lib", COROOT);
   bool ok = buf_push(&c->diagbuf, '\0');
   safecheck(ok);
   set_cstr(c->ma, &c->cflags, buf_slice(c->diagbuf));
@@ -87,7 +87,7 @@ void compiler_init(compiler_t* c, memalloc_t ma, diaghandler_t dh, slice_t pkgna
   buf_init(&c->diagbuf, c->ma);
   compiler_set_pkgname(c, pkgname);
   compiler_set_triple(c, llvm_host_triple());
-  compiler_set_cachedir(c, slice_cstr(".c0"));
+  compiler_set_cachedir(c, slice_cstr(".co"));
   compiler_set_cflags(c);
   if (!map_init(&c->typeidmap, c->ma, 16))
     panic("out of memory");
@@ -153,7 +153,7 @@ static err_t compile_c_async(
   dlog("cc %s -> %s", cfile, ofile);
 
   const char* argv[] = {
-    "c0", "-target", c->triple,
+    "co", "-target", c->triple,
     "-std=c17",
     "-O2",
     "-g", "-feliminate-unused-debug-types",

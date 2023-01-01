@@ -4,40 +4,45 @@
 #include <string.h> // strcmp
 #include <err.h>
 
+typedef bool(*linkerfn_t)(int argc, const char** argv, bool can_exit_early);
+
 static const char* prog; // main program name
 CoLLVMOS host_os;
 
 extern int clang_main(int argc, const char** argv); // llvm/driver.cc
 extern int build_main(int argc, const char** argv); // build.c
 
+static linkerfn_t nullable ld_impl(CoLLVMOS os);
+static const char* ld_impl_name(linkerfn_t nullable f);
 
-// static CoLLVMOS OSTypeParse(const char* name) {
-//   if (strcmp(name, "darwin") == 0)  return OSDarwin;
-//   if (strcmp(name, "freebsd") == 0) return OSFreeBSD;
-//   if (strcmp(name, "ios") == 0)     return OSIOS;
-//   if (strcmp(name, "linux") == 0)   return OSLinux;
-//   if (strcmp(name, "macosx") == 0)  return OSMacOSX;
-//   if (strcmp(name, "openbsd") == 0) return OSOpenBSD;
-//   if (strcmp(name, "win32") == 0)   return OSWin32;
-//   return OSUnknown;
-// }
 
 static void usage(FILE* f) {
-  const char* host_os_typename = CoLLVMOS_name(host_os);
+  linkerfn_t ldf = ld_impl(host_os);
+  char host_ld[128];
+  if (ldf) {
+    snprintf(host_ld, sizeof(host_ld),
+      "  ld [args ...]        Linker for host system (%s)\n", ld_impl_name(ldf));
+  } else {
+    host_ld[0] = 0;
+  }
+
   fprintf(f,
-    "usage: %s <command> [args ...]\n"
-    "commands:\n"
-    "  cc [args ...]        Clang\n"
+    "Compis, your friendly neighborhood programming language\n"
+    "Usage: %s <command> [args ...]\n"
+    "Commands:\n"
+    "  build [args ...]     Compis compiler\n"
+    "Extra commands:\n"
+    "  cc [args ...]        Clang (C & C++ compiler)\n"
     "  as [args ...]        LLVM assembler (same as cc -cc1as)\n"
-    "  ar [args ...]        Create object archive\n"
-    "  ld [args ...]        Linker for host system (%s)\n"
+    "  ar [args ...]        Object archiver\n"
+    "%s" // ld for host, if any
     "  ld-coff [args ...]   Linker for COFF\n"
     "  ld-elf [args ...]    Linker for ELF\n"
     "  ld-macho [args ...]  Linker for Mach-O\n"
     "  ld-wasm [args ...]   Linker for WebAssembly\n"
     "",
     prog,
-    host_os_typename);
+    host_ld);
 }
 
 static int ar_main(int argc, const char** argv) {
@@ -77,19 +82,31 @@ static int ar_main(int argc, const char** argv) {
 }
 
 
-static int ld_main(int argc, const char** argv) {
-  switch (host_os) {
+static const char* ld_impl_name(linkerfn_t nullable f) {
+  if (f == LLDLinkMachO) return "Mach-O";
+  if (f == LLDLinkELF)   return "ELF";
+  if (f == LLDLinkWasm)  return "WebAssembly";
+  if (f == LLDLinkCOFF)  return "COFF";
+  return "?";
+}
+
+
+static linkerfn_t nullable ld_impl(CoLLVMOS os) {
+  switch (os) {
     case CoLLVMOS_Darwin:
     case CoLLVMOS_MacOSX:
     case CoLLVMOS_IOS:
     case CoLLVMOS_TvOS:
     case CoLLVMOS_WatchOS:
-      return LLDLinkMachO(argc, argv, true) ? 0 : 1;
+      return LLDLinkMachO;
+
     case CoLLVMOS_Win32:
-      return LLDLinkCOFF(argc, argv, true) ? 0 : 1;
+      return LLDLinkCOFF;
+
     case CoLLVMOS_WASI:
     case CoLLVMOS_Emscripten:
-      return LLDLinkWasm(argc, argv, true) ? 0 : 1;
+      return LLDLinkWasm;
+
     // assume the rest uses ELF (this is probably not correct)
     case CoLLVMOS_Ananas:
     case CoLLVMOS_CloudABI:
@@ -117,11 +134,21 @@ static int ld_main(int argc, const char** argv) {
     case CoLLVMOS_AMDPAL:
     case CoLLVMOS_HermitCore:
     case CoLLVMOS_Hurd:
-      return LLDLinkELF(argc, argv, true) ? 0 : 1;
+      return LLDLinkELF;
+
     default:
-      log("%s ld: unsupported host OS %s", prog, CoLLVMOS_name(host_os));
-      return 1;
+      return NULL;
   }
+}
+
+
+static int ld_main(int argc, const char** argv) {
+  linkerfn_t impl = ld_impl(host_os);
+  if (!impl) {
+    log("%s ld: unsupported host OS %s", prog, CoLLVMOS_name(host_os));
+    return 1;
+  }
+  return !impl(argc, argv, true);
 }
 
 
@@ -130,7 +157,7 @@ int main(int argc, const char** argv) {
 
   const char* progname = strrchr(prog, '/');
   progname = progname ? progname + 1 : prog;
-  bool is_multicall = strcmp(progname, "c0") != 0;
+  bool is_multicall = strcmp(progname, "co") != 0;
   const char* cmd = is_multicall ? progname : argv[1] ? argv[1] : "";
   usize cmdlen = strlen(cmd);
 
@@ -157,9 +184,10 @@ int main(int argc, const char** argv) {
     argv++;
   }
 
+  // primary commands
   if ISCMD("build") return build_main(argc, argv);
 
-  // clang-derived commands
+  // llvm-based commands
   if ISCMD("cc")       return clang_main(argc, argv);
   if ISCMD("ar")       return ar_main(argc, argv);
   if ISCMD("ld")       return ld_main(argc, argv);
@@ -169,7 +197,7 @@ int main(int argc, const char** argv) {
   if ISCMD("ld-wasm")  return LLDLinkWasm(argc, argv, true) ? 0 : 1;
 
   if (cmdlen == 0) {
-    log("%s: missing command", prog);
+    log("%s: missing command (try %s -h)", prog, prog);
     return 1;
   }
 

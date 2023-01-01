@@ -5,12 +5,14 @@
 
 .DS_Store
 .clang_complete
-.c0
+.co
 a.out
 
 /*.dot
 /*.png
 /*.pdf
+/*.c
+/*.co
 /_*
 /deps
 /out

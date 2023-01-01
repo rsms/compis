@@ -1,6 +1,6 @@
 // type-checking pass, which also does late identifier resolution
 // SPDX-License-Identifier: Apache-2.0
-#include "c0lib.h"
+#include "colib.h"
 #include "compiler.h"
 
 #include <stdlib.h> // strtof

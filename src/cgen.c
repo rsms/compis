@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-#include "c0lib.h"
+#include "colib.h"
 #include "compiler.h"
 
 
@@ -66,7 +66,7 @@ static void _error(cgen_t* g, origin_t origin, const char* fmt, ...) {
 
 
 #define INTERNAL_SEP    "·" // U+00B7 MIDDLE DOT (UTF8: "\xC2\xB7")
-#define INTERNAL_PREFIX "_c0" INTERNAL_SEP
+#define INTERNAL_PREFIX "_co" INTERNAL_SEP
 #define ANON_PREFIX     "_" INTERNAL_SEP
 #define ANON_FMT        ANON_PREFIX "%x"
 
@@ -1800,7 +1800,7 @@ err_t cgen_generate(cgen_t* g, const unit_t* n) {
   g->scopenest = 0;
   g->headnest = 0;
 
-  PRINT("#include <c0prelude.h>\n");
+  PRINT("#include <coprelude.h>\n");
 
   input_t* input = loc_input(n->loc, locmap(g));
   if (input) {

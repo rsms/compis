@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-#include "c0lib.h"
+#include "colib.h"
 #include "map.h"
 #include "abuf.h"
 
@@ -19,7 +19,7 @@ static u64 fastrand_state = 1;
   #include <intrin.h>
   #pragma intrinsic(_umul128)
 #endif
-#if !C0_LITTLE_ENDIAN
+#if !CO_LITTLE_ENDIAN
   #error "big endian impl not included"
 #endif
 #if __LONG_MAX__ <= 0x7fffffff

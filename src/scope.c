@@ -124,7 +124,7 @@ unstash()
 #endif //__documentation__
 //—————————————————————————————————————————————————————————————————————————————————————
 
-#include "c0lib.h"
+#include "colib.h"
 #include "compiler.h"
 
 // address used to mark a stashed scope

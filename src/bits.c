@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-#include "c0lib.h"
+#include "colib.h"
 
 
 #define BITSET_SIZE(cap)  ( sizeof(bitset_t) + (cap)/8 )
@@ -86,10 +86,10 @@ bool bitset_merge_xor(bitset_t** dstp, const bitset_t* src, memalloc_t ma) {
 // usize ioffs = 0;
 // while (p != end) {
 //   if (*p) {
-//     usize first_bit_set = c0_clz(*p); // count leading zeroes
-//     usize last_bit_set = c0_ctz(*p); // count trailing zeroes
+//     usize first_bit_set = co_clz(*p); // count leading zeroes
+//     usize last_bit_set = co_ctz(*p); // count trailing zeroes
 //     usize i, endi;
-//     #if C0_LITTLE_ENDIAN
+//     #if CO_LITTLE_ENDIAN
 //       i = last_bit_set;
 //       endi = sizeof(uintptr)*8 - first_bit_set;
 //     #else

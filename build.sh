@@ -8,8 +8,8 @@ _checksum() { sha256sum "$@" | cut -d' ' -f1; }
 
 # project constants
 SRCDIR=src
-MAIN_EXE=c0
-PP_PREFIX=C0_
+MAIN_EXE=co
+PP_PREFIX=CO_
 WASM_SYMS=etc/wasm.syms
 
 # variables overrideable via environment variables

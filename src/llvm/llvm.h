@@ -1,7 +1,7 @@
 // LLVM backend
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
-#include "../c0lib.h"
+#include "../colib.h"
 
 // FIXME
 typedef struct {

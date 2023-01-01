@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-#include "c0lib.h"
+#include "colib.h"
 #include "path.h"
 #include "compiler.h"
 
@@ -11,7 +11,7 @@
 #include "llvm/llvm.h"
 
 
-const char* C0ROOT = ""; // Directory of c0 itself; dirname(argv[0])
+const char* COROOT = ""; // Directory of co itself; dirname(argv[0])
 
 extern CoLLVMOS host_os; // defined in main.c
 
@@ -129,7 +129,8 @@ end:
 
 static void usage(const char* prog) {
   printf(
-    "usage: c0 %s [options] <source> ...\n"
+    "Compis, your friendly neighborhood compiler\n"
+    "usage: co %s [options] <source> ...\n"
     "options:\n"
     "  -o <file>  Write executable to <file> instead of %s\n"
     "  -A         Print AST to stderr\n"
@@ -163,9 +164,9 @@ static int parse_cli_options(int argc, const char** argv) {
 
 
 int build_main(int argc, const char** argv) {
-  char* c0root = LLVMGetMainExecutable(argv[0]);
-  c0root[path_dirlen(c0root, strlen(c0root))] = 0;
-  C0ROOT = c0root;
+  char* coroot = LLVMGetMainExecutable(argv[0]);
+  coroot[path_dirlen(coroot, strlen(coroot))] = 0;
+  COROOT = coroot;
 
   int numflags = parse_cli_options(argc, argv);
   if (numflags < 0)

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-#include "c0lib.h"
+#include "colib.h"
 #include "compiler.h"
 
 
@@ -26,7 +26,7 @@ void input_free(input_t* input, memalloc_t ma) {
     input_close(input);
   mem_t m = MEM(input, sizeof(input_t) + strlen(input->name) + 1);
   mem_free(ma, &m);
-  #if C0_SAFE
+  #if CO_SAFE
     memset(input, 0, m.size);
   #endif
 }

@@ -478,7 +478,7 @@ typedef struct {
 typedef struct compiler {
   memalloc_t     ma;          // memory allocator
   char*          triple;      // target triple
-  char*          cachedir;    // defaults to ".c0"
+  char*          cachedir;    // defaults to ".co"
   char*          objdir;      // "${cachedir}/obj"
   char*          cflags;
   char*          pkgname;     // name of package being compiled

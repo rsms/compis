@@ -65,7 +65,7 @@ inline static array_t array_make() { return (array_t){ 0 }; }
 #define array_allocat(T, a, ma, i, len) \
   ( (T*)_array_allocat((a), (ma), sizeof(T), (i), (len)) )
 #define array_push(T, a, ma, val) ({ \
-  static_assert(c0_same_type(T, __typeof__(val)), ""); \
+  static_assert(co_same_type(T, __typeof__(val)), ""); \
   array_t* __a = (a); \
   ( __a->len >= __a->cap && UNLIKELY(!_array_grow(__a, (ma), sizeof(T), 1)) ) ? false : \
     ( ( (T*)__a->ptr )[__a->len++] = (val), true ); \

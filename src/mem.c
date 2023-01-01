@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-#include "c0lib.h"
+#include "colib.h"
 #include <stdlib.h>
 
 #if __APPLE__ || __BSD__
@@ -11,11 +11,11 @@
 #endif
 
 
-#ifndef C0_MEM_MALLOC
-  #define C0_MEM_MALLOC(size)            malloc(size)
-  #define C0_MEM_CALLOC(count, elemsize) calloc(count, elemsize)
-  #define C0_MEM_REALLOC(ptr, newsize)   realloc((ptr), (newsize))
-  #define C0_MEM_FREE(ptr)               free(ptr)
+#ifndef CO_MEM_MALLOC
+  #define CO_MEM_MALLOC(size)            malloc(size)
+  #define CO_MEM_CALLOC(count, elemsize) calloc(count, elemsize)
+  #define CO_MEM_REALLOC(ptr, newsize)   realloc((ptr), (newsize))
+  #define CO_MEM_FREE(ptr)               free(ptr)
 #endif
 
 
@@ -148,7 +148,7 @@ static bool _memalloc_libc_impl(void* self, mem_t* m, usize size, bool zeroed) {
     // We use calloc instead of malloc + memset because many allocators
     // implement optimizations that avoids memset in cases where the
     // underlying memory is already zeroed. Saves time for large allocations.
-    void* p = zeroed ? C0_MEM_CALLOC(1, size) : C0_MEM_MALLOC(size);
+    void* p = zeroed ? CO_MEM_CALLOC(1, size) : CO_MEM_MALLOC(size);
     if UNLIKELY(p == NULL)
       return false;
     // get actual size if supported
@@ -166,7 +166,7 @@ static bool _memalloc_libc_impl(void* self, mem_t* m, usize size, bool zeroed) {
 
   // resize
   if (size != 0) {
-    void* newp = C0_MEM_REALLOC(m->p, size);
+    void* newp = CO_MEM_REALLOC(m->p, size);
     if UNLIKELY(!newp)
       return false;
     if (zeroed && size > m->size)
@@ -179,8 +179,8 @@ static bool _memalloc_libc_impl(void* self, mem_t* m, usize size, bool zeroed) {
   // free
   safecheckf(m->p != NULL, "attempt to free NULL pointer of size %zu", m->size);
   if (m->size > 0)
-    C0_MEM_FREE(m->p);
-  #if C0_SAFE
+    CO_MEM_FREE(m->p);
+  #if CO_SAFE
     m->p = NULL;
     m->size = 0;
   #endif
