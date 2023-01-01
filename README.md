@@ -34,8 +34,8 @@ $ ./foo
 There are three kinds of pointer types:
 
 - `*T` — owns value of T
-- `&T` — reference to immutable T
-- `mut&T` — reference to mutable T
+- `&T`, `mut&T` — reference to immutable T and mutable T, respectively
+- `raw_ptr` — user-managed pointer to memory (unsafe contexts only; not implemented)
 
 ### Memory ownership
 
