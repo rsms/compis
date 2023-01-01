@@ -523,68 +523,6 @@ static void expr_as_value(cgen_t* g, const expr_t* n) {
 }
 
 
-static void zeroinit(cgen_t* g, const type_t* t) {
-  t = unwind_aliastypes(t);
-again:
-  switch (t->kind) {
-  case TYPE_VOID:
-    CHAR('0');
-    break;
-  case TYPE_BOOL:
-    PRINT("false");
-    break;
-  case TYPE_UINT:
-    t = g->compiler->uinttype;
-    goto again;
-  case TYPE_INT:
-    t = g->compiler->inttype;
-    goto again;
-  case TYPE_I32:
-    CHAR('0');
-    break;
-  case TYPE_U32:
-    PRINT("0u");
-    break;
-  case TYPE_I64:
-    PRINT("0ll");
-    break;
-  case TYPE_U64:
-    PRINT("0llu");
-    break;
-  case TYPE_I8:
-  case TYPE_U8:
-  case TYPE_I16:
-  case TYPE_U16:
-    CHAR('('); CHAR('('); type(g, t); PRINT(")0)");
-    break;
-  case TYPE_F32:
-    PRINT("0.0f");
-    break;
-  case TYPE_F64:
-    PRINT("0.0");
-    break;
-  case TYPE_OPTIONAL:
-    PRINT("{0}");
-    break;
-  case TYPE_PTR:
-    PRINT("NULL");
-    break;
-  default:
-    debugdie(g, t, "unexpected type %s", nodekind_name(t->kind));
-  }
-  // PRINTF(";memset(&%s,0,%zu)", n->name, n->type->size);
-}
-
-
-static void expr_or_zeroinit(cgen_t* g, const type_t* t, const expr_t* nullable n) {
-  if (n) {
-    assert(types_iscompat(g->compiler, t, n->type));
-    return expr(g, n);
-  }
-  zeroinit(g, t);
-}
-
-
 typedef enum {
   BLOCKFLAG_NONE,
   BLOCKFLAG_RET,
@@ -610,6 +548,18 @@ static usize fmt_tmp_id(char* buf, usize bufcap, const void* n) {
 
 
 //—————————————————————————————————————————————————————————————————————————————————————
+
+
+static void zeroinit(cgen_t* g, const type_t* t);
+
+
+static void expr_or_zeroinit(cgen_t* g, const type_t* t, const expr_t* nullable n) {
+  if (n) {
+    assert(types_iscompat(g->compiler, t, n->type));
+    return expr(g, n);
+  }
+  zeroinit(g, t);
+}
 
 
 static void retexpr(cgen_t* g, const retexpr_t* n, const char* nullable tmp) {
@@ -1159,10 +1109,67 @@ static void structinit(cgen_t* g, const structtype_t* t, const ptrarray_t* args)
       if (i) PRINT(", ");
       CHAR('.'); PRINT(f->name); CHAR('=');
       structinit_field(g, (f)->type, assertnotnull(f->init));
+      i++; // for ", "
     }
   }
 
   CHAR('}');
+}
+
+
+static void zeroinit(cgen_t* g, const type_t* t) {
+  t = unwind_aliastypes(t);
+again:
+  switch (t->kind) {
+  case TYPE_VOID:
+    CHAR('0');
+    break;
+  case TYPE_BOOL:
+    PRINT("false");
+    break;
+  case TYPE_UINT:
+    t = g->compiler->uinttype;
+    goto again;
+  case TYPE_INT:
+    t = g->compiler->inttype;
+    goto again;
+  case TYPE_I32:
+    CHAR('0');
+    break;
+  case TYPE_U32:
+    PRINT("0u");
+    break;
+  case TYPE_I64:
+    PRINT("0ll");
+    break;
+  case TYPE_U64:
+    PRINT("0llu");
+    break;
+  case TYPE_I8:
+  case TYPE_U8:
+  case TYPE_I16:
+  case TYPE_U16:
+    CHAR('('); CHAR('('); type(g, t); PRINT(")0)");
+    break;
+  case TYPE_F32:
+    PRINT("0.0f");
+    break;
+  case TYPE_F64:
+    PRINT("0.0");
+    break;
+  case TYPE_OPTIONAL:
+    PRINT("{0}");
+    break;
+  case TYPE_PTR:
+    PRINT("NULL");
+    break;
+  case TYPE_STRUCT:
+    structinit(g, (const structtype_t*)t, &(ptrarray_t){0});
+    break;
+  default:
+    debugdie(g, t, "unexpected type %s", nodekind_name(t->kind));
+  }
+  // PRINTF(";memset(&%s,0,%zu)", n->name, n->type->size);
 }
 
 
@@ -1330,10 +1337,15 @@ static void intlit(cgen_t* g, const intlit_t* n) {
     PRINT("0x");
   buf_print_u64(&g->outbuf, u, base);
 
-  if (n->type->kind == TYPE_I64)
-    PRINT("ll");
-  if (type_isunsigned(n->type))
-    CHAR('u');
+  const type_t* t = n->type;
+again:
+  switch (t->kind) {
+    case TYPE_INT:  t = g->compiler->inttype; goto again;
+    case TYPE_UINT: t = g->compiler->uinttype; goto again;
+    case TYPE_I64:  PRINT("ll"); break;
+    case TYPE_U64:  PRINT("llu"); break;
+    case TYPE_U32:  CHAR('u'); break;
+  }
 }
 
 

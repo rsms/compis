@@ -1,0 +1,11 @@
+type Thing {
+  x int = 3     // defaults to 3
+  y int         // defaults to 0
+  maybe_z ?int  // defaults to empty
+}
+
+fun main() int {
+  var a Thing
+  var b int   // defaults to 0
+  a.y * b     // returns 0
+}
