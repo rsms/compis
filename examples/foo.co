@@ -286,8 +286,7 @@ fun foo(x, y int) int {
   x * y * int(a.z)
 }*/
 
-
-fun foo(x, y int) int {
+pub fun foo(x, y int) int {
   fun double(x int) int {
     fun half(x int) int {
       x / 2

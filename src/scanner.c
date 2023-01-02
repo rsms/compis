@@ -51,10 +51,14 @@ void scanner_set_input(scanner_t* s, input_t* input) {
 }
 
 
-static void stop_scanning(scanner_t* s) {
+void stop_scanning(scanner_t* s) {
   // move cursor to end of source causes scanner_next to return TEOF
   s->inp = s->inend;
   s->tok = TEOF;
+  s->tokstart = s->inp;
+  s->tokend = s->inp;
+  s->insertsemi = false;
+  scanner_next(s);
 }
 
 

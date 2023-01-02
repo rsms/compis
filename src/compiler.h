@@ -256,6 +256,7 @@ typedef struct {
 
 typedef struct {
   stmt_t;
+  visibility_t visibility;
   union {
     type_t       type;
     aliastype_t  aliastype;
@@ -563,6 +564,7 @@ bool scanner_init(scanner_t* s, compiler_t* c);
 void scanner_dispose(scanner_t* s);
 void scanner_set_input(scanner_t* s, input_t*);
 void scanner_next(scanner_t* s);
+void stop_scanning(scanner_t* s);
 slice_t scanner_lit(const scanner_t* s); // e.g. `"\n"` => slice_t{.chars="\n", .len=1}
 
 // parser

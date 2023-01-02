@@ -243,10 +243,14 @@ static void fastforward_semi(parser_t* p) {
 // }
 
 
+static void stop_parsing(parser_t* p) {
+  stop_scanning(&p->scanner);
+}
+
+
 static void out_of_mem(parser_t* p) {
   error(p, NULL, "out of memory");
-  // end scanner, making sure we don't keep going
-  p->scanner.inp = p->scanner.inend;
+  stop_parsing(p); // end scanner, making sure we don't keep going
 }
 
 
@@ -268,6 +272,8 @@ static const char* fmtnode(parser_t* p, u32 bufindex, const void* n) {
 
 
 static void unexpected(parser_t* p, const char* errmsg) {
+  if (currtok(p) == TEOF && p->scanner.compiler->errcount > 0)
+    return;
   const char* tokstr = fmttok(p, 0, currtok(p), scanner_lit(&p->scanner));
   int msglen = (int)strlen(errmsg);
   if (msglen && *errmsg != ',' && *errmsg != ';')
@@ -476,23 +482,24 @@ static void dotctx_pop(parser_t* p) {
 }
 
 
-static stmt_t* stmt(parser_t* p, prec_t prec) {
+static stmt_t* stmt(parser_t* p) {
   tok_t tok = currtok(p);
   const stmt_parselet_t* parselet = &stmt_parsetab[tok];
   LOG_PRATT(p, "prefix stmt");
   if UNLIKELY(!parselet->prefix) {
     unexpected(p, "where a statement is expected");
-    fastforward_semi(p);
-    return mkbad(p);
+    stmt_t* n = mkbad(p);
+    stop_parsing(p);
+    return n;
   }
   stmt_t* n = parselet->prefix(p);
   for (;;) {
     tok = currtok(p);
     parselet = &stmt_parsetab[tok];
-    if (parselet->infix == NULL || parselet->prec < prec)
+    if (parselet->infix == NULL || parselet->prec < PREC_LOWEST)
       return n;
-    log_pratt_infix(p, "stmt", parselet->infix, parselet->prec, prec);
-    n = parselet->infix(p, prec, n);
+    log_pratt_infix(p, "stmt", parselet->infix, parselet->prec, PREC_LOWEST);
+    n = parselet->infix(p, PREC_LOWEST, n);
   }
 }
 
@@ -1872,6 +1879,28 @@ static stmt_t* stmt_fun(parser_t* p) {
 }
 
 
+static stmt_t* stmt_pub(parser_t* p) {
+  loc_t pub_loc = currloc(p);
+  next(p);
+
+  stmt_t* n = stmt(p);
+  switch (n->kind) {
+    case EXPR_FUN:
+      ((fun_t*)n)->visibility = VISIBILITY_PUBLIC;
+      break;
+    case STMT_TYPEDEF:
+      ((typedef_t*)n)->visibility = VISIBILITY_PUBLIC;
+      break;
+    case NODE_BAD:
+      break;
+    default:
+      error(p, pub_loc, "unexpected pub qualifier on %s", nodekind_fmt(n->kind));
+  }
+
+  return n;
+}
+
+
 unit_t* parser_parse(parser_t* p, memalloc_t ast_ma, input_t* input) {
   p->ast_ma = ast_ma;
   scope_clear(&p->scope);
@@ -1889,14 +1918,16 @@ unit_t* parser_parse(parser_t* p, memalloc_t ast_ma, input_t* input) {
       break;
     }
 
-    *np = stmt(p, PREC_LOWEST);
+    *np = stmt(p);
     bubble_flags(unit, *np);
 
-    if (!expect_token(p, TSEMI, "")) {
-      fastforward_semi(p);
-    } else {
-      next(p);
+    if UNLIKELY(currtok(p) != TSEMI) {
+      if (currtok(p) != TEOF)
+        expect_fail(p, TSEMI, "");
+      break;
     }
+
+    next(p); // consume ";"
   }
 
   leave_scope(p);
@@ -2067,6 +2098,7 @@ static const type_parselet_t type_parsetab[TOK_COUNT] = {
 
 // statement
 static const stmt_parselet_t stmt_parsetab[TOK_COUNT] = {
+  [TPUB]  = {stmt_pub, NULL, 0},
   [TFUN]  = {stmt_fun, NULL, 0},
   [TTYPE] = {stmt_typedef, NULL, 0},
 };

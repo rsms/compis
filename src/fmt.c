@@ -42,6 +42,8 @@ const char* nodekind_fmt(nodekind_t kind) {
       return "unknown type";
     case TYPE_UNRESOLVED:
       return "named type";
+    case STMT_TYPEDEF:
+      return "type definition";
     default:
       if (nodekind_istype(kind))
         return "type";

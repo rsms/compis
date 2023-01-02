@@ -185,6 +185,9 @@ static void add_srclines(compiler_t* c, origin_t origin, abuf_t* s) {
       continue;
     }
 
+    if (p + origin.column >= srcend)
+      break;
+
     // origin line
     add_srcline(s, lnw, ln, p, linew, origin);
 
