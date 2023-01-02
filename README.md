@@ -111,13 +111,13 @@ First time setup:
 Build & test:
 
     ./build.sh -debug
-    out/debug/c0 build -o out/hello examples/hello.c examples/foo.co
+    out/debug/co build -o out/hello examples/hello.c examples/foo.co
     out/hello
 
 Build & run in continuous mode:
 
     ./build.sh -wf=examples/foo.co \
-      -run='out/debug/c0 build examples/hello.c examples/foo.co && ./a.out'
+      -run='out/debug/co build examples/hello.c examples/foo.co && ./a.out'
 
 
 ## LLVM
