@@ -1,0 +1,16 @@
+type Animal {
+  nlegs uint
+}
+type Cat {
+  Animal
+  nwhiskers uint
+}
+
+fun dyncast(a Animal) {
+  let cat = a as Cat // typeof(cat) = Cat?
+  if cat {
+    log("Cat with {cat.nwhiskers} whiskers")
+  } else {
+    log("Some animal with {a.nlegs} legs")
+  }
+}
