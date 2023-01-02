@@ -21,17 +21,11 @@ typedef double             f64;
 #define false 0
 #define bool _Bool
 
+#define PUBLIC  __attribute__((__visibility__("default")))
+#define PRIVATE __attribute__((__visibility__("internal")))
+
 __attribute__((noreturn)) void abort(void);
 #define __nullcheck(x) ({ \
   __typeof__(x) x__ = (x); \
   (x__ == NULL ? abort() : ((void)0)), x__; \
 })
-
-// ——————————————————— internal ———————————————————————
-
-inline static void _c0·drop(void* p) {
-  printf("drop %p\n", p);
-}
-inline static void _c0·drop_opt(void* p) {
-  if (p) _c0·drop(p);
-}

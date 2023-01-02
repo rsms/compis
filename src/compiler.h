@@ -137,6 +137,22 @@ typedef struct {
 
 typedef const char* sym_t;
 
+typedef u8 visibility_t;
+enum visibility {
+  VISIBILITY_PKG     = 0, // visible to all of same package
+  VISIBILITY_PRIVATE = 1, // visible only within same source file
+  VISIBILITY_PUBLIC  = 2, // visible to other packages
+};
+
+typedef u8 abi_t;
+enum abi {
+  ABI_CO = 0,
+  ABI_C  = 1,
+};
+
+
+#define EXPORT_ABI_C  ((export_t)1<< 3) // has been typecheck'ed (or doesn't need it)
+
 // ———————— BEGIN AST ————————
 
 typedef u8 nodekind_t;
@@ -322,7 +338,8 @@ typedef struct { // fun is a declaration (stmt) or an expression depending on us
   block_t* nullable body;        // NULL if function is a prototype
   type_t* nullable  recvt;       // non-NULL for type functions (type of "this")
   char* nullable    mangledname; // mangled name, created in ast_ma by typecheck
-  bool              nomangle;    // export with plain "C" name instead of Co encoding
+  abi_t             abi;
+  visibility_t      visibility;
   node_t* nullable  nsparent;
 } fun_t;
 
@@ -435,7 +452,7 @@ typedef struct {
   map_t            recvtmap; // maps type_t* -> ptrarray_t of methods (fun_t*[])
   fun_t* nullable  fun;      // current function
   unit_t* nullable unit;     // current unit
-  expr_t* nullable dotctx; // for ".name" shorthand
+  expr_t* nullable dotctx;   // for ".name" shorthand
   ptrarray_t       dotctxstack;
   #if DEBUG
     int traceindent;
@@ -461,6 +478,7 @@ typedef struct {
 
 typedef struct {
   compiler_t* compiler;
+  memalloc_t  ma;         // compiler->ma
   buf_t       outbuf;
   buf_t       headbuf;
   usize       headoffs;
@@ -474,6 +492,7 @@ typedef struct {
   u32         scopenest;
   map_t       typedefmap;
   map_t       tmpmap;
+  ptrarray_t  funqueue;   // [fun_t*] queue of (nested) functions awaiting build
 } cgen_t;
 
 typedef struct compiler {

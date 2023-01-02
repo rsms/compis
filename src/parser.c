@@ -1793,6 +1793,11 @@ static fun_t* fun(parser_t* p, nodeflag_t fl, type_t* nullable recvt, bool requi
   next(p);
   n->recvt = recvt;
 
+  if (p->fun) {
+    // nested functions are only visible within the same source file
+    n->visibility = VISIBILITY_PRIVATE;
+  }
+
   // name
   if (currtok(p) == TID) {
     n->name = p->scanner.sym;

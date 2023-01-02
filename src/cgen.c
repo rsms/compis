@@ -9,13 +9,14 @@ typedef struct { usize v[2]; } sizetuple_t;
 bool cgen_init(cgen_t* g, compiler_t* c, memalloc_t out_ma) {
   memset(g, 0, sizeof(*g));
   g->compiler = c;
+  g->ma = c->ma;
   buf_init(&g->outbuf, out_ma);
   buf_init(&g->headbuf, out_ma);
 
-  if (!map_init(&g->typedefmap, g->compiler->ma, 32))
+  if (!map_init(&g->typedefmap, g->ma, 32))
     return false;
-  if (!map_init(&g->tmpmap, g->compiler->ma, 32)) {
-    map_dispose(&g->typedefmap, g->compiler->ma);
+  if (!map_init(&g->tmpmap, g->ma, 32)) {
+    map_dispose(&g->typedefmap, g->ma);
     return false;
   }
   return true;
@@ -23,10 +24,11 @@ bool cgen_init(cgen_t* g, compiler_t* c, memalloc_t out_ma) {
 
 
 void cgen_dispose(cgen_t* g) {
-  map_dispose(&g->tmpmap, g->compiler->ma);
-  map_dispose(&g->typedefmap, g->compiler->ma);
+  map_dispose(&g->tmpmap, g->ma);
+  map_dispose(&g->typedefmap, g->ma);
   buf_dispose(&g->outbuf);
   buf_dispose(&g->headbuf);
+  ptrarray_dispose(&g->funqueue, g->ma);
 }
 
 
@@ -256,7 +258,7 @@ static sym_t intern_typedef(
   if (t->kind == TYPE_OPTIONAL)
     key = typeid((type_t*)t);
 
-  sym_t* vp = (sym_t*)map_assign_ptr(&g->typedefmap, g->compiler->ma, key);
+  sym_t* vp = (sym_t*)map_assign_ptr(&g->typedefmap, g->ma, key);
   if UNLIKELY(!vp)
     return seterr(g, ErrNoMem), sym__;
   if (*vp) {
@@ -276,7 +278,7 @@ static sym_t intern_typedef(
   buf_t outbuf = g->outbuf;
   usize insert_offs = g->headoffs;
   if (g->headnest) {
-    g->outbuf = buf_make(g->compiler->ma);
+    g->outbuf = buf_make(g->ma);
   } else {
     g->outbuf = g->headbuf;
   }
@@ -340,9 +342,6 @@ static void funtype(cgen_t* g, const funtype_t* t, const char* nullable name) {
   }
   CHAR(')');
 }
-
-
-static void fun(cgen_t* g, const fun_t* fun);
 
 
 static sym_t gen_struct_typename(cgen_t* g, const type_t* t) {
@@ -649,7 +648,7 @@ static void gen_drop_custom(cgen_t* g, const drop_t* d, const type_t* bt) {
 
 
 static void gen_drop_struct_fields(cgen_t* g, const drop_t* d, const structtype_t* st) {
-  buf_t tmpbuf = buf_make(g->compiler->ma);
+  buf_t tmpbuf = buf_make(g->ma);
   for (u32 i = st->fields.len; i; ) {
     const local_t* f = st->fields.v[--i];
     const type_t* ft = unwrap_ptr(f->type);
@@ -992,6 +991,12 @@ static void fun_name(cgen_t* g, const fun_t* fun) {
 static void fun_proto(cgen_t* g, const fun_t* fun) {
   funtype_t* ft = (funtype_t*)fun->type;
 
+  switch (fun->visibility) {
+    case VISIBILITY_PKG:     PRINT("PRIVATE "); break;
+    case VISIBILITY_PRIVATE: PRINT("PRIVATE static "); break;
+    case VISIBILITY_PUBLIC:  PRINT("PUBLIC "); break;
+  }
+
   type(g, ft->result);
   CHAR(' ');
   fun_name(g, fun);
@@ -1017,9 +1022,36 @@ static void fun_proto(cgen_t* g, const fun_t* fun) {
 }
 
 
+#define GEN_IN_HEADBUF_BEGIN \
+  assertf(g->headnest == 0, "reentrant GEN_IN_HEADBUF"); \
+  g->headnest++; \
+  usize indent = g->indent;  g->indent = 0; \
+  u32   lineno = g->lineno;  g->lineno = 0; \
+  buf_t outbuf = g->outbuf;  g->outbuf = g->headbuf;
+
+#define GEN_IN_HEADBUF_END \
+  assertf(g->headnest == 1, "unbalanced GEN_IN_HEADBUF"); \
+  g->headnest--; \
+  g->headbuf = g->outbuf; \
+  g->outbuf  = outbuf; \
+  g->lineno  = lineno; \
+  g->indent  = indent;
+
+
 static void fun(cgen_t* g, const fun_t* fun) {
   // if (type_isowner(((funtype_t*)fun->type)->result))
   //   PRINT("__attribute__((__return_typestate__(unconsumed))) ");
+
+  if (g->scopenest > 0) {
+    if UNLIKELY(!ptrarray_push(&g->funqueue, g->ma, (void*)fun))
+      seterr(g, ErrNoMem);
+    GEN_IN_HEADBUF_BEGIN
+    startlinex(g);
+    fun_proto(g, fun);
+    CHAR(';');
+    GEN_IN_HEADBUF_END
+    return;
+  }
 
   fun_proto(g, fun);
 
@@ -1084,7 +1116,7 @@ static void structinit(cgen_t* g, const structtype_t* t, const ptrarray_t* args)
   map_clear(initmap);
   for (u32 i = posend; i < t->fields.len; i++) {
     const local_t* f = t->fields.v[i];
-    const void** vp = (const void**)map_assign_ptr(initmap, g->compiler->ma, f->name);
+    const void** vp = (const void**)map_assign_ptr(initmap, g->ma, f->name);
     if UNLIKELY(!vp)
       return seterr(g, ErrNoMem);
     *vp = f;
@@ -1747,7 +1779,6 @@ static void unit(cgen_t* g, const unit_t* n) {
   // function prototypes
   g->inputid = init_inputid;
   g->lineno = init_lineno;
-  PRINT("\n/* function prototypes */"); g->lineno++;
   for (u32 i = 0; i < n->children.len; i++) {
     const fun_t* fn = n->children.v[i];
     if (fn->kind == EXPR_FUN) {
@@ -1771,12 +1802,22 @@ static void unit(cgen_t* g, const unit_t* n) {
         // declaration-only function already generated
         continue;
       }
+
       startline(g, fn->loc);
       fun(g, fn);
+
+      // nested functions
+      for (u32 i = 0; i < g->funqueue.len; i++) {
+        const fun_t* fn = g->funqueue.v[i];
+        startline(g, fn->loc);
+        fun(g, fn);
+      }
+      g->funqueue.len = 0;
     } else if (fn->kind != STMT_TYPEDEF) {
       debugdie(g, n, "unexpected unit-level node %s", nodekind_name(n->kind));
     }
   }
+
 }
 
 
@@ -1816,6 +1857,7 @@ err_t cgen_generate(cgen_t* g, const unit_t* n) {
   usize headstart = g->outbuf.len;
 
   buf_clear(&g->headbuf);
+  ptrarray_clear(&g->funqueue);
 
   if (n->kind != NODE_UNIT)
     return ErrInvalid;

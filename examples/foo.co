@@ -288,11 +288,11 @@ fun foo(x, y int) int {
 
 
 fun foo(x, y int) int {
-  let a ?MyInt = x
-  if a {
-    return a
+  fun double(x int) int {
+    fun half(x int) int {
+      x / 2
+    }
+    half(x) * 2
   }
-  0
+  double(x)
 }
-
-type MyInt int

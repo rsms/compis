@@ -116,7 +116,7 @@ static bool fqn_recv(const compiler_t* c, buf_t* buf, const type_t* recv) {
 
 
 static bool fqn_fun(const compiler_t* c, buf_t* buf, const fun_t* fn) {
-  if (!fn->nomangle) {
+  if (fn->abi == ABI_CO) {
     buf_print(buf, c->pkgname);
     buf_push(buf, '.');
     if (fn->recvt) {
