@@ -325,7 +325,7 @@ static void repr(RPARAMS, const node_t* nullable n) {
     } else if (n->kind == EXPR_MEMBER) {
       CHAR(' '), PRINT(((member_t*)n)->name);
     }
-    PRINTF(" #%u", n->nrefs);
+    PRINTF(" #%u", n->nuse);
   } else if (n->kind == TYPE_UNRESOLVED) {
     CHAR(' '), PRINT(((unresolvedtype_t*)n)->name);
   }

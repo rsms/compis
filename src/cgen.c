@@ -1403,7 +1403,7 @@ static void expr_in_block(cgen_t* g, const expr_t* n) {
 static void vardef1(cgen_t* g, const local_t* n, const char* name, bool wrap_rvalue) {
 
   // elide unused variable (unless it has side effects)
-  if (n->nrefs == 0 && expr_no_side_effects((expr_t*)n))
+  if (n->nuse == 0 && expr_no_side_effects((expr_t*)n))
     return;
 
   if ((n->flags & NF_RVALUE) && wrap_rvalue)
@@ -1418,7 +1418,7 @@ static void vardef1(cgen_t* g, const local_t* n, const char* name, bool wrap_rva
 
   id(g, name);
 
-  if (n->nrefs == 0)
+  if (n->nuse == 0)
     PRINT(" __attribute__((__unused__))");
 
   // if (type_isptr(n->type)) {
@@ -1537,9 +1537,13 @@ static void ifexpr(cgen_t* g, const ifexpr_t* n) {
     const idexpr_t* id = NULL;
 
     if (has_tmp_opt) {
-      // e.g. "let x ?int; let y = if x { use(x) }"
+      // e.g.
+      //   let x ?int
+      //   if x {
+      //     let y int = x
+      //   }
       id = (const idexpr_t*)n->cond;
-      if (node_isexpr(id->ref) && ((const expr_t*)id->ref)->nrefs > 1) {
+      if (assertnotnull(id->ref)->nuse > 0) {
         g->indent++;
         if (n->flags & NF_RVALUE)
           CHAR('(');

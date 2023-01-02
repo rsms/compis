@@ -45,19 +45,23 @@ static const char* fmtnode(typecheck_t* a, u32 bufindex, const void* nullable n)
   static void _trace_cleanup(nodetrace_t* nt) {
     typecheck_t* a = nt->a;
     a->traceindent--;
-    type_t* effective_type = NULL;
+    type_t* t = NULL;
     const node_t* n = *nt->np;
     if (node_isexpr(n)) {
-      effective_type = asexpr(n)->type;
+      t = asexpr(n)->type;
     } else if (node_istype(n)) {
-      effective_type = (type_t*)n;
+      t = (type_t*)n;
     }
-    if (effective_type == type_unknown) {
+    if (t &&
+        ( t == type_unknown ||
+          t->kind == TYPE_UNRESOLVED) )
+    {
       trace("\e[1;31m%s type not resolved (%s)\e[0m",
         nodekind_name(n->kind), fmtnode(a, 0, n));
     }
-    trace("%s%-14s => %s", nt->msg, nodekind_name(n->kind),
-      effective_type ? fmtnode(a, 0, effective_type) : "NULL");
+    trace("%s%-14s => %s %s", nt->msg, nodekind_name(n->kind),
+      t ? nodekind_name(t->kind) : "NULL",
+      t ? fmtnode(a, 0, t) : "");
   }
 
   #define TRACE_NODE(a, msg, np) \
@@ -74,6 +78,16 @@ static const char* fmtnode(typecheck_t* a, u32 bufindex, const void* nullable n)
 
 #define CHECK_ONCE(node) \
   ( ((node)->flags & NF_CHECKED) == 0 && ((node)->flags |= NF_CHECKED) )
+
+
+static void incuse(void* node) {
+  node_t* n = node;
+  n->nuse++;
+  if (n->kind == EXPR_ID && ((idexpr_t*)n)->ref)
+    incuse(((idexpr_t*)n)->ref);
+}
+
+#define use(node) (incuse(node), (node))
 
 
 static const type_t* unwrap_alias_const(const type_t* t) {
@@ -318,18 +332,33 @@ bool expr_no_side_effects(const expr_t* n) { switch (n->kind) {
   case EXPR_INTLIT:
   case EXPR_FLOATLIT:
     return true;
+
   case EXPR_MEMBER:
-    return expr_no_side_effects(((const member_t*)n)->recv);
+    return expr_no_side_effects(((member_t*)n)->recv);
+
   case EXPR_FIELD:
   case EXPR_PARAM:
   case EXPR_LET:
   case EXPR_VAR: {
-    const local_t* local = (const local_t*)n;
+    const local_t* local = (local_t*)n;
     return (
       type_cons_no_side_effects(local->type) &&
       ( !local->init || expr_no_side_effects(local->init) )
     );
   }
+
+  case EXPR_BINOP:
+    return expr_no_side_effects(((binop_t*)n)->right) &&
+           expr_no_side_effects(((binop_t*)n)->left);
+
+  case EXPR_PREFIXOP:
+  case EXPR_POSTFIXOP: {
+    const unaryop_t* op = (unaryop_t*)n;
+    if (op->op == OP_INC || op->op == OP_DEC)
+      return false;
+    return expr_no_side_effects(op->expr);
+  }
+
   // TODO: other kinds
   default:
     return false;
@@ -407,8 +436,7 @@ static node_t* nullable lookup(typecheck_t* a, sym_t name) {
       return NULL;
     n = *vp;
   }
-  n->nrefs++;
-  return n;
+  return use(n);
 }
 
 
@@ -447,11 +475,15 @@ inline static void type(typecheck_t* a, type_t** tp) {
 static void report_unused(typecheck_t* a, const void* expr_node) {
   assert(node_isexpr(expr_node));
   const expr_t* n = expr_node;
+
   if (nodekind_islocal(n->kind)) {
     local_t* var = (local_t*)n;
     if (var->name != sym__ && noerror(a))
       warning(a, var->nameloc, "unused %s %s", nodekind_fmt(n->kind), var->name);
-  } else if UNLIKELY(expr_no_side_effects(n)) {
+    return;
+  }
+
+  if UNLIKELY(expr_no_side_effects(n)) {
     if (noerror(a))
       warning(a, n, "unused %s %s", nodekind_fmt(n->kind), fmtnode(a, 0, n));
   }
@@ -474,10 +506,8 @@ static void block_noscope(typecheck_t* a, block_t* n) {
     if (cn->kind == EXPR_RETURN) {
       // mark remaining expressions as unused
       // note: parser reports diagnostics about unreachable code
-      for (i++; i < count; i++) {
-        if (node_isexpr(n->children.v[i]))
-          ((expr_t*)n->children.v[i])->nrefs = 0;
-      }
+      for (i++; i < count; i++)
+        ((node_t*)n->children.v[i])->nuse = 0;
       stmt_end = count; // avoid rvalue branch later on
       n->type = ((expr_t*)cn)->type;
 
@@ -495,8 +525,12 @@ static void block_noscope(typecheck_t* a, block_t* n) {
 
       break;
     }
+  }
 
-    if (cn->nrefs == 0 && nodekind_isexpr(cn->kind))
+  // report unused expressions
+  for (u32 i = 0; i < stmt_end; i++) {
+    stmt_t* cn = n->children.v[i];
+    if UNLIKELY(cn->nuse == 0 && nodekind_isexpr(cn->kind))
       report_unused(a, cn);
   }
 
@@ -507,7 +541,7 @@ static void block_noscope(typecheck_t* a, block_t* n) {
     assert(nodekind_isexpr(lastexpr->kind));
     lastexpr->flags |= NF_RVALUE;
     expr(a, lastexpr);
-    lastexpr->nrefs = MAX(n->nrefs, lastexpr->nrefs);
+    lastexpr->nuse = MAX(n->nuse, lastexpr->nuse);
     n->type = lastexpr->type;
   }
 }
@@ -542,7 +576,7 @@ static void this_type(typecheck_t* a, local_t* local) {
 
 
 static void local(typecheck_t* a, local_t* n) {
-  assertf(n->nrefs == 0 || n->name != sym__, "'_' local that is somehow referenced");
+  assertf(n->nuse == 0 || n->name != sym__, "'_' local that is somehow used");
 
   type(a, &n->type);
 
@@ -743,128 +777,62 @@ static void fun(typecheck_t* a, fun_t* n) {
 }
 
 
-#if 0
-expr_t* nullable typecheck_if_cond(parser_t* p, expr_t* cond) {
-  if (cond->type->kind == TYPE_BOOL)
-    return NULL;
-
-  dlog("TODO move check_if_cond to typecheck");
-
-  if (!type_isopt(cond->type)) {
-    error(p, cond, "conditional is not a boolean");
-    return NULL;
-  }
-
-  // apply negation, e.g. "if (!x)"
-  bool neg = false;
-  while (cond->kind == EXPR_PREFIXOP) {
-    unaryop_t* op = (unaryop_t*)cond;
-    if UNLIKELY(op->op != OP_NOT) {
-      error(p, cond, "invalid operation %s on optional type", fmtnode(p, 0, cond));
-      return cond;
-    }
-    neg = !neg;
-    cond = assertnotnull(op->expr);
-  }
-
-  // effective_type is either T or void, depending on "!" prefix ops.
-  // e.g. "var x ?T ... ; if (x) { ... /* x is definitely T here */ }"
-  // e.g. "var x ?T ... ; if (!x) { ... /* x is definitely void here */ }"
-  type_t* effective_type = neg ? type_void : ((opttype_t*)cond->type)->elem;
-
-  // redefine with effective_type
-  switch (cond->kind) {
-    case EXPR_ID: {
-      // e.g. "if x { ... }"
-      idexpr_t* id = (idexpr_t*)cond;
-      if (!node_isexpr(id->ref)) {
-        error(p, (node_t*)cond, "conditional is not an expression");
-        return NULL;
-      }
-
-      idexpr_t* id2 = CLONE_NODE(p, id);
-      id2->type = effective_type;
-
-      expr_t* ref2 = (expr_t*)clone_node(p, id->ref);
-      ref2->type = effective_type;
-      define_replace(p, id->name, (node_t*)ref2);
-
-      return (expr_t*)id2;
-    }
-    case EXPR_LET:
-    case EXPR_VAR: {
-      // e.g. "if let x = expr { ... }"
-      ((local_t*)cond)->type = effective_type;
-      cond->flags |= NF_OPTIONAL;
-      break;
-    }
-  }
-
-  return NULL;
-}
-
-
-expr_t* nullable typecheck_if_cond(parser_t* p, expr_t* cond) {
-}
-#endif
-
-
 static void ifexpr(typecheck_t* a, ifexpr_t* n) {
-  nodeflag_t extrafl = n->flags & NF_RVALUE;
-
   // "cond"
   assert(n->cond->flags & NF_RVALUE);
   enter_scope(a);
+  use(n->cond);
   expr(a, n->cond);
+  if (!type_isbool(n->cond->type) && !type_isopt(n->cond->type))
+    return error(a, n->cond, "conditional is not a boolean nor an optional type");
 
   // "then"
   enter_scope(a);
-  n->thenb->flags |= extrafl;
+  n->thenb->flags |= (n->flags & NF_RVALUE); // "then" block is rvalue if "if" is
   block_noscope(a, n->thenb);
+  leave_scope(a);
 
   // "else"
   if (n->elseb) {
-    // When there's an "else" branch, we need to fork the scopes of the
-    // "then" and "else" blocks and then merge them (merge ownership during unwind.)
-    // Stash the "then" scope away for now; we'll unwind it later
-    if UNLIKELY(!scope_stash(&a->scope, a->ma))
-      out_of_mem(a);
-
     // visit "else" branch
     enter_scope(a);
-    n->elseb->flags |= extrafl;
+    n->elseb->flags |= (n->flags & NF_RVALUE); // "else" block is rvalue if "if" is
     block_noscope(a, n->elseb);
     leave_scope(a);
-
-    // restore stashed "then" scope
-    scope_unstash(&a->scope);
   }
-
-  // leave "then" scope
-  leave_scope(a);
 
   // leave "cond" scope
   leave_scope(a);
 
-  // type check
-  if (n->flags & NF_RVALUE) {
-    if (n->elseb && n->elseb->type != type_void) {
-      // "if ... else" => T
-      n->type = n->thenb->type;
-      if UNLIKELY(!types_iscompat(a->compiler, n->thenb->type, n->elseb->type)) {
-        // TODO: type union
-        const char* t1 = fmtnode(a, 0, n->thenb->type);
-        const char* t2 = fmtnode(a, 1, n->elseb->type);
-        error(a, n->elseb, "incompatible types %s and %s in \"if\" branches", t1, t2);
-      }
-    } else {
-      // "if" => ?T
-      n->type = n->thenb->type;
-      if (n->type->kind != TYPE_OPTIONAL) {
-        opttype_t* t = mknode(a, opttype_t, TYPE_OPTIONAL);
-        t->elem = n->type;
-        n->type = (type_t*)t;
-      }
+  // if (type_narrowed_binding) {
+  //   expr_t* dst = n->cond;
+  //   while (dst->kind == EXPR_ID && node_isexpr(((idexpr_t*)dst)->ref))
+  //     dst = (expr_t*)((idexpr_t*)dst)->ref;
+  //   dst->nuse += type_narrowed_binding->nuse;
+  // }
+
+  // unless the "if" is used as an rvalue, we are done
+  if ((n->flags & NF_RVALUE) == 0) {
+    n->type = type_void;
+    return;
+  }
+
+  if (n->elseb && n->elseb->type != type_void) {
+    // "if ... else" => T
+    n->type = n->thenb->type;
+    if UNLIKELY(!types_iscompat(a->compiler, n->thenb->type, n->elseb->type)) {
+      // TODO: type union
+      const char* t1 = fmtnode(a, 0, n->thenb->type);
+      const char* t2 = fmtnode(a, 1, n->elseb->type);
+      error(a, n->elseb, "incompatible types %s and %s in \"if\" branches", t1, t2);
+    }
+  } else {
+    // "if" => ?T
+    n->type = n->thenb->type;
+    if (n->type->kind != TYPE_OPTIONAL) {
+      opttype_t* t = mknode(a, opttype_t, TYPE_OPTIONAL);
+      t->elem = n->type;
+      n->type = (type_t*)t;
     }
   }
 }
@@ -878,8 +846,10 @@ static void idexpr(typecheck_t* a, idexpr_t* n) {
       return;
     }
   }
+  expr(a, n->ref);
   if (node_istype(n->ref)) {
     n->type = (type_t*)n->ref;
+    type(a, &n->type);
   } else {
     n->type = asexpr(n->ref)->type;
   }
@@ -888,6 +858,7 @@ static void idexpr(typecheck_t* a, idexpr_t* n) {
 
 static void retexpr(typecheck_t* a, retexpr_t* n) {
   if (n->value) {
+    incuse(n->value);
     expr(a, n->value);
     n->type = n->value->type;
   } else {
@@ -1161,6 +1132,7 @@ static expr_t* nullable find_member(typecheck_t* a, type_t* t, sym_t name) {
 
 
 static void member(typecheck_t* a, member_t* n) {
+  incuse(n->recv);
   expr(a, n->recv);
 
   // get receiver type without ref or optional
@@ -1172,8 +1144,7 @@ static void member(typecheck_t* a, member_t* n) {
   typectx_pop(a);
 
   if (target) {
-    target->nrefs++;
-    n->target = target;
+    n->target = use(target);
     n->type = target->type;
   } else {
     n->type = a->typectx; // avoid cascading errors
@@ -1194,7 +1165,7 @@ static void finalize_typecons(typecheck_t* a, typecons_t** np) {
 
   if (types_iscompat(a->compiler, t, expr->type)) {
     // eliminate type cast to equivalent type, e.g. "i8(3)" => "3"
-    expr->nrefs += MAX(1, (*np)->nrefs) - 1;
+    expr->nuse += MAX(1, (*np)->nuse) - 1;
     *(expr_t**)np = expr;
     return;
   }
@@ -1211,6 +1182,7 @@ static void finalize_typecons(typecheck_t* a, typecons_t** np) {
 static void typecons(typecheck_t* a, typecons_t** np) {
   typecons_t* n = *np;
   if (n->expr) {
+    incuse(n->expr);
     typectx_push(a, n->type);
     expr(a, n->expr);
     typectx_pop(a);
@@ -1558,6 +1530,11 @@ static void call(typecheck_t* a, call_t** np) {
 
 
 static void unresolvedtype(typecheck_t* a, unresolvedtype_t** tp) {
+  if ((*tp)->resolved) {
+    *(type_t**)tp = (*tp)->resolved;
+    return;
+  }
+
   sym_t name = (*tp)->name;
   type_t* t = (type_t*)lookup(a, name);
 
@@ -1566,10 +1543,13 @@ static void unresolvedtype(typecheck_t* a, unresolvedtype_t** tp) {
 
   if LIKELY(t && nodekind_istype(t->kind)) {
     type(a, &t);
-    t->nrefs += (*tp)->nrefs;
+    t->nuse += (*tp)->nuse;
+    (*tp)->resolved = t;
     *(type_t**)tp = t;
     return;
   }
+
+  // some error beyond this point
 
   // not found
   if (!t) {
@@ -1654,8 +1634,7 @@ static void exprp(typecheck_t* a, expr_t** np) {
 
   TRACE_NODE(a, "", np);
 
-  if ( (n->type != type_unknown) && ((n->type->flags & NF_CHECKED) == 0) )
-    type(a, &n->type);
+  type(a, &n->type);
 
   switch ((enum nodekind)n->kind) {
   case EXPR_FUN:       return fun(a, (fun_t*)n);

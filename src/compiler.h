@@ -165,7 +165,7 @@ typedef struct {
   nodekind_t kind;
   nodeflag_t flags;
   u8         _unused[2];
-  u32        nrefs; // used by expr_t and usertype_t
+  u32        nuse; // number of uses (expr_t and usertype_t)
   loc_t      loc;
 } node_t;
 
@@ -187,7 +187,8 @@ typedef struct {
 
 typedef struct {
   type_t;
-  sym_t name;
+  sym_t            name;
+  type_t* nullable resolved; // used by typeresolve
 } unresolvedtype_t;
 
 typedef struct {
@@ -621,6 +622,8 @@ inline static bool type_isprim(const type_t* nullable t) {
   return nodekind_isprimtype(assertnotnull(t)->kind); }
 inline static bool type_isopt(const type_t* nullable t) {
   return assertnotnull(t)->kind == TYPE_OPTIONAL; }
+inline static bool type_isbool(const type_t* nullable t) {
+  return assertnotnull(t)->kind == TYPE_BOOL; }
 inline static bool type_isowner(const type_t* t) { // true for "*T" and "?*T"
   t = type_isopt(t) ? ((opttype_t*)t)->elem : t;
   return ((t->flags & (NF_DROP | NF_SUBOWNERS)) != 0) | type_isptr(t);

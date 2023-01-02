@@ -391,9 +391,6 @@ static void leave_scope(parser_t* p) {
 }
 
 
-//
-// TODO: do we even need scope, lookup & define during parsing?
-//
 static node_t* nullable lookup(parser_t* p, sym_t name) {
   node_t* n = scope_lookup(&p->scope, name, U32_MAX);
   if (!n) {
@@ -403,7 +400,6 @@ static node_t* nullable lookup(parser_t* p, sym_t name) {
       return NULL;
     n = *vp;
   }
-  n->nrefs++;
   return n;
 }
 
@@ -812,6 +808,11 @@ static stmt_t* stmt_typedef(parser_t* p) {
     n->aliastype.name = name;
     n->aliastype.elem = type(p, PREC_COMMA);
     bubble_flags(n, n->aliastype.elem);
+    if UNLIKELY(type_isopt(n->aliastype.elem)) {
+      error(p, n->aliastype.elem,
+        "cannot define optional aliased type;"
+        " instead, mark as optional at use sites with ?%s", name);
+    }
     if (n->aliastype.elem->kind == TYPE_STRUCT)
       ((structtype_t*)n->aliastype.elem)->name = n->aliastype.name;
   }
@@ -955,16 +956,8 @@ static expr_t* expr_block(parser_t* p, const parselet_t* pl, nodeflag_t fl) {
 }
 
 
-static expr_t* nullable check_if_cond(parser_t* p, expr_t* cond) {
-  if (cond->type->kind == TYPE_BOOL)
-    return NULL;
-
-  dlog("TODO move check_if_cond to typecheck");
-
-  if (!type_isopt(cond->type)) {
-    error(p, cond, "conditional is not a boolean");
-    return NULL;
-  }
+static void narrow_optional_check(parser_t* p, expr_t* cond) {
+  assert(type_isopt(cond->type));
 
   // apply negation, e.g. "if (!x)"
   bool neg = false;
@@ -972,7 +965,7 @@ static expr_t* nullable check_if_cond(parser_t* p, expr_t* cond) {
     unaryop_t* op = (unaryop_t*)cond;
     if UNLIKELY(op->op != OP_NOT) {
       error(p, cond, "invalid operation %s on optional type", fmtnode(p, 0, cond));
-      return cond;
+      return;
     }
     neg = !neg;
     cond = assertnotnull(op->expr);
@@ -988,10 +981,8 @@ static expr_t* nullable check_if_cond(parser_t* p, expr_t* cond) {
     case EXPR_ID: {
       // e.g. "if x { ... }"
       idexpr_t* id = (idexpr_t*)cond;
-      if (!node_isexpr(id->ref)) {
-        error(p, cond, "conditional is not an expression");
-        return NULL;
-      }
+      if (!node_isexpr(id->ref))
+        return error(p, cond, "conditional is not an expression");
 
       idexpr_t* id2 = CLONE_NODE(p, id);
       id2->type = effective_type;
@@ -1000,7 +991,7 @@ static expr_t* nullable check_if_cond(parser_t* p, expr_t* cond) {
       ref2->type = effective_type;
       define_replace(p, id->name, (node_t*)ref2);
 
-      return (expr_t*)id2;
+      break;
     }
     case EXPR_LET:
     case EXPR_VAR: {
@@ -1010,8 +1001,6 @@ static expr_t* nullable check_if_cond(parser_t* p, expr_t* cond) {
       break;
     }
   }
-
-  return NULL;
 }
 
 
@@ -1022,11 +1011,11 @@ static expr_t* expr_if(parser_t* p, const parselet_t* pl, nodeflag_t fl) {
   // enter "cond" scope
   enter_scope(p);
 
+  // condition
   n->cond = expr(p, PREC_COMMA, fl | NF_RVALUE);
   bubble_flags(n, n->cond);
-
-  // TODO move to typecheck
-  expr_t* type_narrowed_binding = check_if_cond(p, n->cond);
+  if (n->cond->type->kind == TYPE_OPTIONAL)
+    narrow_optional_check(p, n->cond);
 
   // "then"
   enter_scope(p);
@@ -1045,14 +1034,6 @@ static expr_t* expr_if(parser_t* p, const parselet_t* pl, nodeflag_t fl) {
 
   // leave "cond" scope
   leave_scope(p);
-
-  // TODO move to typecheck
-  if (type_narrowed_binding) {
-    expr_t* dst = n->cond;
-    while (dst->kind == EXPR_ID && node_isexpr(((idexpr_t*)dst)->ref))
-      dst = (expr_t*)((idexpr_t*)dst)->ref;
-    dst->nrefs += type_narrowed_binding->nrefs;
-  }
 
   return (expr_t*)n;
 }
@@ -1428,7 +1409,6 @@ static expr_t* prim_typecons(parser_t* p, type_t* t, nodeflag_t fl) {
 
   if (currtok(p) != TRPAREN) {
     n->expr = expr(p, PREC_COMMA, fl | NF_RVALUE);
-    n->expr->nrefs++;
     bubble_flags(n, n->expr);
   }
 
@@ -1514,7 +1494,6 @@ static expr_t* expr_postfix_member(
   next(p);
   left->flags |= NF_RVALUE * (nodeflag_t)(left != p->dotctx);
   n->recv = left;
-  left->nrefs++;
   n->name = p->scanner.sym;
   bubble_flags(n, n->recv);
   expect(p, TID, "");

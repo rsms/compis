@@ -3,7 +3,7 @@
 #include "compiler.h"
 #include <stdlib.h> // for debug_graphviz hack
 
-#define TRACE_ANALYSIS
+//#define TRACE_ANALYSIS
 #if !DEBUG
   #undef TRACE_ANALYSIS
 #endif
@@ -1255,6 +1255,7 @@ static irval_t* vardef(ircons_t* c, local_t* n) {
   irval_t* v;
   if (n->init) {
     irval_t* v1 = load_expr(c, n->init);
+    v1->type = n->type; // needed in case dst is subtype of v, e.g. "dst ?T <= v T"
     v = move_or_copy(c, v1, n->loc, NULL);
     if (v == v1 && v->comment && *v->comment) {
       commentf(c, v, "%s aka %s", v->comment, n->name);
@@ -1293,6 +1294,7 @@ static irval_t* assign(ircons_t* c, binop_t* n) {
   }
 
   sym_t varname = dst->name;
+  v->type = dst->type; // needed in case dst is subtype of v, e.g. "dst ?T <= v T"
 
   irval_t* curr_owner = var_read(c, varname, v->type, (loc_t){0});
   v = move_or_copy(c, v, n->loc, curr_owner);
