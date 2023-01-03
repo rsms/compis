@@ -87,7 +87,7 @@ void abuf_repr(abuf_t* s, const void* srcp, usize len) {
         } else {
           p = lastp;
         }
-        nwrite++;
+        nwrite += 2;
         break;
       }
       // verbatim

@@ -315,6 +315,14 @@ static void fmt(abuf_t* s, const node_t* nullable n, u32 indent, u32 maxdepth) {
     abuf_f64(s, ((const floatlit_t*)n)->f64val, -1);
     break;
 
+  case EXPR_STRLIT: {
+    const strlit_t* str = (strlit_t*)n;
+    abuf_c(s, '"');
+    abuf_repr(s, str->bytes, str->len);
+    abuf_c(s, '"');
+    break;
+  }
+
   case TYPE_VOID:    abuf_str(s, "void"); break;
   case TYPE_BOOL:    abuf_str(s, "bool"); break;
   case TYPE_I8:      abuf_str(s, "i8"); break;

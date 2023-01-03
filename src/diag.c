@@ -50,7 +50,6 @@ usize tok_descr(char* buf, usize bufcap, tok_t t, slice_t lit) {
 
   const char* typ;
   char quote = 0;
-  usize len;
 
   switch (t) {
     case TEOF:      typ = "end of input"; break;
@@ -58,7 +57,10 @@ usize tok_descr(char* buf, usize bufcap, tok_t t, slice_t lit) {
     case TINTLIT:
     case TFLOATLIT: typ = "number"; break;
     case TBYTELIT:  typ = "byte";   quote = '\''; break;
-    case TSTRLIT:   typ = "string"; quote = '"';  break;
+    case TSTRLIT:   typ = "string"; quote = '"';
+      lit.p++;
+      lit.len -= 2;
+      break;
     default:
       abuf_c(&s, '\'');
       abuf_str(&s, tok_repr(t));
@@ -80,7 +82,7 @@ usize tok_descr(char* buf, usize bufcap, tok_t t, slice_t lit) {
   }
 
 end:
-  len = abuf_terminate(&s);
+  usize len = abuf_terminate(&s);
   if (len >= bufcap && bufcap > 4)
     memset(&buf[bufcap - 4], '.', 3);
   return len;

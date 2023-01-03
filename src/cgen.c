@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "colib.h"
 #include "compiler.h"
+#include "abuf.h"
 
 
 typedef struct { usize v[2]; } sizetuple_t;
@@ -235,6 +236,7 @@ static bool type_is_interned_def(const type_t* t) {
   return t->kind == TYPE_STRUCT
       || t->kind == TYPE_OPTIONAL
       || t->kind == TYPE_ALIAS
+      || t->kind == TYPE_ARRAY
       ;
 }
 
@@ -360,6 +362,7 @@ static void gen_struct_typedef(cgen_t* g, const type_t* tp, sym_t typename) {
     PRINT("u8 _unused;");
   } else {
     g->indent++;
+    u32 start_lineno = g->lineno;
     const type_t* t = NULL;
     for (u32 i = 0; i < n->fields.len; i++) {
       const local_t* f = n->fields.v[i];
@@ -385,16 +388,49 @@ static void gen_struct_typedef(cgen_t* g, const type_t* tp, sym_t typename) {
     }
     CHAR(';');
     g->indent--;
-    startline(g, (loc_t){0});
+    if (g->lineno != start_lineno)
+      startlinex(g);
   }
-  PRINT("} ");
-  PRINT(typename);
-  CHAR(';');
+  PRINTF("} %s;", typename);
 }
 
 
 static void structtype(cgen_t* g, const structtype_t* t) {
   PRINT(intern_typedef(g, (const type_t*)t, gen_struct_typename, gen_struct_typedef));
+}
+
+
+static sym_t gen_array_typename(cgen_t* g, const type_t* t) {
+  const arraytype_t* at = (const arraytype_t*)t;
+  usize len1 = g->outbuf.len;
+  PRINT(ANON_PREFIX "array_");
+  if UNLIKELY(compiler_mangle_type(g->compiler, &g->outbuf, at->elem)) {
+    seterr(g, ErrNoMem);
+    return sym__;
+  }
+  sym_t name = sym_intern(&g->outbuf.chars[len1], g->outbuf.len - len1);
+  g->outbuf.len = len1;
+  return name;
+}
+
+
+static void gen_array_typedef(cgen_t* g, const type_t* tp, sym_t typename) {
+  const arraytype_t* n = (const arraytype_t*)tp;
+  PRINT("typedef struct {");
+  type(g, g->compiler->uinttype);
+  PRINT(" len; ");
+  type(g, n->elem);
+  PRINTF("* ptr;} %s;", typename);
+}
+
+
+static void arraytype(cgen_t* g, const arraytype_t* t) {
+  if (t->len == 0) {
+    // length of array known only at runtime
+    PRINT(intern_typedef(g, (const type_t*)t, gen_array_typename, gen_array_typedef));
+    return;
+  }
+  panic("TODO comptime-sized array");
 }
 
 
@@ -496,7 +532,7 @@ static void type(cgen_t* g, const type_t* t) {
   case TYPE_OPTIONAL: return opttype(g, (const opttype_t*)t);
   case TYPE_STRUCT:   return structtype(g, (const structtype_t*)t);
   case TYPE_ALIAS:    return aliastype(g, (const aliastype_t*)t);
-  case TYPE_ARRAY:    panic("TODO %s", nodekind_name(t->kind));
+  case TYPE_ARRAY:    return arraytype(g, (const arraytype_t*)t);
 
   default:
     panic("unexpected type_t %s (%u)", nodekind_name(t->kind), t->kind);
@@ -1393,6 +1429,14 @@ static void boollit(cgen_t* g, const intlit_t* n) {
 }
 
 
+static void strlit(cgen_t* g, const strlit_t* n) {
+  PRINTF("{%zu,(u8[%zu]){\"", n->len, n->len);
+  if UNLIKELY(!buf_appendrepr(&g->outbuf, n->bytes, n->len))
+    seterr(g, ErrNoMem);
+  PRINT("\"}}");
+}
+
+
 static void idexpr(cgen_t* g, const idexpr_t* n) {
   id(g, n->name);
 }
@@ -1704,6 +1748,7 @@ static void expr(cgen_t* g, const expr_t* n) {
   case EXPR_INTLIT:    return intlit(g, (const intlit_t*)n);
   case EXPR_FLOATLIT:  return floatlit(g, (const floatlit_t*)n);
   case EXPR_BOOLLIT:   return boollit(g, (const intlit_t*)n);
+  case EXPR_STRLIT:    return strlit(g, (const strlit_t*)n);
   case EXPR_ID:        return idexpr(g, (const idexpr_t*)n);
   case EXPR_PARAM:     return param(g, (const local_t*)n);
   case EXPR_BLOCK:     return block(g, (const block_t*)n, 0);

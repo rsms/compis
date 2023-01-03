@@ -31,6 +31,7 @@
   _( EXPR_BOOLLIT )\
   _( EXPR_INTLIT )\
   _( EXPR_FLOATLIT )\
+  _( EXPR_STRLIT )\
 // end FOREACH_NODEKIND
 #define FOREACH_NODEKIND_TYPE(_) \
   /* primitive types */\
@@ -221,6 +222,7 @@ typedef struct {
 typedef struct {
   usertype_t;
   type_t* elem;
+  u64     len;
 } arraytype_t;
 
 typedef struct {
@@ -279,6 +281,7 @@ typedef struct {
 
 typedef struct { expr_t; u64 intval; } intlit_t;
 typedef struct { expr_t; double f64val; } floatlit_t;
+typedef struct { expr_t; u8* bytes; usize len; } strlit_t;
 typedef struct { expr_t; sym_t name; node_t* nullable ref; } idexpr_t;
 typedef struct { expr_t; op_t op; expr_t* expr; } unaryop_t;
 typedef struct { expr_t; op_t op; expr_t* left; expr_t* right; } binop_t;
@@ -436,7 +439,6 @@ typedef struct {
 typedef struct {
   scanstate_t;
   compiler_t* compiler;
-  usize       litlenoffs;  // subtracted from source span len in scanner_litlen()
   u64         litint;      // parsed INTLIT
   buf_t       litbuf;      // interpreted source literal (e.g. "foo\n")
   sym_t       sym;         // identifier
@@ -515,6 +517,8 @@ typedef struct compiler {
   type_t*        addrtype;    // type for storing memory addresses, e.g. u64
   type_t*        inttype;     // type for "int"
   type_t*        uinttype;    // type for "uint"
+  arraytype_t    u8atype;     // type for "[u8]"
+  aliastype_t    strtype;     // type for "str"
   bool           isbigendian;
   bool           nomain;      // don't auto-generate C ABI "main" for main.main
   bool           opt_printast;
@@ -558,6 +562,7 @@ void compiler_set_cachedir(compiler_t*, slice_t cachedir);
 err_t compiler_compile(compiler_t*, promise_t*, input_t*, buf_t* ofile);
 bool compiler_fully_qualified_name(const compiler_t*, buf_t* dst, const node_t*);
 bool compiler_mangle(const compiler_t*, buf_t* dst, const node_t*);
+bool compiler_mangle_type(const compiler_t* c, buf_t* buf, const type_t* t);
 
 // scanner
 bool scanner_init(scanner_t* s, compiler_t* c);
@@ -718,10 +723,11 @@ ATTR_FORMAT(printf,4,5) inline static void report_diag(
 void sym_init(memalloc_t);
 sym_t sym_intern(const void* key, usize keylen);
 sym_t sym_snprintf(char* buf, usize bufcap, const char* fmt, ...)ATTR_FORMAT(printf,3,4);
-extern sym_t sym__;    // "_"
-extern sym_t sym_this; // "this"
-extern sym_t sym_drop; // "drop"
-extern sym_t sym_main; // "main"
+extern sym_t sym__;      // "_"
+extern sym_t sym_this;   // "this"
+extern sym_t sym_drop;   // "drop"
+extern sym_t sym_main;   // "main"
+extern sym_t sym_string; // "string"
 
 // scope
 void scope_clear(scope_t* s);

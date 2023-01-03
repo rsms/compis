@@ -389,6 +389,13 @@ static void repr(RPARAMS, const node_t* nullable n) {
     PRINTF(" %f", ((const floatlit_t*)n)->f64val);
     break;
 
+  case EXPR_STRLIT:
+    CHAR(' ');
+    CHAR('"');
+    buf_appendrepr(&r->outbuf, ((strlit_t*)n)->bytes, ((strlit_t*)n)->len);
+    CHAR('"');
+    break;
+
   case EXPR_MEMBER:
     CHAR(' '), repr(RARGS, (node_t*)((member_t*)n)->recv);
     CHAR(' '), repr(RARGS, (node_t*)((member_t*)n)->target);

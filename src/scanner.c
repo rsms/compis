@@ -16,9 +16,6 @@ static const struct { const char* s; u8 len; tok_t t; } keywordtab[] = {
 };
 
 
-static void scan0(scanner_t* s);
-
-
 bool scanner_init(scanner_t* s, compiler_t* c) {
   memset(s, 0, sizeof(*s));
   s->compiler = c;
@@ -62,12 +59,16 @@ void stop_scanning(scanner_t* s) {
 }
 
 
+static usize litlen(const scanner_t* s) {
+  return (usize)(uintptr)(s->inp - s->tokstart);
+}
+
+
 slice_t scanner_lit(const scanner_t* s) {
   assert((uintptr)s->inp >= (uintptr)s->tokstart);
-  usize len = (usize)(uintptr)(s->inp - s->tokstart) - s->litlenoffs;
   return (slice_t){
     .bytes = s->tokstart,
-    .len = len,
+    .len = litlen(s),
   };
 }
 
@@ -85,6 +86,19 @@ static void error(scanner_t* s, const char* fmt, ...) {
 }
 
 
+ATTR_FORMAT(printf,3,4)
+static void error_at(scanner_t* s, loc_t loc, const char* fmt, ...) {
+  if (s->inp == s->inend && s->tok == TEOF)
+    return; // stop_scanning
+  origin_t origin = origin_make(&s->compiler->locmap, loc);
+  va_list ap;
+  va_start(ap, fmt);
+  report_diagv(s->compiler, origin, DIAG_ERR, fmt, ap);
+  va_end(ap);
+  stop_scanning(s);
+}
+
+
 static void newline(scanner_t* s) {
   assert(*s->inp == '\n');
   s->lineno++;
@@ -92,13 +106,18 @@ static void newline(scanner_t* s) {
 }
 
 
+static void prepare_litbuf(scanner_t* s, usize minlen) {
+  buf_clear(&s->litbuf);
+  if UNLIKELY(!buf_reserve(&s->litbuf, minlen))
+    error(s, "out of memory");
+}
+
+
 static void floatnumber(scanner_t* s, int base) {
   s->tok = TFLOATLIT;
   s->insertsemi = true;
   bool allowsign = false;
-  buf_clear(&s->litbuf);
-  if UNLIKELY(!buf_reserve(&s->litbuf, 128))
-    return error(s, "out of memory");
+  prepare_litbuf(s, 64);
   buf_push(&s->litbuf, '+');
   int ok = 1;
   if (*s->tokstart == '-')
@@ -202,6 +221,183 @@ static void zeronumber(scanner_t* s) {
     case '.': s->inp--; return floatnumber(s, 10);
   }
   return number(s, base);
+}
+
+
+static usize string_multiline(scanner_t* s, const u8* start, const u8* end, loc_t loc) {
+  if ((usize)(uintptr)(end - start) >= (usize)USIZE_MAX)
+    return USIZE_MAX;
+
+  if UNLIKELY(*start != '\n') {
+    error(s, "multiline string must start with \"|\" on a new line");
+    return USIZE_MAX;
+  }
+
+  dlog(">>> '%.*s'", (int)(end - start), start);
+
+  u32 extralen = 0;
+  const u8* src = start;
+  const u8* ind = start;
+  u32 indlen = 0;
+  u32 lineno = loc_line(loc);
+  u32 col = loc_col(loc);
+
+  while (src != end) {
+    if (*src++ != '\n') {
+      col++;
+      continue;
+    }
+
+    col = 1;
+    lineno++;
+    const u8* l = src;
+
+    // find '|', leaving while loop with src positioned just after '|'
+    while (src != end) {
+      u8 c = *src++;
+      if (c == '|') break;
+      if UNLIKELY(c != ' ' && c != '\t') {
+        loc_set_line(&loc, lineno);
+        loc_set_col(&loc, col);
+        error_at(s, loc, "missing \"|\" after linebreak in multiline string");
+        return USIZE_MAX;
+      }
+    }
+
+    u32 len = (u32)((src - 1) - l);
+    extralen += len;
+
+    if (indlen == 0) {
+      indlen = len;
+      ind = l;
+    } else if UNLIKELY(indlen != len || memcmp(l, ind, len) != 0) {
+      loc_set_line(&loc, lineno);
+      loc_set_col(&loc, col);
+      error_at(s, loc, "inconsitent indentation of multiline string");
+      // return USIZE_MAX;
+    }
+  }
+  return extralen;
+}
+
+
+static void string_buffered(scanner_t* s, usize extralen, bool ismultiline, loc_t loc) {
+  const u8* src = s->tokstart + 1;
+  usize len = (usize)(uintptr)((s->inp - 1) - src);
+
+  // calculate effective string length
+  if (ismultiline) {
+    if UNLIKELY(extralen >= len) {
+      // string() assumes \n is followed by |, but it isn't the case.
+      // i.e. a string of only linebreaks.
+      return error(s, NULL, "missing \"|\" after linebreak in multiline string");
+    }
+    // verify indentation and calculate nbytes used for indentation
+    usize indentextralen = string_multiline(s, src, src + len, loc);
+    if UNLIKELY(indentextralen == USIZE_MAX) // an error occured
+      return;
+    if (check_add_overflow(extralen, indentextralen, &extralen))
+      return error(s, NULL, "string literal too large");
+    src++; len--;  // sans leading '\n'
+  }
+  assert(extralen <= len);
+  len -= extralen;
+
+  // allocate buffer
+  buf_clear(&s->litbuf);
+  u8* dst = buf_alloc(&s->litbuf, len);
+  if UNLIKELY(!dst)
+    return error(s, "out of memory");
+
+  const u8* chunkstart = src;
+
+  #define FLUSH_BUF(end) { \
+    usize nbyte = (usize)((end) - chunkstart); \
+    memcpy(dst, chunkstart, nbyte); \
+    dst += nbyte; \
+  }
+
+  if (ismultiline) {
+    while (*src++ != '|') {}
+    chunkstart = src;
+  }
+
+  while (src < s->inend) {
+    switch (*src) {
+      case '\\':
+        FLUSH_BUF(src);
+        src++;
+        switch (*src) {
+          case '"': case '\'': case '\\': *dst++ = *src; break; // verbatim
+          case '0':  *dst++ = (u8)0;   break;
+          case 'a':  *dst++ = (u8)0x7; break;
+          case 'b':  *dst++ = (u8)0x8; break;
+          case 't':  *dst++ = (u8)0x9; break;
+          case 'n':  *dst++ = (u8)0xA; break;
+          case 'v':  *dst++ = (u8)0xB; break;
+          case 'f':  *dst++ = (u8)0xC; break;
+          case 'r':  *dst++ = (u8)0xD; break;
+          case 'x': // \xXX
+          case 'u': // \uXXXX
+          case 'U': // \UXXXXXXXX
+            // TODO: \x-style escape sequences
+            return error(s, NULL,
+              "string literal escape \"\\%c\" not yet supported", *src);
+          default:
+            return error(s, NULL,
+              "invalid escape \"\\%c\" in string literal", *src);
+        }
+        chunkstart = ++src;
+        break;
+      case '\n':
+        src++;
+        FLUSH_BUF(src);
+        // note: sstring_multiline has verified syntax already
+        while (*src++ != '|') {
+          assert(src < s->inend);
+        }
+        chunkstart = src;
+        break;
+      case '"':
+        FLUSH_BUF(src);
+        return;
+      default:
+        src++;
+    }
+  }
+}
+
+
+static void string(scanner_t* s) {
+  s->tok = TSTRLIT;
+  s->insertsemi = true;
+  usize extralen = 0;
+  bool ismultiline = false;
+  loc_t loc = s->loc;
+
+  buf_clear(&s->litbuf);
+
+  while (s->inp < s->inend) {
+    switch (*s->inp) {
+      case '\\':
+        s->inp++; // eat next byte
+        extralen++;
+        break;
+      case '\n':
+        newline(s);
+        ismultiline = true;
+        extralen++;
+        break;
+      case '"': {
+        s->inp++;
+        if (extralen || ismultiline)
+          string_buffered(s, extralen, ismultiline, loc);
+        return;
+      }
+    }
+    s->inp++;
+  }
+  error(s, "unterminated string literal");
 }
 
 
@@ -313,6 +509,9 @@ static void skip_comment(scanner_t* s) {
 }
 
 
+static void scan0(scanner_t* s);
+
+
 static void scan1(scanner_t* s) {
   s->tokstart = s->inp;
   loc_set_line(&s->loc, s->lineno);
@@ -369,7 +568,8 @@ static void scan1(scanner_t* s) {
     case '=':
       ++s->inp, s->tok = TDIVASSIGN; break;
   } break;
-  case '0': return zeronumber(s);
+  case '0': MUSTTAIL return zeronumber(s);
+  case '"': MUSTTAIL return string(s);
   case '.': switch (nextc) {
     case '0' ... '9':
       s->inp--;
@@ -402,8 +602,6 @@ static void scan1(scanner_t* s) {
 
 
 static void scan0(scanner_t* s) {
-  s->litlenoffs = 0;
-
   // save for TSEMI
   u32 prev_lineno = s->lineno;
   const u8* prev_linestart = s->linestart;

@@ -142,6 +142,17 @@ static type_t* unwrap_ptr_and_alias(type_t* t) {
 }
 
 
+static type_t* concrete_type(const compiler_t* c, type_t* t) {
+  for (;;) switch (t->kind) {
+  case TYPE_OPTIONAL: t = assertnotnull(((opttype_t*)t)->elem); break;
+  case TYPE_ALIAS:    t = assertnotnull(((aliastype_t*)t)->elem); break;
+  case TYPE_INT:      t = c->inttype; break;
+  case TYPE_UINT:     t = c->uinttype; break;
+  default:            return t;
+  }
+}
+
+
 bool types_isconvertible(const type_t* dst, const type_t* src) {
   dst = unwrap_alias_const(assertnotnull(dst));
   src = unwrap_alias_const(assertnotnull(src));
@@ -634,9 +645,10 @@ static void structtype(typecheck_t* a, structtype_t* st) {
       // For this reason, we add struct types to a.postanalyze later on.
       st->flags |= NF_SUBOWNERS;
     }
-    f->offset = ALIGN2(size, f->type->align);
-    size = f->offset + f->type->size;
-    align = MAX(align, f->type->align); // alignment of struct is max alignment of fields
+    type_t* t = concrete_type(a->compiler, f->type);
+    f->offset = ALIGN2(size, t->align);
+    size = f->offset + t->size;
+    align = MAX(align, t->align); // alignment of struct is max alignment of fields
   }
 
   leave_ns(a);
@@ -1674,6 +1686,7 @@ static void exprp(typecheck_t* a, expr_t** np) {
   case NODE_UNIT:
   case STMT_TYPEDEF:
   case EXPR_BOOLLIT:
+  case EXPR_STRLIT:
   case TYPE_VOID:
   case TYPE_BOOL:
   case TYPE_I8:

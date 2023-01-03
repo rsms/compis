@@ -1138,6 +1138,33 @@ static expr_t* expr_floatlit(parser_t* p, const parselet_t* pl, nodeflag_t fl) {
 }
 
 
+static expr_t* expr_strlit(parser_t* p, const parselet_t* pl, nodeflag_t fl) {
+  strlit_t* n = mkexpr(p, strlit_t, EXPR_STRLIT, fl | NF_CHECKED);
+
+  n->type = (type_t*)&p->scanner.compiler->strtype;
+
+  slice_t str;
+  if (p->scanner.litbuf.len > 0) {
+    str = buf_slice(p->scanner.litbuf);
+  } else {
+    str = scanner_lit(&p->scanner);
+    str.p++;
+    str.len -= 2;
+  }
+  n->bytes = (u8*)mem_strdup(p->ast_ma, str, 0);
+  n->len = str.len;
+
+  if UNLIKELY(!n->bytes) {
+    out_of_mem(p);
+    n->len = 0;
+  }
+
+  next(p);
+
+  return (expr_t*)n;
+}
+
+
 static expr_t* expr_boollit(parser_t* p, const parselet_t* pl, nodeflag_t fl) {
   intlit_t* n = mkexpr(p, intlit_t, EXPR_BOOLLIT, fl | NF_CHECKED);
   n->intval = currtok(p) == TTRUE;
@@ -2065,6 +2092,7 @@ static const parselet_t expr_parsetab[TOK_COUNT] = {
   // constants
   [TINTLIT]   = {expr_intlit},
   [TFLOATLIT] = {expr_floatlit},
+  [TSTRLIT]   = {expr_strlit},
   [TTRUE]     = {expr_boollit},
   [TFALSE]    = {expr_boollit},
 

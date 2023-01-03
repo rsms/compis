@@ -286,12 +286,20 @@ fun foo(x, y int) int {
   x * y * int(a.z)
 }*/
 
-pub fun foo(x, y int) int {
-  fun double(x int) int {
-    fun half(x int) int {
-      x / 2
-    }
-    half(x) * 2
-  }
-  double(x)
+fun foo() {
+  let _ = "Abc"
+  let _ = "A\nB"
+  let _ = "
+    |Anne
+    | Bob"
 }
+
+// pub "C" fun foo(x, y int) int {
+//   fun double(x int) int {
+//     fun half(x int) int {
+//       x / 2
+//     }
+//     half(x) * 2
+//   }
+//   double(x)
+// }

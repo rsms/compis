@@ -1737,6 +1737,11 @@ static irval_t* intlit(ircons_t* c, intlit_t* n) {
 }
 
 
+static irval_t* strlit(ircons_t* c, strlit_t* n) {
+  return push_TODO_val(c, c->b, n->type, "strlit");
+}
+
+
 static irval_t* floatlit(ircons_t* c, floatlit_t* n) {
   irblock_t* b0 = entry_block(c->f);
   f64 f64val = n->f64val;
@@ -2049,6 +2054,9 @@ static irval_t* expr(ircons_t* c, void* expr_node) {
   case EXPR_BOOLLIT:
   case EXPR_INTLIT:
     return intlit(c, (intlit_t*)n);
+
+  case EXPR_STRLIT:
+    return strlit(c, (strlit_t*)n);
 
   case EXPR_VAR:
   case EXPR_LET:

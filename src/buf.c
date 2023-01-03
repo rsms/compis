@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "colib.h"
 #include "buf.h"
+#include "abuf.h"
 
 
 // buf_t should be castable to mem_t
@@ -94,6 +95,24 @@ bool buf_append(buf_t* b, const void* src, usize len) {
   if (p)
     memcpy(p, src, len);
   return !!p;
+}
+
+
+bool buf_appendrepr(buf_t* b, const void* src, usize len) {
+  if (len == 0)
+    return true;
+  usize cap = len * 1.2;
+  for (;;) {
+    if UNLIKELY(!buf_reserve(b, cap))
+      return false;
+    abuf_t a = abuf_make(b->p + b->len, b->cap - b->len);
+    abuf_repr(&a, src, len);
+    if (a.len <= cap) {
+      b->len += a.len;
+      return true;
+    }
+    cap = a.len;
+  }
 }
 
 

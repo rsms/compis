@@ -85,6 +85,8 @@ bool buf_nullterm(buf_t* b);
 // buf_append appends len bytes to the end of the buffer by copying src
 bool buf_append(buf_t* b, const void* src, usize len);
 
+bool buf_appendrepr(buf_t* b, const void* src, usize len);
+
 // buf_insert inserts bytes at index, shifting any existing data over
 // e.g. buf_insert("abc", 1, "123") => "a123bc"
 bool buf_insert(buf_t* b, usize index, const void* src, usize len);

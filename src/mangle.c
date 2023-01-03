@@ -158,6 +158,37 @@ static bool nsstack_push(encoder_t* e, const node_t* n) {
 }
 
 
+static encoder_t mkencoder(const compiler_t* c, buf_t* buf) {
+  encoder_t e = {
+    .c = c,
+    .buf = *buf,
+  };
+  e.nsstack.v = e.nsstack.st;
+  e.nsstack.cap = countof(e.nsstack.st);
+  return e;
+}
+
+
+static bool encoder_finalize(encoder_t* e, buf_t* buf) {
+  if (e->nsstack.v != e->nsstack.st) {
+    mem_freev(e->c->ma, e->nsstack.v, e->nsstack.cap, sizeof(void*));
+    e->nsstack.v = 0;
+    e->nsstack.cap = 0;
+  }
+  bool ok = buf_nullterm(&e->buf);
+  *buf = e->buf;
+  return ok & e->ok;
+}
+
+
+bool compiler_mangle_type(const compiler_t* c, buf_t* buf, const type_t* t) {
+  encoder_t e = mkencoder(c, buf);
+  buf_reserve(buf, 16);
+  type(&e, t);
+  return encoder_finalize(&e, buf);
+}
+
+
 bool compiler_mangle(const compiler_t* c, buf_t* buf, const node_t* n) {
   // package mypkg
   // namespace foo {
@@ -177,24 +208,20 @@ bool compiler_mangle(const compiler_t* c, buf_t* buf, const node_t* n) {
   // │ └──────────────────── start tag for "bar"
   // └────────────────────── common symbol prefix
   //
+
+  encoder_t e = mkencoder(c, buf);
+
   buf_reserve(buf, 64);
 
   // // common prefix
   // buf_push(buf, '_');
   // buf_push(buf, 'C');
 
-  encoder_t* e = &(encoder_t){
-    .c = c,
-    .buf = *buf,
-  };
-  e->nsstack.v = e->nsstack.st;
-  e->nsstack.cap = countof(e->nsstack.st);
-
   // path
   const node_t* ns = n;
   for (;;) {
-    start_path(e, ns);
-    nsstack_push(e, ns);
+    start_path(&e, ns);
+    nsstack_push(&e, ns);
     switch (ns->kind) {
       case EXPR_FUN:    ns = assertnotnull(((fun_t*)ns)->nsparent); break;
       case TYPE_STRUCT: ns = assertnotnull(((structtype_t*)ns)->nsparent); break;
@@ -203,22 +230,15 @@ bool compiler_mangle(const compiler_t* c, buf_t* buf, const node_t* n) {
     }
   }
 endpath:
-  for (u32 i = e->nsstack.len; i;)
-    end_path(e, e->nsstack.v[--i]);
+  for (u32 i = e.nsstack.len; i;)
+    end_path(&e, e.nsstack.v[--i]);
 
   // TODO: append types for generic functions, structs, arrays:
   // // type
   // if (n->kind == EXPR_FUN) {
   //   // e.g. "fun foo(x, y i32) i8" => "Nf3fooTiiEa"
-  //   funtype1(e, (funtype_t*)((fun_t*)n)->type);
+  //   funtype1(&e, (funtype_t*)((fun_t*)n)->type);
   // }
 
-  // free nsstack
-  if (e->nsstack.v != e->nsstack.st)
-    mem_freev(e->c->ma, e->nsstack.v, e->nsstack.cap, sizeof(void*));
-
-  // finalize buffer
-  bool ok = buf_nullterm(&e->buf);
-  *buf = e->buf;
-  return ok & e->ok;
+  return encoder_finalize(&e, buf);
 }
