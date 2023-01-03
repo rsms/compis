@@ -401,7 +401,7 @@ static node_t* nullable lookup(parser_t* p, sym_t name) {
   node_t* n = scope_lookup(&p->scope, name, U32_MAX);
   if (!n) {
     // look in package scope and its parent universe scope
-    void** vp = map_lookup(&p->pkgdefs, name, strlen(name));
+    void** vp = map_lookup_ptr(&p->pkgdefs, name);
     if (!vp)
       return NULL;
     n = *vp;
@@ -417,7 +417,7 @@ static void define_replace(parser_t* p, sym_t name, node_t* n) {
   if UNLIKELY(!scope_define(&p->scope, p->ma, name, n))
     out_of_mem(p);
   if (scope_istoplevel(&p->scope)) {
-    void** vp = map_assign(&p->pkgdefs, p->ma, name, strlen(name));
+    void** vp = map_assign_ptr(&p->pkgdefs, p->ma, name);
     if UNLIKELY(!vp)
       return out_of_mem(p);
     *vp = n;
@@ -439,7 +439,7 @@ static void define(parser_t* p, sym_t name, node_t* n) {
 
   // top-level definitions also goes into package scope
   if (scope_istoplevel(&p->scope)) {
-    void** vp = map_assign(&p->pkgdefs, p->ma, name, strlen(name));
+    void** vp = map_assign_ptr(&p->pkgdefs, p->ma, name);
     if (!vp)
       return out_of_mem(p);
     if (*vp) {
@@ -1139,9 +1139,7 @@ static expr_t* expr_floatlit(parser_t* p, const parselet_t* pl, nodeflag_t fl) {
 
 
 static expr_t* expr_strlit(parser_t* p, const parselet_t* pl, nodeflag_t fl) {
-  strlit_t* n = mkexpr(p, strlit_t, EXPR_STRLIT, fl | NF_CHECKED);
-
-  n->type = (type_t*)&p->scanner.compiler->strtype;
+  strlit_t* n = mkexpr(p, strlit_t, EXPR_STRLIT, fl);
 
   slice_t str;
   if (p->scanner.litbuf.len > 0) {
@@ -1965,54 +1963,58 @@ unit_t* parser_parse(parser_t* p, memalloc_t ast_ma, input_t* input) {
 }
 
 
-static const map_t* universe() {
-  static map_t m = {0};
-  _Atomic(usize) init = 0;
-  if (init++)
-    return &m;
+static map_t* nullable compiler_builtins(compiler_t* c) {
+  if (c->builtins.cap > 0)
+    return &c->builtins;
 
   const struct {
-    const char* key;
+    sym_t       sym;
     const void* node;
   } entries[] = {
     // types
-    {"void", type_void},
-    {"bool", type_bool},
-    {"int",  type_int},
-    {"uint", type_uint},
-    {"i8",   type_i8},
-    {"i16",  type_i16},
-    {"i32",  type_i32},
-    {"i64",  type_i64},
-    {"u8",   type_u8},
-    {"u16",  type_u16},
-    {"u32",  type_u32},
-    {"u64",  type_u64},
-    {"f32",  type_f32},
-    {"f64",  type_f64},
+    {sym_cstr("void"),   type_void},
+    {sym_cstr("bool"),   type_bool},
+    {sym_cstr("int"),    type_int},
+    {sym_cstr("uint"),   type_uint},
+    {sym_cstr("i8"),     type_i8},
+    {sym_cstr("i16"),    type_i16},
+    {sym_cstr("i32"),    type_i32},
+    {sym_cstr("i64"),    type_i64},
+    {sym_cstr("u8"),     type_u8},
+    {sym_cstr("u16"),    type_u16},
+    {sym_cstr("u32"),    type_u32},
+    {sym_cstr("u64"),    type_u64},
+    {sym_cstr("f32"),    type_f32},
+    {sym_cstr("f64"),    type_f64},
+    {sym_cstr("string"), &c->strtype},
   };
-  static void* storage[
-    (MEMALLOC_BUMP_OVERHEAD + MAP_STORAGE_X(countof(entries))) / sizeof(void*)] = {0};
-  memalloc_t ma = memalloc_bump(storage, sizeof(storage), MEMALLOC_STORAGE_ZEROED);
-  safecheckx(map_init(&m, ma, countof(entries)));
+
+  if UNLIKELY(!map_init(&c->builtins, c->ma, countof(entries)))
+    return NULL;
+
   for (usize i = 0; i < countof(entries); i++) {
-    void** valp = map_assign(&m, ma, entries[i].key, strlen(entries[i].key));
+    void** valp = map_assign_ptr(&c->builtins, c->ma, entries[i].sym);
     assertnotnull(valp);
     *valp = (void*)entries[i].node;
   }
-  return &m;
+  return &c->builtins;
 }
 
 
 bool parser_init(parser_t* p, compiler_t* c) {
   memset(p, 0, sizeof(*p));
 
+  map_t* builtins = compiler_builtins(c);
+  if (!builtins)
+    return false;
+
   if (!scanner_init(&p->scanner, c))
     return false;
 
   if (!map_init(&p->pkgdefs, c->ma, 32))
     goto err1;
-  p->pkgdefs.parent = universe();
+  p->pkgdefs.parent = builtins;
+
   if (!map_init(&p->tmpmap, c->ma, 32))
     goto err2;
   if (!map_init(&p->recvtmap, c->ma, 32))

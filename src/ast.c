@@ -264,7 +264,12 @@ static void repr_type(RPARAMS, const type_t* t) {
     }
     break;
   case TYPE_ARRAY:
-    dlog("TODO subtype %s", nodekind_name(t->kind));
+    PRINTF(" %llu ", ((arraytype_t*)t)->len);
+    repr_type(RARGSFL(fl | REPRFLAG_HEAD), ((arraytype_t*)t)->elem);
+    break;
+  case TYPE_SLICE:
+    CHAR(' ');
+    repr_type(RARGSFL(fl | REPRFLAG_HEAD), ((arraytype_t*)t)->elem);
     break;
   case TYPE_UNRESOLVED:
     CHAR(' '), PRINT(((unresolvedtype_t*)t)->name);

@@ -258,7 +258,7 @@
 // }
 
 
-/*fun printu32(u32) void
+fun printu32(u32) void
 
 type Stuff {
   x int
@@ -284,15 +284,14 @@ fun foo(x, y int) int {
     a.stuff = Stuff()
   }
   x * y * int(a.z)
-}*/
-
-fun foo() {
-  let _ = "Abc"
-  let _ = "A\nB"
-  let _ = "
-    |Anne
-    | Bob"
 }
+
+// fun foo(/*byteslice &[u8]*/) {
+//   // let _ int = 3
+//   var a string = "abc" // string aka &[u8]
+//   var b = "abc"        // &[u8 3]
+//   a = b                // ok; stronger type assignable to weaker type
+// }
 
 // pub "C" fun foo(x, y int) int {
 //   fun double(x int) int {

@@ -167,6 +167,8 @@ bool types_isconvertible(const type_t* dst, const type_t* src) {
 bool _types_iscompat(const compiler_t* c, const type_t* dst, const type_t* src) {
   dst = unwrap_alias_const(assertnotnull(dst));
   src = unwrap_alias_const(assertnotnull(src));
+  if (dst == src)
+    return true;
   switch (dst->kind) {
     case TYPE_INT:
     case TYPE_UINT:
@@ -212,8 +214,32 @@ bool _types_iscompat(const compiler_t* c, const type_t* dst, const type_t* src) 
         src = ((const opttype_t*)src)->elem;
       return types_iscompat(c, d->elem, src);
     }
+    case TYPE_ARRAY: {
+      // [T N] <= [T N]
+      const arraytype_t* l = (arraytype_t*)dst;
+      const arraytype_t* r = (arraytype_t*)src;
+      return r->kind == TYPE_ARRAY &&
+             l->len == r->len &&
+             types_iscompat(c, l->elem, r->elem);
+    }
+    case TYPE_SLICE: {
+      // [T] <= [T]
+      // [T] <= &[T N]
+      const slicetype_t* l = (slicetype_t*)dst;
+      switch (src->kind) {
+        case TYPE_SLICE:
+          return types_iscompat(c, l->elem, ((slicetype_t*)src)->elem);
+        case TYPE_REF: {
+          const reftype_t* r = (const reftype_t*)src;
+          if (r->elem->kind == TYPE_ARRAY)
+            return types_iscompat(c, l->elem, ((arraytype_t*)r->elem)->elem);
+          return false;
+        }
+      }
+      return false;
+    }
   }
-  return dst == src;
+  return false;
 }
 
 
@@ -442,7 +468,7 @@ static node_t* nullable lookup(typecheck_t* a, sym_t name) {
   node_t* n = scope_lookup(&a->scope, name, U32_MAX);
   if (!n) {
     // look in package scope and its parent universe scope
-    void** vp = map_lookup(&a->p->pkgdefs, name, strlen(name));
+    void** vp = map_lookup_ptr(&a->p->pkgdefs, name);
     if (!vp)
       return NULL;
     n = *vp;
@@ -1101,6 +1127,26 @@ again:
 }
 
 
+static void strlit(typecheck_t* a, strlit_t* n) {
+  if (a->typectx == (type_t*)&a->compiler->strtype) {
+    n->type = a->typectx;
+    return;
+  }
+
+  arraytype_t* at = mknode(a, arraytype_t, TYPE_ARRAY);
+  at->flags = NF_CHECKED;
+  at->elem = type_u8;
+  at->len = n->len;
+  at->size = at->elem->size * at->len;
+  at->align = at->elem->align;
+
+  reftype_t* t = mknode(a, reftype_t, TYPE_REF);
+  t->elem = (type_t*)at;
+
+  n->type = (type_t*)t;
+}
+
+
 static expr_t* nullable find_member(typecheck_t* a, type_t* t, sym_t name) {
   type_t* bt = unwrap_ptr_and_alias(t); // e.g. "?&MyMyT" => "T"
 
@@ -1662,6 +1708,7 @@ static void exprp(typecheck_t* a, expr_t** np) {
   case EXPR_DEREF:     return deref(a, (unaryop_t*)n);
   case EXPR_INTLIT:    return intlit(a, (intlit_t*)n);
   case EXPR_FLOATLIT:  return floatlit(a, (floatlit_t*)n);
+  case EXPR_STRLIT:    return strlit(a, (strlit_t*)n);
 
   case EXPR_PREFIXOP:
   case EXPR_POSTFIXOP:
@@ -1686,7 +1733,6 @@ static void exprp(typecheck_t* a, expr_t** np) {
   case NODE_UNIT:
   case STMT_TYPEDEF:
   case EXPR_BOOLLIT:
-  case EXPR_STRLIT:
   case TYPE_VOID:
   case TYPE_BOOL:
   case TYPE_I8:

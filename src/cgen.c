@@ -237,6 +237,7 @@ static bool type_is_interned_def(const type_t* t) {
       || t->kind == TYPE_OPTIONAL
       || t->kind == TYPE_ALIAS
       || t->kind == TYPE_ARRAY
+      || t->kind == TYPE_SLICE
       ;
 }
 
@@ -400,11 +401,15 @@ static void structtype(cgen_t* g, const structtype_t* t) {
 }
 
 
-static sym_t gen_array_typename(cgen_t* g, const type_t* t) {
-  const arraytype_t* at = (const arraytype_t*)t;
+static sym_t gen_slice_typename(cgen_t* g, const type_t* tp) {
+  const slicetype_t* t = (const slicetype_t*)tp;
   usize len1 = g->outbuf.len;
-  PRINT(ANON_PREFIX "array_");
-  if UNLIKELY(compiler_mangle_type(g->compiler, &g->outbuf, at->elem)) {
+  if (t->ismut) {
+    PRINT(ANON_PREFIX "mutslice_");
+  } else {
+    PRINT(ANON_PREFIX "slice_");
+  }
+  if UNLIKELY(compiler_mangle_type(g->compiler, &g->outbuf, t->elem)) {
     seterr(g, ErrNoMem);
     return sym__;
   }
@@ -414,23 +419,28 @@ static sym_t gen_array_typename(cgen_t* g, const type_t* t) {
 }
 
 
-static void gen_array_typedef(cgen_t* g, const type_t* tp, sym_t typename) {
-  const arraytype_t* n = (const arraytype_t*)tp;
+static void gen_slice_typedef(cgen_t* g, const type_t* tp, sym_t typename) {
+  const slicetype_t* t = (const slicetype_t*)tp;
   PRINT("typedef struct {");
   type(g, g->compiler->uinttype);
   PRINT(" len; ");
-  type(g, n->elem);
+  if (!t->ismut)
+    PRINT("const ");
+  type(g, t->elem);
   PRINTF("* ptr;} %s;", typename);
 }
 
 
+static void slicetype(cgen_t* g, const slicetype_t* t) {
+  PRINT(intern_typedef(g, (const type_t*)t, gen_slice_typename, gen_slice_typedef));
+}
+
+
 static void arraytype(cgen_t* g, const arraytype_t* t) {
-  if (t->len == 0) {
-    // length of array known only at runtime
-    PRINT(intern_typedef(g, (const type_t*)t, gen_array_typename, gen_array_typedef));
-    return;
-  }
-  panic("TODO comptime-sized array");
+  type(g, t->elem);
+  CHAR('*');
+  // PRINTF("[%llu]", t->len);
+  // dlog("TODO array");
 }
 
 
@@ -438,7 +448,8 @@ static void reftype(cgen_t* g, const reftype_t* t) {
   if (!t->ismut)
     PRINT("const ");
   type(g, t->elem);
-  CHAR('*');
+  if (t->elem->kind != TYPE_SLICE && t->elem->kind != TYPE_ARRAY)
+    CHAR('*');
 }
 
 
@@ -533,6 +544,7 @@ static void type(cgen_t* g, const type_t* t) {
   case TYPE_STRUCT:   return structtype(g, (const structtype_t*)t);
   case TYPE_ALIAS:    return aliastype(g, (const aliastype_t*)t);
   case TYPE_ARRAY:    return arraytype(g, (const arraytype_t*)t);
+  case TYPE_SLICE:    return slicetype(g, (const slicetype_t*)t);
 
   default:
     panic("unexpected type_t %s (%u)", nodekind_name(t->kind), t->kind);
@@ -1366,13 +1378,21 @@ static void binop(cgen_t* g, const binop_t* n) {
 }
 
 
+// static void implicit_cast(cgen_t* g, const binop_t* n) {
+// }
+
+
 static void assign(cgen_t* g, const binop_t* n) {
   expr_as_value(g, n->left);
   CHAR(' ');
   PRINT(operator(n->op));
   CHAR(' ');
-  if (type_isopt(n->type) && !type_isopt(n->right->type))
+  const type_t* lt = unwind_aliastypes(n->type);
+  const type_t* rt = unwind_aliastypes(n->right->type);
+  if (type_isopt(lt) && !type_isopt(rt))
     return optinit(g, n->right, /*isshort*/false);
+  if (lt->kind == TYPE_SLICE && rt->kind != TYPE_SLICE)
+    panic("TODO assign to slice");
   expr_as_value(g, n->right);
 }
 
@@ -1430,10 +1450,24 @@ static void boollit(cgen_t* g, const intlit_t* n) {
 
 
 static void strlit(cgen_t* g, const strlit_t* n) {
-  PRINTF("{%zu,(u8[%zu]){\"", n->len, n->len);
-  if UNLIKELY(!buf_appendrepr(&g->outbuf, n->bytes, n->len))
-    seterr(g, ErrNoMem);
-  PRINT("\"}}");
+  const type_t* t = n->type;
+  if (t->kind == TYPE_REF && ((reftype_t*)t)->elem->kind == TYPE_ARRAY) {
+    PRINTF("(const u8[%zu]){\"", n->len);
+    if UNLIKELY(!buf_appendrepr(&g->outbuf, n->bytes, n->len))
+      seterr(g, ErrNoMem);
+    PRINT("\"}");
+  } else {
+    // string, alias for &[u8]
+    // t = unwind_aliastypes(t);
+    // const slicetype_t* st = (slicetype_t*)t;
+    assert(unwind_aliastypes(t)->kind == TYPE_SLICE);
+    PRINT("(");
+    type(g, t);
+    PRINTF("){%zu,(const u8[%zu]){\"", n->len, n->len);
+    if UNLIKELY(!buf_appendrepr(&g->outbuf, n->bytes, n->len))
+      seterr(g, ErrNoMem);
+    PRINT("\"}}");
+  }
 }
 
 

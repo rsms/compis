@@ -56,6 +56,7 @@
   _( TYPE_REF )\
   _( TYPE_OPTIONAL )\
   _( TYPE_STRUCT )\
+  _( TYPE_SLICE )\
   _( TYPE_ALIAS )\
   /* special types replaced by typecheck */\
   _( TYPE_UNKNOWN ) /* nodekind_is*type assumes this is the first special type */\
@@ -224,6 +225,12 @@ typedef struct {
   type_t* elem;
   u64     len;
 } arraytype_t;
+
+typedef struct {
+  usertype_t;
+  type_t* elem;
+  bool    ismut;
+} slicetype_t;
 
 typedef struct {
   usertype_t;
@@ -517,8 +524,10 @@ typedef struct compiler {
   type_t*        addrtype;    // type for storing memory addresses, e.g. u64
   type_t*        inttype;     // type for "int"
   type_t*        uinttype;    // type for "uint"
-  arraytype_t    u8atype;     // type for "[u8]"
+  slicetype_t    u8stype;     // type for "[u8]"
+  reftype_t      refu8stype;  // type for "&[u8]"
   aliastype_t    strtype;     // type for "str"
+  map_t          builtins;
   bool           isbigendian;
   bool           nomain;      // don't auto-generate C ABI "main" for main.main
   bool           opt_printast;
@@ -723,6 +732,7 @@ ATTR_FORMAT(printf,4,5) inline static void report_diag(
 void sym_init(memalloc_t);
 sym_t sym_intern(const void* key, usize keylen);
 sym_t sym_snprintf(char* buf, usize bufcap, const char* fmt, ...)ATTR_FORMAT(printf,3,4);
+inline static sym_t sym_cstr(const char* s) { return sym_intern(s, strlen(s)); }
 extern sym_t sym__;      // "_"
 extern sym_t sym_this;   // "this"
 extern sym_t sym_drop;   // "drop"
