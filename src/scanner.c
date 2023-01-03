@@ -233,8 +233,6 @@ static usize string_multiline(scanner_t* s, const u8* start, const u8* end, loc_
     return USIZE_MAX;
   }
 
-  dlog(">>> '%.*s'", (int)(end - start), start);
-
   u32 extralen = 0;
   const u8* src = start;
   const u8* ind = start;
@@ -274,7 +272,7 @@ static usize string_multiline(scanner_t* s, const u8* start, const u8* end, loc_
       loc_set_line(&loc, lineno);
       loc_set_col(&loc, col);
       error_at(s, loc, "inconsitent indentation of multiline string");
-      // return USIZE_MAX;
+      return USIZE_MAX;
     }
   }
   return extralen;
