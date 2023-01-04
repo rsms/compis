@@ -190,6 +190,14 @@ bool _types_iscompat(const compiler_t* c, const type_t* dst, const type_t* src) 
       return (
         (src->kind == TYPE_PTR || src->kind == TYPE_REF) &&
         types_iscompat(c, ((ptrtype_t*)dst)->elem, ((ptrtype_t*)src)->elem));
+    case TYPE_OPTIONAL: {
+      // ?T <= T
+      // ?T <= ?T
+      const opttype_t* d = (opttype_t*)dst;
+      if (src->kind == TYPE_OPTIONAL)
+        src = ((opttype_t*)src)->elem;
+      return types_iscompat(c, d->elem, src);
+    }
     case TYPE_REF: {
       // &T    <= &T
       // mut&T <= &T
@@ -197,22 +205,41 @@ bool _types_iscompat(const compiler_t* c, const type_t* dst, const type_t* src) 
       // &T    x= mut&T
       // &T    <= *T
       // mut&T <= *T
-      const reftype_t* d = (const reftype_t*)dst;
+      const reftype_t* l = (reftype_t*)dst;
       if (src->kind == TYPE_PTR)
-        return types_iscompat(c, d->elem, ((const ptrtype_t*)src)->elem);
-      const reftype_t* s = (const reftype_t*)src;
+        return types_iscompat(c, l->elem, ((ptrtype_t*)src)->elem);
+      const reftype_t* r = (reftype_t*)src;
       return (
-        src->kind == TYPE_REF &&
-        (s->ismut == d->ismut || s->ismut || !d->ismut) &&
-        types_iscompat(c, d->elem, s->elem) );
+        r->kind == TYPE_REF &&
+        (r->ismut == l->ismut || r->ismut || !l->ismut) &&
+        types_iscompat(c, l->elem, r->elem) );
     }
-    case TYPE_OPTIONAL: {
-      // ?T <= T
-      // ?T <= ?T
-      const opttype_t* d = (const opttype_t*)dst;
-      if (src->kind == TYPE_OPTIONAL)
-        src = ((const opttype_t*)src)->elem;
-      return types_iscompat(c, d->elem, src);
+    case TYPE_SLICE: {
+      // &[T]    <= &[T]
+      // &[T]    <= mut&[T]
+      // mut&[T] <= mut&[T]
+      //
+      // &[T]    <= &[T N]
+      // &[T]    <= mut&[T N]
+      // mut&[T] <= mut&[T N]
+      const slicetype_t* l = (slicetype_t*)dst;
+      switch (src->kind) {
+        case TYPE_SLICE: {
+          const slicetype_t* r = (slicetype_t*)src;
+          return (
+            (r->ismut == l->ismut || r->ismut || !l->ismut) &&
+            types_iscompat(c, l->elem, r->elem) );
+        }
+        case TYPE_REF: {
+          bool r_ismut = ((reftype_t*)src)->ismut;
+          const arraytype_t* r = (arraytype_t*)((reftype_t*)src)->elem;
+          return (
+            r->kind == TYPE_ARRAY &&
+            (r_ismut == l->ismut || r_ismut || !l->ismut) &&
+            types_iscompat(c, l->elem, r->elem) );
+        }
+      }
+      return false;
     }
     case TYPE_ARRAY: {
       // [T N] <= [T N]
@@ -221,22 +248,6 @@ bool _types_iscompat(const compiler_t* c, const type_t* dst, const type_t* src) 
       return r->kind == TYPE_ARRAY &&
              l->len == r->len &&
              types_iscompat(c, l->elem, r->elem);
-    }
-    case TYPE_SLICE: {
-      // [T] <= [T]
-      // [T] <= &[T N]
-      const slicetype_t* l = (slicetype_t*)dst;
-      switch (src->kind) {
-        case TYPE_SLICE:
-          return types_iscompat(c, l->elem, ((slicetype_t*)src)->elem);
-        case TYPE_REF: {
-          const reftype_t* r = (const reftype_t*)src;
-          if (r->elem->kind == TYPE_ARRAY)
-            return types_iscompat(c, l->elem, ((arraytype_t*)r->elem)->elem);
-          return false;
-        }
-      }
-      return false;
     }
   }
   return false;
@@ -983,10 +994,15 @@ err:
 }
 
 
-static void binop(typecheck_t* a, binop_t* n) {
+static void binop1(typecheck_t* a, binop_t* n, bool isassign) {
+  if (!isassign) {
+    // note: being assign to doesn't count as being used
+    use(n->left);
+  }
   expr(a, n->left);
 
   typectx_push(a, n->left->type);
+  use(n->right);
   expr(a, n->right);
   typectx_pop(a);
 
@@ -1007,8 +1023,13 @@ static void binop(typecheck_t* a, binop_t* n) {
 }
 
 
+static void binop(typecheck_t* a, binop_t* n) {
+  binop1(a, n, false);
+}
+
+
 static void assign(typecheck_t* a, binop_t* n) {
-  binop(a, n);
+  binop1(a, n, true);
   check_assign(a, n->left);
 }
 
@@ -1748,6 +1769,7 @@ static void exprp(typecheck_t* a, expr_t** np) {
   case TYPE_F32:
   case TYPE_F64:
   case TYPE_ARRAY:
+  case TYPE_SLICE:
   case TYPE_FUN:
   case TYPE_PTR:
   case TYPE_REF:

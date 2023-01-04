@@ -44,7 +44,7 @@ static void compiler_set_cflags(compiler_t* c) {
 
 
 static void set_secondary_pointer_types(compiler_t* c) {
-  // &[u8]
+  // "&[u8]" -- slice of u8 array
   memset(&c->u8stype, 0, sizeof(c->u8stype));
   c->u8stype.kind = TYPE_SLICE;
   c->u8stype.flags = NF_CHECKED;
@@ -52,20 +52,13 @@ static void set_secondary_pointer_types(compiler_t* c) {
   c->u8stype.align = c->ptrsize;
   c->u8stype.elem = type_u8;
 
-  // // &[u8]
-  // c->refu8stype.kind = TYPE_REF;
-  // c->refu8stype.flags = NF_CHECKED;
-  // c->refu8stype.size = c->ptrsize;
-  // c->refu8stype.align = c->ptrsize;
-  // c->refu8stype.elem = (type_t*)&c->u8stype;
-
-  // type string [u8]
+  // "type string &[u8]"
   memset(&c->strtype, 0, sizeof(c->strtype));
   c->strtype.kind = TYPE_ALIAS;
   c->strtype.flags = NF_CHECKED;
   c->strtype.size = c->ptrsize;
   c->strtype.align = c->ptrsize;
-  c->strtype.name = sym_string;
+  c->strtype.name = sym_str;
   c->strtype.elem = (type_t*)&c->u8stype;
 }
 

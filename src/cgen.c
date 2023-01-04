@@ -1378,54 +1378,18 @@ static void binop(cgen_t* g, const binop_t* n) {
 }
 
 
-// static void implicit_cast(cgen_t* g, const binop_t* n) {
-// }
+static void intconst(cgen_t* g, u64 value, const type_t* t) {
+  if (t->kind < TYPE_I32)
+    CHAR('('), type(g, t), CHAR(')');
 
-
-static void assign(cgen_t* g, const binop_t* n) {
-  expr_as_value(g, n->left);
-  CHAR(' ');
-  PRINT(operator(n->op));
-  CHAR(' ');
-  const type_t* lt = unwind_aliastypes(n->type);
-  const type_t* rt = unwind_aliastypes(n->right->type);
-  if (type_isopt(lt) && !type_isopt(rt))
-    return optinit(g, n->right, /*isshort*/false);
-  if (lt->kind == TYPE_SLICE && rt->kind != TYPE_SLICE)
-    panic("TODO assign to slice");
-  expr_as_value(g, n->right);
-}
-
-
-static void prefixop(cgen_t* g, const unaryop_t* n) {
-  if (n->expr->kind == EXPR_INTLIT && n->expr->type->kind < TYPE_I32)
-    CHAR('('), type(g, n->expr->type), CHAR(')');
-  PRINT(operator(n->op));
-  expr_as_value(g, n->expr);
-}
-
-
-static void postfixop(cgen_t* g, const unaryop_t* n) {
-  expr_as_value(g, n->expr);
-  PRINT(operator(n->op));
-}
-
-
-static void intlit(cgen_t* g, const intlit_t* n) {
-  if (n->type->kind < TYPE_I32)
-    CHAR('('), type(g, n->type), CHAR(')');
-
-  u64 u = n->intval;
-  if (!type_isunsigned(n->type) && (u & 0x1000000000000000) ) {
-    u &= ~0x1000000000000000;
+  if (!type_isunsigned(t) && (value & 0x1000000000000000) ) {
+    value &= ~0x1000000000000000;
     CHAR('-');
   }
-  u32 base = u >= 1024 ? 16 : 10;
+  u32 base = value >= 1024 ? 16 : 10;
   if (base == 16)
     PRINT("0x");
-  buf_print_u64(&g->outbuf, u, base);
-
-  const type_t* t = n->type;
+  buf_print_u64(&g->outbuf, value, base);
 again:
   switch (t->kind) {
     case TYPE_INT:  t = g->compiler->inttype; goto again;
@@ -1434,6 +1398,11 @@ again:
     case TYPE_U64:  PRINT("llu"); break;
     case TYPE_U32:  CHAR('u'); break;
   }
+}
+
+
+static void intlit(cgen_t* g, const intlit_t* n) {
+  intconst(g, n->intval, n->type);
 }
 
 
@@ -1468,6 +1437,73 @@ static void strlit(cgen_t* g, const strlit_t* n) {
       seterr(g, ErrNoMem);
     PRINT("\"}}");
   }
+}
+
+
+// static void sliceinit(
+//   cgen_t* g, const slicetype_t* st, const expr_t* lenexpr, const expr_t* ptrexpr)
+// {
+//   // struct slice { uint len; T* ptr; }
+//   CHAR('(');
+//   type(g, (type_t*)st);
+//   PRINT("){");
+//   expr(g, lenexpr);
+//   CHAR(',');
+//   expr(g, ptrexpr);
+//   CHAR('}');
+// }
+
+
+static void expr_as_value_of_type(cgen_t* g, const expr_t* n, const type_t* t) {
+  // note: this function has some similarities to _types_iscompat
+
+  const type_t* lt = unwind_aliastypes(t);
+  const type_t* rt = unwind_aliastypes(n->type);
+
+  if (lt->kind == rt->kind)
+    return expr_as_value(g, n);
+
+  switch (lt->kind) {
+    case TYPE_OPTIONAL: // ?T <= T
+      return optinit(g, n, /*isshort*/false);
+    case TYPE_SLICE:
+      // &[T] <= &[T N]
+      assertf(rt->kind == TYPE_REF && ((reftype_t*)rt)->elem->kind == TYPE_ARRAY,
+        "unexpected slice initializer %s", nodekind_name(rt->kind) );
+      const arraytype_t* at = (arraytype_t*)((reftype_t*)rt)->elem;
+      // struct slice { uint len; T* ptr; }
+      CHAR('('), type(g, (type_t*)lt), PRINT("){");
+      intconst(g, at->len, g->compiler->uinttype);
+      CHAR(',');
+      expr(g, n);
+      CHAR('}');
+      break;
+    default:
+      assertf(0, "unexpected destination type %s", nodekind_name(lt->kind));
+  }
+}
+
+
+static void assign(cgen_t* g, const binop_t* n) {
+  expr_as_value(g, n->left);
+  CHAR(' ');
+  PRINT(operator(n->op));
+  CHAR(' ');
+  expr_as_value_of_type(g, n->right, n->type);
+}
+
+
+static void prefixop(cgen_t* g, const unaryop_t* n) {
+  if (n->expr->kind == EXPR_INTLIT && n->expr->type->kind < TYPE_I32)
+    CHAR('('), type(g, n->expr->type), CHAR(')');
+  PRINT(operator(n->op));
+  expr_as_value(g, n->expr);
+}
+
+
+static void postfixop(cgen_t* g, const unaryop_t* n) {
+  expr_as_value(g, n->expr);
+  PRINT(operator(n->op));
 }
 
 
@@ -1824,6 +1860,7 @@ static void expr(cgen_t* g, const expr_t* n) {
   case TYPE_F32:
   case TYPE_F64:
   case TYPE_ARRAY:
+  case TYPE_SLICE:
   case TYPE_FUN:
   case TYPE_PTR:
   case TYPE_REF:

@@ -323,30 +323,37 @@ static void fmt(abuf_t* s, const node_t* nullable n, u32 indent, u32 maxdepth) {
     break;
   }
 
-  case TYPE_VOID:    abuf_str(s, "void"); break;
-  case TYPE_BOOL:    abuf_str(s, "bool"); break;
-  case TYPE_I8:      abuf_str(s, "i8"); break;
-  case TYPE_I16:     abuf_str(s, "i16"); break;
-  case TYPE_I32:     abuf_str(s, "i32"); break;
-  case TYPE_I64:     abuf_str(s, "i64"); break;
-  case TYPE_INT:     abuf_str(s, "int"); break;
-  case TYPE_U8:      abuf_str(s, "u8"); break;
-  case TYPE_U16:     abuf_str(s, "u16"); break;
-  case TYPE_U32:     abuf_str(s, "u32"); break;
-  case TYPE_U64:     abuf_str(s, "u64"); break;
-  case TYPE_UINT:    abuf_str(s, "uint"); break;
-  case TYPE_F32:     abuf_str(s, "f32"); break;
-  case TYPE_F64:     abuf_str(s, "f64"); break;
-  case TYPE_STRUCT: return structtype(s, (const structtype_t*)n, indent, maxdepth);
+  case TYPE_VOID: abuf_str(s, "void"); break;
+  case TYPE_BOOL: abuf_str(s, "bool"); break;
+  case TYPE_I8:   abuf_str(s, "i8"); break;
+  case TYPE_I16:  abuf_str(s, "i16"); break;
+  case TYPE_I32:  abuf_str(s, "i32"); break;
+  case TYPE_I64:  abuf_str(s, "i64"); break;
+  case TYPE_INT:  abuf_str(s, "int"); break;
+  case TYPE_U8:   abuf_str(s, "u8"); break;
+  case TYPE_U16:  abuf_str(s, "u16"); break;
+  case TYPE_U32:  abuf_str(s, "u32"); break;
+  case TYPE_U64:  abuf_str(s, "u64"); break;
+  case TYPE_UINT: abuf_str(s, "uint"); break;
+  case TYPE_F32:  abuf_str(s, "f32"); break;
+  case TYPE_F64:  abuf_str(s, "f64"); break;
+
+  case TYPE_STRUCT:
+    return structtype(s, (const structtype_t*)n, indent, maxdepth);
   case TYPE_FUN:
     abuf_str(s, "fun");
     return funtype(s, (const funtype_t*)n, indent, maxdepth);
   case TYPE_ARRAY: {
-    arraytype_t* a = (arraytype_t*)n;
+    arraytype_t* t = (arraytype_t*)n;
     abuf_c(s, '[');
-    fmt(s, (node_t*)a->elem, indent, maxdepth);
-    if (a->len)
-      abuf_fmt(s, " %llu", a->len);
+    fmt(s, (node_t*)t->elem, indent, maxdepth);
+    abuf_fmt(s, " %llu]", t->len);
+    break;
+  }
+  case TYPE_SLICE: {
+    slicetype_t* t = (slicetype_t*)n;
+    abuf_str(s, "&[");
+    fmt(s, (node_t*)t->elem, indent, maxdepth);
     abuf_c(s, ']');
     break;
   }

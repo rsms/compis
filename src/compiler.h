@@ -522,11 +522,10 @@ typedef struct compiler {
   u32            intsize;     // byte size of "int" and "uint" types (register sized)
   u32            ptrsize;     // byte size of pointer, e.g. 8 for i64
   type_t*        addrtype;    // type for storing memory addresses, e.g. u64
-  type_t*        inttype;     // type for "int"
-  type_t*        uinttype;    // type for "uint"
-  slicetype_t    u8stype;     // type for "[u8]"
-  reftype_t      refu8stype;  // type for "&[u8]"
-  aliastype_t    strtype;     // type for "str"
+  type_t*        inttype;     // "int"
+  type_t*        uinttype;    // "uint"
+  slicetype_t    u8stype;     // "&[u8]"
+  aliastype_t    strtype;     // "str"
   map_t          builtins;
   bool           isbigendian;
   bool           nomain;      // don't auto-generate C ABI "main" for main.main
@@ -733,11 +732,11 @@ void sym_init(memalloc_t);
 sym_t sym_intern(const void* key, usize keylen);
 sym_t sym_snprintf(char* buf, usize bufcap, const char* fmt, ...)ATTR_FORMAT(printf,3,4);
 inline static sym_t sym_cstr(const char* s) { return sym_intern(s, strlen(s)); }
-extern sym_t sym__;      // "_"
-extern sym_t sym_this;   // "this"
-extern sym_t sym_drop;   // "drop"
-extern sym_t sym_main;   // "main"
-extern sym_t sym_string; // "string"
+extern sym_t sym__;    // "_"
+extern sym_t sym_this; // "this"
+extern sym_t sym_drop; // "drop"
+extern sym_t sym_main; // "main"
+extern sym_t sym_str;  // "str"
 
 // scope
 void scope_clear(scope_t* s);

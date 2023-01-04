@@ -1,0 +1,16 @@
+fun main() int {
+  // str is an alias of &[u8]; immutable slice of u8 values
+  var a str = "cat"
+
+  // no type specifier yields highest fidelity type:
+  // &[u8 5]; ref to array of 5 u8 values (compile-time len)
+  var b = "robin"
+
+  // can assign higher-fidelity type to compatible lower-fi type
+  a = b
+
+  // can NOT do the opposite:
+  //b = a // error: incompatible types, &[u8 5] and string
+
+  return 0
+}

@@ -2095,6 +2095,7 @@ static irval_t* expr(ircons_t* c, void* expr_node) {
   case TYPE_F32:
   case TYPE_F64:
   case TYPE_ARRAY:
+  case TYPE_SLICE:
   case TYPE_FUN:
   case TYPE_PTR:
   case TYPE_REF:

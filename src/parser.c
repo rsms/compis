@@ -1972,21 +1972,21 @@ static map_t* nullable compiler_builtins(compiler_t* c) {
     const void* node;
   } entries[] = {
     // types
-    {sym_cstr("void"),   type_void},
-    {sym_cstr("bool"),   type_bool},
-    {sym_cstr("int"),    type_int},
-    {sym_cstr("uint"),   type_uint},
-    {sym_cstr("i8"),     type_i8},
-    {sym_cstr("i16"),    type_i16},
-    {sym_cstr("i32"),    type_i32},
-    {sym_cstr("i64"),    type_i64},
-    {sym_cstr("u8"),     type_u8},
-    {sym_cstr("u16"),    type_u16},
-    {sym_cstr("u32"),    type_u32},
-    {sym_cstr("u64"),    type_u64},
-    {sym_cstr("f32"),    type_f32},
-    {sym_cstr("f64"),    type_f64},
-    {sym_cstr("string"), &c->strtype},
+    {sym_cstr("void"), type_void},
+    {sym_cstr("bool"), type_bool},
+    {sym_cstr("int"),  type_int},
+    {sym_cstr("uint"), type_uint},
+    {sym_cstr("i8"),   type_i8},
+    {sym_cstr("i16"),  type_i16},
+    {sym_cstr("i32"),  type_i32},
+    {sym_cstr("i64"),  type_i64},
+    {sym_cstr("u8"),   type_u8},
+    {sym_cstr("u16"),  type_u16},
+    {sym_cstr("u32"),  type_u32},
+    {sym_cstr("u64"),  type_u64},
+    {sym_cstr("f32"),  type_f32},
+    {sym_cstr("f64"),  type_f64},
+    {sym_str,          &c->strtype},
   };
 
   if UNLIKELY(!map_init(&c->builtins, c->ma, countof(entries)))
