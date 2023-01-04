@@ -131,8 +131,8 @@ origin_t origin_union(origin_t a, origin_t b) {
     return a.line ? a : b;
   }
 
-  u32 a_endcol = a.column + a.width;
-  u32 b_endcol = b.column + b.width;
+  u32 a_endcol = a.column + MAX(1, a.width);
+  u32 b_endcol = b.column + MAX(1, b.width);
 
   a.column = MIN(a.column, b.column);
   a.width = MAX(a_endcol, b_endcol) - a.column;

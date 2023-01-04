@@ -436,7 +436,36 @@ static void slicetype(cgen_t* g, const slicetype_t* t) {
 }
 
 
+static sym_t gen_darray_typename(cgen_t* g, const type_t* tp) {
+  const arraytype_t* t = (const arraytype_t*)tp;
+  usize len1 = g->outbuf.len;
+  PRINT(ANON_PREFIX "array_");
+  if UNLIKELY(compiler_mangle_type(g->compiler, &g->outbuf, t->elem)) {
+    seterr(g, ErrNoMem);
+    return sym__;
+  }
+  sym_t name = sym_intern(&g->outbuf.chars[len1], g->outbuf.len - len1);
+  g->outbuf.len = len1;
+  return name;
+}
+
+
+static void gen_darray_typedef(cgen_t* g, const type_t* tp, sym_t typename) {
+  const arraytype_t* t = (const arraytype_t*)tp;
+  PRINT("typedef struct {");
+  type(g, g->compiler->uinttype);
+  PRINT(" cap, len; ");
+  type(g, t->elem);
+  PRINTF("* ptr;} %s;", typename);
+}
+
+
 static void arraytype(cgen_t* g, const arraytype_t* t) {
+  if (t->len == 0) {
+    // dynamic array
+    PRINT(intern_typedef(g, (const type_t*)t, gen_darray_typename, gen_darray_typedef));
+    return;
+  }
   type(g, t->elem);
   CHAR('*');
   // PRINTF("[%llu]", t->len);
@@ -1197,6 +1226,22 @@ static void structinit(cgen_t* g, const structtype_t* t, const ptrarray_t* args)
 }
 
 
+static void zeroinit_array(cgen_t* g, const arraytype_t* t) {
+  if (t->len == 0) {
+    // runtime dynamic array "{cap, len uint; T* ptr}"
+    PRINT("{0,0,NULL}");
+    return;
+  }
+  // (u32[5]){0u}
+  CHAR('(');
+  type(g, t->elem);
+  PRINTF("[%llu])", t->len);
+  CHAR('{');
+  zeroinit(g, t->elem);
+  CHAR('}');
+}
+
+
 static void zeroinit(cgen_t* g, const type_t* t) {
   t = unwind_aliastypes(t);
 again:
@@ -1240,6 +1285,11 @@ again:
   case TYPE_OPTIONAL:
     PRINT("{0}");
     break;
+  case TYPE_SLICE:
+    PRINT("{0,NULL}");
+    break;
+  case TYPE_ARRAY:
+    return zeroinit_array(g, (arraytype_t*)t);
   case TYPE_PTR:
     PRINT("NULL");
     break;

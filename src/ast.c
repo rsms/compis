@@ -236,25 +236,25 @@ static void repr_type(RPARAMS, const type_t* t) {
 
   switch (t->kind) {
   case TYPE_STRUCT:
-    repr_struct(RARGS, (const structtype_t*)t, isnew);
+    repr_struct(RARGS, (structtype_t*)t, isnew);
     break;
   case TYPE_FUN:
     if (isnew)
-      repr_funtype(RARGS, (const funtype_t*)t);
+      repr_funtype(RARGS, (funtype_t*)t);
     break;
   case TYPE_PTR:
     CHAR(' ');
-    repr_type(RARGSFL(fl | REPRFLAG_HEAD), ((const ptrtype_t*)t)->elem);
+    repr_type(RARGSFL(fl | REPRFLAG_HEAD), ((ptrtype_t*)t)->elem);
     break;
   case TYPE_REF:
+    if (((reftype_t*)t)->ismut)
+      PRINT(" mut");
     CHAR(' ');
-    if (((const reftype_t*)t)->ismut)
-      PRINT("mut ");
-    repr_type(RARGSFL(fl | REPRFLAG_HEAD), ((const reftype_t*)t)->elem);
+    repr_type(RARGSFL(fl | REPRFLAG_HEAD), ((reftype_t*)t)->elem);
     break;
   case TYPE_OPTIONAL:
     CHAR(' ');
-    repr_type(RARGSFL(fl | REPRFLAG_HEAD), ((const opttype_t*)t)->elem);
+    repr_type(RARGSFL(fl | REPRFLAG_HEAD), ((opttype_t*)t)->elem);
     break;
   case TYPE_ALIAS:
     CHAR(' '), PRINT(((aliastype_t*)t)->name);
@@ -264,12 +264,20 @@ static void repr_type(RPARAMS, const type_t* t) {
     }
     break;
   case TYPE_ARRAY:
-    PRINTF(" %llu ", ((arraytype_t*)t)->len);
+    if (((arraytype_t*)t)->len > 0) {
+      PRINTF(" %llu", ((arraytype_t*)t)->len);
+    } else if (((arraytype_t*)t)->lenexpr) {
+      CHAR(' ');
+      repr(RARGSFL(fl | REPRFLAG_HEAD), (node_t*)((arraytype_t*)t)->lenexpr);
+    }
+    CHAR(' ');
     repr_type(RARGSFL(fl | REPRFLAG_HEAD), ((arraytype_t*)t)->elem);
     break;
   case TYPE_SLICE:
+    if (((slicetype_t*)t)->ismut)
+      PRINT(" mut");
     CHAR(' ');
-    repr_type(RARGSFL(fl | REPRFLAG_HEAD), ((arraytype_t*)t)->elem);
+    repr_type(RARGSFL(fl | REPRFLAG_HEAD), ((slicetype_t*)t)->elem);
     break;
   case TYPE_UNRESOLVED:
     CHAR(' '), PRINT(((unresolvedtype_t*)t)->name);
@@ -363,19 +371,19 @@ static void repr(RPARAMS, const node_t* nullable n) {
   case EXPR_TYPECONS: repr_typecons(RARGS, (typecons_t*)n); break;
 
   case EXPR_RETURN:
-    if (((const retexpr_t*)n)->value)
-      CHAR(' '), repr(RARGS, (node_t*)((const retexpr_t*)n)->value);
+    if (((retexpr_t*)n)->value)
+      CHAR(' '), repr(RARGS, (node_t*)((retexpr_t*)n)->value);
     break;
 
   case EXPR_BLOCK: {
-    const block_t* b = (const block_t*)n;
+    const block_t* b = (block_t*)n;
     repr_nodearray(RARGS, &b->children);
     drops(RARGS, &b->drops);
     break;
   }
 
   case EXPR_BOOLLIT:
-    CHAR(' '), PRINT(((const intlit_t*)n)->intval ? "true" : "false");
+    CHAR(' '), PRINT(((intlit_t*)n)->intval ? "true" : "false");
     break;
 
   case EXPR_INTLIT: {
@@ -391,7 +399,7 @@ static void repr(RPARAMS, const node_t* nullable n) {
   }
 
   case EXPR_FLOATLIT:
-    PRINTF(" %f", ((const floatlit_t*)n)->f64val);
+    PRINTF(" %f", ((floatlit_t*)n)->f64val);
     break;
 
   case EXPR_STRLIT:
@@ -409,7 +417,7 @@ static void repr(RPARAMS, const node_t* nullable n) {
   case EXPR_ID:
     if (((idexpr_t*)n)->ref) {
       CHAR(' ');
-      repr(RARGSFL(fl | REPRFLAG_HEAD), (const node_t*)((idexpr_t*)n)->ref);
+      repr(RARGSFL(fl | REPRFLAG_HEAD), (node_t*)((idexpr_t*)n)->ref);
     }
     break;
 
@@ -423,10 +431,10 @@ static void repr(RPARAMS, const node_t* nullable n) {
 
   case EXPR_IF: {
     ifexpr_t* e = (ifexpr_t*)n;
-    repr(RARGS, (const node_t*)e->cond);
-    repr(RARGS, (const node_t*)e->thenb);
+    repr(RARGS, (node_t*)e->cond);
+    repr(RARGS, (node_t*)e->thenb);
     if (e->elseb)
-      repr(RARGS, (const node_t*)e->elseb);
+      repr(RARGS, (node_t*)e->elseb);
     break;
   }
 
@@ -435,14 +443,14 @@ static void repr(RPARAMS, const node_t* nullable n) {
     if (e->start || e->end) {
       REPR_BEGIN('(', "");
       CHAR(' ');
-      repr(RARGSFL(fl | REPRFLAG_HEAD), (const node_t*)e->start);
-      repr(RARGS, (const node_t*)e->cond);
-      repr(RARGS, (const node_t*)e->end);
+      repr(RARGSFL(fl | REPRFLAG_HEAD), (node_t*)e->start);
+      repr(RARGS, (node_t*)e->cond);
+      repr(RARGS, (node_t*)e->end);
       REPR_END(')');
     } else {
-      repr(RARGS, (const node_t*)e->cond);
+      repr(RARGS, (node_t*)e->cond);
     }
-    repr(RARGS, (const node_t*)e->body);
+    repr(RARGS, (node_t*)e->body);
     break;
   }
 
@@ -463,10 +471,10 @@ static void repr(RPARAMS, const node_t* nullable n) {
   case EXPR_PARAM:
   case EXPR_LET:
   case EXPR_VAR: {
-    const local_t* var = (const local_t*)n;
+    const local_t* var = (local_t*)n;
     if (var->init) {
       CHAR(' ');
-      repr(RARGS, (const node_t*)var->init);
+      repr(RARGS, (node_t*)var->init);
     }
     break;
   }
@@ -548,12 +556,28 @@ origin_t node_origin(const locmap_t* lm, const node_t* n) {
 
   case EXPR_CALL: {
     const call_t* call = (call_t*)n;
+    // note: r includes "("
     if (call->recv)
       r = origin_union(r, node_origin(lm, (node_t*)call->recv));
-    r.width++; // "("
     if (call->args.len > 0)
       r = origin_union(r, node_origin(lm, call->args.v[call->args.len-1]));
-    r.width++; // ")"
+    r = origin_union(r, origin_make(lm, call->argsendloc));
+    break;
+  }
+
+  case TYPE_ARRAY: {
+    const arraytype_t* at = (arraytype_t*)n;
+    r = origin_union(r, node_origin(lm, (node_t*)at->elem));
+    if (at->lenexpr)
+      r = origin_union(r, node_origin(lm, (node_t*)at->lenexpr));
+    r = origin_union(r, origin_make(lm, at->endloc));
+    break;
+  }
+
+  case TYPE_SLICE: {
+    const slicetype_t* st = (slicetype_t*)n;
+    r = origin_union(r, node_origin(lm, (node_t*)st->elem));
+    r = origin_union(r, origin_make(lm, st->endloc));
     break;
   }
 

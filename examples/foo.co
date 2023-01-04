@@ -286,7 +286,17 @@ fun foo(x, y int) int {
   x * y * int(a.z)
 }*/
 
-fun foo(/*byteslice &[u8]*/) {
+fun three() uint {
+  1 + 2
+}
+
+fun foo() {
+  // slice and array types
+  var _ &[int]         // slice
+  var _ mut&[int]      // mutable slice
+  var _ [i16]          // variably-sized array (growable at runtime)
+  var _ [u32 three()]  // fixed-size array (comptime computed size)
+
   var a str = "cat" // str aka &[u8]
   var b = "robin"   // &[u8 5]
   a = b             // ok; higher-fidelity type assignable to lower-fi type

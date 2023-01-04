@@ -50,7 +50,7 @@
   _( TYPE_F32 )\
   _( TYPE_F64 )\
   /* user types */\
-  _( TYPE_ARRAY ) /* nodekind_is*type assumes this is the first user type */\
+  _( TYPE_ARRAY )  /* nodekind_is*type assumes this is the first user type */\
   _( TYPE_FUN )\
   _( TYPE_PTR )\
   _( TYPE_REF )\
@@ -204,6 +204,11 @@ typedef struct {
 } type_t;
 
 typedef struct {
+  stmt_t;
+  type_t* nullable type;
+} expr_t;
+
+typedef struct {
   type_t;
   sym_t            name;
   type_t* nullable resolved; // used by typeresolve
@@ -222,20 +227,24 @@ typedef struct {
 
 typedef struct {
   usertype_t;
-  type_t* elem;
-  u64     len;
+  loc_t            endloc; // "]"
+  type_t*          elem;
+  u64              len;
+  expr_t* nullable lenexpr;
 } arraytype_t;
 
 typedef struct {
   usertype_t;
+  loc_t   endloc; // "]"
   type_t* elem;
   bool    ismut;
 } slicetype_t;
 
 typedef struct {
   usertype_t;
-  ptrarray_t params;    // local_t*[]
-  loc_t      paramsloc; // location of "(" ...
+  ptrarray_t params;       // local_t*[]
+  loc_t      paramsloc;    // location of "(" ...
+  loc_t      paramsendloc; // location of ")"
   type_t*    result;
 } funtype_t;
 
@@ -281,19 +290,20 @@ typedef struct {
 typedef array_type(drop_t) droparray_t;
 DEF_ARRAY_TYPE_API(drop_t, droparray)
 
-typedef struct {
-  stmt_t;
-  type_t* nullable type;
-} expr_t;
-
 typedef struct { expr_t; u64 intval; } intlit_t;
 typedef struct { expr_t; double f64val; } floatlit_t;
 typedef struct { expr_t; u8* bytes; usize len; } strlit_t;
 typedef struct { expr_t; sym_t name; node_t* nullable ref; } idexpr_t;
 typedef struct { expr_t; op_t op; expr_t* expr; } unaryop_t;
 typedef struct { expr_t; op_t op; expr_t* left; expr_t* right; } binop_t;
-typedef struct { expr_t; expr_t* recv; ptrarray_t args; } call_t;
 typedef struct { expr_t; expr_t* nullable value; } retexpr_t;
+
+typedef struct {
+  expr_t;
+  expr_t*    recv;
+  ptrarray_t args;
+  loc_t      argsendloc; // location of ")"
+} call_t;
 
 typedef struct {
   expr_t;
@@ -344,11 +354,11 @@ typedef struct { // PARAM, VAR, LET
 
 typedef struct { // fun is a declaration (stmt) or an expression depending on use
   expr_t;
-  sym_t nullable    name;        // NULL if anonymous
-  loc_t             nameloc;     // source location of name
-  block_t* nullable body;        // NULL if function is a prototype
-  type_t* nullable  recvt;       // non-NULL for type functions (type of "this")
-  char* nullable    mangledname; // mangled name, created in ast_ma by typecheck
+  sym_t nullable    name;         // NULL if anonymous
+  loc_t             nameloc;      // source location of name
+  block_t* nullable body;         // NULL if function is a prototype
+  type_t* nullable  recvt;        // non-NULL for type functions (type of "this")
+  char* nullable    mangledname;  // mangled name, created in ast_ma by typecheck
   abi_t             abi;
   visibility_t      visibility;
   node_t* nullable  nsparent;
@@ -687,24 +697,35 @@ inline static sym_t nullable typeid(type_t* t) { return t->tid ? t->tid : _typei
 bool intern_usertype(compiler_t* c, usertype_t** tp);
 
 inline static const type_t* canonical_primtype(const compiler_t* c, const type_t* t) {
-  return t->kind == TYPE_UINT ? c->inttype :
-         t->kind == TYPE_INT ? c->uinttype :
+  return t->kind == TYPE_INT ? c->inttype :
+         t->kind == TYPE_UINT ? c->uinttype :
          t;
 }
 
 // expr_no_side_effects returns true if materializing n has no side effects
 bool expr_no_side_effects(const expr_t* n);
 
+// void assert_nodekind(const node_t* n, nodekind_t kind)
+#define assert_nodekind(nodeptr, KIND) \
+  assertf(((node_t*)(nodeptr))->kind == KIND, \
+    "%s != %s", nodekind_name(((node_t*)(nodeptr))->kind), nodekind_name(KIND))
+
 // asexpr(void* ptr) -> expr_t*
 // asexpr(const void* ptr) -> const expr_t*
-#define asexpr(ptr) ( \
-  assert(node_isexpr((const node_t*)assertnotnull(ptr))), \
-  _Generic((ptr), \
-    const node_t*: (const expr_t*)(ptr), \
-    node_t*:       (expr_t*)(ptr), \
-    const void*:   (const expr_t*)(ptr), \
-    void*:         (expr_t*)(ptr) ) )
+#define asexpr(ptr) ({ \
+  __typeof__(ptr) ptr__ = (ptr); \
+  assertf(node_isexpr((const node_t*)assertnotnull(ptr__)), "not an expression"), \
+  _Generic(ptr__, \
+    const node_t*: (const expr_t*)ptr__, \
+    node_t*:       (expr_t*)ptr__, \
+    const void*:   (const expr_t*)ptr__, \
+    void*:         (expr_t*)ptr__ ); \
+})
 
+
+// comptime
+node_t* comptime_eval(compiler_t*, expr_t*);
+u64 comptime_eval_uint(compiler_t*, expr_t*);
 
 // tokens
 const char* tok_name(tok_t); // e.g. TEQ => "TEQ"

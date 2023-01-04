@@ -10,7 +10,6 @@
 #if defined(TRACE_TYPECHECK) && DEBUG
   #define trace(fmt, va...)  \
     _dlog(4, "TC", __FILE__, __LINE__, "%*s" fmt, a->traceindent*2, "", ##va)
-  #define tracex(fmt, va...) _dlog(4, "A", __FILE__, __LINE__, fmt, ##va)
 #else
   #undef TRACE_TYPECHECK
   #define trace(fmt, va...) ((void)0)
@@ -696,6 +695,20 @@ static void structtype(typecheck_t* a, structtype_t* st) {
   if (!(st->flags & NF_SUBOWNERS)) {
     if UNLIKELY(!map_assign_ptr(&a->postanalyze, a->ma, st))
       out_of_mem(a);
+  }
+}
+
+
+static void arraytype(typecheck_t* a, arraytype_t* at) {
+  if (at->lenexpr) {
+    typectx_push(a, a->compiler->uinttype);
+    expr(a, at->lenexpr);
+    typectx_pop(a);
+    if (a->compiler->errcount == 0) {
+      at->len = comptime_eval_uint(a->compiler, at->lenexpr);
+      if UNLIKELY(at->len == 0 && a->compiler->errcount == 0)
+        error(a, at, "zero length array");
+    }
   }
 }
 
@@ -1684,6 +1697,7 @@ static void _type(typecheck_t* a, type_t** tp) {
     case TYPE_ALIAS:      return aliastype(a, (aliastype_t**)tp);
     case TYPE_FUN:        return funtype(a, (funtype_t**)tp);
     case TYPE_STRUCT:     return structtype(a, (structtype_t*)*tp);
+    case TYPE_ARRAY:      return arraytype(a, (arraytype_t*)*tp);
     case TYPE_REF:        return type(a, &((reftype_t*)(*tp))->elem);
     case TYPE_PTR:        return type(a, &((ptrtype_t*)(*tp))->elem);
     case TYPE_OPTIONAL:   return type(a, &((opttype_t*)(*tp))->elem);

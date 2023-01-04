@@ -571,6 +571,19 @@ static type_t* type_id(parser_t* p) {
 }
 
 
+// array_type = "[" type constexpr? "]"
+static type_t* type_array(parser_t* p) {
+  arraytype_t* at = mknode(p, arraytype_t, TYPE_ARRAY);
+  next(p);
+  at->elem = type(p, PREC_COMMA);
+  if (currtok(p) != TRBRACK && currtok(p) != TSEMI)
+    at->lenexpr = expr(p, PREC_COMMA, NF_RVALUE);
+  at->endloc = currloc(p);
+  expect(p, TRBRACK, "to match [");
+  return (type_t*)at;
+}
+
+
 fun_t* nullable lookup_typefun(parser_t* p, type_t* recv, sym_t name) {
   // find function map for recv
   void** mmp = map_lookup_ptr(&p->recvtmap, recv);
@@ -730,7 +743,7 @@ static type_t* type_struct1(parser_t* p, structtype_t* st) {
       break;
     next(p);
   }
-  expect(p, TRBRACE, "to end struct");
+  expect(p, TRBRACE, "to match {");
   return (type_t*)st;
 }
 
@@ -754,22 +767,39 @@ static type_t* type_ptr(parser_t* p) {
 }
 
 
+// ref_type   = slice_type | ref_type1
+// slice_type = "mut"? "&" "[" type "]"
+// ref_type1  = "mut"? "&" type
 static type_t* type_ref1(parser_t* p, bool ismut) {
   reftype_t* t = mkreftype(p, ismut);
   next(p);
   t->elem = type(p, PREC_UNARY_PREFIX);
+  if (t->elem->kind == TYPE_ARRAY && ((arraytype_t*)t->elem)->lenexpr == NULL) {
+    // "&[T]" is a slice
+    assert(((arraytype_t*)t->elem)->len == 0);
+    static_assert(sizeof(arraytype_t) >= sizeof(slicetype_t), "convertible");
+
+    // convert array type to slice type
+    arraytype_t* at = (arraytype_t*)t->elem;
+    loc_t endloc = at->endloc;
+    type_t* elem = at->elem;
+
+    slicetype_t* st = (slicetype_t*)at;
+    st->kind = TYPE_SLICE;
+    st->endloc = endloc;
+    st->elem = elem;
+    st->ismut = ismut;
+
+    return (type_t*)st;
+  }
   bubble_flags(t, t->elem);
   return (type_t*)t;
 }
 
-
-// ref_type = "&" type
 static type_t* type_ref(parser_t* p) {
   return type_ref1(p, /*ismut*/false);
 }
 
-
-// mut_type = "mut" ref_type
 static type_t* type_mut(parser_t* p) {
   next(p);
   if UNLIKELY(currtok(p) != TAND) {
@@ -1302,7 +1332,7 @@ static expr_t* expr_deref(parser_t* p, const parselet_t* pl, nodeflag_t fl) {
 }
 
 
-// mut_expr|ref_expr = "mut"? "&" location
+// mut_expr|ref_expr = "mut"? "&" expr
 static expr_t* expr_ref1(parser_t* p, bool ismut, nodeflag_t fl) {
   unaryop_t* n = mkexpr(p, unaryop_t, EXPR_PREFIXOP, fl);
   n->op = currtok(p);
@@ -1333,7 +1363,7 @@ static expr_t* expr_ref1(parser_t* p, bool ismut, nodeflag_t fl) {
 }
 
 
-// ref_expr = "&" location
+// ref_expr = "&" expr
 static expr_t* expr_ref(parser_t* p, const parselet_t* pl, nodeflag_t fl) {
   return expr_ref1(p, /*ismut*/false, fl);
 }
@@ -1499,6 +1529,7 @@ static expr_t* expr_postfix_call(
   // args?
   if (currtok(p) != TRPAREN)
     args(p, n, recvtype, fl);
+  n->argsendloc = currloc(p);
   expect(p, TRPAREN, "to end function call");
 
   return (expr_t*)n;
@@ -1704,7 +1735,8 @@ static funtype_t* funtype(parser_t* p, loc_t loc, type_t* nullable recvt) {
   }
   if (currtok(p) != TRPAREN)
     funtype_params(p, ft, recvt);
-  expect(p, TRPAREN, "to end parameters");
+  ft->paramsendloc = currloc(p);
+  expect(p, TRPAREN, "to match '('");
 
   // result type
   // no result type implies "void", e.g. "fun foo() {}" => "fun foo() void {}"
@@ -2116,13 +2148,14 @@ static const parselet_t expr_parsetab[TOK_COUNT] = {
 
 // type
 static const type_parselet_t type_parsetab[TOK_COUNT] = {
-  [TID]       = {type_id, NULL, 0},
-  [TLBRACE]   = {type_struct, NULL, 0},
-  [TFUN]      = {type_fun, NULL, 0},
-  [TSTAR]     = {type_ptr, NULL, 0},
-  [TAND]      = {type_ref, NULL, 0},
-  [TMUT]      = {type_mut, NULL, 0},
-  [TQUESTION] = {type_optional, NULL, 0},
+  [TID]       = {type_id, NULL, 0},       // T
+  [TLBRACK]   = {type_array, NULL, 0},    // [T N], [T]
+  [TLBRACE]   = {type_struct, NULL, 0},   // {...}
+  [TFUN]      = {type_fun, NULL, 0},      // fun(T)T
+  [TSTAR]     = {type_ptr, NULL, 0},      // *T
+  [TAND]      = {type_ref, NULL, 0},      // &T
+  [TMUT]      = {type_mut, NULL, 0},      // mut&T
+  [TQUESTION] = {type_optional, NULL, 0}, // ?T
 };
 
 
