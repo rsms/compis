@@ -797,7 +797,15 @@ static type_t* type_ref1(parser_t* p, bool ismut) {
 }
 
 static type_t* type_ref(parser_t* p) {
-  return type_ref1(p, /*ismut*/false);
+  // return type_ref1(p, /*ismut*/false);
+  muttype_t* t = mknode(p, muttype_t, TYPE_MUT);
+  // t->size = p->scanner.compiler->ptrsize;
+  // t->align = t->size;
+  next(p);
+  t->flags |= NF_MUT;
+  t->elem = type(p, PREC_UNARY_PREFIX);
+  bubble_flags(t, t->elem);
+  return (type_t*)t;
 }
 
 static type_t* type_mut(parser_t* p) {
@@ -939,6 +947,7 @@ static block_t* block(parser_t* p, nodeflag_t fl) {
 
   fl &= ~NF_RVALUE;
   bool reported_unreachable = false;
+  bool exited = false;
 
   if (currtok(p) != TRBRACE && currtok(p) != TEOF) {
     for (;;) {
@@ -949,13 +958,13 @@ static block_t* block(parser_t* p, nodeflag_t fl) {
       }
       bubble_flags(n, cn);
 
-      if (n->flags & NF_EXITS) {
+      if (exited) {
         if (!reported_unreachable) {
           reported_unreachable = true;
           warning(p, (node_t*)cn, "unreachable code");
         }
       } else if (cn->kind == EXPR_RETURN) {
-        n->flags |= NF_EXITS;
+        exited = true;
       }
 
       if (currtok(p) != TSEMI)
@@ -1333,9 +1342,9 @@ static expr_t* expr_deref(parser_t* p, const parselet_t* pl, nodeflag_t fl) {
 
 
 // mut_expr|ref_expr = "mut"? "&" expr
-static expr_t* expr_ref1(parser_t* p, bool ismut, nodeflag_t fl) {
+static expr_t* expr_ref1(parser_t* p, const parselet_t* pl, nodeflag_t fl, bool ismut) {
   unaryop_t* n = mkexpr(p, unaryop_t, EXPR_PREFIXOP, fl);
-  n->op = currtok(p);
+  n->op = pl->op;
   next(p);
   n->expr = expr(p, PREC_UNARY_PREFIX, fl | NF_RVALUE);
   bubble_flags(n, n->expr);
@@ -1365,7 +1374,13 @@ static expr_t* expr_ref1(parser_t* p, bool ismut, nodeflag_t fl) {
 
 // ref_expr = "&" expr
 static expr_t* expr_ref(parser_t* p, const parselet_t* pl, nodeflag_t fl) {
-  return expr_ref1(p, /*ismut*/false, fl);
+  // return expr_ref1(p, pl, fl, /*ismut*/false);
+  mutval_t* n = mkexpr(p, mutval_t, EXPR_MUTVAL, fl);
+  next(p);
+  n->flags |= NF_MUT;
+  n->expr = expr(p, PREC_UNARY_PREFIX, fl | NF_RVALUE);
+  bubble_flags(n, n->expr);
+  return (expr_t*)n;
 }
 
 
@@ -1376,7 +1391,7 @@ static expr_t* expr_mut(parser_t* p, const parselet_t* pl, nodeflag_t fl) {
     unexpected(p, "expecting '&'");
     return mkbad(p);
   }
-  return expr_ref1(p, /*ismut*/true, fl);
+  return expr_ref1(p, pl, fl, /*ismut*/true);
 }
 
 

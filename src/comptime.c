@@ -354,8 +354,10 @@ static void* eval1(ctx_t* ctx, void* np) {
   case NODE_BAD:
   case NODE_COMMENT:
   case NODEKIND_COUNT:
-    assertf(0, "unexpected node %s", nodekind_name(n->kind));
+    break;
   }
+  assertf(0, "unexpected node %s", nodekind_name(n->kind));
+  return n;
 }
 
 
@@ -392,7 +394,7 @@ u64 comptime_eval_uint(compiler_t* c, expr_t* expr) {
     n = (intlit_t*)comptime_eval(c, expr);
   }
 
-  if LIKELY(n->kind == EXPR_INTLIT && types_iscompat(c, n->type, c->uinttype))
+  if LIKELY(n->kind == EXPR_INTLIT && type_compat_coerce(c, n->type, c->uinttype))
     return n->intval;
 
   // error

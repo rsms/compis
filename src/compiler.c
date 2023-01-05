@@ -6,7 +6,6 @@
 #include "sha256.h"
 #include "llvm/llvm.h"
 
-#include <unistd.h> // fork
 #include <err.h>
 
 // build.c
@@ -167,12 +166,28 @@ bool compiler_fully_qualified_name(const compiler_t* c, buf_t* buf, const node_t
 extern int clang_compile(int argc, const char** argv);
 
 
-static err_t compile_c_async(
-  compiler_t* c, promise_t* p, const char* cfile, const char* ofile)
-{
-  // clang crashes if we run it more than once in the same process, so we fork
-  dlog("cc %s -> %s", cfile, ofile);
+extern void sleep(int);
 
+
+static err_t cc_to_asm_main(compiler_t* c, const char* cfile, const char* asmfile) {
+  const char* argv[] = {
+    "co", "-target", c->triple,
+    "-std=c17",
+    "-O2",
+    "-g", "-feliminate-unused-debug-types",
+    c->cflags,
+    "-S", "-xc", cfile,
+    "-o", asmfile,
+  };
+
+  dlog("cc %s -> %s", cfile, asmfile);
+  int status = clang_compile(countof(argv), argv);
+  return status == 0 ? 0 : ErrCanceled;
+}
+
+
+static err_t cc_to_obj_main(compiler_t* c, const char* cfile, const char* ofile) {
+  // note: clang crashes if we run it more than once in the same process
   const char* argv[] = {
     "co", "-target", c->triple,
     "-std=c17",
@@ -188,20 +203,27 @@ static err_t compile_c_async(
     "-o", ofile,
   };
 
-  pid_t pid = fork();
-  if (pid == -1) {
-    warn("fork");
-    return ErrCanceled;
+  // write .S asm source file?
+  if (c->opt_genasm) {
+    buf_t asmfile = buf_make(c->ma);
+    buf_append(&asmfile, ofile, strlen(ofile) - 1);
+    buf_print(&asmfile, "S");
+    if (!buf_nullterm(&asmfile))
+      return ErrNoMem;
+    promise_spawn_child(cc_to_asm_main, c, cfile, asmfile.chars);
+    // note: no buf_dispose since this is a short-lived process
   }
 
-  if (pid == 0) {
-    int status = clang_compile(countof(argv), argv);
-    _exit(status);
-    UNREACHABLE;
-  } else {
-    promise_open(p, pid);
-    return 0;
-  }
+  dlog("cc %s -> %s", cfile, ofile);
+  int status = clang_compile(countof(argv), argv);
+  return status == 0 ? 0 : ErrCanceled;
+}
+
+
+static err_t cc_to_obj_async(
+  compiler_t* c, promise_t* p, const char* cfile, const char* ofile)
+{
+  return promise_spawn(p, cc_to_obj_main, c, cfile, ofile);
 }
 
 
@@ -373,7 +395,7 @@ err_t compiler_compile(compiler_t* c, promise_t* p, input_t* input, buf_t* ofile
 
   // compile C -> object
   if (!err)
-    err = compile_c_async(c, p, cfile.chars, ofile->chars);
+    err = cc_to_obj_async(c, p, cfile.chars, ofile->chars);
 
   buf_dispose(&cfile);
   return err;

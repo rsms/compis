@@ -488,6 +488,12 @@ static void ptrtype(cgen_t* g, const ptrtype_t* t) {
 }
 
 
+static void muttype(cgen_t* g, const muttype_t* t) {
+  type(g, t->elem);
+  CHAR('*');
+}
+
+
 static sym_t gen_alias_typename(cgen_t* g, const type_t* t) {
   return ((aliastype_t*)t)->name;
 }
@@ -569,6 +575,7 @@ static void type(cgen_t* g, const type_t* t) {
   case TYPE_FUN:      return funtype(g, (const funtype_t*)t, NULL);
   case TYPE_PTR:      return ptrtype(g, (const ptrtype_t*)t);
   case TYPE_REF:      return reftype(g, (const reftype_t*)t);
+  case TYPE_MUT:      return muttype(g, (const muttype_t*)t);
   case TYPE_OPTIONAL: return opttype(g, (const opttype_t*)t);
   case TYPE_STRUCT:   return structtype(g, (const structtype_t*)t);
   case TYPE_ALIAS:    return aliastype(g, (const aliastype_t*)t);
@@ -631,7 +638,7 @@ static void zeroinit(cgen_t* g, const type_t* t);
 
 static void expr_or_zeroinit(cgen_t* g, const type_t* t, const expr_t* nullable n) {
   if (n) {
-    assert(types_iscompat(g->compiler, t, n->type));
+    assert(type_compat_coerce(g->compiler, t, n->type));
     return expr(g, n);
   }
   zeroinit(g, t);
@@ -1069,9 +1076,9 @@ static void fun_proto(cgen_t* g, const fun_t* fun) {
   funtype_t* ft = (funtype_t*)fun->type;
 
   switch (fun->visibility) {
-    case VISIBILITY_PKG:     PRINT("PRIVATE "); break;
-    case VISIBILITY_PRIVATE: PRINT("PRIVATE static "); break;
-    case VISIBILITY_PUBLIC:  PRINT("PUBLIC "); break;
+    case VISIBILITY_PKG:     PRINT("_CO_PRIVATE "); break;
+    case VISIBILITY_PRIVATE: PRINT("_CO_PRIVATE static "); break;
+    case VISIBILITY_PUBLIC:  PRINT("_CO_PUBLIC "); break;
   }
 
   type(g, ft->result);
@@ -1086,6 +1093,8 @@ static void fun_proto(cgen_t* g, const fun_t* fun) {
       // if (!type_isprim(param->type) && !param->ismut)
       //   PRINT("const ");
       type(g, param->type);
+      if (param->type->kind == TYPE_MUT)
+        PRINT(" _CO_NOALIAS");
       if (param->name && param->name != sym__) {
         CHAR(' ');
         PRINT(param->name);
@@ -1543,6 +1552,12 @@ static void assign(cgen_t* g, const binop_t* n) {
 }
 
 
+static void mutval(cgen_t* g, const mutval_t* n) {
+  CHAR('&');
+  expr(g, n->expr);
+}
+
+
 static void prefixop(cgen_t* g, const unaryop_t* n) {
   if (n->expr->kind == EXPR_INTLIT && n->expr->type->kind < TYPE_I32)
     CHAR('('), type(g, n->expr->type), CHAR(')');
@@ -1558,11 +1573,15 @@ static void postfixop(cgen_t* g, const unaryop_t* n) {
 
 
 static void idexpr(cgen_t* g, const idexpr_t* n) {
+  if (n->type->kind == TYPE_MUT)
+    CHAR('*');
   id(g, n->name);
 }
 
 
 static void param(cgen_t* g, const local_t* n) {
+  if (n->type->kind == TYPE_MUT)
+    CHAR('*');
   id(g, n->name);
 }
 
@@ -1883,6 +1902,7 @@ static void expr(cgen_t* g, const expr_t* n) {
   case EXPR_POSTFIXOP: return postfixop(g, (const unaryop_t*)n);
   case EXPR_BINOP:     return binop(g, (const binop_t*)n);
   case EXPR_ASSIGN:    return assign(g, (const binop_t*)n);
+  case EXPR_MUTVAL:    return mutval(g, (const mutval_t*)n);
 
   case EXPR_VAR:
   case EXPR_LET:

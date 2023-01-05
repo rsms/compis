@@ -21,8 +21,10 @@ typedef double             f64;
 #define false 0
 #define bool _Bool
 
-#define PUBLIC  __attribute__((__visibility__("default")))
-#define PRIVATE __attribute__((__visibility__("internal")))
+#define _CO_PUBLIC  __attribute__((__visibility__("default")))
+#define _CO_PRIVATE __attribute__((__visibility__("internal")))
+
+#define _CO_NOALIAS __restrict__
 
 __attribute__((noreturn)) void abort(void);
 #define __nullcheck(x) ({ \

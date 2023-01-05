@@ -1,3 +1,31 @@
+
+fun mutadd(v &int, d int) {
+  v = v + d
+}
+
+fun foo(x, y int) int {
+  var a = 1
+  // let b = 2 ; let _ = &b // error: cannot mutate immutable binding
+  // var c = &a
+  mutadd(&x, y)
+  x
+}
+
+/*type Vec2 {
+  x, y int
+}
+
+fun translate_x(v &Vec2, d int) {
+  v.x = v.x + d
+}
+
+fun foo(x, y int) int {
+  var a = Vec2(x, y)
+  translate_x(&a, 3)
+  a.x * a.y
+}*/
+
+
 // fun create() *int
 
 
@@ -285,22 +313,6 @@ fun foo(x, y int) int {
   }
   x * y * int(a.z)
 }*/
-
-fun three() uint {
-  1 + 2
-}
-
-fun foo() {
-  // slice and array types
-  var _ &[int]         // slice
-  var _ mut&[int]      // mutable slice
-  var _ [i16]          // variably-sized array (growable at runtime)
-  var _ [u32 three()]  // fixed-size array (comptime computed size)
-
-  var a str = "cat" // str aka &[u8]
-  var b = "robin"   // &[u8 5]
-  a = b             // ok; higher-fidelity type assignable to lower-fi type
-}
 
 // pub "C" fun foo(x, y int) int {
 //   fun double(x int) int {

@@ -162,8 +162,9 @@ static bool dump_irunit(const compiler_t* c, const irunit_t* u) {
 // }
 
 
-static void assert_types_iscompat(ircons_t* c, const type_t* x, const type_t* y) {
-  assertf(types_iscompat(c->compiler, x, y), "%s != %s", fmtnode(0, x), fmtnode(1, y));
+static void assert_types_compat_coerce(ircons_t* c, const type_t* x, const type_t* y) {
+  assertf(type_compat_coerce(c->compiler, x, y),
+    "%s != %s", fmtnode(0, x), fmtnode(1, y));
 }
 
 
@@ -1724,7 +1725,7 @@ static irval_t* binop(ircons_t* c, binop_t* n) {
   irval_t* left  = load_expr(c, n->left);
   irval_t* right = load_expr(c, n->right);
   assert(left->type && right->type);
-  assert_types_iscompat(c, left->type, right->type);
+  assert_types_compat_coerce(c, left->type, right->type);
   irval_t* v = pushval(c, c->b, n->op, n->loc, n->type);
   pusharg(v, left);
   pusharg(v, right);

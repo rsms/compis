@@ -23,6 +23,7 @@
   _( EXPR_PREFIXOP )\
   _( EXPR_POSTFIXOP )\
   _( EXPR_BINOP )\
+  _( EXPR_MUTVAL )\
   _( EXPR_ASSIGN )\
   _( EXPR_DEREF )\
   _( EXPR_IF )\
@@ -54,6 +55,7 @@
   _( TYPE_FUN )\
   _( TYPE_PTR )\
   _( TYPE_REF )\
+  _( TYPE_MUT )\
   _( TYPE_OPTIONAL )\
   _( TYPE_STRUCT )\
   _( TYPE_SLICE )\
@@ -169,7 +171,7 @@ enum nodekind {
 typedef u8 nodeflag_t;
 #define NF_RVALUE      ((nodeflag_t)1<< 0) // expression is used as an rvalue
 #define NF_OPTIONAL    ((nodeflag_t)1<< 1) // type-narrowed from optional
-#define NF_EXITS       ((nodeflag_t)1<< 2) // block exits the function (has return)
+#define NF_MUT         ((nodeflag_t)1<< 2) // value or type is mutable
 #define NF_CHECKED     ((nodeflag_t)1<< 3) // has been typecheck'ed (or doesn't need it)
 #define NF_UNKNOWN     ((nodeflag_t)1<< 4) // has or contains unresolved identifier
 #define NF_NAMEDPARAMS ((nodeflag_t)1<< 5) // function has named parameters
@@ -177,12 +179,12 @@ typedef u8 nodeflag_t;
 #define NF_SUBOWNERS   ((nodeflag_t)1<< 7) // type has owning elements
 
 // NODEFLAGS_BUBBLE are flags that "bubble" (transfer) from children to parents
-#define NODEFLAGS_BUBBLE  NF_UNKNOWN
+#define NODEFLAGS_BUBBLE  (NF_UNKNOWN | NF_MUT)
 
 typedef struct {
   nodekind_t kind;
   nodeflag_t flags;
-  u8         _unused[2];
+  u8         _unused[1];
   u32        nuse; // number of uses (expr_t and usertype_t)
   loc_t      loc;
 } node_t;
@@ -260,6 +262,11 @@ typedef struct {
 typedef struct {
   usertype_t;
   type_t* elem;
+} muttype_t;
+
+typedef struct {
+  usertype_t;
+  type_t* elem;
 } ptrtype_t;
 
 typedef struct {
@@ -296,6 +303,7 @@ typedef struct { expr_t; u8* bytes; usize len; } strlit_t;
 typedef struct { expr_t; sym_t name; node_t* nullable ref; } idexpr_t;
 typedef struct { expr_t; op_t op; expr_t* expr; } unaryop_t;
 typedef struct { expr_t; op_t op; expr_t* left; expr_t* right; } binop_t;
+typedef struct { expr_t; expr_t* expr; } mutval_t;
 typedef struct { expr_t; expr_t* nullable value; } retexpr_t;
 
 typedef struct {
@@ -542,6 +550,7 @@ typedef struct compiler {
   bool           opt_printast;
   bool           opt_printir;
   bool           opt_genirdot;
+  bool           opt_genasm;  // write machine assembly .S source file to build dir
 } compiler_t;
 
 
@@ -672,6 +681,9 @@ inline static bool type_isowner(const type_t* t) { // true for "*T" and "?*T"
   t = type_isopt(t) ? ((opttype_t*)t)->elem : t;
   return ((t->flags & (NF_DROP | NF_SUBOWNERS)) != 0) | type_isptr(t);
 }
+inline static bool type_ismut(const type_t* t) {
+  return t->kind == TYPE_MUT;
+}
 inline static bool type_isunsigned(const type_t* t) {
   return TYPE_U8 <= t->kind && t->kind <= TYPE_UINT;
 }
@@ -680,12 +692,27 @@ inline static bool funtype_hasthis(const funtype_t* ft) {
 }
 
 // types
-bool types_isconvertible(const type_t* dst, const type_t* src);
-bool _types_iscompat(const compiler_t* c, const type_t* dst, const type_t* src);
-inline static bool types_iscompat(
+bool type_convertible(const type_t* dst, const type_t* src);
+
+bool _type_compat(
+  const compiler_t* c, const type_t* dst, const type_t* src, bool coerce);
+
+inline static bool type_compat(
+  const compiler_t* c, const type_t* dst, const type_t* src, bool coerce)
+{
+  return dst == src || _type_compat(c, dst, src, coerce);
+}
+
+inline static bool type_compat_coerce(
   const compiler_t* c, const type_t* dst, const type_t* src)
 {
-  return dst == src || _types_iscompat(c, dst, src);
+  return type_compat(c, dst, src, /*coerce*/true);
+}
+
+inline static bool type_compat_strict(
+  const compiler_t* c, const type_t* dst, const type_t* src)
+{
+  return type_compat(c, dst, src, /*coerce*/false);
 }
 
 sym_t nullable _typeid(type_t*);

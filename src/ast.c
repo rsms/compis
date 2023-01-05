@@ -207,9 +207,10 @@ static void flags(RPARAMS, const node_t* n) {
   // don't include NF_UNKNOWN for TYPE_UNKNOWN (always and obviously true)
   flags &= ~(NF_UNKNOWN * (nodeflag_t)(n->kind == TYPE_UNKNOWN));
 
-  if (flags & (NF_RVALUE | NF_OPTIONAL | NF_UNKNOWN)) {
+  if (flags & (NF_RVALUE | NF_MUT | NF_OPTIONAL | NF_UNKNOWN)) {
     PRINT(" {");
     if (flags & NF_RVALUE)   CHAR('r');
+    if (flags & NF_MUT)      CHAR('m');
     if (flags & NF_OPTIONAL) CHAR('o');
     if (flags & NF_UNKNOWN)  CHAR('u');
     CHAR('}');
@@ -251,6 +252,10 @@ static void repr_type(RPARAMS, const type_t* t) {
       PRINT(" mut");
     CHAR(' ');
     repr_type(RARGSFL(fl | REPRFLAG_HEAD), ((reftype_t*)t)->elem);
+    break;
+  case TYPE_MUT:
+    CHAR(' ');
+    repr_type(RARGSFL(fl | REPRFLAG_HEAD), ((muttype_t*)t)->elem);
     break;
   case TYPE_OPTIONAL:
     CHAR(' ');
@@ -338,7 +343,7 @@ static void repr(RPARAMS, const node_t* nullable n) {
     } else if (n->kind == EXPR_MEMBER) {
       CHAR(' '), PRINT(((member_t*)n)->name);
     }
-    PRINTF(" #%u", n->nuse);
+    // PRINTF(" #%u", n->nuse);
   } else if (n->kind == TYPE_UNRESOLVED) {
     CHAR(' '), PRINT(((unresolvedtype_t*)n)->name);
   }
@@ -458,6 +463,10 @@ static void repr(RPARAMS, const node_t* nullable n) {
     CHAR(' '), repr(RARGS, (node_t*)((unaryop_t*)n)->expr);
     break;
 
+  case EXPR_MUTVAL:
+    CHAR(' '), repr(RARGS, (node_t*)((mutval_t*)n)->expr);
+    break;
+
   case EXPR_ASSIGN:
   case EXPR_BINOP: {
     binop_t* op = (binop_t*)n;
@@ -566,18 +575,24 @@ origin_t node_origin(const locmap_t* lm, const node_t* n) {
   }
 
   case TYPE_ARRAY: {
-    const arraytype_t* at = (arraytype_t*)n;
-    r = origin_union(r, node_origin(lm, (node_t*)at->elem));
-    if (at->lenexpr)
-      r = origin_union(r, node_origin(lm, (node_t*)at->lenexpr));
-    r = origin_union(r, origin_make(lm, at->endloc));
+    const arraytype_t* t = (arraytype_t*)n;
+    r = origin_union(r, node_origin(lm, (node_t*)t->elem));
+    if (t->lenexpr)
+      r = origin_union(r, node_origin(lm, (node_t*)t->lenexpr));
+    r = origin_union(r, origin_make(lm, t->endloc));
     break;
   }
 
   case TYPE_SLICE: {
-    const slicetype_t* st = (slicetype_t*)n;
-    r = origin_union(r, node_origin(lm, (node_t*)st->elem));
-    r = origin_union(r, origin_make(lm, st->endloc));
+    const slicetype_t* t = (slicetype_t*)n;
+    r = origin_union(r, node_origin(lm, (node_t*)t->elem));
+    r = origin_union(r, origin_make(lm, t->endloc));
+    break;
+  }
+
+  case TYPE_MUT: {
+    const muttype_t* t = (muttype_t*)n;
+    r = origin_union(r, node_origin(lm, (node_t*)t->elem));
     break;
   }
 
