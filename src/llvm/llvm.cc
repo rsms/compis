@@ -376,7 +376,7 @@ err_t llvm_module_emit(
 
 
 bool llvm_write_archive(
-  const char* arhivefile, const char** filesv, u32 filesc, CoLLVMOS os, char** errmsg)
+  const char* arhivefile, char*const* filesv, u32 filesc, CoLLVMOS os, char** errmsg)
 {
   object::Archive::Kind kind;
   switch (os) {

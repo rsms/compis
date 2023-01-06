@@ -4,13 +4,13 @@
 #include <string.h> // strcmp
 #include <err.h>
 
-typedef bool(*linkerfn_t)(int argc, const char** argv, bool can_exit_early);
+typedef bool(*linkerfn_t)(int argc, char*const* argv, bool can_exit_early);
 
 static const char* prog; // main program name
 CoLLVMOS host_os;
 
-extern int clang_main(int argc, const char** argv); // llvm/driver.cc
-extern int build_main(int argc, const char** argv); // build.c
+extern int clang_main(int argc, char*const* argv); // llvm/driver.cc
+extern int main_build(int argc, char*const* argv); // build.c
 
 static linkerfn_t nullable ld_impl(CoLLVMOS os);
 static const char* ld_impl_name(linkerfn_t nullable f);
@@ -45,7 +45,7 @@ static void usage(FILE* f) {
     host_ld);
 }
 
-static int ar_main(int argc, const char** argv) {
+static int ar_main(int argc, char*const* argv) {
   // TODO: accept --target triple (where we really only parse the os)
 
   // const char* osname = (strlen(argv[0]) > 2) ? &argv[0][3] : "";
@@ -66,10 +66,10 @@ static int ar_main(int argc, const char** argv) {
   //   return 1;
   // }
 
-  const char*  archivefile = argv[1];
-  const char** filesv = &argv[2];
-  u32          filesc = argc-2;
-  CoLLVMOS     os = host_os;
+  const char* archivefile = argv[1];
+  char*const* filesv = &argv[2];
+  u32         filesc = argc-2;
+  CoLLVMOS    os = host_os;
   char* errmsg = "?";
 
   bool ok = llvm_write_archive(archivefile, filesv, filesc, os, &errmsg);
@@ -142,7 +142,7 @@ static linkerfn_t nullable ld_impl(CoLLVMOS os) {
 }
 
 
-static int ld_main(int argc, const char** argv) {
+static int ld_main(int argc, char* argv[]) {
   linkerfn_t impl = ld_impl(host_os);
   if (!impl) {
     log("%s ld: unsupported host OS %s", prog, CoLLVMOS_name(host_os));
@@ -152,7 +152,7 @@ static int ld_main(int argc, const char** argv) {
 }
 
 
-int main(int argc, const char** argv) {
+int main(int argc, char* argv[]) {
   prog = argv[0];
 
   const char* progname = strrchr(prog, '/');
@@ -185,7 +185,7 @@ int main(int argc, const char** argv) {
   }
 
   // primary commands
-  if ISCMD("build") return build_main(argc, argv);
+  if ISCMD("build") return main_build(argc, argv);
 
   // llvm-based commands
   if ISCMD("cc")       return clang_main(argc, argv);

@@ -7,6 +7,7 @@
 #include <unistd.h> // getopt
 #include <string.h> // strdup
 #include <err.h>
+#include <getopt.h>
 
 #include "llvm/llvm.h"
 
@@ -16,13 +17,76 @@ const char* COROOT = ""; // Directory of co itself; dirname(argv[0])
 extern CoLLVMOS host_os; // defined in main.c
 
 // cli options
-static const char* opt_outfile = "a.out";
+static bool opt_help = false;
+static const char* opt_out = "";
+static bool opt_debug = false;
 static bool opt_printast = false;
 static bool opt_printir = false;
 static bool opt_genirdot = false;
 static bool opt_genasm = false;
 static bool opt_logld = false;
 static bool opt_nomain = false;
+static const char* opt_builddir = "build";
+
+#define FOREACH_CLI_OPTION(S, SV, L, LV) \
+  /* S( var, ch, name,          descr) */\
+  /* SV(var, ch, name, valname, descr) */\
+  /* L( var,     name,          descr) */\
+  /* LV(var,     name, valname, descr) */\
+  SV(&opt_out,    'o', "out", "<file>", "Write product to <file> instead of build dir")\
+  S( &opt_debug,  'd', "debug",     "Build in debug aka development mode")\
+  S( &opt_genasm, 'S', "write-asm", "Write machine assembly sources to build dir")\
+  S( &opt_help,   'h', "help",      "Print help on stdout and exit")\
+  /* advanced options (long form only) */ \
+  LV(&opt_builddir, "build-dir", "<dir>", "Use <dir> instead of ./build")\
+  L( &opt_printast, "print-ast",    "Print AST to stderr")\
+  L( &opt_printir,  "print-ir",     "Print IR to stderr")\
+  L( &opt_genirdot, "write-ir-dot", "Write IR as Graphviz .dot file to build dir")\
+  L( &opt_logld,    "print-ld-cmd", "Print linker invocation to stderr")\
+  L( &opt_nomain,   "no-auto-main", "Don't auto-generate C ABI \"main\" for main.main")\
+// end FOREACH_CLI_OPTION
+
+#include "cliopt.inc.h"
+
+static void help(const char* prog) {
+  printf(
+    "Compis, your friendly neighborhood compiler\n"
+    "usage: co %s [options] [--] <source> ...\n"
+    "options:\n"
+    "",
+    prog);
+  print_options();
+  exit(0);
+}
+
+
+static err_t build_exe(char*const* srcfilev, usize filecount);
+
+
+int main_build(int argc, char* argv[]) {
+  char* coroot = LLVMGetMainExecutable(argv[0]);
+  coroot[path_dirlen(coroot, strlen(coroot))] = 0;
+  COROOT = coroot;
+
+  int optind = parse_cli_options(argc, argv, help);
+  if (optind < 0)
+    return 1;
+
+  if (optind == argc)
+    errx(1, "missing input source");
+
+  assert(optind <= argc);
+  argv += optind;
+  argc -= optind;
+
+  sym_init(memalloc_ctx());
+
+  err_t err = build_exe(argv, (usize)argc);
+  if (err && err != ErrCanceled)
+    dlog("failed to build: %s", err_str(err));
+
+  return err == 0 ? 0 : 1;
+}
 
 
 static void diaghandler(const diag_t* d, void* nullable userdata) {
@@ -43,6 +107,28 @@ static input_t* open_input(memalloc_t ma, const char* filename) {
 }
 
 
+static char* nullable path_join(memalloc_t ma, slice_t base, slice_t extraname) {
+  char* s = mem_strdup(ma, base, 1 + extraname.len);
+  if (!s)
+    return NULL;
+  char* p = s + base.len;
+  *p++ = PATH_SEPARATOR;
+  memcpy(p, extraname.p, extraname.len);
+  p[extraname.len] = 0;
+  return s;
+}
+
+
+static char* nullable make_output_file(compiler_t* c) {
+  return path_join(c->ma, slice_cstr(c->builddir), slice_cstr(c->pkgname));
+}
+
+
+static char* nullable make_lto_cachedir(compiler_t* c) {
+  return path_join(c->ma, slice_cstr(c->builddir), slice_cstr("llvm"));
+}
+
+
 typedef struct {
   input_t*  input;
   buf_t     ofile;
@@ -50,23 +136,72 @@ typedef struct {
 } buildfile_t;
 
 
-static err_t build_exe(const char** srcfilev, usize filecount) {
+static err_t link_exe(compiler_t* c, buildfile_t* buildfilev, usize buildfilec) {
+  err_t err = 0;
+
+  const char* outfile = *opt_out ? opt_out : make_output_file(c);
+  char* lto_cachedir = make_lto_cachedir(c);
+  if (!outfile || !lto_cachedir) {
+    err = ErrNoMem;
+    goto end;
+  }
+
+  CoLLVMLink link = {
+    .target_triple = c->triple,
+    .outfile = outfile,
+    .infilec = buildfilec,
+    .print_lld_args = opt_logld,
+    .lto_level = c->buildmode == BUILDMODE_DEBUG ? 0 : 2,
+    .lto_cachedir = lto_cachedir,
+  };
+
+  // linker wants an array of cstring pointers
+  link.infilev = mem_alloctv(c->ma, const char*, buildfilec);
+  if (!link.infilev) {
+    err = ErrNoMem;
+    goto end;
+  }
+  for (usize i = 0; i < buildfilec; i++)
+    link.infilev[i] = buildfilev[i].ofile.chars;
+
+  log("link %s", outfile);
+  err = llvm_link(&link);
+
+  mem_freetv(c->ma, link.infilev, buildfilec);
+
+end:
+  if (outfile && outfile != opt_out)
+    mem_freex(c->ma, MEM((void*)outfile, strlen(outfile)));
+  if (lto_cachedir)
+    mem_freex(c->ma, MEM(lto_cachedir, strlen(lto_cachedir)));
+  return err;
+}
+
+
+static err_t build_exe(char*const* srcfilev, usize filecount) {
   err_t err = 0;
 
   if (filecount == 0)
     return ErrInvalid;
 
-  const char* pkgname = "main"; // TODO FIXME
+  slice_t builddir = slice_cstr(opt_builddir);
+  slice_t pkgname = slice_cstr("main"); // TODO FIXME
 
   compiler_t c;
-  compiler_init(&c, memalloc_ctx(), &diaghandler, slice_cstr(pkgname));
+  compiler_init(&c, memalloc_ctx(), &diaghandler, pkgname);
   c.opt_printast = opt_printast;
   c.opt_printir = opt_printir;
   c.opt_genirdot = opt_genirdot;
   c.opt_genasm = opt_genasm;
   c.nomain = opt_nomain;
-  // compiler_set_triple(&c, "aarch64-linux-unknown");
-  dlog("compiler.triple: %s", c.triple);
+  c.buildmode = opt_debug ? BUILDMODE_DEBUG : BUILDMODE_OPT;
+  const char* target_triple = llvm_host_triple();
+  // const char* target_triple = "aarch64-linux-unknown";
+  if (( err = compiler_configure(&c, target_triple, builddir) )) {
+    compiler_dispose(&c);
+    return err;
+  }
+  dlog("target: %s", c.triple);
 
   // fv is an array of files we are building
   buildfile_t* fv = mem_alloctv(c.ma, buildfile_t, filecount);
@@ -79,8 +214,8 @@ static err_t build_exe(const char** srcfilev, usize filecount) {
     buf_init(&fv[i].ofile, c.ma);
   }
 
-  // create object dir
-  if (( err = fs_mkdirs(c.objdir, strlen(c.objdir), 0770) ))
+  // create output dir
+  if (( err = fs_mkdirs(c.pkgbuilddir, strlen(c.pkgbuilddir), 0770) ))
     goto end;
 
   // compile object files
@@ -92,33 +227,14 @@ static err_t build_exe(const char** srcfilev, usize filecount) {
 
   // wait for all compiler processes
   for (usize i = 0; i < filecount; i++) {
-    if (!promise_isresolved(&fv[i].promise)) {
-      err_t err1 = promise_await(&fv[i].promise);
-      if (err1 && !err) err = err1;
-    }
+    err_t err1 = promise_await(&fv[i].promise);
+    if (!err)
+      err = err1;
   }
-
-  if (err)
-    goto end;
 
   // link executable
-  log("link %s", opt_outfile);
-  CoLLVMLink link = {
-    .target_triple = c.triple,
-    .outfile = opt_outfile,
-    .infilec = filecount,
-    .print_lld_args = opt_logld,
-  };
-  // (linker wants an array of cstring pointers)
-  link.infilev = mem_alloctv(c.ma, const char*, filecount);
-  if (!link.infilev) {
-    err = ErrNoMem;
-  } else {
-    for (usize i = 0; i < filecount; i++)
-      link.infilev[i] = fv[i].ofile.chars;
-    err = llvm_link(&link);
-    mem_freetv(c.ma, link.infilev, filecount);
-  }
+  if (!err)
+    err = link_exe(&c, fv, filecount);
 
 end:
   for (usize i = 0; i < filecount; i++)
@@ -126,67 +242,4 @@ end:
   mem_freetv(c.ma, fv, filecount);
   compiler_dispose(&c);
   return err;
-}
-
-
-static void usage(const char* prog) {
-  printf(
-    "Compis, your friendly neighborhood compiler\n"
-    "usage: co %s [options] <source> ...\n"
-    "options:\n"
-    "  -o <file>  Write executable to <file> instead of %s\n"
-    "  -A         Print AST to stderr\n"
-    "  -R         Print IR SSA to stderr\n"
-    "  -D         Write IR SSA as Graphviz .dot file\n"
-    "  -S         Write machine assembly sources to build dir\n"
-    "  -K         Print linker invocation to stderr\n"
-    "  -h         Print help on stdout and exit\n"
-    "",
-    prog,
-    opt_outfile);
-}
-
-
-static int parse_cli_options(int argc, const char** argv) {
-  extern char* optarg; // global state in libc... coolcoolcool
-  extern int optind, optopt;
-  int nerrs = 0;
-  for (int c; (c = getopt(argc, (char*const*)argv, "o:ARDSKMh")) != -1; ) switch (c) {
-    case 'o': opt_outfile = optarg; break;
-    case 'A': opt_printast = true; break;
-    case 'R': opt_printir = true; break;
-    case 'D': opt_genirdot = true; break;
-    case 'S': opt_genasm = true; break;
-    case 'K': opt_logld = true; break;
-    case 'M': opt_nomain = true; break;
-    case 'h': usage(argv[0]); exit(0);
-    case ':': warnx("missing value for -%c", optopt); nerrs++; break;
-    case '?': warnx("unrecognized option -%c", optopt); nerrs++; break;
-  }
-  return nerrs > 0 ? -1 : optind;
-}
-
-
-int build_main(int argc, const char** argv) {
-  char* coroot = LLVMGetMainExecutable(argv[0]);
-  coroot[path_dirlen(coroot, strlen(coroot))] = 0;
-  COROOT = coroot;
-
-  int numflags = parse_cli_options(argc, argv);
-  if (numflags < 0)
-    return 1;
-
-  if (numflags == argc)
-    errx(1, "missing input source");
-
-  argv += numflags;
-  argc -= numflags;
-
-  sym_init(memalloc_ctx());
-
-  err_t err = build_exe(argv, (usize)argc);
-  if (err && err != ErrCanceled)
-    dlog("failed to build: %s", err_str(err));
-
-  return err == 0 ? 0 : 1;
 }

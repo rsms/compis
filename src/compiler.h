@@ -154,6 +154,12 @@ enum abi {
   ABI_C  = 1,
 };
 
+typedef u8 buildmode_t;
+enum buildmode {
+  BUILDMODE_DEBUG,
+  BUILDMODE_OPT,
+};
+
 
 #define EXPORT_ABI_C  ((export_t)1<< 3) // has been typecheck'ed (or doesn't need it)
 
@@ -525,11 +531,13 @@ typedef struct {
 
 typedef struct compiler {
   memalloc_t     ma;          // memory allocator
+  buildmode_t    buildmode;   //
   char*          triple;      // target triple
-  char*          cachedir;    // defaults to ".co"
-  char*          objdir;      // "${cachedir}/obj"
-  char*          cflags;
+  char*          buildroot;   // where all generated files go, e.g. "build"
+  char*          builddir;    // "{buildroot}/{mode}[-{triple}]", e.g. "build/debug"
+  char*          pkgbuilddir; // "{builddir}/{pkgname}.pkg"
   char*          pkgname;     // name of package being compiled
+  ptrarray_t     cflags;      // char*[]
   diaghandler_t  diaghandler; // called when errors are encountered
   void* nullable userdata;    // passed to diaghandler
   locmap_t       locmap;      // maps input <—> loc_t
@@ -584,8 +592,7 @@ filetype_t filetype_guess(const char* filename);
 // compiler
 void compiler_init(compiler_t*, memalloc_t, diaghandler_t, slice_t pkgname);
 void compiler_dispose(compiler_t*);
-void compiler_set_triple(compiler_t*, const char* triple);
-void compiler_set_cachedir(compiler_t*, slice_t cachedir);
+err_t compiler_configure(compiler_t*, const char* triple, slice_t builddir);
 err_t compiler_compile(compiler_t*, promise_t*, input_t*, buf_t* ofile);
 bool compiler_fully_qualified_name(const compiler_t*, buf_t* dst, const node_t*);
 bool compiler_mangle(const compiler_t*, buf_t* dst, const node_t*);

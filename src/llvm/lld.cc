@@ -115,6 +115,26 @@ static err_t build_args(
     }
   }
 
+  // LTO
+  if (options.lto_level > 0) {
+    args.emplace_back(
+      options.lto_level == 1 ? "--lto-O1" :
+      options.lto_level == 2 ? "--lto-O2" :
+                               "--lto-O3");
+    args.emplace_back("--no-lto-legacy-pass-manager");
+
+    args.emplace_back("-prune_after_lto");
+    args.emplace_back("86400"); // 1 day
+
+    if (options.lto_cachedir && *options.lto_cachedir) {
+      args.emplace_back("-cache_path_lto");
+      args.emplace_back(options.lto_cachedir);
+
+      args.emplace_back("-object_path_lto");
+      args.emplace_back(mktmpstr(std::string(options.lto_cachedir) + "/obj"));
+    }
+  }
+
   // linker flavor-specific arguments
   switch (triple.getObjectFormat()) {
     case Triple::COFF:
@@ -125,12 +145,6 @@ static err_t build_args(
     case Triple::Wasm:
       // flavor=ld.lld
       args.emplace_back("--no-pie");
-      if (options.lto_level > 0) {
-        args.emplace_back(
-          options.lto_level == 1 ? "--lto-O1" :
-          options.lto_level == 2 ? "--lto-O2" :
-                                   "--lto-O3");
-      }
       break;
     case Triple::MachO:
       // flavor=ld64.lld
@@ -308,22 +322,22 @@ err_t llvm_link(const CoLLVMLink* optionsptr) {
 
 // object-specific linker functions for exporting as C API:
 
-bool LLDLinkCOFF(int argc, const char **argv, bool can_exit_early) {
+bool LLDLinkCOFF(int argc, char*const*argv, bool can_exit_early) {
   std::vector<const char *> args(argv, argv + argc);
   return lld::coff::link(args, llvm::outs(), llvm::errs(), can_exit_early, false);
 }
 
-bool LLDLinkELF(int argc, const char **argv, bool can_exit_early) {
+bool LLDLinkELF(int argc, char*const*argv, bool can_exit_early) {
   std::vector<const char *> args(argv, argv + argc);
   return lld::elf::link(args, llvm::outs(), llvm::errs(), can_exit_early, false);
 }
 
-bool LLDLinkMachO(int argc, const char **argv, bool can_exit_early) {
+bool LLDLinkMachO(int argc, char*const*argv, bool can_exit_early) {
   std::vector<const char *> args(argv, argv + argc);
   return lld::macho::link(args, llvm::outs(), llvm::errs(), can_exit_early, false);
 }
 
-bool LLDLinkWasm(int argc, const char **argv, bool can_exit_early) {
+bool LLDLinkWasm(int argc, char*const*argv, bool can_exit_early) {
   std::vector<const char *> args(argv, argv + argc);
   return lld::wasm::link(args, llvm::outs(), llvm::errs(), can_exit_early, false);
 }

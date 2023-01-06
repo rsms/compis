@@ -207,9 +207,10 @@ typedef struct {
   const char* nullable outfile; // output file. NULL for no output
   const char**         infilev; // input file array
   u32                  infilec; // input file count
-  int                  lto_level;
   bool                 strip_dead;
   bool                 print_lld_args;
+  int                  lto_level;
+  const char* nullable lto_cachedir;
 } CoLLVMLink;
 
 typedef enum CoLLVMWriteIRFlags {
@@ -264,10 +265,10 @@ EXTERN_C const char* CoLLVMEnvironment_name(CoLLVMEnvironment); // canonical nam
 EXTERN_C err_t llvm_link(const CoLLVMLink*);
 
 // Format-specific linkers
-EXTERN_C bool LLDLinkCOFF(int argc, const char** argv, bool can_exit_early);
-EXTERN_C bool LLDLinkELF(int argc, const char** argv, bool can_exit_early);
-EXTERN_C bool LLDLinkMachO(int argc, const char** argv, bool can_exit_early);
-EXTERN_C bool LLDLinkWasm(int argc, const char** argv, bool can_exit_early);
+EXTERN_C bool LLDLinkCOFF(int argc, char*const* argv, bool can_exit_early);
+EXTERN_C bool LLDLinkELF(int argc, char*const* argv, bool can_exit_early);
+EXTERN_C bool LLDLinkMachO(int argc, char*const* argv, bool can_exit_early);
+EXTERN_C bool LLDLinkWasm(int argc, char*const* argv, bool can_exit_early);
 
 // —————————————————————————————————————————————————————————————————————————————————————
 // archive
@@ -276,11 +277,11 @@ EXTERN_C bool LLDLinkWasm(int argc, const char** argv, bool can_exit_early);
 // filesv is an array of object filenames.
 // Returns false on error and sets errmsg; caller should dispose with LLVMDisposeMessage.
 EXTERN_C bool llvm_write_archive(
-  const char*  archivefile,
-  const char** filesv,
-  u32          filesc,
-  CoLLVMOS     os,
-  char**       errmsg);
+  const char* archivefile,
+  char*const* filesv,
+  u32         filesc,
+  CoLLVMOS    os,
+  char**      errmsg);
 
 // —————————————————————————————————————————————————————————————————————————————————————
 // module functions

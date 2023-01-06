@@ -919,71 +919,14 @@ err_t fs_mkdirs(const char* path, usize pathlen, int perms);
 //—————————————————————————————————————————————————————————————————————————————————————
 // promise
 
-typedef struct promise {
-  pid_t pid;
-  // pid_t pidv[3];
-  // usize pidc;
-  err_t err;
+typedef err_t(*promise_await_t)(void* impl);
+typedef struct {
+  promise_await_t nullable await;
+  void*                    impl;
+  err_t                    result;
 } promise_t;
 
-void promise_open(promise_t* p, pid_t pid);
-void promise_close(promise_t* p);
 err_t promise_await(promise_t* p);
-inline static bool promise_isresolved(const promise_t* p) { return p->pid == 0; }
-
-
-// err_t promise_spawn(promise_t* p, f(...uintptr), ...uintptr)
-// spawns a process bound to promise p in a new process group
-#define promise_spawn(p, fn, ...) \
-  __VARG_CONCAT(_promise_spawn,__VARG_NARGS(__VA_ARGS__))( \
-    (p), (_promise_spawn_t)(fn), __VA_ARGS__)
-
-// err_t promise_spawn_child(f(...uintptr), ...uintptr)
-// spawns a child process inside a parent process spawned using promise_spawn
-#define promise_spawn_child(fn, ...) \
-  __VARG_CONCAT(_promise_spawn_child,__VARG_NARGS(__VA_ARGS__))( \
-    (_promise_spawn_t)(fn), __VA_ARGS__)
-
-typedef err_t(*_promise_spawn_t)(
-  uintptr a, uintptr b, uintptr c, uintptr d, uintptr e, uintptr f);
-
-err_t _promise_spawn(promise_t* p, _promise_spawn_t fn,
-  uintptr a, uintptr b, uintptr c, uintptr d, uintptr e, uintptr f);
-#define _promise_spawn6(p, fn, a, b, c, d, e, f) _promise_spawn((p), \
-  (_promise_spawn_t)(fn), \
-  (uintptr)(a), (uintptr)(b), (uintptr)(c), (uintptr)(d), (uintptr)(e), (uintptr)(f))
-#define _promise_spawn5(p, fn, a, b, c, d, e) _promise_spawn((p), \
-  (_promise_spawn_t)(fn), \
-  (uintptr)(a), (uintptr)(b), (uintptr)(c), (uintptr)(d), (uintptr)(e), 0)
-#define _promise_spawn4(p, fn, a, b, c, d) _promise_spawn((p), \
-  (_promise_spawn_t)(fn), (uintptr)(a), (uintptr)(b), (uintptr)(c), (uintptr)(d), 0, 0)
-#define _promise_spawn3(p, fn, a, b, c) _promise_spawn((p), \
-  (_promise_spawn_t)(fn), (uintptr)(a), (uintptr)(b), (uintptr)(c), 0, 0, 0)
-#define _promise_spawn2(p, fn, a, b) _promise_spawn((p), \
-  (_promise_spawn_t)(fn), (uintptr)(a), (uintptr)(b), 0, 0, 0, 0)
-#define _promise_spawn1(p, fn, a) _promise_spawn((p), \
-  (_promise_spawn_t)(fn), (uintptr)(a), 0, 0, 0, 0, 0)
-#define _promise_spawn0(p, fn) _promise_spawn((p), \
-  (_promise_spawn_t)(fn), 0, 0, 0, 0, 0, 0)
-
-err_t _promise_spawn_child(_promise_spawn_t fn,
-  uintptr a, uintptr b, uintptr c, uintptr d, uintptr e, uintptr f);
-#define _promise_spawn_child6(fn, a, b, c, d, e, f) _promise_spawn_child( \
-  (_promise_spawn_t)(fn), \
-  (uintptr)(a), (uintptr)(b), (uintptr)(c), (uintptr)(d), (uintptr)(e), (uintptr)(f))
-#define _promise_spawn_child5(fn, a, b, c, d, e) _promise_spawn_child( \
-  (_promise_spawn_t)(fn), \
-  (uintptr)(a), (uintptr)(b), (uintptr)(c), (uintptr)(d), (uintptr)(e), 0)
-#define _promise_spawn_child4(fn, a, b, c, d) _promise_spawn_child( \
-  (_promise_spawn_t)(fn), (uintptr)(a), (uintptr)(b), (uintptr)(c), (uintptr)(d), 0, 0)
-#define _promise_spawn_child3(fn, a, b, c) _promise_spawn_child( \
-  (_promise_spawn_t)(fn), (uintptr)(a), (uintptr)(b), (uintptr)(c), 0, 0, 0)
-#define _promise_spawn_child2(fn, a, b) _promise_spawn_child( \
-  (_promise_spawn_t)(fn), (uintptr)(a), (uintptr)(b), 0, 0, 0, 0)
-#define _promise_spawn_child1(fn, a) _promise_spawn_child( \
-  (_promise_spawn_t)(fn), (uintptr)(a), 0, 0, 0, 0, 0)
-#define _promise_spawn_child0(fn) _promise_spawn_child( \
-  (_promise_spawn_t)(fn), 0, 0, 0, 0, 0, 0)
 
 //—————————————————————————————————————————————————————————————————————————————————————
 // LEB128: Little Endian Base 128
