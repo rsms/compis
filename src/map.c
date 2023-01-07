@@ -120,8 +120,6 @@ static u64 fastrand() {
 
 
 static usize keyhash(const void *key, usize keysize, u64 seed) {
-  if ((keysize == sizeof(u64)) & IS_ALIGN2((uintptr)key, sizeof(u64)))
-    return wyhash64(*(u64*)key, seed);
   static const u8 secret8[4];
   static const u64 secret[4] = {
     (u64)(uintptr)&secret8[0], (u64)(uintptr)&secret8[1],
