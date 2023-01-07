@@ -23,7 +23,6 @@
   _( EXPR_PREFIXOP )\
   _( EXPR_POSTFIXOP )\
   _( EXPR_BINOP )\
-  _( EXPR_MUTVAL )\
   _( EXPR_ASSIGN )\
   _( EXPR_DEREF )\
   _( EXPR_IF )\
@@ -55,7 +54,6 @@
   _( TYPE_FUN )\
   _( TYPE_PTR )\
   _( TYPE_REF )\
-  _( TYPE_MUT )\
   _( TYPE_OPTIONAL )\
   _( TYPE_STRUCT )\
   _( TYPE_SLICE )\
@@ -143,8 +141,8 @@ typedef const char* sym_t;
 
 typedef u8 visibility_t;
 enum visibility {
-  VISIBILITY_PKG     = 0, // visible to all of same package
-  VISIBILITY_PRIVATE = 1, // visible only within same source file
+  VISIBILITY_PRIVATE = 0, // visible within same source file
+  VISIBILITY_PKG     = 1, // visible within same package
   VISIBILITY_PUBLIC  = 2, // visible to other packages
 };
 
@@ -177,15 +175,15 @@ enum nodekind {
 typedef u8 nodeflag_t;
 #define NF_RVALUE      ((nodeflag_t)1<< 0) // expression is used as an rvalue
 #define NF_OPTIONAL    ((nodeflag_t)1<< 1) // type-narrowed from optional
-#define NF_MUT         ((nodeflag_t)1<< 2) // value or type is mutable
-#define NF_CHECKED     ((nodeflag_t)1<< 3) // has been typecheck'ed (or doesn't need it)
-#define NF_UNKNOWN     ((nodeflag_t)1<< 4) // has or contains unresolved identifier
-#define NF_NAMEDPARAMS ((nodeflag_t)1<< 5) // function has named parameters
-#define NF_DROP        ((nodeflag_t)1<< 6) // type has drop() function
-#define NF_SUBOWNERS   ((nodeflag_t)1<< 7) // type has owning elements
+#define NF_CHECKED     ((nodeflag_t)1<< 2) // has been typecheck'ed (or doesn't need it)
+#define NF_UNKNOWN     ((nodeflag_t)1<< 3) // has or contains unresolved identifier
+#define NF_NAMEDPARAMS ((nodeflag_t)1<< 4) // function has named parameters
+#define NF_DROP        ((nodeflag_t)1<< 5) // type has drop() function
+#define NF_SUBOWNERS   ((nodeflag_t)1<< 6) // type has owning elements
+// #define NF_         ((nodeflag_t)1<< 7) //
 
 // NODEFLAGS_BUBBLE are flags that "bubble" (transfer) from children to parents
-#define NODEFLAGS_BUBBLE  (NF_UNKNOWN | NF_MUT)
+#define NODEFLAGS_BUBBLE  NF_UNKNOWN
 
 typedef struct {
   nodekind_t kind;
@@ -254,6 +252,7 @@ typedef struct {
   loc_t      paramsloc;    // location of "(" ...
   loc_t      paramsendloc; // location of ")"
   type_t*    result;
+  loc_t      resultloc;    // location of result
 } funtype_t;
 
 typedef struct {
@@ -264,11 +263,6 @@ typedef struct {
   node_t* nullable nsparent;
   bool             hasinit;     // true if at least one field has an initializer
 } structtype_t;
-
-typedef struct {
-  usertype_t;
-  type_t* elem;
-} muttype_t;
 
 typedef struct {
   usertype_t;
@@ -309,7 +303,6 @@ typedef struct { expr_t; u8* bytes; usize len; } strlit_t;
 typedef struct { expr_t; sym_t name; node_t* nullable ref; } idexpr_t;
 typedef struct { expr_t; op_t op; expr_t* expr; } unaryop_t;
 typedef struct { expr_t; op_t op; expr_t* left; expr_t* right; } binop_t;
-typedef struct { expr_t; expr_t* expr; } mutval_t;
 typedef struct { expr_t; expr_t* nullable value; } retexpr_t;
 
 typedef struct {
@@ -517,48 +510,58 @@ typedef struct {
   buf_t       headbuf;
   usize       headoffs;
   u32         headnest;
+  u32         headlineno;
+  u32         headinputid;
   u32         inputid;
-  err_t       err;
-  u32         anon_idgen;
-  bool        hasmain;    // has main.main
-  usize       indent;
   u32         lineno;
   u32         scopenest;
+  err_t       err;
+  u32         anon_idgen;
+  usize       indent;
   map_t       typedefmap;
   map_t       tmpmap;
   ptrarray_t  funqueue;   // [fun_t*] queue of (nested) functions awaiting build
 } cgen_t;
 
 typedef struct compiler {
-  memalloc_t     ma;          // memory allocator
-  buildmode_t    buildmode;   //
-  char*          triple;      // target triple
-  char*          buildroot;   // where all generated files go, e.g. "build"
-  char*          builddir;    // "{buildroot}/{mode}[-{triple}]", e.g. "build/debug"
-  char*          pkgbuilddir; // "{builddir}/{pkgname}.pkg"
-  char*          pkgname;     // name of package being compiled
-  ptrarray_t     cflags;      // char*[]
+  memalloc_t  ma;          // memory allocator
+  buildmode_t buildmode;   //
+  char*       buildroot;   // where all generated files go, e.g. "build"
+  char*       builddir;    // "{buildroot}/{mode}[-{triple}]", e.g. "build/debug"
+  char*       pkgbuilddir; // "{builddir}/{pkgname}.pkg"
+  char*       pkgname;     // name of package being compiled
+  ptrarray_t  cflags;      // char*[]
+
+  // diagnostics
   diaghandler_t  diaghandler; // called when errors are encountered
   void* nullable userdata;    // passed to diaghandler
-  locmap_t       locmap;      // maps input <—> loc_t
   u32            errcount;    // number of errors encountered
   diag_t         diag;        // most recent diagnostic message
-  buf_t          diagbuf;     // for diag.msg
-  map_t          typeidmap;
-  u32            intsize;     // byte size of "int" and "uint" types (register sized)
-  u32            ptrsize;     // byte size of pointer, e.g. 8 for i64
-  type_t*        addrtype;    // type for storing memory addresses, e.g. u64
-  type_t*        inttype;     // "int"
-  type_t*        uinttype;    // "uint"
-  slicetype_t    u8stype;     // "&[u8]"
-  aliastype_t    strtype;     // "str"
-  map_t          builtins;
-  bool           isbigendian;
-  bool           nomain;      // don't auto-generate C ABI "main" for main.main
-  bool           opt_printast;
-  bool           opt_printir;
-  bool           opt_genirdot;
-  bool           opt_genasm;  // write machine assembly .S source file to build dir
+  buf_t          diagbuf;     // for diag.msg (also used as tmpbuf)
+
+  // target info
+  char*       triple;      // target triple
+  u32         intsize;     // byte size of "int" and "uint" types (register sized)
+  u32         ptrsize;     // byte size of pointer, e.g. 8 for i64
+  type_t*     addrtype;    // type for storing memory addresses, e.g. u64
+  type_t*     inttype;     // "int"
+  type_t*     uinttype;    // "uint"
+  slicetype_t u8stype;     // "&[u8]"
+  aliastype_t strtype;     // "str"
+  map_t       builtins;
+  bool        isbigendian;
+
+  // configurable options
+  bool nomain;      // don't auto-generate C ABI "main" for main.main
+  bool opt_printast;
+  bool opt_printir;
+  bool opt_genirdot;
+  bool opt_genasm;  // write machine assembly .S source file to build dir
+
+  // data created during parsing & analysis
+  map_t           typeidmap;
+  locmap_t        locmap;    // maps input <—> loc_t
+  fun_t* nullable mainfun;   // main.main()
 } compiler_t;
 
 
@@ -687,9 +690,6 @@ inline static bool type_isbool(const type_t* nullable t) {
 inline static bool type_isowner(const type_t* t) { // true for "*T" and "?*T"
   t = type_isopt(t) ? ((opttype_t*)t)->elem : t;
   return ((t->flags & (NF_DROP | NF_SUBOWNERS)) != 0) | type_isptr(t);
-}
-inline static bool type_ismut(const type_t* t) {
-  return t->kind == TYPE_MUT;
 }
 inline static bool type_isunsigned(const type_t* t) {
   return TYPE_U8 <= t->kind && t->kind <= TYPE_UINT;

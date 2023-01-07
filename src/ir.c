@@ -1280,20 +1280,36 @@ static irval_t* vardef(ircons_t* c, local_t* n) {
 
 static irval_t* assign(ircons_t* c, binop_t* n) {
   irval_t* v = load_expr(c, n->right);
-  local_t* dst;
+  local_t* dst = NULL;
 
-  if (n->left->kind == EXPR_MEMBER) {
-    member_t* m = (member_t*)n->left;
-    assertnotnull(m->target);
-    assert(m->target->kind == EXPR_FIELD);
-    dst = (local_t*)m->target;
-  } else {
-    idexpr_t* id = (idexpr_t*)n->left;
-    assertf(id->kind == EXPR_ID, "%s", nodekind_name(id->kind));
-    assert(node_islocal(id->ref));
-    dst = (local_t*)id->ref;
+  expr_t* left = n->left;
+  while (left->kind == EXPR_DEREF) {
+    dlog("TODO assignment to deref");
+    left = ((unaryop_t*)left)->expr;
   }
 
+  switch (left->kind) {
+    case EXPR_MEMBER: {
+      member_t* m = (member_t*)left;
+      assertnotnull(m->target);
+      assert(m->target->kind == EXPR_FIELD);
+      dst = (local_t*)m->target;
+      break;
+    }
+    case EXPR_ID: {
+      idexpr_t* id = (idexpr_t*)left;
+      dst = (local_t*)id->ref;
+      // note: dst may be null, i.e in case of "_ = expr", "_" has no ref.
+      if (!dst)
+        return v;
+      break;
+    }
+    default:
+      assertf(0, "unexpected %s", nodekind_name(left->kind));
+      return v;
+  }
+
+  assert(node_islocal((node_t*)dst));
   sym_t varname = dst->name;
   v->type = dst->type; // needed in case dst is subtype of v, e.g. "dst ?T <= v T"
 

@@ -207,10 +207,9 @@ static void flags(RPARAMS, const node_t* n) {
   // don't include NF_UNKNOWN for TYPE_UNKNOWN (always and obviously true)
   flags &= ~(NF_UNKNOWN * (nodeflag_t)(n->kind == TYPE_UNKNOWN));
 
-  if (flags & (NF_RVALUE | NF_MUT | NF_OPTIONAL | NF_UNKNOWN)) {
+  if (flags & (NF_RVALUE | NF_OPTIONAL | NF_UNKNOWN)) {
     PRINT(" {");
     if (flags & NF_RVALUE)   CHAR('r');
-    if (flags & NF_MUT)      CHAR('m');
     if (flags & NF_OPTIONAL) CHAR('o');
     if (flags & NF_UNKNOWN)  CHAR('u');
     CHAR('}');
@@ -252,10 +251,6 @@ static void repr_type(RPARAMS, const type_t* t) {
       PRINT(" mut");
     CHAR(' ');
     repr_type(RARGSFL(fl | REPRFLAG_HEAD), ((reftype_t*)t)->elem);
-    break;
-  case TYPE_MUT:
-    CHAR(' ');
-    repr_type(RARGSFL(fl | REPRFLAG_HEAD), ((muttype_t*)t)->elem);
     break;
   case TYPE_OPTIONAL:
     CHAR(' ');
@@ -463,10 +458,6 @@ static void repr(RPARAMS, const node_t* nullable n) {
     CHAR(' '), repr(RARGS, (node_t*)((unaryop_t*)n)->expr);
     break;
 
-  case EXPR_MUTVAL:
-    CHAR(' '), repr(RARGS, (node_t*)((mutval_t*)n)->expr);
-    break;
-
   case EXPR_ASSIGN:
   case EXPR_BINOP: {
     binop_t* op = (binop_t*)n;
@@ -526,6 +517,13 @@ origin_t node_origin(const locmap_t* lm, const node_t* n) {
   origin_t r = origin_make(lm, n->loc);
   switch (n->kind) {
 
+  case STMT_TYPEDEF: {
+    typedef_t* td = (typedef_t*)n;
+    if (loc_line(td->type.loc))
+      return origin_make(lm, td->type.loc);
+    return r;
+  }
+
   case EXPR_INTLIT:
     if (r.width == 0)
       r.width = u64log10(((intlit_t*)n)->intval); // FIXME e.g. 0xbeef
@@ -535,20 +533,16 @@ origin_t node_origin(const locmap_t* lm, const node_t* n) {
     r.width = strlen(((idexpr_t*)n)->name);
     break;
 
-  case TYPE_UNRESOLVED:
-    r.width = strlen(((unresolvedtype_t*)n)->name);
-    break;
-
   case EXPR_DEREF:
     return origin_union(r, node_origin(lm, (node_t*)((unaryop_t*)n)->expr));
 
   case EXPR_LET:
     return origin_make(lm, loc_union(((local_t*)n)->loc, ((local_t*)n)->nameloc));
 
-  case STMT_TYPEDEF: {
-    typedef_t* td = (typedef_t*)n;
-    if (loc_line(td->type.loc))
-      return origin_make(lm, td->type.loc);
+  case EXPR_FUN: {
+    fun_t* fn = (fun_t*)n;
+    if (loc_line(fn->nameloc))
+      r = origin_union(r, origin_make(lm, fn->nameloc));
     return r;
   }
 
@@ -590,11 +584,9 @@ origin_t node_origin(const locmap_t* lm, const node_t* n) {
     break;
   }
 
-  case TYPE_MUT: {
-    const muttype_t* t = (muttype_t*)n;
-    r = origin_union(r, node_origin(lm, (node_t*)t->elem));
+  case TYPE_UNRESOLVED:
+    r.width = strlen(((unresolvedtype_t*)n)->name);
     break;
-  }
 
   }
   return r;

@@ -16,7 +16,9 @@
 #endif
 
 
-static const char* fmtnodex(typecheck_t* a, u32 bufindex, const void* nullable n, u32 depth) {
+static const char* fmtnodex(
+  typecheck_t* a, u32 bufindex, const void* nullable n, u32 depth)
+{
   buf_t* buf = &a->p->tmpbuf[bufindex];
   buf_clear(buf);
   node_fmt(buf, n, depth);
@@ -164,10 +166,10 @@ bool type_convertible(const type_t* dst, const type_t* src) {
   dst = unwrap_alias_const(assertnotnull(dst));
   src = unwrap_alias_const(assertnotnull(src));
 
-  if (dst->kind == TYPE_MUT)
-    dst = ((muttype_t*)dst)->elem;
-  if (src->kind == TYPE_MUT)
-    src = ((muttype_t*)src)->elem;
+  // if (dst->kind == TYPE_MUT)
+  //   dst = ((muttype_t*)dst)->elem;
+  // if (src->kind == TYPE_MUT)
+  //   src = ((muttype_t*)src)->elem;
 
   if (dst == src || (type_isprim(dst) && type_isprim(src)))
     return true;
@@ -182,14 +184,14 @@ bool _type_compat(
   dst = unwrap_alias_const(assertnotnull(dst));
   src = unwrap_alias_const(assertnotnull(src));
 
-  if (coerce) {
-    // T <=> &T
-    // &T <=> T
-    if (dst->kind == TYPE_MUT)
-      dst = ((muttype_t*)dst)->elem;
-    if (src->kind == TYPE_MUT)
-      src = ((muttype_t*)src)->elem;
-  }
+  // if (coerce) {
+  //   // T <=> &T
+  //   // &T <=> T
+  //   if (dst->kind == TYPE_MUT)
+  //     dst = ((muttype_t*)dst)->elem;
+  //   if (src->kind == TYPE_MUT)
+  //     src = ((muttype_t*)src)->elem;
+  // }
 
   if (dst == src)
     return true;
@@ -209,11 +211,6 @@ bool _type_compat(
     case TYPE_U32:
     case TYPE_U64:
       return dst == src;
-    case TYPE_MUT:
-      // note: branch only taken when coerce=false
-      return (
-        (src->kind == TYPE_MUT) &&
-        type_compat(c, ((muttype_t*)dst)->elem, ((muttype_t*)src)->elem, coerce) );
     case TYPE_PTR:
       // *T <= *T
       // &T <= *T
@@ -661,8 +658,8 @@ static void local(typecheck_t* a, local_t* n) {
   if (n->isthis)
     this_type(a, n);
 
-  // field, param and var are mutable (but "let" isn't; see local_var)
-  n->flags |= NF_MUT;
+  // // field, param and var are mutable (but "let" isn't; see local_var)
+  // n->flags |= NF_MUT;
 
   if UNLIKELY(n->type == type_void || n->type == type_unknown)
     error(a, n, "cannot define %s of type void", fmtkind(n));
@@ -672,7 +669,7 @@ static void local(typecheck_t* a, local_t* n) {
 static void local_var(typecheck_t* a, local_t* n) {
   assert(nodekind_isvar(n->kind));
   local(a, n);
-  n->flags = COND_FLAG(n->flags, NF_MUT, n->kind == EXPR_VAR);
+  // n->flags = COND_FLAG(n->flags, NF_MUT, n->kind == EXPR_VAR);
   define(a, n->name, n);
 }
 
@@ -692,12 +689,6 @@ static void structtype(typecheck_t* a, structtype_t* st) {
     local_t* f = st->fields.v[i];
     local(a, f);
     assertnotnull(f->type);
-
-    if (type_ismut(f->type)) {
-      error(a, f->type, "struct fields cannot hold mutable values");
-      // help: can use rawptr in unsafe mode
-      break;
-    }
 
     if (type_isowner(f->type)) {
       // note: this is optimistic; types aren't marked "DROP" until a
@@ -770,6 +761,30 @@ static void funtype(typecheck_t* a, funtype_t** np) {
 // }
 
 
+static void main_fun(typecheck_t* a, fun_t* n) {
+  a->compiler->mainfun = n;
+
+  funtype_t* ft = (funtype_t*)n->type;
+
+  if UNLIKELY(ft->result != type_void) {
+    error(a, ft->resultloc, "special \"main\" function should not return a result");
+    if (loc_line(ft->resultloc))
+      help(a, ft->resultloc, "remove return type or replace with 'void'");
+    return;
+  }
+
+  if UNLIKELY(n->visibility != VISIBILITY_PUBLIC) {
+    error(a, n, "special \"main\" function is not public");
+    if (loc_line(n->loc)) {
+      loc_t helploc = loc_with_width(n->loc, 0);
+      if (loc_col(helploc) > 1)
+        loc_set_col(&helploc, loc_col(helploc) - 1);
+      help(a, helploc, "add 'pub' in front of 'fun'");
+    }
+  }
+}
+
+
 static void fun(typecheck_t* a, fun_t* n) {
   fun_t* outer_fun = a->fun;
   a->fun = n;
@@ -782,8 +797,9 @@ static void fun(typecheck_t* a, fun_t* n) {
   } else {
     // plain function
     n->nsparent = a->nspath.v[a->nspath.len - 1];
-    if (n->name)
+    if (n->name) {
       define(a, n->name, n);
+    }
   }
 
   // check function type first
@@ -855,6 +871,15 @@ static void fun(typecheck_t* a, fun_t* n) {
       if (origin) {
         error(a, origin, "unexpected result type %s, function returns %s", got, expect);
       }
+    }
+
+    // is this the "main.main" function?
+    if (!n->recvt &&
+        n->name == sym_main &&
+        assertnotnull(n->nsparent)->kind == NODE_UNIT &&
+        strcmp(a->compiler->pkgname, "main") == 0 )
+    {
+      main_fun(a, n);
     }
   }
 
@@ -936,6 +961,10 @@ static void idexpr(typecheck_t* a, idexpr_t* n) {
       error(a, n, "unknown identifier \"%s\"", n->name);
       return;
     }
+    // if the target is a function, mark that function as being used across
+    // translations units of the same package
+    if (n->ref->kind == EXPR_FUN && ((fun_t*)n->ref)->visibility < VISIBILITY_PKG)
+      ((fun_t*)n->ref)->visibility = VISIBILITY_PKG;
   }
 
   expr(a, n->ref);
@@ -1041,11 +1070,8 @@ err:
 }
 
 
-static void binop1(typecheck_t* a, binop_t* n, bool isassign) {
-  if (!isassign) {
-    // note: being assign to doesn't count as being used
-    use(n->left);
-  }
+static void binop1(typecheck_t* a, binop_t* n) {
+  // note: no use(n->left) since being assign to doesn't count as being used
   expr(a, n->left);
 
   typectx_push(a, n->left->type);
@@ -1076,53 +1102,40 @@ static void binop1(typecheck_t* a, binop_t* n, bool isassign) {
 
 
 static void binop(typecheck_t* a, binop_t* n) {
-  binop1(a, n, false);
+  use(n->left);
+  binop1(a, n);
 }
 
 
 static void assign(typecheck_t* a, binop_t* n) {
-  binop1(a, n, true);
-  check_assign(a, n->left);
-}
-
-
-static bool ismut(const void* node) {
-  const node_t* n = assertnotnull(node);
-  if (n->kind == EXPR_ID && ((idexpr_t*)n)->ref)
-    n = ((idexpr_t*)n)->ref;
-  return n->flags & NF_MUT;
-}
-
-
-static void mutval(typecheck_t* a, mutval_t* n) {
-  expr(a, n->expr);
-  use(n->expr);
-
-  if UNLIKELY(n->expr->type->kind == TYPE_MUT)
-    return error(a, n, "double mutation");
-
-  type_t* elem = n->expr->type;
-  muttype_t* t = mknode(a, muttype_t, TYPE_MUT);
-  t->size = elem->size;
-  t->align = elem->align;
-  t->elem = elem;
-
-  n->type = (type_t*)t;
-
-  // make sure n.expr is mutable
-  if UNLIKELY(!ismut(n->expr))
-    error(a, n, "cannot mutate immutable %s", fmtkind(n->expr));
+  if (n->left->kind == EXPR_ID && ((idexpr_t*)n->left)->name == sym__) {
+    // "_ = expr"
+    typectx_push(a, n->left->type);
+    use(n->right);
+    expr(a, n->right);
+    typectx_pop(a);
+    n->type = n->right->type;
+  } else {
+    binop1(a, n);
+    check_assign(a, n->left);
+  }
 }
 
 
 static void unaryop(typecheck_t* a, unaryop_t* n) {
   expr(a, n->expr);
-  n->type = n->expr->type;
+
+  if (n->type->kind == TYPE_UNRESOLVED || n->type == type_unknown)
+    n->type = n->expr->type;
+
+  // TODO: create dedicated EXPR_REF refexpr_t for "&expr"
+  //       since the semantics are different from e.g. "!expr"
+
   switch (n->op) {
     case OP_AND:
-      // &x
-      n->flags |= NF_MUT;
-      // n->type = (type_t*)mkreftype(a, n->type, /*ismut*/false);
+      assert(n->type->kind == TYPE_REF);
+      // if (n->type->kind != TYPE_REF)
+      //   n->type = (type_t*)mkreftype(a, n->type, /*ismut*/false);
       break;
     case OP_INC:
     case OP_DEC:
@@ -1665,14 +1678,14 @@ static void call_fun(typecheck_t* a, call_t* call, funtype_t* ft) {
       const char* got = fmtnode(a, 0, arg->type);
       const char* expect = fmtnode(a, 1, param->type);
       error(a, arg, "passing value of type %s to parameter of type %s", got, expect);
-      if (param->type->kind == TYPE_MUT &&
-          arg->type->kind != TYPE_MUT &&
-          (arg->kind == EXPR_ID || arg->kind == EXPR_MEMBER) &&
-          loc_line(arg->loc))
-      {
-        const char* name = fmtnode(a, 0, arg);
-        help(a, arg, "mark %s as mutable: &%s", name, name);
-      }
+      // if (param->type->kind == TYPE_MUT &&
+      //     arg->type->kind != TYPE_MUT &&
+      //     (arg->kind == EXPR_ID || arg->kind == EXPR_MEMBER) &&
+      //     loc_line(arg->loc))
+      // {
+      //   const char* name = fmtnode(a, 0, arg);
+      //   help(a, arg, "mark %s as mutable: &%s", name, name);
+      // }
     }
   }
 
@@ -1830,7 +1843,6 @@ static void exprp(typecheck_t* a, expr_t** np) {
   case EXPR_TYPECONS:  return typecons(a, (typecons_t**)np);
   case EXPR_MEMBER:    return member(a, (member_t*)n);
   case EXPR_DEREF:     return deref(a, (unaryop_t*)n);
-  case EXPR_MUTVAL:    return mutval(a, (mutval_t*)n);
   case EXPR_INTLIT:    return intlit(a, (intlit_t*)n);
   case EXPR_FLOATLIT:  return floatlit(a, (floatlit_t*)n);
   case EXPR_STRLIT:    return strlit(a, (strlit_t*)n);

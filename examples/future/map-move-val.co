@@ -1,0 +1,164 @@
+type MyVal {
+  v int
+}
+
+pub type MyMap {
+  len     uint
+  entries [Entry]
+
+  fun create(lenhint uint) MyMap
+  fun get(this, key str) ?MyVal
+  fun set(mut this, key str, MyVal) bool
+  fun del(mut this, key str) bool
+  fun clear(mut this)
+}
+
+pub fun main() int {
+  var anne = MyVal(1)
+  var cat = MyVal(2)
+  var dan = MyVal(3)
+  let dan2 = dan.copy()
+
+  var s = MyMap.create(4)
+  s.set("anne", anne)
+  s.set("cat", cat)
+  s.set("dan", dan)
+
+  // let x = cat  // error: cat lost ownership
+  // let y = dan2 // ok, dan was copied to dan2
+
+  assert(if (let v = s.get("cat")) v.value == 2)
+  assert(s.del("cat"))
+  assert(!s.get("cat"))
+  return 0
+}
+
+// ——— implementation ———
+
+type Entry union {
+  unused, tombstone
+  entry(key str, value MyVal)
+}
+/*C: typedef struct {
+  u8 kind; // 0=unused, 1=tombstone, 2=entry
+  union {
+    struct { slice_u8 key; MyVal value; } entry;
+  } u;
+} Entry; */
+
+fun MyMap.get(this, key str) ?MyVal {
+  if let i = .lookup(key) {
+    .entries[index].value
+  }
+}
+
+fun MyMap.del(mut this, key str) bool {
+  if let index = .lookup(key) {
+    .entries[index].key = &TOMBSTONE
+    .entries[index].value = MyVal()
+    true
+  }
+}
+
+fun MyMap.lookup(this, key str) ?uint {
+  var index = key.hash() & (.entries.cap() - 1)
+  for {
+    switch .entries[index] {
+      unused: break // key not found in map
+      tombstone:    // skip
+      entry(k str, _ MyVal): if k.equal(key) return index
+    }
+    index++
+    if index == .entries.cap() {
+      index = 0
+    }
+  }
+  nil
+}
+
+fun MyMap.add(mut this, key str, value MyVal) bool {
+  let growlen = .entries.cap() - (.entries.cap() >> LOAD_FACTOR)
+  if .len >= growlen && !.grow() {
+    return false
+  }
+  var index = key.hash() & (.entries.cap() - 1)
+  for {
+    switch .entries[index] {
+      unused:       break                 // use unused
+      tombstone:    break                 // recycle
+      entry(k str): if k.equal(key) break // use if equivalent
+    }
+    // collision; linear probing
+    index++
+    if index == .entries.cap() {
+      index = 0
+    }
+  }
+  .entries[index] = Entry.entry(key, value)
+  true
+}
+
+fun MyMap.create(lenhint uint) MyMap {
+  let cap = {
+    // +1: must always have one free slot
+    // 0.25: grow when 25% percent full
+    let f = f64(lenhint + 1)*0.25 + 0.5;
+    if f >= f64(UINT_MAX) {
+      1024
+    } else {
+      ceil_pow2(lenhint + 1 + uint(f))
+    }
+  }
+  let entries ?[Entry] = memalloc(Entry, cap)
+  if entries {
+    MyMap(entries)
+  } else {
+    MyMap()
+  }
+}
+
+fun MyMap.grow(mut this) bool {
+  panic("TODO")
+  false
+}
+
+fun MyMap.clear(mut this) {
+  // clear all tombstones
+  .entries.fill(Entry())
+  .len = 0
+}
+
+// —————————————————————————————————————————————————————————————————————
+// helpers
+
+// floor_pow2 rounds down to nearest power of two
+fun floor_pow2[T](x T) T {
+  if x <= 1 return 1
+  T(1) << ilog2(x)
+}
+
+// ceil_pow2 rounds up to nearest power of two
+fun ceil_pow2[T](x T) T {
+  if x <= 1 return 1
+  let v = T(1) << ilog2( (x - T(x == 1)) - 1 )
+  ((v - 1) << 1) + T(2)
+}
+
+// calculates the log of base 2, rounding down
+fun ilog2[T](x T) T {
+  (find_last_set_bit(x) - 1) * T(!!x)
+}
+
+// finds the Find Last Set bit (last = most-significant)
+fun find_last_set_bit[T](x T) uint {
+  if x == 0 return 0
+  sizeof(T)*8 - count_leading_zero_bits(x)
+}
+
+// counts leading zeroes starting at the most significant bit
+fun count_leading_zero_bits[T](x T) uint switch T {
+  i8|u8:   __builtin_clz32(x) - (32 - 8)
+  i16|u16: __builtin_clz32(x) - (32 - 16)
+  i32|u32: __builtin_clz32(x)
+  i64|u64: __builtin_clz64(x)
+}

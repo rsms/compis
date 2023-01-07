@@ -330,6 +330,7 @@ static char** nullable makeargv(
 static err_t cc_to_asm_main(compiler_t* c, const char* cfile, const char* asmfile) {
   int argc;
   char** argv = makeargv(c, &argc, "clang", c->cflags,
+    "-w", // don't produce warnings (already reported by cc_to_obj_main)
     "-S", "-xc", cfile,
     "-o", asmfile,
     NULL);
@@ -348,11 +349,17 @@ static err_t cc_to_obj_main(compiler_t* c, const char* cfile, const char* ofile)
 
   int argc;
   char** argv = makeargv(c, &argc, "clang", c->cflags,
-    "-Wall",
-    "-Wcovered-switch-default",
-    "-Werror=implicit-function-declaration",
-    "-Werror=incompatible-pointer-types",
-    "-Werror=format-insufficient-args",
+    // enable all warnings in debug builds, disable them in release builds
+    #if DEBUG
+      "-Wall",
+      "-Wcovered-switch-default",
+      "-Werror=implicit-function-declaration",
+      "-Werror=incompatible-pointer-types",
+      "-Werror=format-insufficient-args",
+      "-Wno-unused-value",
+    #else
+      "-w",
+    #endif
     "-flto=thin",
     "-c", "-xc", cfile,
     "-o", ofile,

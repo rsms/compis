@@ -369,10 +369,6 @@ static void fmt(abuf_t* s, const node_t* nullable n, u32 indent, u32 maxdepth) {
     fmt(s, (node_t*)pt->elem, indent, maxdepth);
     break;
   }
-  case TYPE_MUT:
-    abuf_c(s, '&');
-    fmt(s, (node_t*)((muttype_t*)n)->elem, indent, maxdepth);
-    break;
   case TYPE_OPTIONAL: {
     abuf_c(s, '?');
     fmt(s, (node_t*)((const opttype_t*)n)->elem, indent, maxdepth);

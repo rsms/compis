@@ -32,12 +32,15 @@ typedef double             f64;
 #define false 0
 #define bool _Bool
 
-#define _CO_PUBLIC  __attribute__((__visibility__("default")))
-#define _CO_PRIVATE __attribute__((__visibility__("internal")))
-
 #define _CO_NOALIAS __restrict__
+#define _CO_UNUSED  __attribute__((__unused__))
 
-__attribute__((noreturn)) void abort(void);
+#define _CO_VIS_PRI __attribute__((__unused__))
+#define _CO_VIS_PKG __attribute__((__visibility__("internal")))
+#define _CO_VIS_PUB __attribute__((__visibility__("default")))
+
+__attribute__((__noreturn__)) void abort(void);
+
 #define __nullcheck(x) ({ \
   __typeof__(x) x__ = (x); \
   (x__ == NULL ? abort() : ((void)0)), x__; \

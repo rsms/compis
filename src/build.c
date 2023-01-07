@@ -107,14 +107,14 @@ static input_t* open_input(memalloc_t ma, const char* filename) {
 }
 
 
-static char* nullable path_join(memalloc_t ma, slice_t base, slice_t extraname) {
-  char* s = mem_strdup(ma, base, 1 + extraname.len);
+static char* nullable path_join(memalloc_t ma, slice_t left, slice_t right) {
+  char* s = mem_strdup(ma, left, 1 + right.len);
   if (!s)
     return NULL;
-  char* p = s + base.len;
+  char* p = s + left.len;
   *p++ = PATH_SEPARATOR;
-  memcpy(p, extraname.p, extraname.len);
-  p[extraname.len] = 0;
+  memcpy(p, right.p, right.len);
+  p[right.len] = 0;
   return s;
 }
 

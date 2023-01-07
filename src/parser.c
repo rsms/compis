@@ -796,18 +796,12 @@ static type_t* type_ref1(parser_t* p, bool ismut) {
   return (type_t*)t;
 }
 
+// "&" type
 static type_t* type_ref(parser_t* p) {
-  // return type_ref1(p, /*ismut*/false);
-  muttype_t* t = mknode(p, muttype_t, TYPE_MUT);
-  // t->size = p->scanner.compiler->ptrsize;
-  // t->align = t->size;
-  next(p);
-  t->flags |= NF_MUT;
-  t->elem = type(p, PREC_UNARY_PREFIX);
-  bubble_flags(t, t->elem);
-  return (type_t*)t;
+  return type_ref1(p, /*ismut*/false);
 }
 
+// "mut" "&" type
 static type_t* type_mut(parser_t* p) {
   next(p);
   if UNLIKELY(currtok(p) != TAND) {
@@ -1342,9 +1336,9 @@ static expr_t* expr_deref(parser_t* p, const parselet_t* pl, nodeflag_t fl) {
 
 
 // mut_expr|ref_expr = "mut"? "&" expr
-static expr_t* expr_ref1(parser_t* p, const parselet_t* pl, nodeflag_t fl, bool ismut) {
+static expr_t* expr_ref1(parser_t* p, nodeflag_t fl, bool ismut) {
   unaryop_t* n = mkexpr(p, unaryop_t, EXPR_PREFIXOP, fl);
-  n->op = pl->op;
+  n->op = OP_AND;
   next(p);
   n->expr = expr(p, PREC_UNARY_PREFIX, fl | NF_RVALUE);
   bubble_flags(n, n->expr);
@@ -1371,27 +1365,19 @@ static expr_t* expr_ref1(parser_t* p, const parselet_t* pl, nodeflag_t fl, bool 
   return (expr_t*)n;
 }
 
-
 // ref_expr = "&" expr
 static expr_t* expr_ref(parser_t* p, const parselet_t* pl, nodeflag_t fl) {
-  // return expr_ref1(p, pl, fl, /*ismut*/false);
-  mutval_t* n = mkexpr(p, mutval_t, EXPR_MUTVAL, fl);
-  next(p);
-  n->flags |= NF_MUT;
-  n->expr = expr(p, PREC_UNARY_PREFIX, fl | NF_RVALUE);
-  bubble_flags(n, n->expr);
-  return (expr_t*)n;
+  return expr_ref1(p, fl, /*ismut*/false);
 }
 
-
-// mut_expr = "mut" ref_expr
+// mut_expr = "mut" "&" expr
 static expr_t* expr_mut(parser_t* p, const parselet_t* pl, nodeflag_t fl) {
   next(p);
   if UNLIKELY(currtok(p) != TAND) {
     unexpected(p, "expecting '&'");
     return mkbad(p);
   }
-  return expr_ref1(p, pl, fl, /*ismut*/true);
+  return expr_ref1(p, fl, /*ismut*/true);
 }
 
 
@@ -1756,7 +1742,10 @@ static funtype_t* funtype(parser_t* p, loc_t loc, type_t* nullable recvt) {
   // result type
   // no result type implies "void", e.g. "fun foo() {}" => "fun foo() void {}"
   if (currtok(p) != TLBRACE) {
+    ft->resultloc = currloc(p);
     ft->result = type(p, PREC_MEMBER);
+    if (loc_line(ft->result->loc))
+      ft->resultloc = ft->result->loc;
     bubble_flags(ft, ft->result);
   }
 

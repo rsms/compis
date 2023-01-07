@@ -4,7 +4,18 @@
 #include "abuf.h"
 
 
+#define TRACE_CGEN
+
+
 typedef struct { usize v[2]; } sizetuple_t;
+
+
+#if defined(TRACE_CGEN) && DEBUG
+  #define trace(fmt, va...) _dlog(6, "cgen", __FILE__, __LINE__, fmt, ##va)
+#else
+  #undef TRACE_CGEN
+  #define trace(fmt, va...) ((void)0)
+#endif
 
 
 bool cgen_init(cgen_t* g, compiler_t* c, memalloc_t out_ma) {
@@ -55,6 +66,14 @@ static void _error(cgen_t* g, origin_t origin, const char* fmt, ...) {
   report_diagv(g->compiler, origin, DIAG_ERR, fmt, ap);
   va_end(ap);
   seterr(g, ErrInvalid);
+}
+
+
+static const char* fmtnode(cgen_t* g, const void* nullable n) {
+  buf_t* buf = &g->compiler->diagbuf;
+  buf_clear(buf);
+  node_fmt(buf, n, /*depth*/0);
+  return buf->chars;
 }
 
 
@@ -269,13 +288,11 @@ static sym_t intern_typedef(
     return *vp;
   }
 
-  dlog("%*.s%s %s %s",
-    (int)g->headnest*2, "", __FUNCTION__, nodekind_name(t->kind),
-    t->kind == TYPE_STRUCT && ((structtype_t*)t)->name ? ((structtype_t*)t)->name : "");
+  trace("%*.s%s %s %s",
+    (int)g->headnest*2, "", __FUNCTION__, nodekind_name(t->kind), fmtnode(g, t));
 
-  // save & reset lineno
-  u32 lineno = g->lineno;
-  g->lineno = 0;
+  // saved values
+  u32 lineno, inputid, indent;
 
   // save & replace outbuf
   buf_t outbuf = g->outbuf;
@@ -284,17 +301,21 @@ static sym_t intern_typedef(
     g->outbuf = buf_make(g->ma);
   } else {
     g->outbuf = g->headbuf;
+    indent = g->indent;
+    lineno = g->lineno;
+    inputid = g->inputid;
+    g->indent = 0;
+    g->lineno = g->headlineno;
+    g->inputid = g->headinputid;
   }
 
   g->headnest++;
 
   // generate, appending to g->outbuf
-  if (startloc(g, t->loc))
-    CHAR('\n');
+  startline(g, t->loc);
   sym_t name = gentypename(g, t);
   *vp = name;
   gentypedef(g, t, name);
-  PRINT("\n");
 
   g->headnest--;
 
@@ -308,10 +329,14 @@ static sym_t intern_typedef(
     buf_dispose(&buf);
   } else {
     g->headbuf = buf;
+    g->headlineno = g->lineno;
+    g->headinputid = g->inputid;
+    g->lineno = lineno;
+    g->inputid = inputid;
+    g->indent = indent;
   }
 
   g->headoffs = buf.len;
-  g->lineno = lineno;
 
   return name;
 }
@@ -338,7 +363,6 @@ static void funtype(cgen_t* g, const funtype_t* t, const char* nullable name) {
       type(g, param->type);
       if (param->name && param->name != sym__) {
         CHAR(' ');
-        dlog(">> %s", param->name);
         PRINT(param->name);
       }
     }
@@ -473,22 +497,25 @@ static void arraytype(cgen_t* g, const arraytype_t* t) {
 }
 
 
+static bool reftype_byvalue(cgen_t* g, const reftype_t* t) {
+  return (
+    (t->elem->kind == TYPE_SLICE) |
+    (t->elem->kind == TYPE_ARRAY) |
+    (!t->ismut & (t->size <= g->compiler->ptrsize*2))
+  );
+}
+
+
 static void reftype(cgen_t* g, const reftype_t* t) {
   if (!t->ismut)
     PRINT("const ");
   type(g, t->elem);
-  if (t->elem->kind != TYPE_SLICE && t->elem->kind != TYPE_ARRAY)
+  if (!reftype_byvalue(g, t))
     CHAR('*');
 }
 
 
 static void ptrtype(cgen_t* g, const ptrtype_t* t) {
-  type(g, t->elem);
-  CHAR('*');
-}
-
-
-static void muttype(cgen_t* g, const muttype_t* t) {
   type(g, t->elem);
   CHAR('*');
 }
@@ -575,7 +602,6 @@ static void type(cgen_t* g, const type_t* t) {
   case TYPE_FUN:      return funtype(g, (const funtype_t*)t, NULL);
   case TYPE_PTR:      return ptrtype(g, (const ptrtype_t*)t);
   case TYPE_REF:      return reftype(g, (const reftype_t*)t);
-  case TYPE_MUT:      return muttype(g, (const muttype_t*)t);
   case TYPE_OPTIONAL: return opttype(g, (const opttype_t*)t);
   case TYPE_STRUCT:   return structtype(g, (const structtype_t*)t);
   case TYPE_ALIAS:    return aliastype(g, (const aliastype_t*)t);
@@ -628,6 +654,7 @@ static usize fmt_tmp_id(char* buf, usize bufcap, const void* n) {
 //   usize len = fmt_tmp_id(tmp, sizeof(tmp), n);
 //   buf_append(&g->outbuf, tmp, len);
 // }
+
 
 
 //—————————————————————————————————————————————————————————————————————————————————————
@@ -1065,6 +1092,16 @@ static void id(cgen_t* g, sym_t nullable name) {
 }
 
 
+static bool noalias(const type_t* t) {
+  // PTR: pointers are always unique (one owner)
+  // REF: there can only be one mutable ref at any given time
+  return (
+    (t->kind == TYPE_PTR) ||
+    (t->kind == TYPE_REF && ((reftype_t*)t)->ismut)
+  );
+}
+
+
 static void fun_name(cgen_t* g, const fun_t* fun) {
   // compiler_encode_name(g->compiler, &g->outbuf, (node_t*)fun);
   // mangle(g->compiler, &g->outbuf, (node_t*)fun);
@@ -1076,9 +1113,9 @@ static void fun_proto(cgen_t* g, const fun_t* fun) {
   funtype_t* ft = (funtype_t*)fun->type;
 
   switch (fun->visibility) {
-    case VISIBILITY_PKG:     PRINT("_CO_PRIVATE "); break;
-    case VISIBILITY_PRIVATE: PRINT("_CO_PRIVATE static "); break;
-    case VISIBILITY_PUBLIC:  PRINT("_CO_PUBLIC "); break;
+    case VISIBILITY_PRIVATE: PRINT("_CO_VIS_PRI static "); break;
+    case VISIBILITY_PKG:     PRINT("_CO_VIS_PKG "); break;
+    case VISIBILITY_PUBLIC:  PRINT("_CO_VIS_PUB "); break;
   }
 
   type(g, ft->result);
@@ -1093,7 +1130,7 @@ static void fun_proto(cgen_t* g, const fun_t* fun) {
       // if (!type_isprim(param->type) && !param->ismut)
       //   PRINT("const ");
       type(g, param->type);
-      if (param->type->kind == TYPE_MUT)
+      if (noalias(param->type))
         PRINT(" _CO_NOALIAS");
       if (param->name && param->name != sym__) {
         CHAR(' ');
@@ -1143,14 +1180,6 @@ static void fun(cgen_t* g, const fun_t* fun) {
 
   if (!fun->body)
     return;
-
-  // is this the "main.main" function?
-  if (!g->hasmain && !fun->recvt && fun->name == sym_main &&
-      fun->nsparent && fun->nsparent->kind == NODE_UNIT &&
-      strcmp(g->compiler->pkgname, "main") == 0 )
-  {
-    g->hasmain = true;
-  }
 
   funtype_t* ft = (funtype_t*)fun->type;
 
@@ -1544,17 +1573,19 @@ static void expr_as_value_of_type(cgen_t* g, const expr_t* n, const type_t* t) {
 
 
 static void assign(cgen_t* g, const binop_t* n) {
+  if UNLIKELY(n->left->kind == EXPR_ID && ((idexpr_t*)n->left)->name == sym__) {
+    // "_ = expr" => "expr"  if expr may have side effects or building in debug mode
+    // "_ = expr" => ""      if expr does not have side effects
+    // note: this may cause a warning to be printed by cc (in DEBUG builds only)
+    if (g->compiler->buildmode == BUILDMODE_DEBUG || !expr_no_side_effects(n->right))
+      expr_as_value(g, n->right);
+    return;
+  }
   expr_as_value(g, n->left);
   CHAR(' ');
   PRINT(operator(n->op));
   CHAR(' ');
   expr_as_value_of_type(g, n->right, n->type);
-}
-
-
-static void mutval(cgen_t* g, const mutval_t* n) {
-  CHAR('&');
-  expr(g, n->expr);
 }
 
 
@@ -1573,16 +1604,26 @@ static void postfixop(cgen_t* g, const unaryop_t* n) {
 
 
 static void idexpr(cgen_t* g, const idexpr_t* n) {
-  if (n->type->kind == TYPE_MUT)
-    CHAR('*');
+  // if (n->type->kind == TYPE_REF || n->type->kind == TYPE_PTR)
+  //   CHAR('*');
   id(g, n->name);
 }
 
 
 static void param(cgen_t* g, const local_t* n) {
-  if (n->type->kind == TYPE_MUT)
-    CHAR('*');
+  // if (n->type->kind == TYPE_REF || n->type->kind == TYPE_PTR)
+  //   CHAR('*');
   id(g, n->name);
+}
+
+
+static void member_op(cgen_t* g, const type_t* recvt) {
+  nodekind_t k = recvt->kind;
+  if (k == TYPE_PTR || (k == TYPE_REF && !reftype_byvalue(g, (reftype_t*)recvt))) {
+    PRINT("->");
+  } else {
+    CHAR('.');
+  }
 }
 
 
@@ -1599,7 +1640,7 @@ static void member(cgen_t* g, const member_t* n) {
   if (n->recv->type->kind == TYPE_OPTIONAL) {
     panic("TODO optional access!");
   }
-  PRINT(n->recv->type->kind == TYPE_REF ? "->" : ".");
+  member_op(g, n->recv->type);
   PRINT(n->name);
   if (insert_nullcheck)
     CHAR(')');
@@ -1634,7 +1675,7 @@ static void vardef1(cgen_t* g, const local_t* n, const char* name, bool wrap_rva
   id(g, name);
 
   if (n->nuse == 0)
-    PRINT(" __attribute__((__unused__))");
+    PRINT(" _CO_UNUSED");
 
   // if (type_isptr(n->type)) {
   //   PRINTF(" __attribute__((__consumable__(%s)))",
@@ -1902,7 +1943,6 @@ static void expr(cgen_t* g, const expr_t* n) {
   case EXPR_POSTFIXOP: return postfixop(g, (const unaryop_t*)n);
   case EXPR_BINOP:     return binop(g, (const binop_t*)n);
   case EXPR_ASSIGN:    return assign(g, (const binop_t*)n);
-  case EXPR_MUTVAL:    return mutval(g, (const mutval_t*)n);
 
   case EXPR_VAR:
   case EXPR_LET:
@@ -1949,58 +1989,59 @@ static void unit(cgen_t* g, const unit_t* n) {
   if (n->children.len == 0)
     return;
 
-  u32 init_inputid = g->inputid;
-  u32 init_lineno = g->lineno;
-
-  // typedefs
-  for (u32 i = 0; i < n->children.len; i++) {
-    const typedef_t* td = n->children.v[i];
-    if (td->kind == STMT_TYPEDEF) {
-      sizetuple_t startlens = x_semi_begin_startline(g, td->loc);
-      typedef_(g, td);
-      x_semi_end(g, startlens);
-    }
-  }
-
-  // function prototypes
-  g->inputid = init_inputid;
-  g->lineno = init_lineno;
+  // external function prototypes
   for (u32 i = 0; i < n->children.len; i++) {
     const fun_t* fn = n->children.v[i];
-    if (fn->kind == EXPR_FUN) {
-      if (fn->body) {
-        CHAR('\n'); g->lineno++;
-      } else {
-        startline(g, fn->loc);
-      }
+    if (fn->kind == EXPR_FUN && !fn->body) {
+      startline(g, fn->loc);
       fun_proto(g, fn);
       CHAR(';');
     }
   }
 
-  // function implementations
-  g->inputid = init_inputid;
-  g->lineno = init_lineno;
+  // local function prototypes
+  bool printed_head = false;
+  g->inputid = 0;
   for (u32 i = 0; i < n->children.len; i++) {
     const fun_t* fn = n->children.v[i];
-    if (fn->kind == EXPR_FUN) {
-      if (fn->body == NULL) {
-        // declaration-only function already generated
-        continue;
+    if (fn->kind == EXPR_FUN && fn->body) {
+      if (!printed_head) {
+        printed_head = true;
+        PRINT("\n\n#line 1 \"<generated>\"");
       }
+      CHAR('\n'); g->lineno++;
+      fun_proto(g, fn);
+      CHAR(';');
+    }
+  }
 
-      startline(g, fn->loc);
-      fun(g, fn);
-
-      // nested functions
-      for (u32 i = 0; i < g->funqueue.len; i++) {
-        const fun_t* fn = g->funqueue.v[i];
+  // implementations (and typedefs, added to headbuf)
+  g->inputid = 0;
+  for (u32 i = 0; i < n->children.len; i++) {
+    const node_t* cn = n->children.v[i];
+    switch (cn->kind) {
+      case STMT_TYPEDEF:
+        typedef_(g, (typedef_t*)cn);
+        break;
+      case EXPR_FUN: {
+        const fun_t* fn = (fun_t*)cn;
+        if (fn->body == NULL) {
+          // declaration-only function already generated
+          continue;
+        }
         startline(g, fn->loc);
         fun(g, fn);
+        // nested functions
+        for (u32 i = 0; i < g->funqueue.len; i++) {
+          const fun_t* fn = g->funqueue.v[i];
+          startline(g, fn->loc);
+          fun(g, fn);
+        }
+        g->funqueue.len = 0;
+        break;
       }
-      g->funqueue.len = 0;
-    } else if (fn->kind != STMT_TYPEDEF) {
-      debugdie(g, n, "unexpected unit-level node %s", nodekind_name(n->kind));
+      default:
+        debugdie(g, n, "unexpected unit-level node %s", nodekind_name(n->kind));
     }
   }
 
@@ -2013,7 +2054,7 @@ static void gen_main(cgen_t* g) {
     "\n"
     "#line 0 \"<builtin>\"\n"
     "int main(int argc, char* argv[]) {\n"
-    "  return (int)NfM4main4main();\n"
+    "  return NfM4main4main(), 0;\n"
     "}"
   );
 }
@@ -2033,12 +2074,14 @@ err_t cgen_generate(cgen_t* g, const unit_t* n) {
 
   PRINT("#include <coprelude.h>\n");
 
-  input_t* input = loc_input(n->loc, locmap(g));
-  if (input) {
-    g->inputid = loc_inputid(n->loc);
-    g->lineno = 1;
-    PRINTF("\n#line 1 \"%s\"\n", input->name);
-  }
+  // input_t* input = loc_input(n->loc, locmap(g));
+  // if (input) {
+  //   g->inputid = loc_inputid(n->loc);
+  //   g->lineno = 1;
+  //   g->headlineno = g->lineno;
+  //   g->headinputid = g->inputid;
+  //   PRINTF("\n#line 1 \"%s\"\n", input->name);
+  // }
 
   usize headstart = g->outbuf.len;
 
@@ -2049,7 +2092,7 @@ err_t cgen_generate(cgen_t* g, const unit_t* n) {
     return ErrInvalid;
   unit(g, n);
 
-  if (g->hasmain && !g->compiler->nomain)
+  if (g->compiler->mainfun && !g->compiler->nomain)
     gen_main(g);
 
   if (g->headbuf.len > 0) {
