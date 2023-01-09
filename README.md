@@ -248,9 +248,9 @@ Build & test:
     out/debug/co build -o out/hello examples/hello.c examples/foo.co
     out/hello
 
-Build & run in continuous mode:
+Build & run debug build in continuous mode:
 
-    ./build.sh -wf=examples/foo.co \
+    ./build.sh -debug -wf=examples/foo.co \
       -run='out/debug/co build examples/hello.c examples/foo.co && build/debug/main'
 
 
@@ -258,7 +258,7 @@ Build & run in continuous mode:
 
 Define `CO_DEVBUILD` to enable tracing and detailed output:
 
-    ./build.sh -DCO_DEVBUILD -wf=myhack.co \
+    ./build.sh -debug -DCO_DEVBUILD -wf=myhack.co \
       -run='out/debug/co build myhack.co && build/debug/main'
 
 
