@@ -34,15 +34,14 @@ typedef struct {
   #define trace(fmt, va...)  \
     _dlog(5, "eval", __FILE__, __LINE__, "%*s" fmt, ctx->traceindent*2, "", ##va)
 
-  static void _trace_scope_end(ctx_t** cp) { (*cp)->traceindent--; }
-  #define TRACE_SCOPE() \
-    ctx->traceindent++; \
-    ctx_t* __tracer __attribute__((__cleanup__(_trace_scope_end),__unused__)) = ctx
-
+  // static void _trace_scope_end(ctx_t** cp) { (*cp)->traceindent--; }
+  // #define TRACE_SCOPE() \
+  //   ctx->traceindent++; \
+  //   ctx_t* __tracer __attribute__((__cleanup__(_trace_scope_end),__unused__)) = ctx
 #else
   #undef TRACE_COMPTIME
   #define trace(fmt, va...) ((void)0)
-  #define TRACE_SCOPE()     ((void)0)
+  // #define TRACE_SCOPE()     ((void)0)
 #endif
 
 
@@ -342,8 +341,10 @@ static void* eval1(ctx_t* ctx, void* np) {
   case TYPE_FUN:
   case TYPE_ARRAY:
   case TYPE_SLICE:
+  case TYPE_MUTSLICE:
   case TYPE_PTR:
   case TYPE_REF:
+  case TYPE_MUTREF:
   case TYPE_OPTIONAL:
   case TYPE_ALIAS:
   case TYPE_UNKNOWN:
@@ -394,7 +395,7 @@ u64 comptime_eval_uint(compiler_t* c, expr_t* expr) {
     n = (intlit_t*)comptime_eval(c, expr);
   }
 
-  if LIKELY(n->kind == EXPR_INTLIT && type_compat_coerce(c, n->type, c->uinttype))
+  if LIKELY(n->kind == EXPR_INTLIT && n->type == type_uint)
     return n->intval;
 
   // error

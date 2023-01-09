@@ -162,12 +162,6 @@ static bool dump_irunit(const compiler_t* c, const irunit_t* u) {
 // }
 
 
-static void assert_types_compat_coerce(ircons_t* c, const type_t* x, const type_t* y) {
-  assertf(type_compat_coerce(c->compiler, x, y),
-    "%s != %s", fmtnode(0, x), fmtnode(1, y));
-}
-
-
 static void seterr(ircons_t* c, err_t err) {
   if (!c->err)
     dlog("error set to: %d \"%s\"", err, err_str(err));
@@ -1169,7 +1163,7 @@ static irval_t* move(
 
 
 static irval_t* reference(ircons_t* c, irval_t* rvalue, loc_t loc) {
-  op_t op = ((reftype_t*)rvalue->type)->ismut ? OP_BORROW_MUT : OP_BORROW;
+  op_t op = ((reftype_t*)rvalue->type)->kind == TYPE_MUTREF ? OP_BORROW_MUT : OP_BORROW;
   irval_t* v = pushval(c, c->b, op, loc, rvalue->type);
   pusharg(v, rvalue);
   return v;
@@ -1741,7 +1735,6 @@ static irval_t* binop(ircons_t* c, binop_t* n) {
   irval_t* left  = load_expr(c, n->left);
   irval_t* right = load_expr(c, n->right);
   assert(left->type && right->type);
-  assert_types_compat_coerce(c, left->type, right->type);
   irval_t* v = pushval(c, c->b, n->op, n->loc, n->type);
   pusharg(v, left);
   pusharg(v, right);
@@ -2113,9 +2106,11 @@ static irval_t* expr(ircons_t* c, void* expr_node) {
   case TYPE_F64:
   case TYPE_ARRAY:
   case TYPE_SLICE:
+  case TYPE_MUTSLICE:
   case TYPE_FUN:
   case TYPE_PTR:
   case TYPE_REF:
+  case TYPE_MUTREF:
   case TYPE_OPTIONAL:
   case TYPE_STRUCT:
   case TYPE_ALIAS:

@@ -68,7 +68,10 @@ static void append(buf_t* buf, type_t* t) {
     case TYPE_ARRAY:    panic("TODO %s", nodekind_name(t->kind));
     case TYPE_FUN:      funtype(buf, (funtype_t*)t); break;
     case TYPE_PTR:      append(buf, ((ptrtype_t*)t)->elem); break;
-    case TYPE_REF:      append(buf, ((reftype_t*)t)->elem); break;
+    case TYPE_REF:
+    case TYPE_MUTREF:   append(buf, ((reftype_t*)t)->elem); break;
+    case TYPE_SLICE:
+    case TYPE_MUTSLICE: append(buf, ((slicetype_t*)t)->elem); break;
     case TYPE_OPTIONAL: append(buf, ((opttype_t*)t)->elem); break;
     case TYPE_STRUCT:   structtype(buf, (structtype_t*)t); break;
     case TYPE_ALIAS:    aliastype(buf, (aliastype_t*)t); break;

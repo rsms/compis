@@ -246,9 +246,10 @@ static void repr_type(RPARAMS, const type_t* t) {
     CHAR(' ');
     repr_type(RARGSFL(fl | REPRFLAG_HEAD), ((ptrtype_t*)t)->elem);
     break;
+  case TYPE_MUTREF:
+    PRINT(" mut");
+    FALLTHROUGH;
   case TYPE_REF:
-    if (((reftype_t*)t)->ismut)
-      PRINT(" mut");
     CHAR(' ');
     repr_type(RARGSFL(fl | REPRFLAG_HEAD), ((reftype_t*)t)->elem);
     break;
@@ -273,9 +274,10 @@ static void repr_type(RPARAMS, const type_t* t) {
     CHAR(' ');
     repr_type(RARGSFL(fl | REPRFLAG_HEAD), ((arraytype_t*)t)->elem);
     break;
+  case TYPE_MUTSLICE:
+    PRINT(" mut");
+    FALLTHROUGH;
   case TYPE_SLICE:
-    if (((slicetype_t*)t)->ismut)
-      PRINT(" mut");
     CHAR(' ');
     repr_type(RARGSFL(fl | REPRFLAG_HEAD), ((slicetype_t*)t)->elem);
     break;

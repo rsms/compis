@@ -68,15 +68,15 @@ _( OP_GTEQ, 0 ) // >=
 // binary, assignment
 _( OP_ASSIGN, 0 )     // =
 _( OP_ADD_ASSIGN, 0 ) // +=
-_( OP_AND_ASSIGN, 0 ) // &=
+_( OP_SUB_ASSIGN, 0 ) // -=
+_( OP_MUL_ASSIGN, 0 ) // *=
 _( OP_DIV_ASSIGN, 0 ) // /=
 _( OP_MOD_ASSIGN, 0 ) // %=
-_( OP_MUL_ASSIGN, 0 ) // *=
+_( OP_AND_ASSIGN, 0 ) // &=
 _( OP_OR_ASSIGN, 0 )  // |=
+_( OP_XOR_ASSIGN, 0 ) // ^=
 _( OP_SHL_ASSIGN, 0 ) // <<=
 _( OP_SHR_ASSIGN, 0 ) // >>=
-_( OP_SUB_ASSIGN, 0 ) // -=
-_( OP_XOR_ASSIGN, 0 ) // ^=
 
 
 #undef W

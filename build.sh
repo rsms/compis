@@ -22,7 +22,7 @@ CXXFLAGS=()
 # variables configurable via CLI flags
 OUTDIR=
 OUTDIR_DEFAULT=out
-BUILD_MODE=debug  # debug | safe | fast
+BUILD_MODE=safe  # debug | safe | fast
 WATCH=
 WATCH_ADDL_FILES=()
 _WATCHED=
@@ -30,7 +30,6 @@ WITH_LLVM=
 RUN=
 NINJA_ARGS=()
 NON_WATCH_ARGS=()
-EXTRA_CFLAGS=()
 TESTING_ENABLED=false
 ONLY_CONFIGURE=false
 STRIP=false
@@ -56,7 +55,7 @@ while [[ $# -gt 0 ]]; do
   -out=*)  OUTDIR=${1:5}; shift; continue ;;
   -g)      DEBUGGABLE=true; shift ;;
   -v)      VERBOSE=true; NINJA_ARGS+=(-v); shift ;;
-  -D*)     [ ${#1} -gt 2 ] || _err "Missing NAME after -D";EXTRA_CFLAGS+=( "$1" );shift;;
+  -D*)     [ ${#1} -gt 2 ] || _err "Missing NAME after -D";XFLAGS+=( "$1" );shift;;
   -llvm=*) WITH_LLVM=${1:6}; shift ;;
   -h|-help|--help) cat << _END
 usage: $0 [options] [--] [<target> ...]

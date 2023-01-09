@@ -352,10 +352,9 @@ static void* mkbad(parser_t* p) {
 
 
 static reftype_t* mkreftype(parser_t* p, bool ismut) {
-  reftype_t* t = mknode(p, reftype_t, TYPE_REF);
+  reftype_t* t = mknode(p, reftype_t, ismut ? TYPE_MUTREF : TYPE_REF);
   t->size = p->scanner.compiler->ptrsize;
   t->align = t->size;
-  t->ismut = ismut;
   return t;
 }
 
@@ -411,7 +410,7 @@ static node_t* nullable lookup(parser_t* p, sym_t name) {
 
 
 static void define_replace(parser_t* p, sym_t name, node_t* n) {
-  //dlog("define_replace %s %s", name, nodekind_name(n->kind));
+  trace("redefine %s %s", name, nodekind_name(n->kind));
   assert(n->kind != EXPR_ID);
   assert(name != sym__);
   if UNLIKELY(!scope_define(&p->scope, p->ma, name, n))
@@ -428,7 +427,8 @@ static void define_replace(parser_t* p, sym_t name, node_t* n) {
 static void define(parser_t* p, sym_t name, node_t* n) {
   if (name == sym__)
     return;
-  //dlog("define %s %s", name, nodekind_name(n->kind));
+
+  trace("define %s %s", name, nodekind_name(n->kind));
 
   node_t* existing = scope_lookup(&p->scope, name, 0);
   if (existing)
@@ -439,6 +439,7 @@ static void define(parser_t* p, sym_t name, node_t* n) {
 
   // top-level definitions also goes into package scope
   if (scope_istoplevel(&p->scope)) {
+    // trace("define in pkg %s %s", name, nodekind_name(n->kind));
     void** vp = map_assign_ptr(&p->pkgdefs, p->ma, name);
     if (!vp)
       return out_of_mem(p);
@@ -457,11 +458,6 @@ err_duplicate:
 
 
 // —————————————————————————————————————————————————————————————————————————————————————
-
-
-static void bubble_flags(void* parent, void* child) {
-  ((node_t*)parent)->flags |= (((node_t*)child)->flags & NODEFLAGS_BUBBLE);
-}
 
 
 static void push_child(parser_t* p, ptrarray_t* children, void* child) {
@@ -785,10 +781,9 @@ static type_t* type_ref1(parser_t* p, bool ismut) {
     type_t* elem = at->elem;
 
     slicetype_t* st = (slicetype_t*)at;
-    st->kind = TYPE_SLICE;
+    st->kind = ismut ? TYPE_MUTSLICE : TYPE_SLICE;
     st->endloc = endloc;
     st->elem = elem;
-    st->ismut = ismut;
 
     return (type_t*)st;
   }
@@ -970,6 +965,7 @@ static block_t* block(parser_t* p, nodeflag_t fl) {
     }
   }
 
+  n->endloc = currloc(p);
   expect2(p, TRBRACE, ", expected '}' or ';'");
 
   return n;
@@ -1259,6 +1255,7 @@ static expr_t* expr_assign_op(
   parser_t* p, const parselet_t* pl, expr_t* left, nodeflag_t fl)
 {
   expr_t* n = expr_infix_op(p, pl, left, fl);
+  left->flags &= ~NF_RVALUE;
   n->kind = EXPR_ASSIGN;
   return n;
 }
@@ -1286,6 +1283,8 @@ static bool expr_isstorage(const expr_t* n) {
   case EXPR_FUN:
   case EXPR_DEREF:
     return true;
+  case EXPR_PREFIXOP:
+    return ((unaryop_t*)n)->op == OP_DEREF;
   default:
     return false;
   }
@@ -1322,14 +1321,9 @@ static expr_t* expr_deref(parser_t* p, const parselet_t* pl, nodeflag_t fl) {
   n->expr = expr(p, PREC_UNARY_PREFIX, fl);
   bubble_flags(n, n->expr);
 
-  ptrtype_t* t = (ptrtype_t*)n->expr->type;
-
-  if UNLIKELY(t->kind != TYPE_REF && t->kind != TYPE_PTR) {
-    const char* ts = fmtnode(p, 0, t);
-    error(p, n, "dereferencing non-reference value of type %s", ts);
-  } else {
-    n->type = t->elem;
-  }
+  if (type_isptrlike(n->expr->type))
+    n->type = ((ptrtype_t*)n->expr->type)->elem;
+  // else: let typecheck do its thing
 
   return (expr_t*)n;
 }
@@ -1744,7 +1738,7 @@ static funtype_t* funtype(parser_t* p, loc_t loc, type_t* nullable recvt) {
   if (currtok(p) != TLBRACE) {
     ft->resultloc = currloc(p);
     ft->result = type(p, PREC_MEMBER);
-    if (loc_line(ft->result->loc))
+    if (loc_line(ft->result->loc) && ft->result->loc > ft->loc)
       ft->resultloc = ft->result->loc;
     bubble_flags(ft, ft->result);
   }

@@ -357,6 +357,7 @@ static err_t cc_to_obj_main(compiler_t* c, const char* cfile, const char* ofile)
       "-Werror=incompatible-pointer-types",
       "-Werror=format-insufficient-args",
       "-Wno-unused-value",
+      "-Wno-tautological-compare", // e.g. "x == x"
     #else
       "-w",
     #endif
@@ -453,8 +454,6 @@ static err_t compile_co_to_c(compiler_t* c, input_t* input, const char* cfile) {
   }
   DUMP_AST();
 
-  // dlog("abort");abort(); // XXX
-
   // typecheck
   dlog("————————— typecheck —————————");
   if (( err = typecheck(&parser, unit) ))
@@ -464,6 +463,8 @@ static err_t compile_co_to_c(compiler_t* c, input_t* input, const char* cfile) {
     err = ErrCanceled;
     goto end_parser;
   }
+
+  // dlog("abort");abort(); // XXX
 
   // analyze (ir)
   dlog("————————— analyze —————————");
@@ -485,7 +486,7 @@ static err_t compile_co_to_c(compiler_t* c, input_t* input, const char* cfile) {
     goto end_parser;
   err = cgen_generate(&g, unit);
   if (!err) {
-    #if DEBUG
+    #ifdef CO_DEVBUILD
       fprintf(stderr, "——————————\n%.*s\n——————————\n",
         (int)g.outbuf.len, g.outbuf.chars);
     #endif

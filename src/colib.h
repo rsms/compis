@@ -332,6 +332,13 @@ typedef double             f64;
 // panic prints msg to stderr and calls TRAP()
 #define panic(fmt, args...) _panic(__FILE__, __LINE__, __FUNCTION__, fmt, ##args)
 
+// CO_DEVBUILD forces DEBUG to be enabled (can enable CO_DEVBUILD in release builds)
+#if defined(CO_DEVBUILD)
+  #undef DEBUG
+  #undef NDEBUG
+  #define DEBUG
+#endif
+
 // void assert(expr condition)
 #undef assert
 #define comptime_assert(condition, msg) _Static_assert(condition, msg)

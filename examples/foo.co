@@ -1,23 +1,133 @@
-type Vec2 {
-  x, y int
+// type Vec2 {
+//   x, y int
+// }
+
+// fun mutate(v mut&Vec2, x int) { v.x += x }
+// fun read(v &Vec2) int         { v.x }
+// fun edit_own_copy(v Vec2)     { v.x = 2 }
+// fun filter(a, b Vec2) Vec2    { if b.x > a.x { b } else { a } }
+
+// fun refadd(v &int, d int) int { v + d }
+// fun mutadd(v mut&int, d int) { *v = d + v }
+
+
+type Copyable { x int }
+type BigCopyable { a, b, c, d, e int }
+type Owner { x ?*int }
+
+fun ref_sem_rvalue_binop(x int, y &int, z mut&int) {
+  // no implicit deref for comparison operations
+  // _ = x == y // error (must explicitly deref y)
+  // _ = y == x // error (must explicitly deref y)
+  // _ = y == z // error (must explicitly deref y and z)
+  _ = y == y // ok (&T <> &T)
+  _ = z == z // ok (mut&T <> mut&T)
+
+  // implicit deref for rvalues of copyable types
+  _ = x + x
+  _ = x + y
+  _ = x + z
+  _ = y + y
+  _ = y + z
+  _ = y + x
+  _ = z + z
+  _ = z + x
+  _ = z + y
 }
 
-fun mutate(v mut&Vec2, x int) { v.x += x }
-fun read(v &Vec2) int         { v.x }
-fun edit_own_copy(v Vec2)     { v.x = 2 }
-fun filter(a, b Vec2) Vec2    { if b.x > a.x { b } else { a } }
-
-fun mutadd(v mut&int, d int) {
-  *v = *v + d
+fun ref_sem_return_ret_copyable(x &Copyable) Copyable {
+  _ = *x // ok to copy by deref
+  // *x = Copyable() // error: cannot assign via immutable reference
+  return x
 }
 
-fun foo(x, y int) int {
-  var a = 1
-  // let b = 2 ; let _ = &b // error: cannot mutate immutable binding
-  // var c = &a
-  mutadd(mut&x, y)
-  // TODO: allow typectx auto-fit to "mut&" with just "&x": mutadd(&x, y)
-  x
+fun ref_sem_return_ret_mut_copyable(x mut&Copyable) Copyable {
+  _ = *x // ok to copy by deref
+  *x = Copyable() // ok (x is a mutable ref and type is copyable)
+  return x // ok
+}
+
+fun ref_sem_return_ret_copyable_big(x &BigCopyable) BigCopyable {
+  // (this test only affects code generation)
+  // BigCopyable is passed by pointer, so "y" implies a deref
+  return x
+}
+
+// fun ref_sem_return_ret_owner_error(x &Owner) Owner {
+//   _ = *x       // error: cannot transfer ownership of borrowed &T
+//   *x = Owner() // error 1/2: cannot transfer ownership of borrowed &T
+//                // error 2/2: cannot assign via immutable reference
+//   return *x    // error: cannot transfer ownership of borrowed &T
+//   return x     // error: invalid function result type: &Owner
+// }
+
+fun ref_sem_rvalue_copyable(x Copyable, y &Copyable, z mut&Copyable) {
+  // implicit deref-and-copy for copyable types
+  let _ Copyable = y
+  let _ Copyable = z
+
+  // can assign looser ref type to equal or stricter ref type
+  let _ &Copyable = y
+  var a &Copyable = z
+  a = z  // can also assign
+  let _ mut&Copyable = z
+  // let _ &Copyable = x // error
+  // let _ mut&Copyable = x // error (x needs to be referenced with &x)
+  // let _ mut&Copyable = y // error (y is immutable)
+}
+
+fun sink_copyable(x Copyable) {}
+fun sink_copyable_ref(x &Copyable) {}
+fun sink_copyable_mutref(x mut&Copyable) {}
+
+fun ref_sem_rvalue_copyable_call(x Copyable, y &Copyable, z mut&Copyable) {
+  // call arguments have same semantics as assignment
+  sink_copyable(x)
+  sink_copyable(y)
+  sink_copyable(z)
+
+  // sink_copyable_ref(x) // error (x is not a reference)
+  sink_copyable_ref(y)
+  sink_copyable_ref(z)
+
+  // sink_copyable_mutref(x) // error (x is not a reference)
+  // sink_copyable_mutref(y) // error (y is immutable)
+  sink_copyable_mutref(z)
+}
+
+fun ref_sem_rvalue_owner(x Owner, y &Owner, z mut&Owner) {
+  // cannot convert/cast from ref to non-ref of owner type
+  // _ = y as Owner  // error (TODO NOT IMPLEMENTED)
+  // _ = z as &Owner // ok    (TODO NOT IMPLEMENTED)
+
+  // no implicit deref for owners
+  // let _ Owner = y // error
+  // let _ Owner = z // error
+  let _ Owner = x // ok (x is moved)
+}
+
+fun sink_owner(x Owner) {}
+fun sink_owner_ref(x &Owner) {}
+fun sink_owner_mutref(x mut&Owner) {}
+
+fun ref_sem_rvalue_owner_call(x Owner, y &Owner, z mut&Owner) {
+  // call arguments have same semantics as assignment
+  sink_owner(x) // ok, ownership transferred from x to call
+  // sink_owner(y) // error (y is a reference)
+  // sink_owner(z) // error (z is a reference)
+
+  // sink_owner_ref(x) // error (x is not a reference)
+  sink_owner_ref(y)
+  sink_owner_ref(z)
+
+  // sink_owner_mutref(x) // error (x is not a reference)
+  // sink_owner_mutref(y) // error (y is immutable)
+  sink_owner_mutref(z)
+}
+
+
+pub fun foo(x, y int) int {
+  x * y
 }
 
 /*type Vec2 {

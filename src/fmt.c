@@ -54,6 +54,79 @@ const char* nodekind_fmt(nodekind_t kind) {
 }
 
 
+const char* op_fmt(op_t op) {
+  switch ((enum op)op) {
+  case OP_ALIAS:
+  case OP_ARG:
+  case OP_BORROW:
+  case OP_BORROW_MUT:
+  case OP_CALL:
+  case OP_DROP:
+  case OP_FCONST:
+  case OP_FUN:
+  case OP_ICONST:
+  case OP_MOVE:
+  case OP_NOOP:
+  case OP_OCHECK:
+  case OP_PHI:
+  case OP_STORE:
+  case OP_VAR:
+  case OP_ZERO:
+  case OP_CAST:
+  case OP_GEP:
+    return op_name(op);
+
+  // unary
+  case OP_INC:   return "++";
+  case OP_DEC:   return "--";
+  case OP_INV:   return "~";
+  case OP_NOT:   return "!";
+  case OP_DEREF: return "*";
+
+  // binary, arithmetic
+  case OP_ADD: return "+";
+  case OP_SUB: return "-";
+  case OP_MUL: return "*";
+  case OP_DIV: return "/";
+  case OP_MOD: return "%";
+
+  // binary, bitwise
+  case OP_AND: return "&";
+  case OP_OR:  return "|";
+  case OP_XOR: return "^";
+  case OP_SHL: return "<<";
+  case OP_SHR: return ">>";
+
+  // binary, logical
+  case OP_LAND: return "&&";
+  case OP_LOR:  return "||";
+
+  // binary, comparison
+  case OP_EQ:   return "==";
+  case OP_NEQ:  return "!=";
+  case OP_LT:   return "<";
+  case OP_GT:   return ">";
+  case OP_LTEQ: return "<=";
+  case OP_GTEQ: return ">=";
+
+  // binary, assignment
+  case OP_ASSIGN:     return "=";
+  case OP_ADD_ASSIGN: return "+=";
+  case OP_AND_ASSIGN: return "&=";
+  case OP_DIV_ASSIGN: return "/=";
+  case OP_MOD_ASSIGN: return "%=";
+  case OP_MUL_ASSIGN: return "*=";
+  case OP_OR_ASSIGN:  return "|=";
+  case OP_SHL_ASSIGN: return "<<=";
+  case OP_SHR_ASSIGN: return ">>=";
+  case OP_SUB_ASSIGN: return "-=";
+  case OP_XOR_ASSIGN: return "^=";
+  }
+  assertf(0,"bad op %u", op);
+  return "?";
+}
+
+
 // static void fmtarray(abuf_t* s, const ptrarray_t* a, u32 depth, u32 maxdepth) {
 //   for (usize i = 0; i < a->len; i++) {
 //     abuf_c(s, ' ');
@@ -286,14 +359,14 @@ static void fmt(abuf_t* s, const node_t* nullable n, u32 indent, u32 maxdepth) {
 
   case EXPR_POSTFIXOP:
     fmt(s, (node_t*)((unaryop_t*)n)->expr, indent, maxdepth);
-    abuf_str(s, op_name(((unaryop_t*)n)->op));
+    abuf_str(s, op_fmt(((unaryop_t*)n)->op));
     break;
 
   case EXPR_ASSIGN:
   case EXPR_BINOP:
     fmt(s, (node_t*)((binop_t*)n)->left, indent, maxdepth - 1);
     abuf_c(s, ' ');
-    abuf_str(s, op_name(((binop_t*)n)->op));
+    abuf_str(s, op_fmt(((binop_t*)n)->op));
     abuf_c(s, ' ');
     fmt(s, (node_t*)((binop_t*)n)->right, indent, maxdepth - 1);
     break;
@@ -350,7 +423,8 @@ static void fmt(abuf_t* s, const node_t* nullable n, u32 indent, u32 maxdepth) {
     abuf_fmt(s, " %llu]", t->len);
     break;
   }
-  case TYPE_SLICE: {
+  case TYPE_SLICE:
+  case TYPE_MUTSLICE: {
     slicetype_t* t = (slicetype_t*)n;
     abuf_str(s, "&[");
     fmt(s, (node_t*)t->elem, indent, maxdepth);
@@ -363,9 +437,10 @@ static void fmt(abuf_t* s, const node_t* nullable n, u32 indent, u32 maxdepth) {
     fmt(s, (node_t*)pt->elem, indent, maxdepth);
     break;
   }
-  case TYPE_REF: {
+  case TYPE_REF:
+  case TYPE_MUTREF: {
     const reftype_t* pt = (const reftype_t*)n;
-    abuf_str(s, pt->ismut ? "mut&" : "&");
+    abuf_str(s, n->kind == TYPE_MUTREF ? "mut&" : "&");
     fmt(s, (node_t*)pt->elem, indent, maxdepth);
     break;
   }

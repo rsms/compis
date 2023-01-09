@@ -24,7 +24,7 @@
   _( EXPR_POSTFIXOP )\
   _( EXPR_BINOP )\
   _( EXPR_ASSIGN )\
-  _( EXPR_DEREF )\
+  _( EXPR_DEREF ) /* implicit, by reading &T (user deref is EXPR_PREFIXOP) */\
   _( EXPR_IF )\
   _( EXPR_FOR )\
   _( EXPR_RETURN )\
@@ -53,10 +53,12 @@
   _( TYPE_ARRAY )  /* nodekind_is*type assumes this is the first user type */\
   _( TYPE_FUN )\
   _( TYPE_PTR )\
-  _( TYPE_REF )\
+  _( TYPE_REF )      /* &T      */\
+  _( TYPE_MUTREF )   /* mut&T   */\
+  _( TYPE_SLICE )    /* &[T]    */\
+  _( TYPE_MUTSLICE ) /* mut&[T] */\
   _( TYPE_OPTIONAL )\
   _( TYPE_STRUCT )\
-  _( TYPE_SLICE )\
   _( TYPE_ALIAS )\
   /* special types replaced by typecheck */\
   _( TYPE_UNKNOWN ) /* nodekind_is*type assumes this is the first special type */\
@@ -180,7 +182,7 @@ typedef u8 nodeflag_t;
 #define NF_NAMEDPARAMS ((nodeflag_t)1<< 4) // function has named parameters
 #define NF_DROP        ((nodeflag_t)1<< 5) // type has drop() function
 #define NF_SUBOWNERS   ((nodeflag_t)1<< 6) // type has owning elements
-// #define NF_         ((nodeflag_t)1<< 7) //
+#define NF_EXIT        ((nodeflag_t)1<< 7) // block exits (i.e. "return" or "break")
 
 // NODEFLAGS_BUBBLE are flags that "bubble" (transfer) from children to parents
 #define NODEFLAGS_BUBBLE  NF_UNKNOWN
@@ -188,7 +190,7 @@ typedef u8 nodeflag_t;
 typedef struct {
   nodekind_t kind;
   nodeflag_t flags;
-  u8         _unused[1];
+  u8         _unused[2];
   u32        nuse; // number of uses (expr_t and usertype_t)
   loc_t      loc;
 } node_t;
@@ -243,7 +245,6 @@ typedef struct {
   usertype_t;
   loc_t   endloc; // "]"
   type_t* elem;
-  bool    ismut;
 } slicetype_t;
 
 typedef struct {
@@ -271,7 +272,6 @@ typedef struct {
 
 typedef struct {
   ptrtype_t;
-  bool ismut;
 } reftype_t;
 
 typedef struct {
@@ -323,8 +323,9 @@ typedef struct {
 typedef struct { // block is a declaration (stmt) or an expression depending on use
   expr_t;
   ptrarray_t  children;
-  droparray_t drops; // drop_t[]
+  droparray_t drops;    // drop_t[]
   scope_t     scope;
+  loc_t       endloc;   // location of terminating '}'
 } block_t;
 
 typedef struct {
@@ -489,11 +490,11 @@ typedef struct {
 typedef struct {
   compiler_t*     compiler;
   parser_t*       p;
-  memalloc_t      ma;     // p->scanner.compiler->ma
-  memalloc_t      ast_ma; // p->ast_ma
+  memalloc_t      ma;        // p->scanner.compiler->ma
+  memalloc_t      ast_ma;    // p->ast_ma
   scope_t         scope;
   err_t           err;
-  fun_t* nullable fun;    // current function
+  fun_t* nullable fun;       // current function
   type_t*         typectx;
   ptrarray_t      typectxstack;
   ptrarray_t      nspath;
@@ -645,6 +646,10 @@ node_t* clone_node(parser_t* p, const node_t* n);
 local_t* nullable lookup_struct_field(structtype_t* st, sym_t name);
 fun_t* nullable lookup_method(parser_t* p, type_t* recv, sym_t name);
 
+inline static void bubble_flags(void* parent, void* child) {
+  ((node_t*)parent)->flags |= (((node_t*)child)->flags & NODEFLAGS_BUBBLE);
+}
+
 inline static bool nodekind_istype(nodekind_t kind) { return kind >= TYPE_VOID; }
 inline static bool nodekind_isexpr(nodekind_t kind) {
   return EXPR_FUN <= kind && kind < TYPE_VOID; }
@@ -658,9 +663,10 @@ inline static bool nodekind_isusertype(nodekind_t kind) {
 inline static bool nodekind_isspecialtype(nodekind_t kind) {
   return TYPE_UNKNOWN <= kind; }
 inline static bool nodekind_isptrtype(nodekind_t kind) { return kind == TYPE_PTR; }
-inline static bool nodekind_isreftype(nodekind_t kind) { return kind == TYPE_REF; }
+inline static bool nodekind_isreftype(nodekind_t kind) {
+  return kind == TYPE_REF || kind == TYPE_MUTREF; }
 inline static bool nodekind_isptrliketype(nodekind_t kind) {
-  return kind == TYPE_PTR || kind == TYPE_REF; }
+  return kind == TYPE_PTR || kind == TYPE_REF || kind == TYPE_MUTREF; }
 inline static bool nodekind_isvar(nodekind_t kind) {
   return kind == EXPR_VAR || kind == EXPR_LET; }
 
@@ -675,51 +681,30 @@ inline static bool node_islocal(const node_t* n) {
 inline static bool node_isusertype(const node_t* n) {
   return nodekind_isusertype(n->kind); }
 
-inline static bool type_isptr(const type_t* nullable t) {
+inline static bool type_isptr(const type_t* nullable t) {  // *T
   return nodekind_isptrtype(assertnotnull(t)->kind); }
-inline static bool type_isref(const type_t* nullable t) {
+inline static bool type_isref(const type_t* nullable t) {  // &T | mut&T
   return nodekind_isreftype(assertnotnull(t)->kind); }
-inline static bool type_isptrlike(const type_t* nullable t) {
+inline static bool type_isptrlike(const type_t* nullable t) { // &T | mut&T | *T
   return nodekind_isptrliketype(assertnotnull(t)->kind); }
-inline static bool type_isprim(const type_t* nullable t) {
+inline static bool type_isprim(const type_t* nullable t) {  // void, bool, int, u8, ...
   return nodekind_isprimtype(assertnotnull(t)->kind); }
-inline static bool type_isopt(const type_t* nullable t) {
+inline static bool type_isopt(const type_t* nullable t) {  // ?T
   return assertnotnull(t)->kind == TYPE_OPTIONAL; }
-inline static bool type_isbool(const type_t* nullable t) {
+inline static bool type_isbool(const type_t* nullable t) {  // bool
   return assertnotnull(t)->kind == TYPE_BOOL; }
-inline static bool type_isowner(const type_t* t) { // true for "*T" and "?*T"
+inline static bool type_isowner(const type_t* t) {
   t = type_isopt(t) ? ((opttype_t*)t)->elem : t;
   return ((t->flags & (NF_DROP | NF_SUBOWNERS)) != 0) | type_isptr(t);
+}
+inline static bool type_iscopyable(const type_t* t) {
+  return !type_isowner(t);
 }
 inline static bool type_isunsigned(const type_t* t) {
   return TYPE_U8 <= t->kind && t->kind <= TYPE_UINT;
 }
 inline static bool funtype_hasthis(const funtype_t* ft) {
   return ft->params.len && ((local_t*)ft->params.v[0])->isthis;
-}
-
-// types
-bool type_convertible(const type_t* dst, const type_t* src);
-
-bool _type_compat(
-  const compiler_t* c, const type_t* dst, const type_t* src, bool coerce);
-
-inline static bool type_compat(
-  const compiler_t* c, const type_t* dst, const type_t* src, bool coerce)
-{
-  return dst == src || _type_compat(c, dst, src, coerce);
-}
-
-inline static bool type_compat_coerce(
-  const compiler_t* c, const type_t* dst, const type_t* src)
-{
-  return type_compat(c, dst, src, /*coerce*/true);
-}
-
-inline static bool type_compat_strict(
-  const compiler_t* c, const type_t* dst, const type_t* src)
-{
-  return type_compat(c, dst, src, /*coerce*/false);
 }
 
 sym_t nullable _typeid(type_t*);
@@ -769,6 +754,7 @@ inline static bool tok_isassign(tok_t t) { return TASSIGN <= t && t <= TORASSIGN
 
 // operations
 const char* op_name(op_t); // e.g. OP_ADD => "OP_ADD"
+const char* op_fmt(op_t);  // e.g. OP_ADD => "+"
 int op_name_maxlen();
 
 // diagnostics

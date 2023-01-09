@@ -175,7 +175,8 @@ static void x_semi_end(cgen_t* g, sizetuple_t startlens) {
 
 static void type(cgen_t* g, const type_t*);
 static void expr(cgen_t* g, const expr_t*);
-static void expr_as_value(cgen_t* g, const expr_t* n);
+static void expr_rvalue(cgen_t* g, const expr_t* n, const type_t* dst_type);
+static void intconst(cgen_t* g, u64 value, const type_t* t);
 
 
 static const char* operator(op_t op) {
@@ -257,6 +258,7 @@ static bool type_is_interned_def(const type_t* t) {
       || t->kind == TYPE_ALIAS
       || t->kind == TYPE_ARRAY
       || t->kind == TYPE_SLICE
+      || t->kind == TYPE_MUTSLICE
       ;
 }
 
@@ -428,10 +430,10 @@ static void structtype(cgen_t* g, const structtype_t* t) {
 static sym_t gen_slice_typename(cgen_t* g, const type_t* tp) {
   const slicetype_t* t = (const slicetype_t*)tp;
   usize len1 = g->outbuf.len;
-  if (t->ismut) {
-    PRINT(ANON_PREFIX "mutslice_");
-  } else {
+  if (t->kind == TYPE_SLICE) {
     PRINT(ANON_PREFIX "slice_");
+  } else {
+    PRINT(ANON_PREFIX "mutslice_");
   }
   if UNLIKELY(compiler_mangle_type(g->compiler, &g->outbuf, t->elem)) {
     seterr(g, ErrNoMem);
@@ -448,7 +450,7 @@ static void gen_slice_typedef(cgen_t* g, const type_t* tp, sym_t typename) {
   PRINT("typedef struct {");
   type(g, g->compiler->uinttype);
   PRINT(" len; ");
-  if (!t->ismut)
+  if (t->kind == TYPE_SLICE)
     PRINT("const ");
   type(g, t->elem);
   PRINTF("* ptr;} %s;", typename);
@@ -499,19 +501,29 @@ static void arraytype(cgen_t* g, const arraytype_t* t) {
 
 static bool reftype_byvalue(cgen_t* g, const reftype_t* t) {
   return (
-    (t->elem->kind == TYPE_SLICE) |
-    (t->elem->kind == TYPE_ARRAY) |
-    (!t->ismut & (t->size <= g->compiler->ptrsize*2))
+    t->elem->kind == TYPE_SLICE ||
+    t->elem->kind == TYPE_MUTSLICE ||
+    t->elem->kind == TYPE_ARRAY ||
+    ( t->kind == TYPE_REF && t->elem->size <= g->compiler->ptrsize*2 )
   );
 }
 
 
 static void reftype(cgen_t* g, const reftype_t* t) {
-  if (!t->ismut)
-    PRINT("const ");
-  type(g, t->elem);
-  if (!reftype_byvalue(g, t))
+  if (reftype_byvalue(g, t)) {
+    // e.g. "&Foo" => "Foo"
+    // note: we can't use "const" here since that would cause issues with temorary
+    // locals, for example implicit block returns as in "let y = { ...; x }" which
+    // uses a temporary variable to store x in for the block "{ ...; x }".
+    type(g, t->elem);
+  } else {
+    // e.g. "&Foo"    => "const Foo*"
+    //      "mut&Foo" => "Foo*"
+    if (t->kind == TYPE_REF)
+      PRINT("const ");
+    type(g, t->elem);
     CHAR('*');
+  }
 }
 
 
@@ -559,13 +571,13 @@ static void opttype(cgen_t* g, const opttype_t* t) {
 
 static void optinit(cgen_t* g, const expr_t* init, bool isshort) {
   if (type_isptrlike(init->type))
-    return expr_as_value(g, init);
+    return expr_rvalue(g, init, init->type);
   assert(init->type->kind != TYPE_OPTIONAL);
   if (!isshort) {
     opttype_t t = { .kind = TYPE_OPTIONAL, .elem = (type_t*)init->type };
     CHAR('('), opttype(g, &t), CHAR(')');
   }
-  PRINT("{true,"); expr_as_value(g, init); CHAR('}');
+  PRINT("{true,"); expr_rvalue(g, init, init->type); CHAR('}');
 }
 
 
@@ -601,12 +613,14 @@ static void type(cgen_t* g, const type_t* t) {
   case TYPE_F64:      PRINT("f64"); break;
   case TYPE_FUN:      return funtype(g, (const funtype_t*)t, NULL);
   case TYPE_PTR:      return ptrtype(g, (const ptrtype_t*)t);
-  case TYPE_REF:      return reftype(g, (const reftype_t*)t);
+  case TYPE_REF:
+  case TYPE_MUTREF:   return reftype(g, (const reftype_t*)t);
+  case TYPE_SLICE:
+  case TYPE_MUTSLICE: return slicetype(g, (const slicetype_t*)t);
   case TYPE_OPTIONAL: return opttype(g, (const opttype_t*)t);
   case TYPE_STRUCT:   return structtype(g, (const structtype_t*)t);
   case TYPE_ALIAS:    return aliastype(g, (const aliastype_t*)t);
   case TYPE_ARRAY:    return arraytype(g, (const arraytype_t*)t);
-  case TYPE_SLICE:    return slicetype(g, (const slicetype_t*)t);
 
   default:
     panic("unexpected type_t %s (%u)", nodekind_name(t->kind), t->kind);
@@ -614,28 +628,76 @@ static void type(cgen_t* g, const type_t* t) {
 }
 
 
-static void expr_as_value(cgen_t* g, const expr_t* n) {
+// true if n needs to be wrapped in "(...)" for op C <> Compis precedence differences
+static bool has_ambiguous_prec(const expr_t* n) {
   switch (n->kind) {
   case EXPR_INTLIT:
   case EXPR_FLOATLIT:
   case EXPR_ID:
   case EXPR_PARAM:
-  case EXPR_PREFIXOP:
-  case EXPR_POSTFIXOP:
   case EXPR_MEMBER:
   case EXPR_BLOCK:
   case EXPR_CALL:
-    return expr(g, n);
+  case EXPR_DEREF:
+  case EXPR_PREFIXOP:
+  case EXPR_POSTFIXOP:
+    return false;
   default:
-    CHAR('('); expr(g, n); CHAR(')');
+    return true;
   }
 }
 
 
-typedef enum {
-  BLOCKFLAG_NONE,
-  BLOCKFLAG_RET,
-} blockflag_t;
+static void expr_rvalue(cgen_t* g, const expr_t* n, const type_t* lt) {
+  const type_t* rt = n->type;
+  bool parenwrap = has_ambiguous_prec(n);
+  if (parenwrap)
+    CHAR('(');
+
+  if (lt->kind != rt->kind) {
+    lt = unwind_aliastypes(lt);
+    rt = unwind_aliastypes(rt);
+    if (lt->kind != rt->kind) switch (lt->kind) {
+      case TYPE_OPTIONAL:
+        // ?T <= T
+        return optinit(g, n, /*isshort*/false);
+
+      case TYPE_SLICE:
+      case TYPE_MUTSLICE:
+        // &[T] <= &[T N]
+        assertf(type_isref(rt) && ((reftype_t*)rt)->elem->kind == TYPE_ARRAY,
+          "unexpected slice initializer %s", nodekind_name(rt->kind) );
+        const arraytype_t* at = (arraytype_t*)((reftype_t*)rt)->elem;
+        // struct slice { uint len; T* ptr; }
+        CHAR('('), type(g, (type_t*)lt), PRINT("){");
+        intconst(g, at->len, g->compiler->uinttype);
+        CHAR(',');
+        expr(g, n);
+        CHAR('}');
+        return;
+
+      case TYPE_REF: {
+        if (rt->kind == TYPE_MUTREF && reftype_byvalue(g, (reftype_t*)lt)) {
+          // special case: "&T <= mut&T" where &T is byvalue requires deref,
+          // since "mut&T" is always by pointer.
+          CHAR('*');
+        }
+        break;
+      }
+
+      default:
+        debugdie(g, n, "unexpected destination type %s", nodekind_name(lt->kind));
+    }
+  }
+
+  if (parenwrap) {
+    expr(g, n);
+    CHAR(')');
+  } else {
+    // allow tail call in common case
+    return expr(g, n);
+  }
+}
 
 
 #define ID_SIZE(key) (sizeof(ANON_PREFIX key) + sizeof(uintptr)*8 + 1)
@@ -664,10 +726,8 @@ static void zeroinit(cgen_t* g, const type_t* t);
 
 
 static void expr_or_zeroinit(cgen_t* g, const type_t* t, const expr_t* nullable n) {
-  if (n) {
-    assert(type_compat_coerce(g->compiler, t, n->type));
+  if (n)
     return expr(g, n);
-  }
   zeroinit(g, t);
 }
 
@@ -732,7 +792,8 @@ static const type_t* unwrap_ptr(const type_t* t) {
   assertnotnull(t);
   for (;;) switch (t->kind) {
     case TYPE_OPTIONAL: t = assertnotnull(((opttype_t*)t)->elem); break;
-    case TYPE_REF:      t = assertnotnull(((reftype_t*)t)->elem); break;
+    case TYPE_REF:
+    case TYPE_MUTREF:   t = assertnotnull(((reftype_t*)t)->elem); break;
     case TYPE_PTR:      t = assertnotnull(((ptrtype_t*)t)->elem); break;
     default:            return t;
   }
@@ -930,7 +991,7 @@ static void drops_before_stmt(cgen_t* g, const droparray_t* drops, const void* n
 }
 
 
-static void block(cgen_t* g, const block_t* n, blockflag_t fl) {
+static void block(cgen_t* g, const block_t* n) {
   g->scopenest++;
 
   if (n->flags & NF_RVALUE) {
@@ -943,7 +1004,7 @@ static void block(cgen_t* g, const block_t* n, blockflag_t fl) {
       }
       // simplify expression block with a single sub expression
       if (n->children.len == 1) {
-        expr_as_value(g, n->children.v[0]);
+        expr_rvalue(g, n->children.v[0], n->type);
         g->scopenest--;
         return;
       }
@@ -986,9 +1047,8 @@ static void block(cgen_t* g, const block_t* n, blockflag_t fl) {
       //     return tmp
       //   }
       //
-
       if (cn->kind == EXPR_RETURN) {
-        // explicit return from function (any block)
+        // return from function
         // e.g. "fun foo(x int) int { return x }"
         const retexpr_t* ret = (const retexpr_t*)cn;
         if (ret->type == type_void) {
@@ -1012,36 +1072,13 @@ static void block(cgen_t* g, const block_t* n, blockflag_t fl) {
         break;
       }
 
-      if (i == last) {
-        if (fl & BLOCKFLAG_RET) {
-          // implicit return from function body block
-          // e.g. "fun foo(x int) int { x }"
-          assertf(!block_isrvalue, "function block flagged NF_RVALUE");
-          x_semi_begin(g, cn->loc);
-          if (cn->type == type_void) {
-            expr(g, cn), CHAR(';');
-            gen_drops(g, &n->drops);
-          } else if (n->drops.len && expr_contains_owners(cn)) {
-            fmt_tmp_id(tmp, sizeof(tmp), cn);
-            // "T tmp = expr;"
-            type(g, cn->type), PRINTF(" %s = ", tmp), expr(g, cn), CHAR(';');
-            gen_drops(g, &n->drops);
-            startlinex(g);
-            PRINT("return "), PRINT(tmp), CHAR(';');
-          } else {
-            drops_before_stmt(g, &n->drops, cn);
-            PRINT("return "), expr(g, cn), CHAR(';');
-          }
-          break;
-        }
-        if (block_isrvalue) {
-          // implicit return from non function-body block
-          // e.g. "fun foo(x int) int { { x } }"
-          x_semi_begin(g, cn->loc);
-          PRINT(block_resvar), PRINT(" = "), expr(g, cn), CHAR(';');
-          gen_drops(g, &n->drops);
-          break;
-        }
+      if (i == last && block_isrvalue) {
+        // result from rvalue block
+        // e.g. "let x = { 1; 2 }" => "x" is an "int" with value "2"
+        x_semi_begin(g, cn->loc);
+        PRINT(block_resvar), PRINT(" = "), expr(g, cn), CHAR(';');
+        gen_drops(g, &n->drops);
+        break;
       }
 
       // regular statement or expression
@@ -1096,8 +1133,8 @@ static bool noalias(const type_t* t) {
   // PTR: pointers are always unique (one owner)
   // REF: there can only be one mutable ref at any given time
   return (
-    (t->kind == TYPE_PTR) ||
-    (t->kind == TYPE_REF && ((reftype_t*)t)->ismut)
+    t->kind == TYPE_PTR ||
+    t->kind == TYPE_MUTREF
   );
 }
 
@@ -1181,14 +1218,8 @@ static void fun(cgen_t* g, const fun_t* fun) {
   if (!fun->body)
     return;
 
-  funtype_t* ft = (funtype_t*)fun->type;
-
-  blockflag_t blockflags = 0;
-  if (ft->result != type_void)
-    blockflags |= BLOCKFLAG_RET; // return last expression
-
   CHAR(' ');
-  block(g, fun->body, blockflags);
+  block(g, fun->body);
 }
 
 
@@ -1346,19 +1377,19 @@ static void primtype_cast(cgen_t* g, const type_t* t, const expr_t* nullable val
 
   // skip redundant "(T)v" when v is T
   if (val && (val->type == t || val->type == basetype))
-    return expr_as_value(g, val);
+    return expr_rvalue(g, val, t);
 
   CHAR('('); type(g, t); CHAR(')');
 
   if (val) {
-    expr_as_value(g, val);
+    expr_rvalue(g, val, t);
   } else {
     zeroinit(g, t);
   }
 }
 
 
-static void typecall(cgen_t* g, const call_t* n, const type_t* t) {
+static void call_type(cgen_t* g, const call_t* n, const type_t* t) {
   if (type_isprim(t)) {
     assert(n->args.len < 2);
     return primtype_cast(g, t, n->args.len ? n->args.v[0] : NULL);
@@ -1387,7 +1418,7 @@ static void call_fn_recv(cgen_t* g, const call_t* n, expr_t** selfp, bool* issel
       funtype_t* ft = (funtype_t*)fn->type;
       if (ft->params.len > 0 && ((const local_t*)ft->params.v[0])->isthis) {
         const local_t* thisparam = ft->params.v[0];
-        *isselfrefp = thisparam->type->kind == TYPE_REF;
+        *isselfrefp = type_isref(thisparam->type);
         *selfp = m->recv;
       }
       assert(fn->name != sym__);
@@ -1407,16 +1438,10 @@ static void call_fn_recv(cgen_t* g, const call_t* n, expr_t** selfp, bool* issel
 }
 
 
-static void call(cgen_t* g, const call_t* n) {
-  // type call?
-  const idexpr_t* idrecv = (const idexpr_t*)n->recv;
-  if (idrecv->kind == EXPR_ID && nodekind_istype(idrecv->ref->kind))
-    return typecall(g, n, (const type_t*)idrecv->ref);
-  if (nodekind_istype(n->recv->kind))
-    return typecall(g, n, (const type_t*)n->recv);
-
+static void call_fun(cgen_t* g, const call_t* n) {
   // okay, then it must be a function call
   assert(n->recv->type->kind == TYPE_FUN);
+  const funtype_t* ft = (funtype_t*)n->recv->type;
 
   // owner sink? (i.e. return value is unused but must be dropped)
   bool owner_sink = (n->flags & NF_RVALUE) == 0 && type_isowner(n->type);
@@ -1431,7 +1456,7 @@ static void call(cgen_t* g, const call_t* n) {
   // args
   CHAR('(');
   if (self) {
-    if (isselfref && self->type->kind != TYPE_REF)
+    if (isselfref && !type_isref(self->type))
       CHAR('&');
     expr(g, self);
     if (n->args.len > 0)
@@ -1442,12 +1467,26 @@ static void call(cgen_t* g, const call_t* n) {
     const expr_t* arg = n->args.v[i];
     if (arg->kind == EXPR_PARAM) // named argument
       arg = ((const local_t*)arg)->init;
-    expr(g, arg);
+    const type_t* dst_t = ((local_t*)ft->params.v[i])->type;
+    expr_rvalue(g, arg, dst_t);
   }
   CHAR(')');
 
   if (owner_sink)
     drop_end(g);
+}
+
+
+static void call(cgen_t* g, const call_t* n) {
+  // type call?
+  const idexpr_t* idrecv = (idexpr_t*)n->recv;
+  if (idrecv->kind == EXPR_ID && nodekind_istype(idrecv->ref->kind))
+    return call_type(g, n, (type_t*)idrecv->ref);
+  if (nodekind_istype(n->recv->kind))
+    return call_type(g, n, (type_t*)n->recv);
+
+  // okay, then it must be a function call
+  return call_fun(g, n);
 }
 
 
@@ -1458,11 +1497,11 @@ static void typecons(cgen_t* g, const typecons_t* n) {
 
 
 static void binop(cgen_t* g, const binop_t* n) {
-  expr_as_value(g, n->left);
+  expr_rvalue(g, n->left, n->left->type);
   CHAR(' ');
   PRINT(operator(n->op));
   CHAR(' ');
-  expr_as_value(g, n->right);
+  expr_rvalue(g, n->right, n->right->type);
 }
 
 
@@ -1508,7 +1547,7 @@ static void boollit(cgen_t* g, const intlit_t* n) {
 
 static void strlit(cgen_t* g, const strlit_t* n) {
   const type_t* t = n->type;
-  if (t->kind == TYPE_REF && ((reftype_t*)t)->elem->kind == TYPE_ARRAY) {
+  if (type_isref(t) && ((reftype_t*)t)->elem->kind == TYPE_ARRAY) {
     PRINTF("(const u8[%zu]){\"", n->len);
     if UNLIKELY(!buf_appendrepr(&g->outbuf, n->bytes, n->len))
       seterr(g, ErrNoMem);
@@ -1542,50 +1581,94 @@ static void strlit(cgen_t* g, const strlit_t* n) {
 // }
 
 
-static void expr_as_value_of_type(cgen_t* g, const expr_t* n, const type_t* t) {
-  // note: this function has some similarities to _types_iscompat
-
-  const type_t* lt = unwind_aliastypes(t);
-  const type_t* rt = unwind_aliastypes(n->type);
-
-  if (lt->kind == rt->kind)
-    return expr_as_value(g, n);
-
-  switch (lt->kind) {
-    case TYPE_OPTIONAL: // ?T <= T
-      return optinit(g, n, /*isshort*/false);
-    case TYPE_SLICE:
-      // &[T] <= &[T N]
-      assertf(rt->kind == TYPE_REF && ((reftype_t*)rt)->elem->kind == TYPE_ARRAY,
-        "unexpected slice initializer %s", nodekind_name(rt->kind) );
-      const arraytype_t* at = (arraytype_t*)((reftype_t*)rt)->elem;
-      // struct slice { uint len; T* ptr; }
-      CHAR('('), type(g, (type_t*)lt), PRINT("){");
-      intconst(g, at->len, g->compiler->uinttype);
-      CHAR(',');
-      expr(g, n);
-      CHAR('}');
-      break;
-    default:
-      assertf(0, "unexpected destination type %s", nodekind_name(lt->kind));
-  }
-}
-
-
 static void assign(cgen_t* g, const binop_t* n) {
   if UNLIKELY(n->left->kind == EXPR_ID && ((idexpr_t*)n->left)->name == sym__) {
     // "_ = expr" => "expr"  if expr may have side effects or building in debug mode
     // "_ = expr" => ""      if expr does not have side effects
     // note: this may cause a warning to be printed by cc (in DEBUG builds only)
     if (g->compiler->buildmode == BUILDMODE_DEBUG || !expr_no_side_effects(n->right))
-      expr_as_value(g, n->right);
+      expr_rvalue(g, n->right, n->type);
     return;
   }
-  expr_as_value(g, n->left);
+  expr(g, n->left);
   CHAR(' ');
   PRINT(operator(n->op));
   CHAR(' ');
-  expr_as_value_of_type(g, n->right, n->type);
+  expr_rvalue(g, n->right, n->type);
+}
+
+
+static void vardef1(cgen_t* g, const local_t* n, const char* name, bool wrap_rvalue) {
+  // elide unused variable (unless it has side effects or in debug mode)
+  if (n->nuse == 0 &&
+      g->compiler->buildmode != BUILDMODE_DEBUG &&
+      expr_no_side_effects((expr_t*)n))
+  {
+    return;
+  }
+
+  if ((n->flags & NF_RVALUE) && wrap_rvalue)
+    PRINT("({");
+
+  type(g, n->type);
+
+  // "const" qualifier for &T that's a pointer
+  if (n->kind == EXPR_LET &&
+    ( type_isprim(n->type) ||
+      n->type->kind == TYPE_OPTIONAL ||
+      ( type_isref(n->type) && !reftype_byvalue(g, (reftype_t*)n->type) )
+    )
+  ){
+    PRINT(" const");
+  }
+  CHAR(' ');
+  id(g, name);
+
+  if (n->nuse == 0)
+    PRINT(" _CO_UNUSED");
+
+  // if (type_isptr(n->type)) {
+  //   PRINTF(" __attribute__((__consumable__(%s)))",
+  //     owner_islive(n) ? "unconsumed" : "consumed");
+  // }
+
+  PRINT(" = ");
+
+  if (n->init) {
+    if (n->type->kind == TYPE_OPTIONAL && n->init->type->kind != TYPE_OPTIONAL) {
+      optinit(g, n->init, /*isshort*/true);
+      //optinit(g, ((const opttype_t*)n->type)->elem, n->init, /*isshort*/true);
+    } else {
+      expr_rvalue(g, n->init, n->type);
+    }
+  } else {
+    zeroinit(g, n->type);
+  }
+
+  if ((n->flags & NF_RVALUE) && wrap_rvalue)
+    PRINT("; "), PRINT(name), PRINT(";})");
+}
+
+
+static void vardef(cgen_t* g, const local_t* n) {
+  vardef1(g, n, n->name, true);
+}
+
+
+static void deref(cgen_t* g, const unaryop_t* n) {
+  const type_t* t = n->expr->type;
+  if (t->kind == TYPE_REF && reftype_byvalue(g, (reftype_t*)t)) {
+    expr(g, n->expr);
+  } else {
+    CHAR('*');
+    // note: must not uese expr_rvalue here since it does implicit deref
+    bool parenwrap = has_ambiguous_prec(n->expr);
+    if (parenwrap)
+      CHAR('(');
+    expr(g, n->expr);
+    if (parenwrap)
+      CHAR(')');
+  }
 }
 
 
@@ -1593,33 +1676,30 @@ static void prefixop(cgen_t* g, const unaryop_t* n) {
   if (n->expr->kind == EXPR_INTLIT && n->expr->type->kind < TYPE_I32)
     CHAR('('), type(g, n->expr->type), CHAR(')');
   PRINT(operator(n->op));
-  expr_as_value(g, n->expr);
+  expr_rvalue(g, n->expr, n->type);
 }
 
 
 static void postfixop(cgen_t* g, const unaryop_t* n) {
-  expr_as_value(g, n->expr);
+  expr_rvalue(g, n->expr, n->type);
   PRINT(operator(n->op));
 }
 
 
 static void idexpr(cgen_t* g, const idexpr_t* n) {
-  // if (n->type->kind == TYPE_REF || n->type->kind == TYPE_PTR)
-  //   CHAR('*');
   id(g, n->name);
 }
 
 
 static void param(cgen_t* g, const local_t* n) {
-  // if (n->type->kind == TYPE_REF || n->type->kind == TYPE_PTR)
-  //   CHAR('*');
   id(g, n->name);
 }
 
 
 static void member_op(cgen_t* g, const type_t* recvt) {
-  nodekind_t k = recvt->kind;
-  if (k == TYPE_PTR || (k == TYPE_REF && !reftype_byvalue(g, (reftype_t*)recvt))) {
+  if (recvt->kind == TYPE_PTR ||
+    (type_isref(recvt) && !reftype_byvalue(g, (reftype_t*)recvt)))
+  {
     PRINT("->");
   } else {
     CHAR('.');
@@ -1635,7 +1715,7 @@ static void member(cgen_t* g, const member_t* n) {
     PRINT("__nullcheck(");
     expr(g, n->recv);
   } else {
-    expr_as_value(g, n->recv);
+    expr_rvalue(g, n->recv, n->recv->type);
   }
   if (n->recv->type->kind == TYPE_OPTIONAL) {
     panic("TODO optional access!");
@@ -1653,53 +1733,6 @@ static void expr_in_block(cgen_t* g, const expr_t* n) {
   PRINT("{ ");
   expr(g, n);
   PRINT("; }");
-}
-
-
-static void vardef1(cgen_t* g, const local_t* n, const char* name, bool wrap_rvalue) {
-
-  // elide unused variable (unless it has side effects)
-  if (n->nuse == 0 && expr_no_side_effects((expr_t*)n))
-    return;
-
-  if ((n->flags & NF_RVALUE) && wrap_rvalue)
-    PRINT("({");
-  type(g, n->type);
-  if (n->kind == EXPR_LET && (type_isprim(n->type) ||
-    n->type->kind == TYPE_REF || n->type->kind == TYPE_OPTIONAL))
-  {
-    PRINT(" const");
-  }
-  CHAR(' ');
-
-  id(g, name);
-
-  if (n->nuse == 0)
-    PRINT(" _CO_UNUSED");
-
-  // if (type_isptr(n->type)) {
-  //   PRINTF(" __attribute__((__consumable__(%s)))",
-  //     owner_islive(n) ? "unconsumed" : "consumed");
-  // }
-
-  PRINT(" = ");
-  if (n->init) {
-    if (n->type->kind == TYPE_OPTIONAL && n->init->type->kind != TYPE_OPTIONAL) {
-      optinit(g, n->init, /*isshort*/true);
-      //optinit(g, ((const opttype_t*)n->type)->elem, n->init, /*isshort*/true);
-    } else {
-      expr(g, n->init);
-    }
-  } else {
-    zeroinit(g, n->type);
-  }
-  if ((n->flags & NF_RVALUE) && wrap_rvalue)
-    PRINT("; "), PRINT(name), PRINT(";})");
-}
-
-
-static void vardef(cgen_t* g, const local_t* n) {
-  vardef1(g, n, n->name, true);
 }
 
 
@@ -1749,7 +1782,7 @@ static void ifexpr(cgen_t* g, const ifexpr_t* n) {
         PRINT("if ");
       }
       if ((var->flags & NF_OPTIONAL) && !type_isptrlike(var->type)) {
-        CHAR('('), expr_as_value(g, var->init), PRINT(".ok)");
+        CHAR('('), expr_rvalue(g, var->init, var->init->type), PRINT(".ok)");
       } else {
         PRINTF("(%s)", var->name);
       }
@@ -1765,7 +1798,7 @@ static void ifexpr(cgen_t* g, const ifexpr_t* n) {
       opttype_t t = { .kind = TYPE_OPTIONAL, .elem = (type_t*)var->type };
       opttype(g, &t);
       PRINT(" const "), PRINT(tmp), PRINT(" = ");
-      expr_as_value(g, var->init);
+      expr_rvalue(g, var->init, (type_t*)&t);
       CHAR(';');
 
       // "K x = tmp.v;"
@@ -1820,7 +1853,7 @@ static void ifexpr(cgen_t* g, const ifexpr_t* n) {
       if (id) {
         PRINTF("(%s.ok ? ", has_tmp_opt ? tmp : id->name);
       } else {
-        CHAR('('), expr_as_value(g, n->cond);
+        CHAR('('), expr_rvalue(g, n->cond, n->cond->type);
         if (n->cond->type->kind == TYPE_OPTIONAL &&
           !type_isptrlike(((const opttype_t*)n->cond->type)->elem))
         {
@@ -1832,7 +1865,7 @@ static void ifexpr(cgen_t* g, const ifexpr_t* n) {
       if (id) {
         PRINTF("if (%s.ok) ", has_tmp_opt ? tmp : id->name);
       } else {
-        PRINT("if ("), expr_as_value(g, n->cond), CHAR(')');
+        PRINT("if ("), expr_rvalue(g, n->cond, n->cond->type), CHAR(')');
       }
     }
   }
@@ -1843,13 +1876,13 @@ static void ifexpr(cgen_t* g, const ifexpr_t* n) {
     if ((!n->elseb || n->elseb->type == type_void) && !type_isopt(n->thenb->type)) {
       optinit(g, (expr_t*)n->thenb, /*isshort*/false);
     } else {
-      block(g, n->thenb, 0); // expr_as_value(g, n->thenb);
+      block(g, n->thenb);
     }
     PRINT(" : (");
     if (n->elseb) {
       if (loc_line(n->elseb->loc) != g->lineno)
         startline(g, n->elseb->loc);
-      block(g, n->elseb, 0);
+      block(g, n->elseb);
       if (n->elseb->type == type_void)
         PRINT(", ");
     } else {
@@ -1863,12 +1896,12 @@ static void ifexpr(cgen_t* g, const ifexpr_t* n) {
     }
     PRINT("))");
   } else {
-    block(g, n->thenb, 0);
+    block(g, n->thenb);
     if (n->elseb) {
       if (lastchar(g) != '}')
         CHAR(';'); // terminate non-block "then" body
       PRINT(" else ");
-      block(g, n->elseb, 0);
+      block(g, n->elseb);
     }
   }
 
@@ -1931,14 +1964,14 @@ static void expr(cgen_t* g, const expr_t* n) {
   case EXPR_STRLIT:    return strlit(g, (const strlit_t*)n);
   case EXPR_ID:        return idexpr(g, (const idexpr_t*)n);
   case EXPR_PARAM:     return param(g, (const local_t*)n);
-  case EXPR_BLOCK:     return block(g, (const block_t*)n, 0);
+  case EXPR_BLOCK:     return block(g, (const block_t*)n);
   case EXPR_CALL:      return call(g, (const call_t*)n);
   case EXPR_TYPECONS:  return typecons(g, (const typecons_t*)n);
   case EXPR_MEMBER:    return member(g, (const member_t*)n);
   case EXPR_IF:        return ifexpr(g, (const ifexpr_t*)n);
   case EXPR_FOR:       return forexpr(g, (const forexpr_t*)n);
   case EXPR_RETURN:    return retexpr(g, (const retexpr_t*)n, NULL);
-  case EXPR_DEREF:
+  case EXPR_DEREF:     return deref(g, (const unaryop_t*)n);
   case EXPR_PREFIXOP:  return prefixop(g, (const unaryop_t*)n);
   case EXPR_POSTFIXOP: return postfixop(g, (const unaryop_t*)n);
   case EXPR_BINOP:     return binop(g, (const binop_t*)n);
@@ -1971,9 +2004,11 @@ static void expr(cgen_t* g, const expr_t* n) {
   case TYPE_F64:
   case TYPE_ARRAY:
   case TYPE_SLICE:
+  case TYPE_MUTSLICE:
   case TYPE_FUN:
   case TYPE_PTR:
   case TYPE_REF:
+  case TYPE_MUTREF:
   case TYPE_OPTIONAL:
   case TYPE_STRUCT:
   case TYPE_ALIAS:

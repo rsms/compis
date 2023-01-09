@@ -1,0 +1,48 @@
+// Q: is it allowed to make fields with ref types?
+// Q: if it is, do struct types with mut ref fields become owners?
+// Q: what happens if a struct with a ref field outlives the ref'd value?
+//
+type Vec2 { x, y int }
+type Line { start, end &Vec2 }
+fun make_line() Line {
+  var pt = Vec2(0, 0)
+  return Line(&pt, &pt) // <—— 'Line' value outlives 'pt' storage!
+}
+fun main() {
+  var line = make_line()
+  line.start.x // <—— UD; points to dead stack memory!
+}
+//
+// Ideas:
+//
+// - Don't allow ref field types (or arrays or slices!), instead require
+//   pointers when shared state is needed.
+//   This would make programming in Compis clunky as you'd need to
+//   heap-allocate stuff even when you know a value has a valid lifetime:
+//     let pt = Vec2(0, 0)
+//     let line = Line(&pt, &pt)
+//     borrow_line(&line)
+//
+// - Perform "borrow checking", disallowing references to outlive referrers.
+//   Essentially escape analysis used with a value dependency graph:
+//     fun make_line() Line {
+//       var pt = Vec2(0, 0)
+//       let l = Line(&pt, &pt) // record dependency: pt -> l
+//       return l               // check lifetime of dependencies
+//       // error: l outlives pt
+//     }
+//
+// Notes:
+//   Writing code like this in Rust is pretty messy, but it does allow one
+//   to sleep sound at night:
+//     struct Vec2 { x: i32, y: i32 }
+//     struct Line<'a> { start: &'a Vec2, end: &'a Vec2 }
+//     // note: needs "lifetime parameters" (i.e. "'a")
+//     fn make_line() -> Line<'static> {
+//       // note: needs "lifetime parameter" (i.e. "'static")
+//       let pt = Vec2 { x: 1, y: 1 };
+//       Line { start: &pt, end: &pt }
+//       // error: cannot return value referencing local variable `pt`
+//     }
+//
+

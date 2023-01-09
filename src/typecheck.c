@@ -35,6 +35,17 @@ static const char* fmtkind(const void* node) {
   const node_t* n = node;
   if (n->kind == EXPR_ID && ((idexpr_t*)n)->ref)
     n = ((idexpr_t*)n)->ref;
+  switch (n->kind) {
+    case EXPR_BINOP: switch (((binop_t*)n)->op) {
+      case OP_EQ:   // ==
+      case OP_NEQ:  // !=
+      case OP_LT:   // <
+      case OP_GT:   // >
+      case OP_LTEQ: // <=
+      case OP_GTEQ: // >=
+        return "comparison";
+    }
+  }
   return nodekind_fmt(n->kind);
 }
 
@@ -99,13 +110,6 @@ static void incuse(void* node) {
 #define use(node) (incuse(node), (node))
 
 
-static const type_t* unwrap_alias_const(const type_t* t) {
-  while (t->kind == TYPE_ALIAS)
-    t = assertnotnull(((aliastype_t*)t)->elem);
-  return t;
-}
-
-
 // unwrap_id returns node->ref if node is an ID
 static node_t* unwrap_id(void* node) {
   node_t* n = node;
@@ -123,6 +127,12 @@ static type_t* unwrap_alias(type_t* t) {
   return t;
 }
 
+static const type_t* unwrap_alias_const(const type_t* t) {
+  while (t->kind == TYPE_ALIAS)
+    t = assertnotnull(((aliastype_t*)t)->elem);
+  return t;
+}
+
 
 // unwrap_ptr unwraps optional, ref and ptr
 // e.g. "?&T" => "&T" => "T"
@@ -130,7 +140,8 @@ static type_t* unwrap_ptr(type_t* t) {
   assertnotnull(t);
   for (;;) switch (t->kind) {
     case TYPE_OPTIONAL: t = assertnotnull(((opttype_t*)t)->elem); break;
-    case TYPE_REF:      t = assertnotnull(((reftype_t*)t)->elem); break;
+    case TYPE_REF:
+    case TYPE_MUTREF:   t = assertnotnull(((reftype_t*)t)->elem); break;
     case TYPE_PTR:      t = assertnotnull(((ptrtype_t*)t)->elem); break;
     default:            return t;
   }
@@ -143,7 +154,8 @@ static type_t* unwrap_ptr_and_alias(type_t* t) {
   assertnotnull(t);
   for (;;) switch (t->kind) {
     case TYPE_OPTIONAL: t = assertnotnull(((opttype_t*)t)->elem); break;
-    case TYPE_REF:      t = assertnotnull(((reftype_t*)t)->elem); break;
+    case TYPE_REF:
+    case TYPE_MUTREF:   t = assertnotnull(((reftype_t*)t)->elem); break;
     case TYPE_PTR:      t = assertnotnull(((ptrtype_t*)t)->elem); break;
     case TYPE_ALIAS:    t = assertnotnull(((aliastype_t*)t)->elem); break;
     default:            return t;
@@ -153,55 +165,82 @@ static type_t* unwrap_ptr_and_alias(type_t* t) {
 
 static type_t* concrete_type(const compiler_t* c, type_t* t) {
   for (;;) switch (t->kind) {
-  case TYPE_OPTIONAL: t = assertnotnull(((opttype_t*)t)->elem); break;
-  case TYPE_ALIAS:    t = assertnotnull(((aliastype_t*)t)->elem); break;
-  case TYPE_INT:      t = c->inttype; break;
-  case TYPE_UINT:     t = c->uinttype; break;
-  default:            return t;
+  case TYPE_ALIAS: t = assertnotnull(((aliastype_t*)t)->elem); break;
+  case TYPE_INT:   t = c->inttype; break;
+  case TYPE_UINT:  t = c->uinttype; break;
+  default:         return t;
   }
 }
 
 
-bool type_convertible(const type_t* dst, const type_t* src) {
-  dst = unwrap_alias_const(assertnotnull(dst));
-  src = unwrap_alias_const(assertnotnull(src));
-
-  // if (dst->kind == TYPE_MUT)
-  //   dst = ((muttype_t*)dst)->elem;
-  // if (src->kind == TYPE_MUT)
-  //   src = ((muttype_t*)src)->elem;
-
-  if (dst == src || (type_isprim(dst) && type_isprim(src)))
-    return true;
-
-  return false;
+// type_iscompatible:  value of type x can be read as type y or vice versa (eg "x + y").
+// type_isassignable:  value of type y can be assigned to local of type x.
+// type_isequivalent:  value of type x and y are equivalent (sans any aliases.)
+// type_isconvertible: value of type src can be converted to type dst.
+static bool _type_compat(
+  const compiler_t* c, const type_t* x, const type_t* y, bool assignment);
+static bool type_compat(
+  const compiler_t* c, const type_t* x, const type_t* y, bool assignment)
+{
+  return x == y || _type_compat(c, x, y, assignment);
+}
+static bool type_isequivalent(const compiler_t* c, const type_t* x, const type_t* y) {
+  return x == y || concrete_type(c, (type_t*)x) == concrete_type(c, (type_t*)y);
+}
+static bool type_isassignable( const compiler_t* c, const type_t* x, const type_t* y) {
+  return type_compat(c, x, y, true);
+}
+static bool type_iscompatible(const compiler_t* c, const type_t* x, const type_t* y) {
+  return type_compat(c, x, y, false);
 }
 
-
-bool _type_compat(
-  const compiler_t* c, const type_t* dst, const type_t* src, bool coerce)
+static const type_t* type_compat_unwrap(
+  const compiler_t* c, const type_t* t, bool may_deref)
 {
-  dst = unwrap_alias_const(assertnotnull(dst));
-  src = unwrap_alias_const(assertnotnull(src));
+  for (;;) switch (t->kind) {
+    case TYPE_ALIAS: t = assertnotnull(((aliastype_t*)t)->elem); break;
+    case TYPE_INT:   t = c->inttype; break;
+    case TYPE_UINT:  t = c->uinttype; break;
 
-  // if (coerce) {
-  //   // T <=> &T
-  //   // &T <=> T
-  //   if (dst->kind == TYPE_MUT)
-  //     dst = ((muttype_t*)dst)->elem;
-  //   if (src->kind == TYPE_MUT)
-  //     src = ((muttype_t*)src)->elem;
-  // }
+    case TYPE_REF:
+    case TYPE_MUTREF:
+      if (!may_deref)
+        return t;
+      may_deref = false;
+      t = ((reftype_t*)t)->elem;
+      break;
 
-  if (dst == src)
+    default:
+      return t;
+  }
+}
+
+static bool _type_compat(
+  const compiler_t* c, const type_t* x, const type_t* y, bool assignment)
+{
+  assertnotnull(x);
+  assertnotnull(y);
+
+  x = type_compat_unwrap(c, x, /*may_deref*/!assignment);
+  y = type_compat_unwrap(c, y, /*may_deref*/!assignment);
+
+  #if 0 && DEBUG
+  {
+    dlog("_type_compat (assignment=%d)", assignment);
+    buf_t* buf = (buf_t*)&c->diagbuf;
+    buf_clear(buf);
+    node_fmt(buf, (node_t*)x, 0);
+    dlog("  x = %s", buf->chars);
+    buf_clear(buf);
+    node_fmt(buf, (node_t*)y, 0);
+    dlog("  y = %s", buf->chars);
+  }
+  #endif
+
+  if (x == y)
     return true;
 
-  switch (dst->kind) {
-    case TYPE_INT:
-    case TYPE_UINT:
-      dst = canonical_primtype(c, dst);
-      src = canonical_primtype(c, src);
-      FALLTHROUGH;
+  switch (x->kind) {
     case TYPE_I8:
     case TYPE_I16:
     case TYPE_I32:
@@ -210,38 +249,59 @@ bool _type_compat(
     case TYPE_U16:
     case TYPE_U32:
     case TYPE_U64:
-      return dst == src;
+      // note: we do allow "T = &T" (e.g. "var y &int; var x int = y")
+      // of non-owning types, even though may be a little confusing sometimes.
+      if (assignment)
+        y = type_compat_unwrap(c, y, /*may_deref*/true);
+      return x == y;
+
+    case TYPE_STRUCT:
+      // note that at this point, x != y
+      if (assignment)
+        y = type_compat_unwrap(c, y, /*may_deref*/true);
+      return x == y && !type_isowner(x);
+
     case TYPE_PTR:
       // *T <= *T
       // &T <= *T
       return (
-        (src->kind == TYPE_PTR || src->kind == TYPE_REF) &&
-        type_compat(c, ((ptrtype_t*)dst)->elem, ((ptrtype_t*)src)->elem, coerce) );
+        type_isptrlike(y) &&
+        type_compat(c, ((ptrtype_t*)x)->elem, ((ptrtype_t*)y)->elem, assignment) );
+
     case TYPE_OPTIONAL: {
       // ?T <= T
       // ?T <= ?T
-      const opttype_t* d = (opttype_t*)dst;
-      if (src->kind == TYPE_OPTIONAL)
-        src = ((opttype_t*)src)->elem;
-      return type_compat(c, d->elem, src, coerce);
+      const opttype_t* d = (opttype_t*)x;
+      if (y->kind == TYPE_OPTIONAL)
+        y = ((opttype_t*)y)->elem;
+      return type_compat(c, d->elem, y, assignment);
     }
-    case TYPE_REF: {
+
+    case TYPE_REF:
+    case TYPE_MUTREF: {
       // &T    <= &T
       // mut&T <= &T
       // mut&T <= mut&T
       // &T    x= mut&T
       // &T    <= *T
       // mut&T <= *T
-      const reftype_t* l = (reftype_t*)dst;
-      if (src->kind == TYPE_PTR)
-        return type_compat(c, l->elem, ((ptrtype_t*)src)->elem, coerce);
-      const reftype_t* r = (reftype_t*)src;
+      const reftype_t* l = (reftype_t*)x;
+      if (y->kind == TYPE_PTR) {
+        // e.g. "&T <= *T"
+        return type_compat(c, l->elem, ((ptrtype_t*)y)->elem, assignment);
+      }
+      const reftype_t* r = (reftype_t*)y;
+      // e.g. "&T <= &T"
+      bool l_ismut = l->kind == TYPE_MUTREF;
+      bool r_ismut = r->kind == TYPE_MUTREF;
       return (
-        r->kind == TYPE_REF &&
-        (r->ismut == l->ismut || r->ismut || !l->ismut) &&
-        type_compat(c, l->elem, r->elem, coerce) );
+        type_isref(y) &&
+        (r_ismut == l_ismut || r_ismut || !l_ismut) &&
+        type_compat(c, l->elem, r->elem, assignment) );
     }
-    case TYPE_SLICE: {
+
+    case TYPE_SLICE:
+    case TYPE_MUTSLICE: {
       // &[T]    <= &[T]
       // &[T]    <= mut&[T]
       // mut&[T] <= mut&[T]
@@ -249,34 +309,57 @@ bool _type_compat(
       // &[T]    <= &[T N]
       // &[T]    <= mut&[T N]
       // mut&[T] <= mut&[T N]
-      const slicetype_t* l = (slicetype_t*)dst;
-      switch (src->kind) {
-        case TYPE_SLICE: {
-          const slicetype_t* r = (slicetype_t*)src;
+      const slicetype_t* l = (slicetype_t*)x;
+      bool l_ismut = l->kind == TYPE_MUTSLICE;
+      switch (y->kind) {
+        case TYPE_SLICE:
+        case TYPE_MUTSLICE: {
+          const slicetype_t* r = (slicetype_t*)y;
+          bool r_ismut = r->kind == TYPE_MUTSLICE;
           return (
-            (r->ismut == l->ismut || r->ismut || !l->ismut) &&
-            type_compat(c, l->elem, r->elem, coerce) );
+            (r_ismut == l_ismut || r_ismut || !l_ismut) &&
+            type_compat(c, l->elem, r->elem, assignment) );
         }
-        case TYPE_REF: {
-          bool r_ismut = ((reftype_t*)src)->ismut;
-          const arraytype_t* r = (arraytype_t*)((reftype_t*)src)->elem;
+        case TYPE_REF:
+        case TYPE_MUTREF: {
+          bool r_ismut = y->kind == TYPE_MUTREF;
+          const arraytype_t* r = (arraytype_t*)((reftype_t*)y)->elem;
           return (
             r->kind == TYPE_ARRAY &&
-            (r_ismut == l->ismut || r_ismut || !l->ismut) &&
-            type_compat(c, l->elem, r->elem, coerce) );
+            (r_ismut == l_ismut || r_ismut || !l_ismut) &&
+            type_compat(c, l->elem, r->elem, assignment) );
         }
       }
       return false;
     }
+
     case TYPE_ARRAY: {
       // [T N] <= [T N]
-      const arraytype_t* l = (arraytype_t*)dst;
-      const arraytype_t* r = (arraytype_t*)src;
-      return r->kind == TYPE_ARRAY &&
-             l->len == r->len &&
-             type_compat(c, l->elem, r->elem, coerce);
+      const arraytype_t* l = (arraytype_t*)x;
+      const arraytype_t* r = (arraytype_t*)y;
+      return (
+        r->kind == TYPE_ARRAY &&
+        l->len == r->len &&
+        type_compat(c, l->elem, r->elem, assignment) );
     }
   }
+
+  return false;
+}
+
+
+bool type_isconvertible(const type_t* dst, const type_t* src) {
+  dst = unwrap_alias_const(assertnotnull(dst));
+  src = unwrap_alias_const(assertnotnull(src));
+
+  if (type_isref(dst))
+    dst = ((reftype_t*)dst)->elem;
+  if (type_isref(src))
+    src = ((reftype_t*)src)->elem;
+
+  if (dst == src || (type_isprim(dst) && type_isprim(src)))
+    return true;
+
   return false;
 }
 
@@ -356,13 +439,55 @@ static void out_of_mem(typecheck_t* a) {
 #define mknode(a, TYPE, kind)  ( (TYPE*)_mknode((a)->p, sizeof(TYPE), (kind)) )
 
 
+static void transfer_nuse_to_wrapper(void* wrapper_node, void* wrapee_node) {
+  node_t* wrapper = wrapper_node;
+  node_t* wrapee = wrapee_node;
+  wrapper->nuse = wrapee->nuse;
+  wrapee->nuse -= (u32)!!wrapee->nuse;
+}
+
+
 static reftype_t* mkreftype(typecheck_t* a, type_t* elem, bool ismut) {
-  reftype_t* t = mknode(a, reftype_t, TYPE_REF);
+  reftype_t* t = mknode(a, reftype_t, ismut ? TYPE_MUTREF : TYPE_REF);
+  t->flags = elem->flags & NF_CHECKED;
   t->size = a->compiler->ptrsize;
   t->align = t->size;
   t->elem = elem;
-  t->ismut = ismut;
+  transfer_nuse_to_wrapper(t, elem);
   return t;
+}
+
+
+static expr_t* mkderef(typecheck_t* a, expr_t* refval, loc_t loc) {
+  unaryop_t* n = mknode(a, unaryop_t, EXPR_DEREF);
+  n->op = OP_MUL;
+  n->flags = refval->flags & (NF_RVALUE | NF_CHECKED);
+  n->loc = loc;
+  n->expr = refval;
+  transfer_nuse_to_wrapper(n, refval);
+  switch (refval->type->kind) {
+    case TYPE_PTR:
+    case TYPE_REF:
+    case TYPE_MUTREF:
+      n->type = ((ptrtype_t*)refval->type)->elem;
+      break;
+    default:
+      n->type = type_void;
+      assertf(0, "unexpected %s", nodekind_name(refval->type->kind));
+  }
+  return (expr_t*)n;
+}
+
+
+static expr_t* mkretexpr(typecheck_t* a, expr_t* value, loc_t loc) {
+  retexpr_t* n = mknode(a, retexpr_t, EXPR_RETURN);
+  n->flags = value->flags & NF_CHECKED;
+  value->flags |= NF_RVALUE;
+  n->loc = loc;
+  n->value = value;
+  n->type = value->type;
+  transfer_nuse_to_wrapper(n, value);
+  return (expr_t*)n;
 }
 
 
@@ -444,8 +569,24 @@ bool expr_no_side_effects(const expr_t* n) { switch (n->kind) {
 static void error_incompatible_types(
   typecheck_t* a, const void* nullable origin_node, const type_t* x, const type_t* y)
 {
-  error(a, origin_node, "incompatible types, %s and %s",
-    fmtnode(a, 0, x), fmtnode(a, 1, y));
+  const char* in_descr = origin_node ? fmtkind(origin_node) : NULL;
+  error(a, origin_node, "incompatible types %s and %s%s%s",
+    fmtnode(a, 0, x), fmtnode(a, 1, y), in_descr ? " in " : "", in_descr);
+}
+
+
+static void error_unassignable_type(
+  typecheck_t* a, const void* dst_expr, const type_t* srct)
+{
+  const expr_t* dst = dst_expr;
+  const expr_t* origin = dst;
+  if (node_islocal((node_t*)dst)) {
+    const local_t* local = (local_t*)dst;
+    if (loc_line(assertnotnull(local->init)->loc))
+      origin = local->init;
+  }
+  error(a, origin, "cannot assign value of type %s to %s of type %s",
+    fmtnode(a, 0, srct), fmtkind(dst), fmtnode(a, 1, dst->type));
 }
 
 
@@ -507,7 +648,7 @@ static void define(typecheck_t* a, sym_t name, void* n) {
   if (name == sym__)
     return;
 
-  trace("define \"%s\" => %s", name, fmtnode(a, 0, n));
+  // trace("define \"%s\" => %s", name, fmtnode(a, 0, n));
 
   #if DEBUG
     node_t* existing = scope_lookup(&a->scope, name, 0);
@@ -535,78 +676,89 @@ inline static void type(typecheck_t* a, type_t** tp) {
 }
 
 
-static void report_unused(typecheck_t* a, const void* expr_node) {
+static void implicit_rvalue_deref(typecheck_t* a, const type_t* ltype, expr_t** rvalp) {
+  expr_t* rval = *rvalp;
+  ltype = unwrap_alias_const(ltype);
+  const type_t* rtype = unwrap_alias(rval->type);
+  if (!type_isref(ltype) && type_isref(rtype))
+    *rvalp = mkderef(a, rval, rval->loc);
+}
+
+
+static bool report_unused(typecheck_t* a, const void* expr_node) {
   assert(node_isexpr(expr_node));
   const expr_t* n = expr_node;
 
   if (nodekind_islocal(n->kind)) {
     local_t* var = (local_t*)n;
-    if (var->name != sym__ && noerror(a))
+    if (var->name != sym__ && noerror(a)) {
       warning(a, var->nameloc, "unused %s %s", fmtkind(n), var->name);
-    return;
-  }
-
-  if UNLIKELY(expr_no_side_effects(n)) {
-    if (noerror(a))
+      return true;
+    }
+  } else if UNLIKELY(expr_no_side_effects(n)) {
+    if (noerror(a)) {
       warning(a, n, "unused %s %s", fmtkind(n), fmtnode(a, 0, n));
+      return true;
+    }
   }
+  return false;
 }
 
 
 static void block_noscope(typecheck_t* a, block_t* n) {
   TRACE_NODE(a, "", &n);
 
-  if (n->children.len == 0)
-    return;
-
   u32 count = n->children.len;
-  u32 stmt_end = count - (u32)(n->flags & NF_RVALUE);
+  stmt_t** stmtv = (stmt_t**)n->children.v;
+
+  if (count == 0) {
+    n->type = type_void;
+    return;
+  }
+
+  // if block is rvalue, last expression is the block's value, analyzed separately
+  u32 stmt_end = count;
+  stmt_end -= (u32)( (n->flags & NF_RVALUE) && stmtv[count-1]->kind != EXPR_RETURN );
 
   for (u32 i = 0; i < stmt_end; i++) {
-    stmt_t* cn = n->children.v[i];
+    stmt_t* cn = stmtv[i];
     stmt(a, cn);
 
     if (cn->kind == EXPR_RETURN) {
       // mark remaining expressions as unused
       // note: parser reports diagnostics about unreachable code
       for (i++; i < count; i++)
-        ((node_t*)n->children.v[i])->nuse = 0;
+        ((node_t*)stmtv[i])->nuse = 0;
       stmt_end = count; // avoid rvalue branch later on
       n->type = ((expr_t*)cn)->type;
-
-      if UNLIKELY(!a->fun) {
-        error(a, cn, "return outside of function");
-      } else if (n->type != type_void) {
-        funtype_t* ft = (funtype_t*)a->fun->type;
-        if UNLIKELY(ft->result == type_void) {
-          error(a, cn, "function %s%sshould not return a value",
-            a->fun->name ? a->fun->name : "",
-            a->fun->name ? " " : "");
-        }
-        // note: analysis of fun will check non-void types
-      }
-
+      n->flags |= NF_EXIT;
       break;
     }
   }
 
   // report unused expressions
   for (u32 i = 0; i < stmt_end; i++) {
-    stmt_t* cn = n->children.v[i];
-    if UNLIKELY(cn->nuse == 0 && nodekind_isexpr(cn->kind))
-      report_unused(a, cn);
+    stmt_t* cn = stmtv[i];
+    if UNLIKELY(cn->nuse == 0 && nodekind_isexpr(cn->kind)) {
+      if (report_unused(a, cn))
+        break; // stop after the first reported diagnostic
+    }
   }
 
+  // we are done if block is not an rvalue or contains an explicit "return" statement
+  if (stmt_end == count)
+    return;
+
   // if the block is rvalue, treat last entry as implicitly-returned expression
-  if (stmt_end < count) {
-    assert(n->flags & NF_RVALUE);
-    expr_t* lastexpr = n->children.v[stmt_end];
-    assert(nodekind_isexpr(lastexpr->kind));
-    lastexpr->flags |= NF_RVALUE;
-    expr(a, lastexpr);
-    lastexpr->nuse = MAX(n->nuse, lastexpr->nuse);
-    n->type = lastexpr->type;
-  }
+  expr_t* lastexpr = (expr_t*)stmtv[stmt_end];
+  assert(nodekind_isexpr(lastexpr->kind));
+  lastexpr->flags |= NF_RVALUE;
+
+  exprp(a, (expr_t**)&stmtv[stmt_end]);
+  lastexpr = (expr_t*)stmtv[stmt_end]; // reload; expr might have edited
+
+  lastexpr->nuse = MAX(n->nuse, lastexpr->nuse);
+  n->type = lastexpr->type;
 }
 
 
@@ -649,9 +801,10 @@ static void local(typecheck_t* a, local_t* n) {
 
     if (n->type == type_unknown || n->type->kind == TYPE_UNRESOLVED) {
       n->type = n->init->type;
-    } else if UNLIKELY(!type_compat_coerce(a->compiler, n->type, n->init->type)) {
-      error(a, n->init, "%s initializer of type %s where type %s is expected",
-        fmtkind(n), fmtnode(a, 0, n->init->type), fmtnode(a, 1, n->type));
+    } else if UNLIKELY(!type_isassignable(a->compiler, n->type, n->init->type)) {
+      error_unassignable_type(a, n, n->init->type);
+    } else {
+      implicit_rvalue_deref(a, n->type, &n->init);
     }
   }
 
@@ -751,14 +904,49 @@ static void funtype(typecheck_t* a, funtype_t** np) {
 }
 
 
-// static sym_t nullable nameof(const node_t* n) {
-//   switch (n->kind) {
-//   case TYPE_STRUCT: return ((structtype_t*)n)->name;
-//   case TYPE_ALIAS:  return ((aliastype_t*)n)->name;
-//   case EXPR_FUN:    return ((fun_t*)n)->name;
-//   default: return NULL;
-//   }
-// }
+static type_t* check_retval(typecheck_t* a, const void* originptr, expr_t*nullable* np) {
+  assertnotnull(a->fun);
+  funtype_t* ft = (funtype_t*)a->fun->type;
+
+  type_t* t;
+  if (*np) {
+    use(*np);
+    exprp(a, np);
+    expr_t* n = *np;
+    t = n->type;
+  } else {
+    t = type_void;
+  }
+
+  if UNLIKELY(!type_isassignable(a->compiler, ft->result, t)) {
+    const node_t* origin = originptr;
+    if (ft->result == type_void) {
+      error(a, origin, "function %s%sdoes not return a value",
+        a->fun->name ? a->fun->name : "",
+        a->fun->name ? " " : "");
+    } else {
+      if (t == type_void) {
+        loc_t loc = origin->loc;
+        if (origin->kind == EXPR_BLOCK)
+          loc = ((block_t*)origin)->endloc;
+        error(a, loc, "missing return value");
+      } else {
+        error(a, origin, "invalid function result type: %s", fmtnode(a, 0, t));
+      }
+      if (loc_line(ft->resultloc)) {
+        help(a, ft->resultloc, "function %s%sreturns %s",
+          (a->fun->name ? a->fun->name : ""), (a->fun->name ? " " : ""),
+          fmtnode(a, 1, ft->result));
+      }
+    }
+  }
+
+  if (*np) {
+    implicit_rvalue_deref(a, ft->result, np);
+    return (*np)->type;
+  }
+  return type_void;
+}
 
 
 static void main_fun(typecheck_t* a, fun_t* n) {
@@ -834,12 +1022,12 @@ static void fun(typecheck_t* a, fun_t* n) {
   n->mangledname = mangle(a, (node_t*)n);
 
   // check signature of special "drop" function.
-  // basically a "poor human's drop trait."
+  // basically a "poor person's drop trait."
   if (n->recvt && n->name == sym_drop) {
     bool ok = false;
     if (ft->result == type_void && ft->params.len == 1) {
       local_t* param0 = ft->params.v[0];
-      ok = param0->type->kind == TYPE_REF && ((reftype_t*)param0->type)->ismut;
+      ok = param0->type->kind == TYPE_MUTREF;
       if (ok)
         n->recvt->flags |= NF_DROP;
     }
@@ -849,27 +1037,29 @@ static void fun(typecheck_t* a, fun_t* n) {
 
   // body
   if (n->body) {
-    if (ft->result != type_void)
-      n->body->flags |= NF_RVALUE;
-    enter_ns(a, n);
-    typectx_push(a, ft->result);
-    block(a, n->body);
-    typectx_pop(a);
-    leave_ns(a);
-    n->body->flags &= ~NF_RVALUE;
+    // If the function returns a value, mark the block as rvalue.
+    // This causes block_noscope() to treat the last expression specially.
+    n->body->flags = COND_FLAG(n->body->flags, NF_RVALUE, ft->result != type_void);
 
-    // check body type vs function result type
-    if UNLIKELY(
-      ft->result != type_void &&
-      !type_compat_coerce(a->compiler, ft->result, n->body->type))
-    {
-      const char* expect = fmtnode(a, 0, ft->result);
-      const char* got = fmtnode(a, 1, n->body->type);
-      node_t* origin = (node_t*)n->body;
-      while (origin->kind == EXPR_BLOCK && ((block_t*)origin)->children.len > 0)
-        origin = ((block_t*)origin)->children.v[((block_t*)origin)->children.len-1];
-      if (origin) {
-        error(a, origin, "unexpected result type %s, function returns %s", got, expect);
+    // visit body
+    enter_ns(a, n);
+      typectx_push(a, ft->result);
+        block(a, n->body);
+      typectx_pop(a);
+    leave_ns(a);
+
+    // handle implicit return
+    if (ft->result != type_void && (n->body->flags & NF_EXIT) == 0) {
+      // function body should return a value, but block does not contain "return";
+      // the last expression is converted to a "return" statement.
+      if UNLIKELY(n->body->children.len == 0) {
+        // error will be reported by check_retval
+        expr_t* lastexpr = NULL;
+        check_retval(a, n->body, &lastexpr);
+      } else {
+        expr_t** lastexpr = (expr_t**)&n->body->children.v[n->body->children.len - 1];
+        check_retval(a, *lastexpr, lastexpr);
+        *lastexpr = mkretexpr(a, *lastexpr, (*lastexpr)->loc);
       }
     }
 
@@ -881,6 +1071,9 @@ static void fun(typecheck_t* a, fun_t* n) {
     {
       main_fun(a, n);
     }
+  } else {
+    if (n->visibility == VISIBILITY_PRIVATE)
+      n->visibility = VISIBILITY_PKG;
   }
 
   if (n->recvt)
@@ -936,7 +1129,7 @@ static void ifexpr(typecheck_t* a, ifexpr_t* n) {
   if (n->elseb && n->elseb->type != type_void) {
     // "if ... else" => T
     n->type = n->thenb->type;
-    if UNLIKELY(!type_compat_coerce(a->compiler, n->thenb->type, n->elseb->type)) {
+    if UNLIKELY(!type_isassignable(a->compiler, n->thenb->type, n->elseb->type)) {
       // TODO: type union
       const char* t1 = fmtnode(a, 0, n->thenb->type);
       const char* t2 = fmtnode(a, 1, n->elseb->type);
@@ -982,13 +1175,9 @@ static void idexpr(typecheck_t* a, idexpr_t* n) {
 
 
 static void retexpr(typecheck_t* a, retexpr_t* n) {
-  if (n->value) {
-    incuse(n->value);
-    expr(a, n->value);
-    n->type = n->value->type;
-  } else {
-    n->type = type_void;
-  }
+  if UNLIKELY(!a->fun)
+    return error(a, n, "return outside of function");
+  n->type = check_retval(a, n, &n->value);
 }
 
 
@@ -1010,11 +1199,8 @@ static bool check_assign_to_member(typecheck_t* a, member_t* m) {
     return true;
 
   case TYPE_REF:
-    if UNLIKELY(!((reftype_t*)m->recv->type)->ismut) {
-      error(a, m->recv, "assignment to immutable reference %s", fmtnode(a, 0, m->recv));
-      return false;
-    }
-    return true;
+    error(a, m->recv, "assignment to immutable reference %s", fmtnode(a, 0, m->recv));
+    return false;
 
   default:
     return true;
@@ -1047,36 +1233,172 @@ static bool check_assign_to_id(typecheck_t* a, idexpr_t* id) {
 
 static bool check_assign(typecheck_t* a, expr_t* target) {
   switch (target->kind) {
-  case EXPR_ID:
-    return check_assign_to_id(a, (idexpr_t*)target);
-  case EXPR_MEMBER:
-    return check_assign_to_member(a, (member_t*)target);
-  case EXPR_DEREF: {
-    // dereference target, e.g. "var x &int ; *x = 3"
-    type_t* t = ((unaryop_t*)target)->expr->type;
-    if (t->kind != TYPE_REF)
-      goto err;
-    if UNLIKELY(!((reftype_t*)t)->ismut) {
-      const char* s = fmtnode(a, 0, t);
-      error(a, target, "cannot assign via immutable reference of type %s", s);
-      return false;
+    case EXPR_ID:
+      return check_assign_to_id(a, (idexpr_t*)target);
+    case EXPR_MEMBER:
+      return check_assign_to_member(a, (member_t*)target);
+    case EXPR_DEREF: {
+      // dereference target, e.g. "var x &int ; *x = 3"
+      type_t* t = ((unaryop_t*)target)->expr->type;
+      if (t->kind == TYPE_REF) {
+        const char* s = fmtnode(a, 0, t);
+        error(a, target, "cannot assign via immutable reference of type %s", s);
+        return false;
+      }
+      if (t->kind == TYPE_MUTREF || t->kind == TYPE_PTR)
+        return true;
+      break;
     }
-    return true;
   }
-  }
-err:
   error(a, target, "cannot assign to %s", fmtkind(target));
   return false;
 }
 
 
-static void binop1(typecheck_t* a, binop_t* n) {
-  // note: no use(n->left) since being assign to doesn't count as being used
+static void assign(typecheck_t* a, binop_t* n) {
+  if (n->left->kind == EXPR_ID && ((idexpr_t*)n->left)->name == sym__) {
+    // "_ = expr"
+    typectx_push(a, n->left->type);
+    expr(a, n->right);
+    use(n->right);
+    typectx_pop(a);
+
+    n->type = n->right->type;
+    return;
+  }
+
   expr(a, n->left);
+  use(n->left);
 
   typectx_push(a, n->left->type);
-  use(n->right);
   expr(a, n->right);
+  use(n->right);
+  typectx_pop(a);
+
+  n->type = n->left->type;
+
+  if UNLIKELY(!type_isassignable(a->compiler, n->left->type, n->right->type))
+    error_unassignable_type(a, n, n->right->type);
+
+  check_assign(a, n->left);
+}
+
+
+static bool type_has_binop(const compiler_t* c, const type_t* t, op_t op) {
+  t = concrete_type(c, (type_t*)t);
+  switch (t->kind) {
+    case TYPE_BOOL:
+    case TYPE_OPTIONAL:
+      switch (op) {
+        case OP_LAND:       // &&
+        case OP_LOR:        // ||
+        case OP_EQ:         // ==
+        case OP_NEQ:        // !=
+        case OP_ASSIGN:     // =
+          return true;
+        default:
+          return false;
+      }
+    case TYPE_I8:
+    case TYPE_I16:
+    case TYPE_I32:
+    case TYPE_I64:
+    case TYPE_U8:
+    case TYPE_U16:
+    case TYPE_U32:
+    case TYPE_U64:
+      switch (op) {
+        case OP_ADD:        // +
+        case OP_SUB:        // -
+        case OP_MUL:        // *
+        case OP_DIV:        // /
+        case OP_MOD:        // %
+        case OP_AND:        // &
+        case OP_OR:         // |
+        case OP_XOR:        // ^
+        case OP_SHL:        // <<
+        case OP_SHR:        // >>
+        case OP_LAND:       // &&
+        case OP_LOR:        // ||
+        case OP_EQ:         // ==
+        case OP_NEQ:        // !=
+        case OP_LT:         // <
+        case OP_GT:         // >
+        case OP_LTEQ:       // <=
+        case OP_GTEQ:       // >=
+        case OP_ASSIGN:     // =
+        case OP_ADD_ASSIGN: // +=
+        case OP_SUB_ASSIGN: // -=
+        case OP_MUL_ASSIGN: // *=
+        case OP_DIV_ASSIGN: // /=
+        case OP_MOD_ASSIGN: // %=
+        case OP_AND_ASSIGN: // &=
+        case OP_OR_ASSIGN:  // |=
+        case OP_XOR_ASSIGN: // ^=
+        case OP_SHL_ASSIGN: // <<=
+        case OP_SHR_ASSIGN: // >>=
+          return true;
+        default:
+          return false;
+      }
+    case TYPE_F32:
+    case TYPE_F64:
+      switch (op) {
+        case OP_ADD:        // +
+        case OP_SUB:        // -
+        case OP_MUL:        // *
+        case OP_DIV:        // /
+        case OP_MOD:        // %
+        case OP_LAND:       // &&
+        case OP_LOR:        // ||
+        case OP_EQ:         // ==
+        case OP_NEQ:        // !=
+        case OP_LT:         // <
+        case OP_GT:         // >
+        case OP_LTEQ:       // <=
+        case OP_GTEQ:       // >=
+        case OP_ASSIGN:     // =
+        case OP_ADD_ASSIGN: // +=
+        case OP_SUB_ASSIGN: // -=
+        case OP_MUL_ASSIGN: // *=
+        case OP_DIV_ASSIGN: // /=
+        case OP_MOD_ASSIGN: // %=
+          return true;
+        default:
+          return false;
+      }
+    case TYPE_STRUCT:
+      switch (op) {
+        case OP_EQ:         // ==
+        case OP_NEQ:        // !=
+        case OP_ASSIGN:     // =
+          return true;
+        default:
+          return false;
+      }
+    case TYPE_REF:
+    case TYPE_PTR:
+      switch (op) {
+        case OP_EQ:         // ==
+        case OP_NEQ:        // !=
+        case OP_ASSIGN:     // =
+          return true;
+        default:
+          return false;
+      }
+    default:
+      return op == OP_ASSIGN;
+  }
+}
+
+
+static void binop(typecheck_t* a, binop_t* n) {
+  expr(a, n->left);
+  use(n->left);
+
+  typectx_push(a, n->left->type);
+  expr(a, n->right);
+  use(n->right);
   typectx_pop(a);
 
   switch (n->op) {
@@ -1086,38 +1408,29 @@ static void binop1(typecheck_t* a, binop_t* n) {
     case OP_GT:
     case OP_LTEQ:
     case OP_GTEQ:
+      // e.g. "x == y"
+      if UNLIKELY(!type_isequivalent(a->compiler, n->left->type, n->right->type))
+        error_incompatible_types(a, n, n->left->type, n->right->type);
       n->type = type_bool;
       break;
-    default:
+
+    default: {
+      // e.g. "x + y"
+      type_t* lt = unwrap_alias(n->left->type);
+      type_t* rt = unwrap_alias(n->right->type);
+      if UNLIKELY(!type_iscompatible(a->compiler, lt, rt))
+        error_incompatible_types(a, n, n->left->type, n->right->type);
+      if (type_isref(lt))
+        n->left = mkderef(a, n->left, n->left->loc);
+      if (type_isref(rt))
+        n->right = mkderef(a, n->right, n->right->loc);
       n->type = n->left->type;
+    }
   }
 
-  if UNLIKELY(
-    !!n->left->type * !!n->right->type && // "!!x * !!y": ignore NULL
-    !type_compat_coerce(a->compiler, n->left->type, n->right->type))
-  {
-    error_incompatible_types(a, n, n->left->type, n->right->type);
-  }
-}
-
-
-static void binop(typecheck_t* a, binop_t* n) {
-  use(n->left);
-  binop1(a, n);
-}
-
-
-static void assign(typecheck_t* a, binop_t* n) {
-  if (n->left->kind == EXPR_ID && ((idexpr_t*)n->left)->name == sym__) {
-    // "_ = expr"
-    typectx_push(a, n->left->type);
-    use(n->right);
-    expr(a, n->right);
-    typectx_pop(a);
-    n->type = n->right->type;
-  } else {
-    binop1(a, n);
-    check_assign(a, n->left);
+  if UNLIKELY(!type_has_binop(a->compiler, n->type, n->op)) {
+    error(a, n, "type %s has no '%s' operator defined",
+      fmtnode(a, 0, n->type), op_fmt(n->op));
   }
 }
 
@@ -1150,12 +1463,19 @@ static void unaryop(typecheck_t* a, unaryop_t* n) {
 static void deref(typecheck_t* a, unaryop_t* n) {
   expr(a, n->expr);
 
-  ptrtype_t* t = (ptrtype_t*)n->expr->type;
-  if UNLIKELY(t->kind != TYPE_REF && t->kind != TYPE_PTR) {
-    error(a, n, "dereferencing non-reference value of type %s", fmtnode(a, 0, t));
-  } else {
-    n->type = t->elem;
-  }
+  type_t* t = n->expr->type;
+
+  if UNLIKELY(!type_isptrlike(t))
+    return error(a, n, "dereferencing non-pointer value of type %s", fmtnode(a, 0, t));
+
+  // note: deref as store target is handled by check_assign,
+  // e.g. in "var x &int ...", "*x = 3" is an error but "_ = *x" is okay if
+  // type of "x" is copyable.
+  n->type = ((ptrtype_t*)t)->elem;
+
+  // check for deref of ref to non-copyable value
+  if UNLIKELY(type_isref(t) && type_isowner(n->type))
+    error(a, n, "cannot transfer ownership of borrowed %s", fmtnode(a, 0, t));
 }
 
 
@@ -1345,14 +1665,14 @@ static void finalize_typecons(typecheck_t* a, typecons_t** np) {
   if (!expr)
     return;
 
-  if (type_compat_coerce(a->compiler, t, expr->type)) {
-    // eliminate type cast to equivalent type, e.g. "i8(3)" => "3"
+  // eliminate type cast to equivalent type, e.g. "i8(3)" => "3"
+  if (concrete_type(a->compiler, t) == concrete_type(a->compiler, expr->type)) {
     expr->nuse += MAX(1, (*np)->nuse) - 1;
     *(expr_t**)np = expr;
     return;
   }
 
-  if UNLIKELY(!type_convertible(t, expr->type)) {
+  if UNLIKELY(!type_isconvertible(t, expr->type)) {
     const char* dst_s = fmtnode(a, 0, t);
     const char* src_s = fmtnode(a, 1, expr->type);
     error(a, *np, "cannot convert value of type %s to type %s", src_s, dst_s);
@@ -1466,7 +1786,7 @@ static void check_call_type_struct(typecheck_t* a, call_t* call, structtype_t* t
     if (arg->kind == EXPR_PARAM) {
       local_t* namedarg = (local_t*)arg;
       assertnotnull(namedarg->init); // checked by parser
-      expr(a, namedarg->init);
+      exprp(a, &namedarg->init);
       namedarg->type = namedarg->init->type;
     } else {
       assert(arg->kind == EXPR_ID); // for future dumb me
@@ -1475,8 +1795,12 @@ static void check_call_type_struct(typecheck_t* a, call_t* call, structtype_t* t
 
     typectx_pop(a);
 
-    if UNLIKELY(!type_compat_strict(a->compiler, f->type, arg->type))
+    if UNLIKELY(!type_isassignable(a->compiler, f->type, arg->type)) {
       error_field_type(a, arg, f);
+    } else {
+      implicit_rvalue_deref(a, f->type, (expr_t**)&args.v[i]);
+      arg = args.v[i]; // reload
+    }
   }
 
   a->p->tmpmap = fieldmap; // in case map grew
@@ -1664,20 +1988,20 @@ static void call_fun(typecheck_t* a, call_t* call, funtype_t* ft) {
         typectx_pop(a);
         break;
       }
-      expr(a, arg);
+      exprp(a, (expr_t**)&call->args.v[i]);
+      arg = call->args.v[i]; // reload
     }
 
     typectx_pop(a);
 
     // check type
     if UNLIKELY(
-      !type_compat_strict(a->compiler, param->type, arg->type) &&
+      !type_isassignable(a->compiler, param->type, arg->type) &&
       param->type != type_unknown &&
       arg->type != type_unknown )
     {
-      const char* got = fmtnode(a, 0, arg->type);
-      const char* expect = fmtnode(a, 1, param->type);
-      error(a, arg, "passing value of type %s to parameter of type %s", got, expect);
+      error(a, arg, "passing value of type %s to parameter of type %s",
+        fmtnode(a, 0, arg->type), fmtnode(a, 1, param->type));
       // if (param->type->kind == TYPE_MUT &&
       //     arg->type->kind != TYPE_MUT &&
       //     (arg->kind == EXPR_ID || arg->kind == EXPR_MEMBER) &&
@@ -1686,6 +2010,9 @@ static void call_fun(typecheck_t* a, call_t* call, funtype_t* ft) {
       //   const char* name = fmtnode(a, 0, arg);
       //   help(a, arg, "mark %s as mutable: &%s", name, name);
       // }
+    } else {
+      implicit_rvalue_deref(a, param->type, (expr_t**)&call->args.v[i]);
+      arg = call->args.v[i]; // reload
     }
   }
 
@@ -1731,9 +2058,8 @@ static void unresolvedtype(typecheck_t* a, unresolvedtype_t** tp) {
 
   sym_t name = (*tp)->name;
   type_t* t = (type_t*)lookup(a, name);
-
-  // dlog("resolve type \"%s\" => %s %s",
-  //   name, nodekind_name(t ? t->kind : 0), t ? fmtnode(a, 0, t) : "(null)");
+  trace("resolve type \"%s\" (%p) => %s %s",
+    name, name, nodekind_name(t ? t->kind : 0), t ? fmtnode(a, 0, t) : "(null)");
 
   if LIKELY(t && nodekind_istype(t->kind)) {
     type(a, &t);
@@ -1743,18 +2069,17 @@ static void unresolvedtype(typecheck_t* a, unresolvedtype_t** tp) {
     return;
   }
 
-  // some error beyond this point
+  // error beyond this point
 
   // not found
   if (!t) {
     error(a, *tp, "unknown type \"%s\"", name);
-    return;
+  } else {
+    // not a type
+    error(a, *tp, "%s is not a type (it's a %s)", name, fmtkind(t));
+    if (loc_line(t->loc))
+      help(a, t, "%s defined here", name);
   }
-
-  // not a type
-  error(a, *tp, "%s is not a type (it's a %s)", name, fmtkind(t));
-  if (loc_line(t->loc))
-    help(a, t, "%s defined here", name);
 
   // redefine as "void" in current scope to minimize repetitive errors
   if (!scope_define(&a->scope, a->ma, name, *tp))
@@ -1776,12 +2101,6 @@ static void aliastype(typecheck_t* a, aliastype_t** tp) {
 }
 
 
-// static void unknowntype(typecheck_t* a, type_t** tp) {
-//   assertf(a->typectx != type_unknown, "unknown type inside unresolved typectx");
-//   *tp = a->typectx;
-// }
-
-
 // end call
 // —————————————————————————————————————————————————————————————————————————————————
 
@@ -1800,7 +2119,8 @@ static void _type(typecheck_t* a, type_t** tp) {
     case TYPE_FUN:        return funtype(a, (funtype_t**)tp);
     case TYPE_STRUCT:     return structtype(a, (structtype_t*)*tp);
     case TYPE_ARRAY:      return arraytype(a, (arraytype_t*)*tp);
-    case TYPE_REF:        return type(a, &((reftype_t*)(*tp))->elem);
+    case TYPE_REF:
+    case TYPE_MUTREF:     return type(a, &((reftype_t*)(*tp))->elem);
     case TYPE_PTR:        return type(a, &((ptrtype_t*)(*tp))->elem);
     case TYPE_OPTIONAL:   return type(a, &((opttype_t*)(*tp))->elem);
   }
@@ -1887,9 +2207,11 @@ static void exprp(typecheck_t* a, expr_t** np) {
   case TYPE_F64:
   case TYPE_ARRAY:
   case TYPE_SLICE:
+  case TYPE_MUTSLICE:
   case TYPE_FUN:
   case TYPE_PTR:
   case TYPE_REF:
+  case TYPE_MUTREF:
   case TYPE_OPTIONAL:
   case TYPE_STRUCT:
   case TYPE_ALIAS:
