@@ -137,7 +137,7 @@ static u8 kStash;
 #define TRACE_KEY_FMT  "\"%s\""
 #define TRACE_KEY(key) ((const char*)(key))
 
-#ifdef TRACE_SCOPESTACK
+#if defined(TRACE_SCOPESTACK) && defined(CO_DEVBUILD)
   #define trace(s, fmt, args...) dlog("[scope %u] " fmt, level(s), ##args)
   static u32 level(const scope_t* nullable s) {
     u32 n = 0;
@@ -195,6 +195,7 @@ static u8 kStash;
     fprintf(stderr, "\n}\n");
   }
 #else
+  #undef TRACE_SCOPESTACK
   #define trace(s, fmt, args...) ((void)0)
   #define trace_state(...)        ((void)0)
 #endif

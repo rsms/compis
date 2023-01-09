@@ -1,0 +1,10 @@
+fun array_size(x, y uint) uint {
+  var z uint = 3
+  y = z
+  x * y
+}
+
+fun main() {
+  // size of array computed at compile time
+  var _ [u32 array_size(2,3)]
+}

@@ -1,5 +1,10 @@
 // compile-time evaluation
 // SPDX-License-Identifier: Apache-2.0
+//
+// FIXME TODO: this is a bit of a mess.
+// Replace with something better and less complex.
+// It currently evaluates the AST.
+//
 #include "colib.h"
 #include "compiler.h"
 
@@ -19,18 +24,23 @@ typedef struct {
   u64array_t  stack;
   err_t       err;
 
+  // call frame state
+  expr_t* nullable   returnval;
+  map_t              localm; // {local_t* => node_t*}
+  local_t** nullable localv;
+  u32                localc;
+
   // constants lazily allocated in ast_ma
   intlit_t* nullable const_true;
   intlit_t* nullable const_false;
 
   #ifdef TRACE_COMPTIME
-    int   traceindent;
-    buf_t tracebuf[2];
+    int traceindent;
   #endif
 } ctx_t;
 
 
-#if defined(TRACE_COMPTIME) && DEBUG
+#if defined(TRACE_COMPTIME) && defined(CO_DEVBUILD)
   #define trace(fmt, va...)  \
     _dlog(5, "eval", __FILE__, __LINE__, "%*s" fmt, ctx->traceindent*2, "", ##va)
 
@@ -40,6 +50,7 @@ typedef struct {
   //   ctx_t* __tracer __attribute__((__cleanup__(_trace_scope_end),__unused__)) = ctx
 #else
   #undef TRACE_COMPTIME
+  #undef TRACE_COMPTIME_RESULT
   #define trace(fmt, va...) ((void)0)
   // #define TRACE_SCOPE()     ((void)0)
 #endif
@@ -69,11 +80,34 @@ static void seterr(ctx_t* ctx, err_t err) {
 // void diag(typecheck_t*, T origin, diagkind_t diagkind, const char* fmt, ...)
 // where T is one of: origin_t | loc_t | node_t* | expr_t*
 #define diag(ctx, origin, diagkind, fmt, args...) \
-  report_diag((ctx)->c, to_origin((ctx), (origin)), (diagkind), (fmt), ##args)
+  report_diag((ctx)->c, to_origin((ctx), (origin)), (diagkind), fmt, ##args)
 
-#define error(ctx, origin, fmt, args...)   diag(ctx, origin, DIAG_ERR, (fmt), ##args)
-#define warning(ctx, origin, fmt, args...) diag(ctx, origin, DIAG_WARN, (fmt), ##args)
-#define help(ctx, origin, fmt, args...)    diag(ctx, origin, DIAG_HELP, (fmt), ##args)
+#define error(ctx, origin, fmt, args...)   diag(ctx, origin, DIAG_ERR, fmt, ##args)
+#define warning(ctx, origin, fmt, args...) diag(ctx, origin, DIAG_WARN, fmt, ##args)
+#define help(ctx, origin, fmt, args...)    diag(ctx, origin, DIAG_HELP, fmt, ##args)
+
+// static void* error_not_supported(ctx_t* ctx, node_t* origin, const char* fmt, ...)
+#define error_not_supported(ctx, origin, fmt, args...) \
+  diag((ctx), (origin), DIAG_ERR, fmt " not supported at compile time", ##args)
+
+
+static void* error_operation_not_supported(
+  ctx_t* ctx, void* origin, op_t op, const char* typename)
+{
+  error_not_supported(ctx, origin, "operation %s on %s", op_name(op) + 3, typename);
+  return origin;
+}
+
+
+UNUSED static const char* fmtnode(ctx_t* ctx, u32 bufindex, const void* nullable n) {
+  buf_t* buf = tmpbuf(bufindex);
+  err_t err = node_fmt(buf, n, /*depth*/0);
+  if (!err)
+    return buf->chars;
+  dlog("node_fmt: %s", err_str(err));
+  seterr(ctx, err);
+  return "?";
+}
 
 
 #define mknode(ctx, TYPE, kind, loc) \
@@ -101,8 +135,41 @@ static node_t* _mknode1(ctx_t* ctx, usize size, nodekind_t kind, loc_t loc) {
 static void* eval(ctx_t* ctx, void* node);
 
 
-static void* id(ctx_t* ctx, idexpr_t* n) {
-  return assertnotnull(n->ref);
+static void* lookup_local(ctx_t* ctx, local_t* n) {
+  void** vp = map_lookup_ptr(&ctx->localm, n);
+  if (!vp)
+    return error(ctx, n, "undefined local '%s'", n->name), n;
+  return assertnotnull(*vp);
+}
+
+
+static void define_local(ctx_t* ctx, local_t* n, void* value) {
+  void** vp = map_assign_ptr(&ctx->localm, ctx->ma, n);
+  if (!vp)
+    return seterr(ctx, ErrNoMem);
+  *vp = assertnotnull(value);
+}
+
+
+static void* localdefinition(ctx_t* ctx, local_t* n) {
+  expr_t* init = n->init;
+  if (!init)
+    return error_not_supported(ctx, n, "variable declaration without initializer"), n;
+  define_local(ctx, n, init);
+  return init;
+}
+
+
+static void* idexpr(ctx_t* ctx, idexpr_t* n) {
+  node_t* ref = assertnotnull(n->ref);
+  switch (ref->kind) {
+    case EXPR_VAR:
+    case EXPR_LET:
+    case EXPR_PARAM:
+      ref = lookup_local(ctx, (local_t*)ref);
+      break;
+  }
+  return eval(ctx, ref);
 }
 
 
@@ -113,24 +180,49 @@ static void* call(ctx_t* ctx, call_t* n) {
   if (recv->body == NULL)
     return error(ctx, n, "call to function without implementation"), n;
 
-  // push return address [FIXME]
-  STACK_PUSH(ctx, 0);
+  // push return status
+  // STACK_PUSH(ctx, 0);
 
-  // TODO STACK_PUSH arguments
-  assert( ((funtype_t*)recv->type)->params.len == n->args.len );
-  assertf(n->args.len == 0, "TODO arguments in call");
+  // save current function state
+  expr_t* returnval = ctx->returnval;
+  local_t** localv  = ctx->localv;
+  u32 localc        = ctx->localc;
 
-  return eval(ctx, recv->body);
+  // setup new function state
+  funtype_t* ft = (funtype_t*)recv->type;
+  assert( ft->params.len == n->args.len );
+  for (u32 i = 0; i < n->args.len; i++) {
+    expr_t* arg = n->args.v[i];
+    if (arg->kind == EXPR_PARAM) // named argument
+      arg = ((local_t*)arg)->init;
+    local_t* param = ft->params.v[i];
+    define_local(ctx, param, arg);
+  }
+  if (ctx->err) // define_local failed
+    return n;
+  ctx->returnval = NULL;
+
+  // evaluate function
+  eval(ctx, recv->body);
+
+  // save result in a local temp
+  expr_t* result = ctx->returnval;
+  if (!result)
+    result = (expr_t*)&last_resort_node;
+
+  // restore current function state
+  ctx->returnval = returnval;
+  ctx->localv    = localv;
+  ctx->localc    = localc;
+
+  return result;
 }
 
 
 static void* block(ctx_t* ctx, block_t* n) {
   void* result = last_resort_node;
-  for (u32 i = 0; i < n->children.len; i++) {
-    node_t* r = eval(ctx, n->children.v[i]);
-    // TODO handle return
-    result = r;
-  }
+  for (u32 i = 0; i < n->children.len && ctx->returnval == NULL && ctx->err == 0; i++)
+    result = eval(ctx, n->children.v[i]);
   return result;
 }
 
@@ -180,9 +272,7 @@ static void* binop_test_shortcircuit(ctx_t* ctx, binop_t* n, expr_t* l) {
 
 
 static void* binop_float(ctx_t* ctx, binop_t* n, floatlit_t* l, floatlit_t* r) {
-  error(ctx, n, "operation %s on floats not yet supported at compile time",
-    op_name(n->op) + 3);
-  return l;
+  return error_operation_not_supported(ctx, n, n->op, nodekind_name(l->kind));
 }
 
 static void* binop_int(ctx_t* ctx, binop_t* n, intlit_t* l, intlit_t* r) {
@@ -225,9 +315,7 @@ again:
 
   #undef OPSWITCH
 
-  error(ctx, n, "operation %s on integers not supported at compile time",
-    op_name(n->op) + 3);
-  return l;
+  return error_operation_not_supported(ctx, n, n->op, "integers");
 ok:
   if (res == l->intval)
     return l;
@@ -244,10 +332,53 @@ static void* binop(ctx_t* ctx, binop_t* n) {
   expr_t* l = asexpr(eval(ctx, n->left));
   if (n->op == OP_LAND || n->op == OP_LOR)
     return binop_test_shortcircuit(ctx, n, l);
+
   expr_t* r = asexpr(eval(ctx, n->right));
-  if (l->type->kind == TYPE_F32 || l->type->kind == TYPE_F64)
+  if (l->kind == EXPR_FLOATLIT) {
+    assert(r->kind == EXPR_FLOATLIT);
     return binop_float(ctx, n, (floatlit_t*)l, (floatlit_t*)r);
-  return binop_int(ctx, n, (intlit_t*)l, (intlit_t*)r);
+  }
+
+  if (l->kind == EXPR_INTLIT) {
+    assert(r->kind == EXPR_INTLIT);
+    return binop_int(ctx, n, (intlit_t*)l, (intlit_t*)r);
+  }
+
+  return error_operation_not_supported(ctx, n, n->op, nodekind_name(l->kind));
+}
+
+
+static void* assign(ctx_t* ctx, binop_t* n) {
+  if (n->left->kind != EXPR_ID) {
+    error_not_supported(ctx, n, "%s with %s",
+      nodekind_fmt(n->kind), nodekind_fmt(n->left->kind));
+    return n;
+  }
+
+  // assignment to local
+
+  node_t* ref = assertnotnull(((idexpr_t*)n->left)->ref);
+  switch (ref->kind) {
+    case EXPR_LET:
+    case EXPR_VAR:
+    case EXPR_PARAM:
+      define_local(ctx, (local_t*)ref, n->right);
+      break;
+    default:
+      assertf(0, "unexpected %s", nodekind_name(ref->kind));
+  }
+  return n->right;
+}
+
+
+static void* retexpr(ctx_t* ctx, retexpr_t* n) {
+  if (n->value) {
+    ctx->returnval = eval(ctx, n->value);
+  } else {
+    // no return value, but we have to set ctx->returnval to something
+    ctx->returnval = (expr_t*)&last_resort_node;
+  }
+  return ctx->returnval;
 }
 
 
@@ -258,15 +389,17 @@ static void* eval1(ctx_t* ctx, void* np);
     node_t* n = np;
 
     ctx->traceindent++;
-    buf_t* buf0 = &ctx->tracebuf[0];
+    buf_t* buf0 = tmpbuf(0);
     buf_clear(buf0);
     node_fmt(buf0, (node_t*)n, 0);
     trace("→ %s %s ...", nodekind_name(n->kind), buf0->chars);
 
     node_t* result = eval1(ctx, np);
 
+    assertnotnull(result);
+
     #ifdef TRACE_COMPTIME_RESULT
-      buf_t* buf1 = &ctx->tracebuf[1];
+      buf_t* buf1 = tmpbuf(1);
       buf_clear(buf0);
       buf_clear(buf1);
       node_fmt(buf0, (node_t*)n, 0);
@@ -299,29 +432,29 @@ static void* eval1(ctx_t* ctx, void* np) {
   case EXPR_STRLIT:
     return n;
 
-  case EXPR_ID:    return id(ctx, np);
-  case EXPR_CALL:  return call(ctx, np);
-  case EXPR_BLOCK: return block(ctx, np);
-  case EXPR_BINOP: return binop(ctx, np);
+  case EXPR_ID:     return idexpr(ctx, np);
+  case EXPR_CALL:   return call(ctx, np);
+  case EXPR_BLOCK:  return block(ctx, np);
+  case EXPR_BINOP:  return binop(ctx, np);
+  case EXPR_RETURN: return retexpr(ctx, np);
+  case EXPR_FUN:    return np;
+  case EXPR_ASSIGN: return assign(ctx, np);
+
+  case EXPR_VAR:
+  case EXPR_LET:
+    return localdefinition(ctx, np);
 
   // —— TODO ——
   case NODE_UNIT:
   case STMT_TYPEDEF:
 
-  case EXPR_VAR:
-  case EXPR_LET:
-  case EXPR_PARAM:
-  case EXPR_FIELD:
-  case EXPR_FUN:
   case EXPR_TYPECONS:
   case EXPR_MEMBER:
   case EXPR_IF:
   case EXPR_FOR:
-  case EXPR_RETURN:
   case EXPR_DEREF:
   case EXPR_PREFIXOP:
   case EXPR_POSTFIXOP:
-  case EXPR_ASSIGN:
 
   case TYPE_VOID:
   case TYPE_BOOL:
@@ -349,12 +482,14 @@ static void* eval1(ctx_t* ctx, void* np) {
   case TYPE_ALIAS:
   case TYPE_UNKNOWN:
   case TYPE_UNRESOLVED:
-    // TODO implement these
-    panic("[NOT IMPLEMENTED] comptime_eval %s", nodekind_name(n->kind));
+    return error_not_supported(ctx, n, "%s", nodekind_fmt(n->kind)), n;
 
+  // nodes we should never encounter as an expression
   case NODE_BAD:
   case NODE_COMMENT:
   case NODEKIND_COUNT:
+  case EXPR_PARAM:
+  case EXPR_FIELD:
     break;
   }
   assertf(0, "unexpected node %s", nodekind_name(n->kind));
@@ -362,45 +497,48 @@ static void* eval1(ctx_t* ctx, void* np) {
 }
 
 
-node_t* comptime_eval(compiler_t* c, expr_t* expr) {
+node_t* nullable comptime_eval(compiler_t* c, expr_t* expr) {
   ctx_t ctx = {
     .c = c,
     .ma = c->ma,
     .ast_ma = c->ma, // TODO FIXME pass as function argument
   };
 
-  #ifdef TRACE_COMPTIME
-    for (usize i = 0; i < countof(ctx.tracebuf); i++)
-      buf_init(&ctx.tracebuf[i], ctx.ma);
-  #endif
+  if (!map_init(&ctx.localm, ctx.ma, 16))
+    return NULL;
+
+  u32 errcount = c->errcount;
 
   node_t* result = eval(&ctx, expr);
 
-  u64array_dispose(&ctx.stack, ctx.ma);
+  if UNLIKELY(c->errcount > errcount && loc_line(expr->loc))
+    help(&ctx, expr, "comptime evaluation originated here");
 
-  #ifdef TRACE_COMPTIME
-    for (usize i = 0; i < countof(ctx.tracebuf); i++)
-      buf_dispose(&ctx.tracebuf[i]);
-  #endif
+  u64array_dispose(&ctx.stack, ctx.ma);
+  map_dispose(&ctx.localm, ctx.ma);
 
   return result;
 }
 
 
-u64 comptime_eval_uint(compiler_t* c, expr_t* expr) {
+bool comptime_eval_uint(compiler_t* c, expr_t* expr, u64* result) {
   intlit_t* n;
   if (expr->kind == EXPR_INTLIT) {
+    // shortcut for common case, e.g. "3" in "var myarray [int 3]"
     n = (intlit_t*)expr;
   } else {
     n = (intlit_t*)comptime_eval(c, expr);
+    if (!n)
+      return false;
   }
 
-  if LIKELY(n->kind == EXPR_INTLIT && n->type == type_uint)
-    return n->intval;
+  if LIKELY(n->kind == EXPR_INTLIT && n->type == type_uint) {
+    *result = n->intval;
+    return true;
+  }
 
   // error
   origin_t origin = node_origin(&c->locmap, (node_t*)expr);
-  report_diag(c, origin, DIAG_ERR,
-    "expression does not result in a value of type uint");
-  return 0;
+  report_diag(c, origin, DIAG_ERR, "expression does not result in a value of type uint");
+  return false;
 }

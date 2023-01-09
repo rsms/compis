@@ -243,12 +243,6 @@ typedef struct {
 
 typedef struct {
   usertype_t;
-  loc_t   endloc; // "]"
-  type_t* elem;
-} slicetype_t;
-
-typedef struct {
-  usertype_t;
   ptrarray_t params;       // local_t*[]
   loc_t      paramsloc;    // location of "(" ...
   loc_t      paramsendloc; // location of ")"
@@ -273,6 +267,11 @@ typedef struct {
 typedef struct {
   ptrtype_t;
 } reftype_t;
+
+typedef struct {
+  ptrtype_t;
+  loc_t endloc; // "]"
+} slicetype_t;
 
 typedef struct {
   usertype_t;
@@ -475,7 +474,6 @@ typedef struct {
   memalloc_t       ast_ma; // AST allocator
   scope_t          scope;
   map_t            pkgdefs;
-  buf_t            tmpbuf[2];
   map_t            tmpmap;
   map_t            recvtmap; // maps type_t* -> ptrarray_t of methods (fun_t*[])
   fun_t* nullable  fun;      // current function
@@ -668,6 +666,8 @@ inline static bool nodekind_isreftype(nodekind_t kind) {
   return kind == TYPE_REF || kind == TYPE_MUTREF; }
 inline static bool nodekind_isptrliketype(nodekind_t kind) {
   return kind == TYPE_PTR || kind == TYPE_REF || kind == TYPE_MUTREF; }
+inline static bool nodekind_isslicetype(nodekind_t kind) {
+  return kind == TYPE_SLICE || kind == TYPE_MUTSLICE; }
 inline static bool nodekind_isvar(nodekind_t kind) {
   return kind == EXPR_VAR || kind == EXPR_LET; }
 
@@ -688,16 +688,15 @@ inline static bool type_isref(const type_t* nullable t) {  // &T | mut&T
   return nodekind_isreftype(assertnotnull(t)->kind); }
 inline static bool type_isptrlike(const type_t* nullable t) { // &T | mut&T | *T
   return nodekind_isptrliketype(assertnotnull(t)->kind); }
+inline static bool type_isslice(const type_t* nullable t) {  // &[T] | mut&[T]
+  return nodekind_isslicetype(assertnotnull(t)->kind); }
 inline static bool type_isprim(const type_t* nullable t) {  // void, bool, int, u8, ...
   return nodekind_isprimtype(assertnotnull(t)->kind); }
 inline static bool type_isopt(const type_t* nullable t) {  // ?T
   return assertnotnull(t)->kind == TYPE_OPTIONAL; }
 inline static bool type_isbool(const type_t* nullable t) {  // bool
   return assertnotnull(t)->kind == TYPE_BOOL; }
-inline static bool type_isowner(const type_t* t) {
-  t = type_isopt(t) ? ((opttype_t*)t)->elem : t;
-  return ((t->flags & (NF_DROP | NF_SUBOWNERS)) != 0) | type_isptr(t);
-}
+bool type_isowner(const type_t* t);
 inline static bool type_iscopyable(const type_t* t) {
   return !type_isowner(t);
 }
@@ -744,8 +743,8 @@ bool expr_no_side_effects(const expr_t* n);
 
 
 // comptime
-node_t* comptime_eval(compiler_t*, expr_t*);
-u64 comptime_eval_uint(compiler_t*, expr_t*);
+node_t* nullable comptime_eval(compiler_t*, expr_t*); // NULL if OOM
+bool comptime_eval_uint(compiler_t*, expr_t*, u64* result);
 
 // tokens
 const char* tok_name(tok_t); // e.g. TEQ => "TEQ"
@@ -791,6 +790,11 @@ bool scope_define(scope_t* s, memalloc_t ma, const void* key, void* value);
 bool scope_undefine(scope_t* s, memalloc_t ma, const void* key);
 void* nullable scope_lookup(scope_t* s, const void* key, u32 maxdepth);
 inline static bool scope_istoplevel(const scope_t* s) { return s->base == 0; }
+
+// temporary buffers
+// get_tmpbuf returns a thread-local general-purpose temporary buffer
+void tmpbuf_init(memalloc_t);
+buf_t* tmpbuf(u32 bufindex /* [0-2) */);
 
 // pos
 static void locmap_dispose(locmap_t* lm, memalloc_t ma);

@@ -12,7 +12,7 @@
 // #define TRACE_SUBPROC
 
 
-#if defined(TRACE_SUBPROC) && DEBUG
+#if defined(TRACE_SUBPROC) && defined(CO_DEVBUILD)
   #define trace(fmt, va...) _dlog(3, "sproc", __FILE__, __LINE__, fmt, ##va)
 #else
   #undef TRACE_SUBPROC

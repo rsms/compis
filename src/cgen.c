@@ -10,7 +10,7 @@
 typedef struct { usize v[2]; } sizetuple_t;
 
 
-#if defined(TRACE_CGEN) && DEBUG
+#if defined(TRACE_CGEN) && defined(CO_DEVBUILD)
   #define trace(fmt, va...) _dlog(6, "cgen", __FILE__, __LINE__, fmt, ##va)
 #else
   #undef TRACE_CGEN
@@ -69,11 +69,14 @@ static void _error(cgen_t* g, origin_t origin, const char* fmt, ...) {
 }
 
 
-static const char* fmtnode(cgen_t* g, const void* nullable n) {
-  buf_t* buf = &g->compiler->diagbuf;
-  buf_clear(buf);
-  node_fmt(buf, n, /*depth*/0);
-  return buf->chars;
+static const char* fmtnode(cgen_t* g, u32 bufindex, const void* nullable n) {
+  buf_t* buf = tmpbuf(bufindex);
+  err_t err = node_fmt(buf, n, /*depth*/0);
+  if (!err)
+    return buf->chars;
+  dlog("node_fmt: %s", err_str(err));
+  seterr(g, err);
+  return "?";
 }
 
 
@@ -291,7 +294,7 @@ static sym_t intern_typedef(
   }
 
   trace("%*.s%s %s %s",
-    (int)g->headnest*2, "", __FUNCTION__, nodekind_name(t->kind), fmtnode(g, t));
+    (int)g->headnest*2, "", __FUNCTION__, nodekind_name(t->kind), fmtnode(g, 0, t));
 
   // saved values
   u32 lineno, inputid, indent;
@@ -504,7 +507,7 @@ static bool reftype_byvalue(cgen_t* g, const reftype_t* t) {
     t->elem->kind == TYPE_SLICE ||
     t->elem->kind == TYPE_MUTSLICE ||
     t->elem->kind == TYPE_ARRAY ||
-    ( t->kind == TYPE_REF && t->elem->size <= g->compiler->ptrsize*2 )
+    ( t->kind == TYPE_REF && t->elem->size <= (u64)g->compiler->ptrsize*2 )
   );
 }
 
@@ -512,9 +515,16 @@ static bool reftype_byvalue(cgen_t* g, const reftype_t* t) {
 static void reftype(cgen_t* g, const reftype_t* t) {
   if (reftype_byvalue(g, t)) {
     // e.g. "&Foo" => "Foo"
-    // note: we can't use "const" here since that would cause issues with temorary
-    // locals, for example implicit block returns as in "let y = { ...; x }" which
-    // uses a temporary variable to store x in for the block "{ ...; x }".
+    if (t->kind == TYPE_REF && t->elem->kind == TYPE_ARRAY &&
+        ((arraytype_t*)t->elem)->len != 0)
+    {
+      // note: we can't use "const" here for plain types since that would cause
+      // issues with temorary locals, for example implicit block returns as in
+      // "let y = { ...; x }" which uses a temporary variable to store x in for
+      // the block "{ ...; x }".
+      // However for pointer values like arrays we _must_ use const.
+      PRINT("const ");
+    }
     type(g, t->elem);
   } else {
     // e.g. "&Foo"    => "const Foo*"
@@ -1355,6 +1365,7 @@ again:
     PRINT("{0}");
     break;
   case TYPE_SLICE:
+  case TYPE_MUTSLICE:
     PRINT("{0,NULL}");
     break;
   case TYPE_ARRAY:
@@ -1466,7 +1477,7 @@ static void call_fun(cgen_t* g, const call_t* n) {
     if (i) PRINT(", ");
     const expr_t* arg = n->args.v[i];
     if (arg->kind == EXPR_PARAM) // named argument
-      arg = ((const local_t*)arg)->init;
+      arg = ((local_t*)arg)->init;
     const type_t* dst_t = ((local_t*)ft->params.v[i])->type;
     expr_rvalue(g, arg, dst_t);
   }
@@ -1556,7 +1567,7 @@ static void strlit(cgen_t* g, const strlit_t* n) {
     // string, alias for &[u8]
     // t = unwind_aliastypes(t);
     // const slicetype_t* st = (slicetype_t*)t;
-    assert(unwind_aliastypes(t)->kind == TYPE_SLICE);
+    assert(type_isslice(unwind_aliastypes(t)));
     PRINT("(");
     type(g, t);
     PRINTF("){%zu,(const u8[%zu]){\"", n->len, n->len);

@@ -51,8 +51,6 @@ void compiler_dispose(compiler_t* c) {
   mem_freecstr(c->ma, c->builddir);
   mem_freecstr(c->ma, c->pkgbuilddir);
   mem_freecstr(c->ma, c->pkgname);
-  for (u32 i = 0; i < c->cflags.len; i++)
-    mem_freecstr(c->ma, c->cflags.v[i]);
 }
 
 

@@ -3,8 +3,8 @@
 #include "compiler.h"
 #include <stdlib.h> // for debug_graphviz hack
 
-//#define TRACE_ANALYSIS
-#if !DEBUG
+#define TRACE_ANALYSIS
+#ifndef CO_DEVBUILD
   #undef TRACE_ANALYSIS
 #endif
 
@@ -22,7 +22,6 @@ typedef struct {
   irblock_t*  b;           // current block
   err_t       err;         // result of build process
   u32         condnest;    // >0 when inside conditional ("if", "for", etc)
-  buf_t       tmpbuf[2];   // general-purpose scratch buffers
   ptrarray_t  funqueue;    // [fun_t*] queue of functions awaiting build
   map_t       funm;        // {fun_t* => irfun_t*} for breaking cycles
   map_t       vars;        // {sym_t => irval_t*} (moved to defvars by end_block)
@@ -51,15 +50,21 @@ static irfun_t   bad_irfun = { .ast = &bad_astfun };
 static irunit_t  bad_irunit = { 0 };
 
 
+static void seterr(ircons_t* c, err_t err) {
+  if (!c->err)
+    dlog("error set to: %d \"%s\"", err, err_str(err));
+  c->err += (err * !c->err); // only set if c->err==0 (first error "wins")
+}
+
+
 #define ID_CHAR(v_or_b) _Generic((v_or_b), \
   irval_t*:   'v', \
   irblock_t*: 'b' )
 
 
 ATTR_FORMAT(printf, 3, 4)
-static const char* fmttmp(ircons_t* c, u32 bufidx, const char* fmt, ...) {
-  buf_t* buf = &c->tmpbuf[bufidx];
-  buf_clear(buf);
+static const char* fmttmp(ircons_t* c, u32 bufindex, const char* fmt, ...) {
+  buf_t* buf = tmpbuf(bufindex);
   va_list ap;
   va_start(ap, fmt);
   buf_vprintf(buf, fmt, ap);
@@ -68,15 +73,12 @@ static const char* fmttmp(ircons_t* c, u32 bufidx, const char* fmt, ...) {
 }
 
 
-static const char* fmtnodex(ircons_t* c, u32 bufidx, const void* nullable n, u32 depth) {
-  buf_t* buf = &c->tmpbuf[bufidx];
-  buf_clear(buf);
-  node_fmt(buf, n, depth);
+UNUSED static const char* fmtnode(u32 bufindex, const void* nullable n) {
+  buf_t* buf = tmpbuf(bufindex);
+  err_t err = node_fmt(buf, n, /*depth*/0);
+  assertf(err == 0, "node_fmt");
   return buf->chars;
 }
-
-// const char* fmtnode(u32 bufidx, const void* nullable n)
-#define fmtnode(bufidx, n) fmtnodex(c, (bufidx), (n), 0)
 
 
 #ifdef TRACE_ANALYSIS
@@ -160,13 +162,6 @@ static bool dump_irunit(const compiler_t* c, const irunit_t* u) {
 //   buf_dispose(&buf);
 //   return true;
 // }
-
-
-static void seterr(ircons_t* c, err_t err) {
-  if (!c->err)
-    dlog("error set to: %d \"%s\"", err, err_str(err));
-  c->err += (err * !c->err); // only set if c->err==0 (first error "wins")
-}
 
 
 inline static locmap_t* locmap(ircons_t* c) {
@@ -2201,16 +2196,10 @@ static err_t ircons(
     goto fail_vars;
   }
 
-  for (usize i = 0; i < countof(c.tmpbuf); i++)
-    buf_init(&c.tmpbuf[i], c.ma);
-
   irunit_t* u = unit(&c, n);
 
   // end
   *result = (u == &bad_irunit) ? NULL : u;
-
-  for (usize i = 0; i < countof(c.tmpbuf); i++)
-    buf_dispose(&c.tmpbuf[i]);
 
   ptrarray_dispose(&c.funqueue, c.ma);
   ptrarray_dispose(&c.dropstack, c.ma);

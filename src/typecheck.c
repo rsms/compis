@@ -16,19 +16,7 @@
 #endif
 
 
-static const char* fmtnodex(
-  typecheck_t* a, u32 bufindex, const void* nullable n, u32 depth)
-{
-  buf_t* buf = &a->p->tmpbuf[bufindex];
-  buf_clear(buf);
-  node_fmt(buf, n, depth);
-  return buf->chars;
-}
-
-
-static const char* fmtnode(typecheck_t* a, u32 bufindex, const void* nullable n) {
-  return fmtnodex(a, bufindex, n, 0);
-}
+static const char* fmtnode(typecheck_t* a, u32 bufindex, const void* nullable n);
 
 
 static const char* fmtkind(const void* node) {
@@ -50,7 +38,7 @@ static const char* fmtkind(const void* node) {
 }
 
 
-#ifdef TRACE_TYPECHECK
+#if defined(TRACE_TYPECHECK) && defined(CO_DEVBUILD)
   #define trace_node(a, msg, np) ({ \
     const node_t* __n = *(const node_t**)(np); \
     trace("%s%-14s: %s", (msg), nodekind_name(__n->kind), fmtnode((a), 0, __n)); \
@@ -91,6 +79,7 @@ static const char* fmtkind(const void* node) {
       {(a), (const node_t**)(np), (msg)};
 
 #else
+  #undef TRACE_TYPECHECK
   #define trace_node(a,msg,n) ((void)0)
   #define TRACE_NODE(a,msg,n) ((void)0)
 #endif
@@ -108,6 +97,18 @@ static void incuse(void* node) {
 }
 
 #define use(node) (incuse(node), (node))
+
+
+bool type_isowner(const type_t* t) {
+  // TODO: consider computing this once during typecheck and then just setting
+  // a nodeflag e.g. NF_OWNER, and rewriting type_isowner to just check for that flag.
+  t = type_isopt(t) ? ((opttype_t*)t)->elem : t;
+  return (
+    ((t->flags & (NF_DROP | NF_SUBOWNERS)) != 0) ||
+    type_isptr(t) ||
+    ( t->kind == TYPE_ARRAY && ((arraytype_t*)t)->len == 0 ) // dynamic array [T]
+  );
+}
 
 
 // unwrap_id returns node->ref if node is an ID
@@ -400,6 +401,17 @@ static bool noerror(typecheck_t* a) {
 }
 
 
+static const char* fmtnode(typecheck_t* a, u32 bufindex, const void* nullable n) {
+  buf_t* buf = tmpbuf(bufindex);
+  err_t err = node_fmt(buf, n, /*depth*/0);
+  if (!err)
+    return buf->chars;
+  dlog("node_fmt: %s", err_str(err));
+  seterr(a, err);
+  return "?";
+}
+
+
 inline static locmap_t* locmap(typecheck_t* a) {
   return &a->compiler->locmap;
 }
@@ -492,10 +504,9 @@ static expr_t* mkretexpr(typecheck_t* a, expr_t* value, loc_t loc) {
 
 
 static char* mangle(typecheck_t* a, const node_t* n) {
-  buf_t* tmpbuf = &a->compiler->diagbuf;
-  buf_clear(tmpbuf);
-  compiler_mangle(a->compiler, tmpbuf, n);
-  char* s = mem_strdup(a->ast_ma, buf_slice(*tmpbuf), 0);
+  buf_t* buf = tmpbuf(0);
+  compiler_mangle(a->compiler, buf, n);
+  char* s = mem_strdup(a->ast_ma, buf_slice(*buf), 0);
   if UNLIKELY(!s) {
     out_of_mem(a);
     static char last_resort[1] = {0};
@@ -874,15 +885,19 @@ static void structtype(typecheck_t* a, structtype_t* st) {
 
 
 static void arraytype(typecheck_t* a, arraytype_t* at) {
-  if (at->lenexpr) {
-    typectx_push(a, a->compiler->uinttype);
-    expr(a, at->lenexpr);
-    typectx_pop(a);
-    if (a->compiler->errcount == 0) {
-      at->len = comptime_eval_uint(a->compiler, at->lenexpr);
-      if UNLIKELY(at->len == 0 && a->compiler->errcount == 0)
-        error(a, at, "zero length array");
-    }
+  if (!at->lenexpr)
+    return;
+
+  typectx_push(a, type_uint);
+  expr(a, at->lenexpr);
+  typectx_pop(a);
+
+  if (a->compiler->errcount > 0)
+    return;
+
+  if (comptime_eval_uint(a->compiler, at->lenexpr, &at->len)) {
+    if UNLIKELY(at->len == 0 && a->compiler->errcount == 0)
+      error(a, at, "zero length array");
   }
 }
 
@@ -1477,8 +1492,7 @@ static void floatlit(typecheck_t* a, floatlit_t* n) {
   if (a->typectx == type_f32) {
     n->type = type_f32;
     // FIXME: better way to check f32 value (than via sprintf & strtof)
-    buf_t* buf = &a->p->tmpbuf[0];
-    buf->len = 0;
+    buf_t* buf = tmpbuf(0);
     if UNLIKELY(!buf_printf(buf, "%g", n->f64val))
       out_of_mem(a);
     float f = strtof(buf->chars, NULL);
@@ -2108,17 +2122,40 @@ static void _type(typecheck_t* a, type_t** tp) {
 
   TRACE_NODE(a, "", tp);
   switch ((*tp)->kind) {
-    case TYPE_UNRESOLVED: return unresolvedtype(a, (unresolvedtype_t**)tp);
-    case TYPE_ALIAS:      return aliastype(a, (aliastype_t**)tp);
-    case TYPE_FUN:        return funtype(a, (funtype_t**)tp);
-    case TYPE_STRUCT:     return structtype(a, (structtype_t*)*tp);
-    case TYPE_ARRAY:      return arraytype(a, (arraytype_t*)*tp);
+    case TYPE_VOID:
+    case TYPE_BOOL:
+    case TYPE_I8:
+    case TYPE_I16:
+    case TYPE_I32:
+    case TYPE_I64:
+    case TYPE_INT:
+    case TYPE_U8:
+    case TYPE_U16:
+    case TYPE_U32:
+    case TYPE_U64:
+    case TYPE_UINT:
+    case TYPE_F32:
+    case TYPE_F64:
+    case TYPE_UNKNOWN:
+      assertf(0, "%s should always be NF_CHECKED", nodekind_name((*tp)->kind));
+      return;
+
+    case TYPE_ARRAY: return arraytype(a, (arraytype_t*)*tp);
+    case TYPE_FUN:   return funtype(a, (funtype_t**)tp);
+
+    case TYPE_PTR:
     case TYPE_REF:
-    case TYPE_MUTREF:     return type(a, &((reftype_t*)(*tp))->elem);
-    case TYPE_PTR:        return type(a, &((ptrtype_t*)(*tp))->elem);
+    case TYPE_MUTREF:
+    case TYPE_SLICE:
+    case TYPE_MUTSLICE:
+      return type(a, &((ptrtype_t*)(*tp))->elem);
+
     case TYPE_OPTIONAL:   return type(a, &((opttype_t*)(*tp))->elem);
+    case TYPE_STRUCT:     return structtype(a, (structtype_t*)*tp);
+    case TYPE_ALIAS:      return aliastype(a, (aliastype_t**)tp);
+    case TYPE_UNRESOLVED: return unresolvedtype(a, (unresolvedtype_t**)tp);
   }
-  dlog("TODO %s %s", __FUNCTION__, nodekind_name((*tp)->kind));
+  assertf(0, "unexpected %s", nodekind_name((*tp)->kind));
 }
 
 

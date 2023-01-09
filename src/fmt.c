@@ -377,10 +377,12 @@ static void fmt(abuf_t* s, const node_t* nullable n, u32 indent, u32 maxdepth) {
 
   case EXPR_INTLIT: {
     const intlit_t* lit = (const intlit_t*)n;
-    u32 base = 10;
-    if (lit->type && type_isunsigned(lit->type))
-      base = 16;
-    abuf_u64(s, lit->intval, base);
+    if (lit->type && type_isunsigned(lit->type)) {
+      abuf_str(s, "0x");
+      abuf_u64(s, lit->intval, 16);
+    } else {
+      abuf_u64(s, lit->intval, 10);
+    }
     break;
   }
 
@@ -420,7 +422,9 @@ static void fmt(abuf_t* s, const node_t* nullable n, u32 indent, u32 maxdepth) {
     arraytype_t* t = (arraytype_t*)n;
     abuf_c(s, '[');
     fmt(s, (node_t*)t->elem, indent, maxdepth);
-    abuf_fmt(s, " %llu]", t->len);
+    if (t->len > 0)
+      abuf_fmt(s, " %llu", t->len);
+    abuf_c(s, ']');
     break;
   }
   case TYPE_SLICE:

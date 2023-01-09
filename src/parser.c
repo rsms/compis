@@ -31,7 +31,7 @@ typedef enum {
 } prec_t;
 
 
-#if defined(TRACE_PARSE) && DEBUG
+#if defined(TRACE_PARSE) && defined(CO_DEVBUILD)
   #define trace(fmt, va...)  \
     _dlog(2, "P", __FILE__, __LINE__, "%*s" fmt, p->traceindent*2, "", ##va)
   static void _traceindent_decr(parser_t** cp) { (*cp)->traceindent--; }
@@ -261,9 +261,8 @@ static void out_of_mem(parser_t* p) {
 }
 
 
-static const char* fmttok(parser_t* p, usize bufindex, tok_t tok, slice_t lit) {
-  buf_t* buf = &p->tmpbuf[bufindex];
-  buf_clear(buf);
+static const char* fmttok(parser_t* p, u32 bufindex, tok_t tok, slice_t lit) {
+  buf_t* buf = tmpbuf(bufindex);
   buf_reserve(buf, 64);
   tok_descr(buf->p, buf->cap, tok, lit);
   return buf->chars;
@@ -271,10 +270,13 @@ static const char* fmttok(parser_t* p, usize bufindex, tok_t tok, slice_t lit) {
 
 
 static const char* fmtnode(parser_t* p, u32 bufindex, const void* n) {
-  buf_t* buf = &p->tmpbuf[bufindex];
-  buf_clear(buf);
-  node_fmt(buf, n, 1);
-  return buf->chars;
+  buf_t* buf = tmpbuf(bufindex);
+  err_t err = node_fmt(buf, n, /*depth*/0);
+  if (!err)
+    return buf->chars;
+  dlog("node_fmt: %s", err_str(err));
+  out_of_mem(p);
+  return "?";
 }
 
 
@@ -1947,8 +1949,7 @@ static stmt_t* stmt_pub(parser_t* p) {
     } else if (slice_eq_cstri(str, "CO")) {
       // abi is already "CO"
     } else {
-      buf_t* buf = &p->tmpbuf[0];
-      buf_clear(buf);
+      buf_t* buf = tmpbuf(0);
       if (!buf_appendrepr(buf, str.bytes, str.len)) {
         out_of_mem(p);
       } else {
@@ -2072,9 +2073,6 @@ bool parser_init(parser_t* p, compiler_t* c) {
   if (!map_init(&p->recvtmap, c->ma, 32))
     goto err3;
 
-  for (usize i = 0; i < countof(p->tmpbuf); i++)
-    buf_init(&p->tmpbuf[i], c->ma);
-
   p->ma = p->scanner.compiler->ma;
 
   // note: dotctxstack is valid when zero initialized
@@ -2092,8 +2090,6 @@ err1:
 
 
 void parser_dispose(parser_t* p) {
-  for (usize i = 0; i < countof(p->tmpbuf); i++)
-    buf_dispose(&p->tmpbuf[i]);
   map_dispose(&p->pkgdefs, p->ma);
   map_dispose(&p->tmpmap, p->ma);
   map_dispose(&p->recvtmap, p->ma);

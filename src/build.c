@@ -64,6 +64,11 @@ static err_t build_exe(char*const* srcfilev, usize filecount);
 
 
 int main_build(int argc, char* argv[]) {
+  memalloc_t ma = memalloc_ctx();
+
+  tmpbuf_init(ma);
+  sym_init(ma);
+
   char* coroot = LLVMGetMainExecutable(argv[0]);
   coroot[path_dirlen(coroot, strlen(coroot))] = 0;
   COROOT = coroot;
@@ -78,8 +83,6 @@ int main_build(int argc, char* argv[]) {
   assert(optind <= argc);
   argv += optind;
   argc -= optind;
-
-  sym_init(memalloc_ctx());
 
   err_t err = build_exe(argv, (usize)argc);
   if (err && err != ErrCanceled)

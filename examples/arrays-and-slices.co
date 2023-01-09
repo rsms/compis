@@ -1,17 +1,11 @@
-fun three() uint {
-  1 + 2
-}
-
-fun main() int {
-  // slice and array types
-  var _ &[int]         // slice
-  var _ mut&[int]      // mutable slice
-  var _ [i16]          // variably-sized array (growable at runtime)
-  var _ [u32 three()]  // fixed-size array (comptime computed size)
+// slice and array types
+fun main() {
+  var _ &[int]    // immutable slice
+  var _ mut&[int] // mutable slice
+  var _ [i16]     // variably-sized array (growable at runtime)
+  var _ [u32 3]   // fixed-size array
 
   var a str = "cat" // str aka &[u8]
   var b = "robin"   // &[u8 5]
   a = b             // ok; higher-fidelity type assignable to lower-fi type
-
-  0
 }

@@ -1,7 +1,26 @@
+
+fun arrays() {
+  var _ &[int]    // slice
+  var _ mut&[int] // mutable slice
+  var _ [i16]     // variably-sized array (growable at runtime)
+  var _ [u32 3]   // fixed-size array
+
+  var a str = "cat" // str aka &[u8]
+  var b = "robin"   // &[u8 5]
+  a = b             // ok; higher-fidelity type assignable to lower-fi type
+}
+
+pub "c" fun printu32(u32) void
+
+pub "c" fun foo(x, y int) int {
+  arrays()
+  0
+}
+
+
 // type Vec2 {
 //   x, y int
 // }
-
 // fun mutate(v mut&Vec2, x int) { v.x += x }
 // fun read(v &Vec2) int         { v.x }
 // fun edit_own_copy(v Vec2)     { v.x = 2 }
@@ -10,15 +29,6 @@
 // fun refadd(v &int, d int) int { v + d }
 // fun mutadd(v mut&int, d int) { *v = d + v }
 
-pub "c" fun printu32(u32) void
-
-pub "c" fun foo(x, y int) int {
-  printu32(123)
-  x * y
-}
-
-// fun main() {
-// }
 
 /*type Vec2 {
   x, y int
