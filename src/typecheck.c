@@ -961,15 +961,9 @@ static void main_fun(typecheck_t* a, fun_t* n) {
     return;
   }
 
-  if UNLIKELY(n->visibility != VISIBILITY_PUBLIC) {
-    error(a, n, "special \"main\" function is not public");
-    if (loc_line(n->loc)) {
-      loc_t helploc = loc_with_width(n->loc, 0);
-      if (loc_col(helploc) > 1)
-        loc_set_col(&helploc, loc_col(helploc) - 1);
-      help(a, helploc, "add 'pub' in front of 'fun'");
-    }
-  }
+  // make sure main function is at least visible to the package
+  if (n->visibility < VISIBILITY_PKG)
+    n->visibility = VISIBILITY_PKG;
 }
 
 

@@ -1,6 +1,15 @@
 #include <stdio.h>
-int NfM4main3foo(int x,int y); // foo.co
+#include <stdlib.h> // atol
+
+// "import" function defined in foo.co
+long foo(long x, long y);
+
+// "export" function for use in foo.co
+void printint(long v) {
+  printf("%ld\n", v);
+}
+
 int main(int argc, const char** argv) {
-  printf("Hello world! main.foo(2,3) => %d\n", NfM4main3foo(2, 3));
+  printf("Hello world! foo(2,3) => %ld\n", foo(2, 3));
   return 0;
 }

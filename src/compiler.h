@@ -609,6 +609,7 @@ void scanner_set_input(scanner_t* s, input_t*);
 void scanner_next(scanner_t* s);
 void stop_scanning(scanner_t* s);
 slice_t scanner_lit(const scanner_t* s); // e.g. `"\n"` => slice_t{.chars="\n", .len=1}
+slice_t scanner_strval(const scanner_t* s);
 
 // parser
 bool parser_init(parser_t* p, compiler_t* c);

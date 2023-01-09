@@ -5,6 +5,7 @@
 #include "abuf.h"
 
 #include <stdlib.h>
+#include <string.h> // strncasecmp
 
 #define TRACE_PARSE
 
@@ -141,6 +142,12 @@ inline static origin_t curr_origin(parser_t* p) {
 
 static void next(parser_t* p) {
   scanner_next(&p->scanner);
+}
+
+
+static bool slice_eq_cstri(slice_t s, const char* cstr) {
+  usize len = strlen(cstr);
+  return s.len == len && strncasecmp(s.chars, cstr, len) == 0;
 }
 
 
@@ -1170,14 +1177,7 @@ static expr_t* expr_floatlit(parser_t* p, const parselet_t* pl, nodeflag_t fl) {
 static expr_t* expr_strlit(parser_t* p, const parselet_t* pl, nodeflag_t fl) {
   strlit_t* n = mkexpr(p, strlit_t, EXPR_STRLIT, fl);
 
-  slice_t str;
-  if (p->scanner.litbuf.len > 0) {
-    str = buf_slice(p->scanner.litbuf);
-  } else {
-    str = scanner_lit(&p->scanner);
-    str.p++;
-    str.len -= 2;
-  }
+  slice_t str = scanner_strval(&p->scanner);
   n->bytes = (u8*)mem_strdup(p->ast_ma, str, 0);
   n->len = str.len;
 
@@ -1938,10 +1938,32 @@ static stmt_t* stmt_pub(parser_t* p) {
   loc_t pub_loc = currloc(p);
   next(p);
 
+  // pub "ABI"
+  abi_t abi = ABI_CO;
+  if (currtok(p) == TSTRLIT) {
+    slice_t str = scanner_strval(&p->scanner);
+    if (slice_eq_cstri(str, "C")) {
+      abi = ABI_C;
+    } else if (slice_eq_cstri(str, "CO")) {
+      // abi is already "CO"
+    } else {
+      buf_t* buf = &p->tmpbuf[0];
+      buf_clear(buf);
+      if (!buf_appendrepr(buf, str.bytes, str.len)) {
+        out_of_mem(p);
+      } else {
+        error(p, pub_loc, "invalid ABI: \"%.*s\"; expected \"C\" or \"co\"",
+          (int)buf->len, buf->chars);
+      }
+    }
+    next(p);
+  }
+
   stmt_t* n = stmt(p);
   switch (n->kind) {
     case EXPR_FUN:
       ((fun_t*)n)->visibility = VISIBILITY_PUBLIC;
+      ((fun_t*)n)->abi = abi;
       break;
     case STMT_TYPEDEF:
       ((typedef_t*)n)->visibility = VISIBILITY_PUBLIC;

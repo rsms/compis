@@ -73,6 +73,17 @@ slice_t scanner_lit(const scanner_t* s) {
 }
 
 
+slice_t scanner_strval(const scanner_t* s) {
+  if (s->litbuf.len > 0)
+    return buf_slice(s->litbuf);
+  slice_t str;
+  str = scanner_lit(s);
+  str.p++;
+  str.len -= 2;
+  return str;
+}
+
+
 ATTR_FORMAT(printf,2,3)
 static void error(scanner_t* s, const char* fmt, ...) {
   if (s->inp == s->inend && s->tok == TEOF)
@@ -288,14 +299,14 @@ static void string_buffered(scanner_t* s, usize extralen, bool ismultiline, loc_
     if UNLIKELY(extralen >= len) {
       // string() assumes \n is followed by |, but it isn't the case.
       // i.e. a string of only linebreaks.
-      return error(s, NULL, "missing \"|\" after linebreak in multiline string");
+      return error(s, "missing \"|\" after linebreak in multiline string");
     }
     // verify indentation and calculate nbytes used for indentation
     usize indentextralen = string_multiline(s, src, src + len, loc);
     if UNLIKELY(indentextralen == USIZE_MAX) // an error occured
       return;
     if (check_add_overflow(extralen, indentextralen, &extralen))
-      return error(s, NULL, "string literal too large");
+      return error(s, "string literal too large");
     src++; len--;  // sans leading '\n'
   }
   assert(extralen <= len);
@@ -339,11 +350,9 @@ static void string_buffered(scanner_t* s, usize extralen, bool ismultiline, loc_
           case 'u': // \uXXXX
           case 'U': // \UXXXXXXXX
             // TODO: \x-style escape sequences
-            return error(s, NULL,
-              "string literal escape \"\\%c\" not yet supported", *src);
+            return error(s, "string literal escape \"\\%c\" not yet supported", *src);
           default:
-            return error(s, NULL,
-              "invalid escape \"\\%c\" in string literal", *src);
+            return error(s, "invalid escape \"\\%c\" in string literal", *src);
         }
         chunkstart = ++src;
         break;

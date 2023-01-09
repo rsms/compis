@@ -1,7 +1,8 @@
-type IVec2 {
-  x, y int
-}
-fun foo(x, y int) int {
-  let v = IVec2(x, y)
-  v.x * v.y
+// "import" function defined in main.c
+pub "c" fun printint(int) void
+
+// "export" function for use in main.c
+pub "c" fun foo(x, y int) int {
+  printint(123)
+  x * y
 }

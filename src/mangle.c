@@ -209,6 +209,9 @@ bool compiler_mangle(const compiler_t* c, buf_t* buf, const node_t* n) {
   // └────────────────────── common symbol prefix
   //
 
+  if (n->kind == EXPR_FUN && ((fun_t*)n)->abi == ABI_C)
+    return buf_print(buf, ((fun_t*)n)->name);
+
   encoder_t e = mkencoder(c, buf);
 
   buf_reserve(buf, 64);
