@@ -12,14 +12,17 @@ DESTDIR="$DEPS_DIR"
 C0_SRCDIR=$PWD/src
 mkdir -p "$DESTDIR"
 
+LLVM_RELEASE=14.0.0
+LLVM_RELEASE_TAR_SHA256=87b1a068b370df5b79a892fdb2935922a8efb1fddec4cc506e30fe57b6a1d9c4
+
 # what git ref to build (commit, tag or branch)
-LLVM_GIT_REV=llvmorg-14.0.0
+LLVM_GIT_REV=llvmorg-$LLVM_RELEASE
 LLVM_VERSION=${LLVM_GIT_REV#*-}
 LLVM_DESTDIR=$DESTDIR/llvm
 LLVM_GIT_URL=https://github.com/llvm/llvm-project.git
-LLVM_SRCDIR=$DEPS_DIR/llvm-src
+LLVM_SRCDIR=$DEPS_DIR/llvm-src-$LLVM_RELEASE
 LLVM_BUILD_MODE=MinSizeRel
-LLVM_ENABLE_ASSERTIONS=On
+LLVM_ENABLE_ASSERTIONS=Off
 # LLVM components (libraries) to include. See deps/llvm/bin/llvm-config --components
 # windowsmanifest: needed for lld COFF
 LLVM_COMPONENTS=(
@@ -46,8 +49,8 @@ XC_VERSION=5.2.5
 XC_CHECKSUM=3e1e518ffc912f86608a8cb35e4bd41ad1aec210df2a47aaa1f95e7f5576ef56
 XC_DESTDIR=$DESTDIR/xc
 
-OPENSSL_VERSION=1.1.1q
-OPENSSL_CHECKSUM=d7939ce614029cdff0b6c20f0e2e5703158a489a72b2507b8bd51bf8c8fd10ca
+OPENSSL_VERSION=1.1.1s
+OPENSSL_CHECKSUM=c5ac01e760ee6ff0dab61d6b2bbd30146724d063eb322180c6f18a6f74e4b6aa
 OPENSSL_DESTDIR=$DESTDIR/openssl
 
 LIBXML2_VERSION=2.10.3
@@ -70,7 +73,8 @@ usage: $0 [options]
 Builds LLVM version ${LLVM_VERSION}
 options:
   -no-compiler-rt  Do not build compiler-rt
-  -no-assertions   Do not include assertions
+  -assertions      Enable assertions
+  -no-assertions   Disable assertions (default, here for legacy reasons)
   -force           Build even if it seems that build products are up to date
   -mode=<mode>     One of: Debug, Release, RelWithDebInfo, MinSizeRel (default)
   -quiet           Log less information
@@ -78,6 +82,7 @@ options:
 _END
     exit ;;
   -no-compiler-rt)  CO_LLVM_BUILD_COMPILER_RT=false; shift ;;
+  -assertions)      LLVM_ENABLE_ASSERTIONS=On; shift ;;
   -no-assertions)   LLVM_ENABLE_ASSERTIONS=Off; shift ;;
   -force)           FORCE=true; shift ;;
   -mode=*)          LLVM_BUILD_MODE=${1:6}; shift ;;
@@ -93,34 +98,80 @@ HOST_CC=${HOST_CC}
 HOST_CXX=${HOST_CXX}
 HOST_ASM=${HOST_ASM}
 if [ -z "$HOST_CC" ]; then
-  if [ -x /usr/local/opt/llvm/bin/clang ]; then
-    HOST_CC=/usr/local/opt/llvm/bin/clang
-    HOST_CXX=/usr/local/opt/llvm/bin/clang++
-  elif [ -x /opt/homebrew/opt/llvm/bin/clang ]; then
-    HOST_CC=/opt/homebrew/opt/llvm/bin/clang
-    HOST_CXX=/opt/homebrew/opt/llvm/bin/clang++
+  clangpath="$(command -v clang || true)"
+  echo "clangpath $clangpath"
+  if [ -n "$clangpath" ]; then
+    HOST_CC=$clangpath
+    HOST_CXX=$(command -v clang++)
+  elif command -v gcc >/dev/null && command -v g++ >/dev/null; then
+    HOST_CC=$(command -v gcc)
+    HOST_CXX=$(command -v g++)
   else
-    clangpath="$(command -v clang | echo)"
-    if [ -n "$clangpath" ]; then
-      HOST_CC=$clangpath
-      HOST_CXX=$(command -v clang++)
-    elif command -v gcc >/dev/null && command -v g++ >/dev/null; then
-      HOST_CC=$(command -v gcc)
-      HOST_CXX=$(command -v g++)
-    else
-
-      HOST_CC=$(command -v "${CC:-cc}" | echo)
-      HOST_CXX=$(command -v "${CXX:-c++}" | echo)
-      [ -x "$HOST_CC" -a -x "$HOST_CXX" ] ||
-        _err "no host compiler found. Set HOST_CC or add clang or cc to PATH"
-    fi
+    HOST_CC=$(command -v "${CC:-cc}" || true)
+    HOST_CXX=$(command -v "${CXX:-c++}" || true)
+    [ -x "$HOST_CC" -a -x "$HOST_CXX" ] ||
+      _err "no host compiler found. Set HOST_CC or add clang or cc to PATH"
   fi
 fi
 [ -z "$HOST_ASM" ] && HOST_ASM=$HOST_CC
 [ -x "$HOST_CC" ] || _err "${HOST_CC} is not an executable file"
+
+
+if [[ "$HOST_CC" == */clang ]]; then
+  LLVM_BINDIR=${HOST_CC:0:$(( ${#HOST_CC} - 6 ))}
+
+  if ! [ -x $LLVM_BINDIR/llvm-ar -a -x $LLVM_BINDIR/llvm-ranlib ]; then
+    echo "host clang installation at $LLVM_BINDIR is lacking llvm-ar and/or llvm-ranlib"
+    echo "trying to find another installation..."
+    SEARCH_PATHS=(
+      /usr/local/opt/llvm/bin \
+      /opt/homebrew/opt/llvm/bin \
+    )
+    for d in ${SEARCH_PATHS[@]}; do
+      [ -d "$d" ] || continue
+      echo "  trying $d"
+      if [ -x "$d"/clang -a \
+           -x "$d"/clang++ -a \
+           -x "$d"/llvm-ranlib -a \
+           -x "$d"/llvm-ar ]
+      then
+        HOST_CC=$d/clang
+        HOST_CXX=$d/clang++
+        LLVM_BINDIR=$d
+        break
+      fi
+    done
+    if ! [ -x $LLVM_BINDIR/llvm-ar ]; then
+      echo "no better clang found"
+      echo "note: set HOST_CC to absolute path to fully-featured clang"
+    fi
+  fi
+  if [ -x $LLVM_BINDIR/llvm-ranlib ]; then
+    export RANLIB=$LLVM_BINDIR/llvm-ranlib
+  fi
+  if [ -x $LLVM_BINDIR/llvm-ar ]; then
+    export AR=$LLVM_BINDIR/llvm-ar
+  fi
+fi
+
 export CC=${HOST_CC}
 export CXX=${HOST_CXX}
 export ASM=${HOST_ASM}
+
+# LLVM_STAGE1=$DEPS_DIR/llvm-stage1
+# if [ -x $LLVM_STAGE1/bin/llvm-ar ]; then
+#   export CC=$LLVM_STAGE1/bin/clang
+#   export CXX=$LLVM_STAGE1/bin/clang++
+#   export ASM=$LLVM_STAGE1/bin/clang
+#   export RANLIB=$LLVM_STAGE1/bin/llvm-ranlib
+#   export AR=$LLVM_STAGE1/bin/llvm-ar
+# fi
+
+echo "using CC=$CC"
+echo "using CXX=$CXX"
+[ -n "$ASM" ]    && echo "using ASM=$ASM"
+[ -n "$AR" ]     && echo "using AR=$AR"
+[ -n "$RANLIB" ] && echo "using RANLIB=$RANLIB"
 
 
 # Note: If you are getting errors (like for example "redefinition of module 'libxml2'") and
@@ -141,6 +192,7 @@ export ASM=${HOST_ASM}
 # Oh, and openssl needs perl to build, lol.
 
 DEPS_CHANGED=false
+
 
 # -------------------------------------------------------------------------
 # zlib (required by llvm)
@@ -338,19 +390,17 @@ fi # NEED_XAR
 # -------------------------------------------------------------------------
 # llvm & clang
 
-LLVM_BUILD_DIR=$LLVM_SRCDIR/build-$LLVM_BUILD_MODE
 LLVM_LIBFILES=()
 
 
 # _llvm_build <build-type> [args to cmake ...]
 _llvm_build() {
   local build_type=$1 ;shift  # Debug | Release | RelWithDebInfo | MinSizeRel
-  local build_dir=$(basename "$LLVM_BUILD_DIR")
   _pushd "$LLVM_SRCDIR"
-  # $SOURCE_CHANGED && rm -rf $build_dir
+
+  local build_dir=$(basename "build-${build_type}")
   mkdir -p $build_dir
   _pushd $build_dir
-  rm -rf co-objx
 
   local EXTRA_CMAKE_ARGS=()
   if command -v xcrun >/dev/null; then
@@ -368,6 +418,18 @@ _llvm_build() {
       -DSANITIZER_USE_STATIC_CXX_ABI=ON \
       -DSANITIZER_USE_STATIC_LLVM_UNWINDER=ON \
       -DCOMPILER_RT_USE_BUILTINS_LIBRARY=ON \
+    )
+  fi
+
+  if [ -x "$LLVM_BINDIR/llvm-ar" ]; then
+    EXTRA_CMAKE_ARGS+=(
+      -DLLVM_ENABLE_LTO=Thin \
+      -DCMAKE_RANLIB="$LLVM_BINDIR/llvm-ranlib" \
+      -DCMAKE_AR="$LLVM_BINDIR/llvm-ar" \
+    )
+  else
+    EXTRA_CMAKE_ARGS+=(
+      -DBOOTSTRAP_LLVM_ENABLE_LTO=Thin \
     )
   fi
 
@@ -408,6 +470,7 @@ _llvm_build() {
       -DLLVM_ENABLE_Z3_SOLVER=OFF \
       -DLLVM_INCLUDE_DOCS=OFF \
       \
+      -DCLANG_ENABLE_BOOTSTRAP=On \
       -DCLANG_INCLUDE_DOCS=OFF \
       -DCLANG_ENABLE_OBJC_REWRITER=OFF \
       -DCLANG_ENABLE_ARCMT=OFF \
@@ -474,7 +537,7 @@ _update_src_llvm_driver() {
 
 
 _mk_dlib_macos() {
-  local DLIB_FILE=$LLVM_DESTDIR/lib/libc0-llvm-bundle-d.dylib
+  local DLIB_FILE=$LLVM_DESTDIR/lib/libco-llvm-bundle-d.dylib
   local LIB_VERSION=0.0.1        # used for mach-o dylib
   local LIB_VERSION_COMPAT=0.0.1 # used for mach-o dylib
   local MACOS_VERSION=10.15
@@ -532,7 +595,7 @@ _mk_dlib_macos() {
 
 
 _mk_alib_macos() {
-  local OUTFILE=$LLVM_DESTDIR/lib/libc0-llvm-bundle.a
+  local OUTFILE=$LLVM_DESTDIR/lib/libco-llvm-bundle.a
   local MRIFILE=$WORK_DIR/$(basename "$OUTFILE").mri
 
   echo "create ${OUTFILE##$PWD/}"
@@ -576,13 +639,28 @@ _mk_lib_bundles() {
 
 
 # fetch or update llvm sources
+# SOURCE_CHANGED=false
+# if _git_pull_if_needed "$LLVM_GIT_URL" "$LLVM_SRCDIR" "$LLVM_GIT_REV"; then
+#   SOURCE_CHANGED=true
+# fi
+
 SOURCE_CHANGED=false
-if _git_pull_if_needed "$LLVM_GIT_URL" "$LLVM_SRCDIR" "$LLVM_GIT_REV"; then
+if [ ! -d "$LLVM_SRCDIR" ]; then
+  _download \
+    https://github.com/llvm/llvm-project/archive/llvmorg-${LLVM_RELEASE}.tar.gz \
+    $LLVM_RELEASE_TAR_SHA256
+
+  _extract_tar \
+    "$(_downloaded_file llvmorg-${LLVM_RELEASE}.tar.gz)" \
+    "$LLVM_SRCDIR"
+
   SOURCE_CHANGED=true
 fi
+
 if $FORCE || $DEPS_CHANGED || $SOURCE_CHANGED ||
    [ ! -f "$LLVM_DESTDIR/lib/libLLVMCore.a" ]
- then
+then
+
   _llvm_build $LLVM_BUILD_MODE -DLLVM_ENABLE_ASSERTIONS=$LLVM_ENABLE_ASSERTIONS
   _update_src_llvm_driver
   _mk_lib_bundles

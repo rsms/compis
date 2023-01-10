@@ -142,7 +142,6 @@ _download() {
   local checksum="$2"
   local filename="$DOWNLOAD_DIR/$(basename "${3:-"$url"}")"
   local did_download
-  echo "filename $filename"
   while [ ! -e "$filename" ] ||
         ! _verify_checksum -silent "$filename" "$checksum"
   do
@@ -151,7 +150,7 @@ _download() {
       return 1
     fi
     rm -rf "$filename"
-    echo "fetch $url"
+    echo "fetch $url -> $filename"
     mkdir -p "$(dirname "$filename")"
     curl -L --progress-bar -o "$filename" "$url"
     did_download=y
