@@ -43,8 +43,6 @@ typedef long               __co_int;
 
 __attribute__((__noreturn__)) void abort(void);
 
-typedef struct { __co_uint cap, len; void* ptr; } __co_darray_t;
-
 inline static void* __co_mem_dup(const void* src, __co_uint size) {
   void* ptr = __builtin_memcpy(__builtin_malloc(size), src, size);
   __builtin_printf("__co_mem_dup(%p, %lu) => %p\n", src, size, ptr);
