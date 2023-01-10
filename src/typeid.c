@@ -41,6 +41,12 @@ static void structtype(buf_t* buf, structtype_t* t) {
 }
 
 
+static void arraytype(buf_t* buf, arraytype_t* t) {
+  buf_print_leb128_u32(buf, t->len);
+  append(buf, t->elem);
+}
+
+
 static void aliastype(buf_t* buf, aliastype_t* t) {
   usize namelen = strlen(t->name);
   buf_print_leb128_u32(buf, (u32)namelen);
@@ -65,7 +71,7 @@ static void append(buf_t* buf, type_t* t) {
   buf_push(buf, TYPEID_PREFIX(t->kind));
 
   switch (t->kind) {
-    case TYPE_ARRAY:    panic("TODO %s", nodekind_name(t->kind));
+    case TYPE_ARRAY:    arraytype(buf, (arraytype_t*)t); break;
     case TYPE_FUN:      funtype(buf, (funtype_t*)t); break;
     case TYPE_PTR:      append(buf, ((ptrtype_t*)t)->elem); break;
     case TYPE_REF:

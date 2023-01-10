@@ -22,6 +22,8 @@ typedef signed long long   i64;
 typedef unsigned long long u64;
 typedef float              f32;
 typedef double             f64;
+typedef unsigned long      __co_uint;
+typedef long               __co_int;
 #endif
 
 #ifndef NULL
@@ -32,14 +34,27 @@ typedef double             f64;
 #define false 0
 #define bool _Bool
 
-#define _CO_NOALIAS __restrict__
-#define _CO_UNUSED  __attribute__((__unused__))
+#define __co_noalias __restrict__
+#define __co_unused  __attribute__((__unused__))
 
-#define _CO_VIS_PRI __attribute__((__unused__))
-#define _CO_VIS_PKG __attribute__((__visibility__("internal")))
-#define _CO_VIS_PUB __attribute__((__visibility__("default")))
+#define __co_vis_pri __attribute__((__unused__))
+#define __co_vis_pkg __attribute__((__visibility__("internal")))
+#define __co_vis_pub __attribute__((__visibility__("default")))
 
 __attribute__((__noreturn__)) void abort(void);
+
+typedef struct { __co_uint cap, len; void* ptr; } __co_darray_t;
+
+inline static void* __co_mem_dup(const void* src, __co_uint size) {
+  void* ptr = __builtin_memcpy(__builtin_malloc(size), src, size);
+  __builtin_printf("__co_mem_dup(%p, %lu) => %p\n", src, size, ptr);
+  return ptr;
+}
+
+inline static void __co_mem_free(void* ptr, __co_uint size) {
+  __builtin_printf("__co_mem_free(%p, %lu)\n", ptr, size);
+  __builtin_free(ptr);
+}
 
 #define __nullcheck(x) ({ \
   __typeof__(x) x__ = (x); \

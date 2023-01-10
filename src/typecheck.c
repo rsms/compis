@@ -807,7 +807,7 @@ static void local(typecheck_t* a, local_t* n) {
 
   if (n->init) {
     typectx_push(a, n->type);
-    expr(a, n->init);
+    exprp(a, &n->init);
     typectx_pop(a);
 
     if (n->type == type_unknown || n->type->kind == TYPE_UNRESOLVED) {
@@ -827,6 +827,14 @@ static void local(typecheck_t* a, local_t* n) {
 
   if UNLIKELY(n->type == type_void || n->type == type_unknown)
     error(a, n, "cannot define %s of type void", fmtkind(n));
+
+  if (n->name == sym__ && type_isowner(n->type)) {
+    // owners require var names for ownership tracking
+    // FIXME: this is a pretty janky hack which is rooted in the fact that
+    //        IR-based ownership analysis only tracks varnames, not locals.
+    char buf[strlen("__co_varFFFFFFFFFFFFFFFF")+1];
+    n->name = sym_snprintf(buf, sizeof(buf), "__co_var%lx", (unsigned long)n);
+  }
 }
 
 
@@ -838,7 +846,8 @@ static void local_var(typecheck_t* a, local_t* n) {
 }
 
 
-static void structtype(typecheck_t* a, structtype_t* st) {
+static void structtype(typecheck_t* a, structtype_t** tp) {
+  structtype_t* st = *tp;
   st->nsparent = a->nspath.v[a->nspath.len - 1];
 
   u8  align = 0;
@@ -877,28 +886,54 @@ static void structtype(typecheck_t* a, structtype_t* st) {
   st->align = align;
   st->size = ALIGN2(size, (u64)align);
 
+  // if (intern_usertype(a->compiler, (usertype_t**)tp))
+  //   return;
+
   if (!(st->flags & NF_SUBOWNERS)) {
-    if UNLIKELY(!map_assign_ptr(&a->postanalyze, a->ma, st))
+    if UNLIKELY(!map_assign_ptr(&a->postanalyze, a->ma, *tp))
       out_of_mem(a);
   }
 }
 
 
-static void arraytype(typecheck_t* a, arraytype_t* at) {
-  if (!at->lenexpr)
+static void arraytype_calc_size(typecheck_t* a, arraytype_t* at) {
+  if (at->len == 0) {
+    // type darray<T> {cap, len uint; rawptr T ptr }
+    at->align = MAX(a->compiler->ptrsize, a->compiler->intsize);
+    at->size = a->compiler->intsize*2 + a->compiler->ptrsize;
     return;
-
-  typectx_push(a, type_uint);
-  expr(a, at->lenexpr);
-  typectx_pop(a);
-
-  if (a->compiler->errcount > 0)
+  }
+  u64 size;
+  if (check_mul_overflow(at->len, at->elem->size, &size)) {
+    error(a, at, "array constant too large; overflows uint (%s)",
+      fmtnode(a, 0, a->compiler->uinttype));
     return;
+  }
+  at->align = at->elem->align;
+  at->size = size;
+}
 
-  if (comptime_eval_uint(a->compiler, at->lenexpr, &at->len)) {
+
+static void arraytype(typecheck_t* a, arraytype_t** tp) {
+  arraytype_t* at = *tp;
+  if (at->lenexpr) {
+    typectx_push(a, type_uint);
+    expr(a, at->lenexpr);
+    typectx_pop(a);
+
+    if (a->compiler->errcount > 0)
+      return;
+
+    if (!comptime_eval_uint(a->compiler, at->lenexpr, &at->len))
+      return; // error has been reported
+
     if UNLIKELY(at->len == 0 && a->compiler->errcount == 0)
       error(a, at, "zero length array");
   }
+
+  arraytype_calc_size(a, at);
+
+  intern_usertype(a->compiler, (usertype_t**)tp);
 }
 
 
@@ -1589,13 +1624,71 @@ static void strlit(typecheck_t* a, strlit_t* n) {
   at->flags = NF_CHECKED;
   at->elem = type_u8;
   at->len = n->len;
-  at->size = at->elem->size * at->len;
-  at->align = at->elem->align;
+  arraytype_calc_size(a, at);
 
   reftype_t* t = mknode(a, reftype_t, TYPE_REF);
   t->elem = (type_t*)at;
 
   n->type = (type_t*)t;
+}
+
+
+static void arraylit(typecheck_t* a, arraylit_t* n) {
+  u32 i = 0;
+  arraytype_t* at = (arraytype_t*)assertnotnull(a->typectx);
+
+  if (at->kind == TYPE_ARRAY) {
+    #if 0
+      // eg. "var _ [int] = [1,2,3]" => "[int 3]"
+      if (at->len == 0) {
+        // outer array type does not have size; create sized type
+        type_t* elem = at->elem;
+        at = mknode(a, arraytype_t, TYPE_ARRAY);
+        at->flags = NF_CHECKED;
+        at->elem = elem;
+        at->len = (u64)n->values.len;
+        arraytype_calc_size(a, at);
+      }
+    #else
+      if UNLIKELY(at->len > 0 && at->len < n->values.len) {
+        expr_t* origin = n->values.v[at->len];
+        if (loc_line(origin->loc) == 0)
+          origin = (expr_t*)n;
+        error(a, origin, "excess value in array literal");
+      }
+    #endif
+  } else {
+    // infer the array element type based on the first value
+    at = mknode(a, arraytype_t, TYPE_ARRAY);
+    at->flags = NF_CHECKED;
+    if UNLIKELY(n->values.len == 0) {
+      at->elem = type_unknown;
+      error(a, n, "cannot infer type of empty array literal; please specify its type");
+      return;
+    }
+    typectx_push(a, type_unknown);
+    exprp(a, (expr_t**)&n->values.v[i]);
+    typectx_pop(a);
+    at->elem = ((expr_t*)n->values.v[i])->type;
+    at->len = (u64)n->values.len;
+    arraytype_calc_size(a, at);
+    i++; // don't visit the first value again
+  }
+
+  n->type = (type_t*)at;
+
+  typectx_push(a, at->elem);
+
+  for (; i < n->values.len; i++) {
+    exprp(a, (expr_t**)&n->values.v[i]);
+    expr_t* v = n->values.v[i];
+    if UNLIKELY(!type_isassignable(a->compiler, at->elem, v->type)) {
+      error_unassignable_type(a, v, v->type);
+      break;
+    }
+  }
+
+  typectx_pop(a);
 }
 
 
@@ -2140,7 +2233,7 @@ static void _type(typecheck_t* a, type_t** tp) {
       assertf(0, "%s should always be NF_CHECKED", nodekind_name((*tp)->kind));
       return;
 
-    case TYPE_ARRAY: return arraytype(a, (arraytype_t*)*tp);
+    case TYPE_ARRAY: return arraytype(a, (arraytype_t**)tp);
     case TYPE_FUN:   return funtype(a, (funtype_t**)tp);
 
     case TYPE_PTR:
@@ -2151,7 +2244,7 @@ static void _type(typecheck_t* a, type_t** tp) {
       return type(a, &((ptrtype_t*)(*tp))->elem);
 
     case TYPE_OPTIONAL:   return type(a, &((opttype_t*)(*tp))->elem);
-    case TYPE_STRUCT:     return structtype(a, (structtype_t*)*tp);
+    case TYPE_STRUCT:     return structtype(a, (structtype_t**)tp);
     case TYPE_ALIAS:      return aliastype(a, (aliastype_t**)tp);
     case TYPE_UNRESOLVED: return unresolvedtype(a, (unresolvedtype_t**)tp);
   }
@@ -2197,6 +2290,7 @@ static void exprp(typecheck_t* a, expr_t** np) {
   case EXPR_INTLIT:    return intlit(a, (intlit_t*)n);
   case EXPR_FLOATLIT:  return floatlit(a, (floatlit_t*)n);
   case EXPR_STRLIT:    return strlit(a, (strlit_t*)n);
+  case EXPR_ARRAYLIT:  return arraylit(a, (arraylit_t*)n);
 
   case EXPR_PREFIXOP:
   case EXPR_POSTFIXOP:

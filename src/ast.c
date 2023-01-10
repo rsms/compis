@@ -411,6 +411,13 @@ static void repr(RPARAMS, const node_t* nullable n) {
     CHAR('"');
     break;
 
+  case EXPR_ARRAYLIT:
+    if (((arraylit_t*)n)->values.len > 0) {
+      CHAR(' ');
+      repr_nodearray(RARGS, &((arraylit_t*)n)->values);
+    }
+    break;
+
   case EXPR_MEMBER:
     CHAR(' '), repr(RARGS, (node_t*)((member_t*)n)->recv);
     CHAR(' '), repr(RARGS, (node_t*)((member_t*)n)->target);

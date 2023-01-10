@@ -18,12 +18,16 @@ _( OP_FUN, 0 )
 _( OP_ICONST, 0 )
 _( OP_FCONST, 0 )
 
+// literals
+_( OP_ARRAY, 0 ) // [v ...]
+_( OP_STR, 0 )   // "..."
+
 // memory
-_( OP_VAR, 0 )    // stack memory
-_( OP_STORE, 0 )  // T -> T
-_( OP_DEREF, 0 )  // *T -> T
-_( OP_ALIAS, 0 )  // T -> &T
-_( OP_GEP, 0 )    // get element pointer
+_( OP_VAR, 0 )   // stack memory
+_( OP_STORE, 0 ) // T -> T
+_( OP_DEREF, 0 ) // *T -> T
+_( OP_ALIAS, 0 ) // T -> &T
+_( OP_GEP, 0 )   // get element pointer
 
 // ownership & lifetime
 _( OP_MOVE, 0 )       // *T -> *T

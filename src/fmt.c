@@ -261,7 +261,7 @@ static void fmt(abuf_t* s, const node_t* nullable n, u32 indent, u32 maxdepth) {
     abuf_c(s, '{');
     const ptrarray_t* a = &((block_t*)n)->children;
     if (a->len > 0) {
-      if (maxdepth == 1) {
+      if (maxdepth <= 1) {
         abuf_str(s, "...");
       } else {
         indent++;
@@ -313,7 +313,7 @@ static void fmt(abuf_t* s, const node_t* nullable n, u32 indent, u32 maxdepth) {
     break;
 
   case EXPR_FOR:
-    if (maxdepth == 1) {
+    if (maxdepth <= 1) {
       abuf_str(s, "for");
     } else {
       forexpr_t* e = (forexpr_t*)n;
@@ -397,6 +397,16 @@ static void fmt(abuf_t* s, const node_t* nullable n, u32 indent, u32 maxdepth) {
     abuf_c(s, '"');
     break;
   }
+
+  case EXPR_ARRAYLIT:
+    abuf_c(s, '[');
+    if (maxdepth <= 1) {
+      abuf_str(s, "...");
+    } else {
+      fmt_nodelist(s, &((arraylit_t*)n)->values, ", ", indent, maxdepth);
+    }
+    abuf_c(s, ']');
+    break;
 
   case TYPE_VOID: abuf_str(s, "void"); break;
   case TYPE_BOOL: abuf_str(s, "bool"); break;

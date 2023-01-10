@@ -90,10 +90,10 @@ static const char* fmtnode(cgen_t* g, u32 bufindex, const void* nullable n) {
 #endif
 
 
-#define INTERNAL_SEP    "·" // U+00B7 MIDDLE DOT (UTF8: "\xC2\xB7")
-#define INTERNAL_PREFIX "_co" INTERNAL_SEP
-#define ANON_PREFIX     "_" INTERNAL_SEP
-#define ANON_FMT        ANON_PREFIX "%x"
+//#define INTERNAL_SEP    "·" // U+00B7 MIDDLE DOT (UTF8: "\xC2\xB7")
+#define CO_TYPE_PREFIX CO_INTERNAL_PREFIX "t_"
+#define ANON_PREFIX    CO_INTERNAL_PREFIX "anon_"
+#define ANON_FMT       ANON_PREFIX "%x"
 
 #define CHAR(ch)             ( buf_push(&g->outbuf, (ch)), ((void)0) )
 #define PRINT(cstr)          ( buf_print(&g->outbuf, (cstr)), ((void)0) )
@@ -193,6 +193,8 @@ static const char* operator(op_t op) {
   case OP_FCONST:
   case OP_FUN:
   case OP_ICONST:
+  case OP_ARRAY:
+  case OP_STR:
   case OP_MOVE:
   case OP_NOOP:
   case OP_OCHECK:
@@ -380,8 +382,8 @@ static sym_t gen_struct_typename(cgen_t* g, const type_t* t) {
   const structtype_t* st = (const structtype_t*)t;
   if (st->mangledname)
     return st->mangledname;
-  char buf[strlen(ANON_PREFIX "structXXXXXXXX.")];
-  return sym_snprintf(buf, sizeof(buf), ANON_PREFIX "struct%x", g->anon_idgen++);
+  char buf[strlen(CO_TYPE_PREFIX "structXXXXXXXX.")];
+  return sym_snprintf(buf, sizeof(buf), CO_TYPE_PREFIX "struct%x", g->anon_idgen++);
 }
 
 
@@ -434,9 +436,9 @@ static sym_t gen_slice_typename(cgen_t* g, const type_t* tp) {
   const slicetype_t* t = (const slicetype_t*)tp;
   usize len1 = g->outbuf.len;
   if (t->kind == TYPE_SLICE) {
-    PRINT(ANON_PREFIX "slice_");
+    PRINT(CO_TYPE_PREFIX "slice_");
   } else {
-    PRINT(ANON_PREFIX "mutslice_");
+    PRINT(CO_TYPE_PREFIX "mutslice_");
   }
   if UNLIKELY(compiler_mangle_type(g->compiler, &g->outbuf, t->elem)) {
     seterr(g, ErrNoMem);
@@ -468,7 +470,7 @@ static void slicetype(cgen_t* g, const slicetype_t* t) {
 static sym_t gen_darray_typename(cgen_t* g, const type_t* tp) {
   const arraytype_t* t = (const arraytype_t*)tp;
   usize len1 = g->outbuf.len;
-  PRINT(ANON_PREFIX "array_");
+  PRINT(CO_TYPE_PREFIX "array_");
   if UNLIKELY(compiler_mangle_type(g->compiler, &g->outbuf, t->elem)) {
     seterr(g, ErrNoMem);
     return sym__;
@@ -481,6 +483,7 @@ static sym_t gen_darray_typename(cgen_t* g, const type_t* tp) {
 
 static void gen_darray_typedef(cgen_t* g, const type_t* tp, sym_t typename) {
   const arraytype_t* t = (const arraytype_t*)tp;
+  // typedef struct { uint cap, len; T* ptr; }
   PRINT("typedef struct {");
   type(g, g->compiler->uinttype);
   PRINT(" cap, len; ");
@@ -560,7 +563,7 @@ static void aliastype(cgen_t* g, const aliastype_t* t) {
 
 static sym_t gen_opt_typename(cgen_t* g, const type_t* t) {
   char namebuf[64];
-  return sym_snprintf(namebuf, sizeof(namebuf), ANON_PREFIX "opt%x", g->anon_idgen++);
+  return sym_snprintf(namebuf, sizeof(namebuf), CO_TYPE_PREFIX "opt%x", g->anon_idgen++);
 }
 
 static void gen_opt_typedef(cgen_t* g, const type_t* tp, sym_t typename) {
@@ -694,9 +697,6 @@ static void expr_rvalue(cgen_t* g, const expr_t* n, const type_t* lt) {
         }
         break;
       }
-
-      default:
-        debugdie(g, n, "unexpected destination type %s", nodekind_name(lt->kind));
     }
   }
 
@@ -762,19 +762,6 @@ static void retexpr(cgen_t* g, const retexpr_t* n, const char* nullable tmp) {
 }
 
 
-static void drop_begin(cgen_t* g, const expr_t* owner) {
-  // TODO FIXME
-  PRINT(type_isopt(owner->type) ?
-    INTERNAL_PREFIX "drop_opt(" :
-    INTERNAL_PREFIX "drop(");
-}
-
-
-static void drop_end(cgen_t* g) {
-  CHAR(')');
-}
-
-
 static void as_ptr(cgen_t* g, buf_t* buf, const type_t* t, const char* name) {
   switch (t->kind) {
     case TYPE_PTR:
@@ -807,6 +794,20 @@ static const type_t* unwrap_ptr(const type_t* t) {
     case TYPE_PTR:      t = assertnotnull(((ptrtype_t*)t)->elem); break;
     default:            return t;
   }
+}
+
+
+static void drop_begin(cgen_t* g, const expr_t* owner) {
+  // TODO FIXME
+  dlog("TODO FIXME %s", __FUNCTION__);
+  PRINT(type_isopt(owner->type) ?
+    CO_INTERNAL_PREFIX "drop_opt(" :
+    CO_INTERNAL_PREFIX "drop(");
+}
+
+
+static void drop_end(cgen_t* g) {
+  CHAR(')');
 }
 
 
@@ -868,7 +869,14 @@ static void gen_drop_subowners(cgen_t* g, const drop_t* d, const type_t* bt) {
 
 static void gen_drop_heapmem(cgen_t* g, const drop_t* d) {
   startlinex(g);
-  PRINTF("/* free_heapmem(%s) */", d->name);
+  PRINTF("/* " CO_INTERNAL_PREFIX "mem_free(%s,size=?) */", d->name);
+}
+
+
+static void gen_drop_darray(cgen_t* g, const drop_t* d, const arraytype_t* at) {
+  startlinex(g);
+  PRINTF(CO_INTERNAL_PREFIX "mem_free(%s.ptr, %s.cap * %llu);",
+    d->name, d->name, at->elem->size);
 }
 
 
@@ -890,10 +898,14 @@ static void gen_drop(cgen_t* g, const drop_t* d) {
   if (bt->flags & NF_DROP)
     gen_drop_custom(g, d, bt);
 
-  gen_drop_subowners(g, d, bt);
+  if (bt->flags & NF_SUBOWNERS)
+    gen_drop_subowners(g, d, bt);
 
-  if (type_isptr(d->type))
+  if (type_isptr(d->type)) {
     gen_drop_heapmem(g, d);
+  } else if (bt->kind == TYPE_ARRAY) {
+    gen_drop_darray(g, d, (arraytype_t*)bt);
+  }
 
   if (d->type->kind == TYPE_OPTIONAL) {
     g->indent--;
@@ -1160,9 +1172,9 @@ static void fun_proto(cgen_t* g, const fun_t* fun) {
   funtype_t* ft = (funtype_t*)fun->type;
 
   switch (fun->visibility) {
-    case VISIBILITY_PRIVATE: PRINT("_CO_VIS_PRI static "); break;
-    case VISIBILITY_PKG:     PRINT("_CO_VIS_PKG "); break;
-    case VISIBILITY_PUBLIC:  PRINT("_CO_VIS_PUB "); break;
+    case VISIBILITY_PRIVATE: PRINT(CO_INTERNAL_PREFIX "vis_pri static "); break;
+    case VISIBILITY_PKG:     PRINT(CO_INTERNAL_PREFIX "vis_pkg "); break;
+    case VISIBILITY_PUBLIC:  PRINT(CO_INTERNAL_PREFIX "vis_pub "); break;
   }
 
   type(g, ft->result);
@@ -1178,7 +1190,7 @@ static void fun_proto(cgen_t* g, const fun_t* fun) {
       //   PRINT("const ");
       type(g, param->type);
       if (noalias(param->type))
-        PRINT(" _CO_NOALIAS");
+        PRINT(CO_INTERNAL_PREFIX "noalias");
       if (param->name && param->name != sym__) {
         CHAR(' ');
         PRINT(param->name);
@@ -1578,18 +1590,43 @@ static void strlit(cgen_t* g, const strlit_t* n) {
 }
 
 
-// static void sliceinit(
-//   cgen_t* g, const slicetype_t* st, const expr_t* lenexpr, const expr_t* ptrexpr)
-// {
-//   // struct slice { uint len; T* ptr; }
-//   CHAR('(');
-//   type(g, (type_t*)st);
-//   PRINT("){");
-//   expr(g, lenexpr);
-//   CHAR(',');
-//   expr(g, ptrexpr);
-//   CHAR('}');
-// }
+static void arraylit1(cgen_t* g, const arraylit_t* n, u64 len) {
+  const arraytype_t* at = (arraytype_t*)n->type;
+  CHAR('(');
+  // PRINT("const "); // TODO: track constctx
+  type(g, at->elem);
+  PRINTF("[%llu]){", len);
+  for (u32 i = 0; i < n->values.len; i++) {
+    if (i) CHAR(',');
+    expr(g, n->values.v[i]);
+  }
+  PRINT("}");
+}
+
+
+static void darraylit(cgen_t* g, const arraylit_t* n) {
+  // see gen_darray_typedef
+  const arraytype_t* at = (arraytype_t*)n->type;
+
+  // note: potential overflow of size already checked by typecheck
+  //u8 elemalign = at->elem->align;
+  u64 elemsize = at->elem->size;
+  u64 len = n->values.len;
+
+  CHAR('('), type(g, (type_t*)at), CHAR(')');
+  PRINTF("{%llu,%llu,", len, len);
+  PRINT(CO_INTERNAL_PREFIX "mem_dup(&");
+  arraylit1(g, n, n->values.len);
+  PRINTF(",%llu)}", len * elemsize);
+}
+
+
+static void arraylit(cgen_t* g, const arraylit_t* n) {
+  const arraytype_t* at = (arraytype_t*)n->type;
+  if (at->len == 0)
+    return darraylit(g, n);
+  arraylit1(g, n, at->len);
+}
 
 
 static void assign(cgen_t* g, const binop_t* n) {
@@ -1636,7 +1673,7 @@ static void vardef1(cgen_t* g, const local_t* n, const char* name, bool wrap_rva
   id(g, name);
 
   if (n->nuse == 0)
-    PRINT(" _CO_UNUSED");
+    CHAR(' '), PRINT(CO_INTERNAL_PREFIX "unused");
 
   // if (type_isptr(n->type)) {
   //   PRINTF(" __attribute__((__consumable__(%s)))",
@@ -1973,6 +2010,7 @@ static void expr(cgen_t* g, const expr_t* n) {
   case EXPR_FLOATLIT:  return floatlit(g, (const floatlit_t*)n);
   case EXPR_BOOLLIT:   return boollit(g, (const intlit_t*)n);
   case EXPR_STRLIT:    return strlit(g, (const strlit_t*)n);
+  case EXPR_ARRAYLIT:  return arraylit(g, (const arraylit_t*)n);
   case EXPR_ID:        return idexpr(g, (const idexpr_t*)n);
   case EXPR_PARAM:     return param(g, (const local_t*)n);
   case EXPR_BLOCK:     return block(g, (const block_t*)n);

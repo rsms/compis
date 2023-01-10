@@ -71,9 +71,18 @@ static void val(fmtctx_t* ctx, const irval_t* v, bool isdot) {
     if (isdot && v->var.src)
       PRINTF(" (%s)", v->var.src);
     break;
-  case OP_FUN:
+  case OP_FUN: {
     const irfun_t* f = assertnotnull(v->aux.ptr);
     PRINTF(" %s", f->name);
+    break;
+  }
+  case OP_STR:
+    PRINT(" \"");
+    usize maxlen = 15;
+    buf_appendrepr(&ctx->out, v->aux.bytes.p, MIN(v->aux.bytes.len, maxlen));
+    CHAR('\"');
+    if (v->aux.bytes.len > maxlen)
+      PRINTF("+%zu", v->aux.bytes.len - maxlen);
     break;
   }
 

@@ -1203,6 +1203,31 @@ static expr_t* expr_boollit(parser_t* p, const parselet_t* pl, nodeflag_t fl) {
 }
 
 
+// arraylit = "[" (expr ("," | ";"))* "]"
+static expr_t* expr_arraylit(parser_t* p, const parselet_t* pl, nodeflag_t fl) {
+  arraylit_t* n = mkexpr(p, arraylit_t, EXPR_ARRAYLIT, fl);
+  next(p); // consume '['
+
+  // parse values
+  if (currtok(p) != TRBRACK) {
+    fl |= NF_RVALUE;
+    for (;;) {
+      expr_t* val = expr(p, PREC_COMMA, fl);
+      push_child(p, &n->values, val);
+      bubble_flags(n, val);
+      if (currtok(p) != TSEMI && currtok(p) != TCOMMA)
+        break;
+      next(p);
+    }
+  }
+
+  // ']'
+  n->endloc = currloc(p);
+  expect(p, TRBRACK, "to end array literal");
+  return (expr_t*)n;
+}
+
+
 static expr_t* expr_prefix_op(parser_t* p, const parselet_t* pl, nodeflag_t fl) {
   unaryop_t* n = mkexpr(p, unaryop_t, EXPR_PREFIXOP, fl);
   n->op = pl->op;
@@ -1414,7 +1439,7 @@ static expr_t* named_param_or_id(parser_t* p, nodeflag_t fl) {
 }
 
 
-// args = arg (("," | ";") arg) ("," | ";")?
+// args = ( arg (("," | ";") arg) ("," | ";")? )?
 // arg  = expr | id ":" expr
 static void args(parser_t* p, call_t* n, type_t* recvtype, nodeflag_t fl) {
   local_t param0 = { {{EXPR_PARAM}}, .type = recvtype };
@@ -2147,10 +2172,10 @@ static const parselet_t expr_parsetab[TOK_COUNT] = {
   [TFALSE]    = {expr_boollit},
 
   // punctuation, keywords, identifiers etc
-  [TLPAREN] = {expr_group, expr_postfix_call, PREC_UNARY_POSTFIX}, // (
-  [TLBRACK] = {NULL, expr_postfix_subscript, PREC_UNARY_POSTFIX},  // [
-  [TLBRACE] = {expr_block},                                        // {
-  [TDOT]    = {expr_dotmember, expr_postfix_member, PREC_MEMBER},  // .
+  [TLPAREN] = {expr_group, expr_postfix_call, PREC_UNARY_POSTFIX},         // (
+  [TLBRACK] = {expr_arraylit, expr_postfix_subscript, PREC_UNARY_POSTFIX}, // [
+  [TLBRACE] = {expr_block},                                                // {
+  [TDOT]    = {expr_dotmember, expr_postfix_member, PREC_MEMBER},          // .
   [TMUT]    = {expr_mut},
   [TID]     = {expr_id},
   [TFUN]    = {expr_fun},

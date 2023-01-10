@@ -1,19 +1,28 @@
 
-fun arrays() {
-  var _ &[int]    // slice
-  var _ mut&[int] // mutable slice
-  var _ [i16]     // variably-sized array (growable at runtime)
-  var _ [u32 3]   // fixed-size array
+// pub "c" fun printu64(u64) void
 
-  var a str = "cat" // str aka &[u8]
-  var b = "robin"   // &[u8 5]
-  a = b             // ok; higher-fidelity type assignable to lower-fi type
+fun lol(a [i16]) {
+  //
 }
 
-pub "c" fun printu32(u32) void
+fun arrays_literals(x i32) {
+  // var _ &[int]    // slice
+  // var _ mut&[int] // mutable slice
+  // var _ [i16]     // variably-sized array (growable at runtime)
+  // var _ [u32 3]   // fixed-size array
+
+  var _         = [x, 2, 3]   // [i32 3]
+  var _ [int 5] = [1, 2, 3]   // [int 5], last two elements are zero-initialized
+  var a [i16]   = [1, 2, 3]   // [i16]
+  //var _ [int 2] = [1, 2, 3] // error: excess value in array literal
+  lol(a)
+
+  // TODO allow [T] <= [T N] compatibility
+}
+
 
 pub "c" fun foo(x, y int) int {
-  arrays()
+  arrays_literals(i32(x))
   0
 }
 

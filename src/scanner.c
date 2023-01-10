@@ -425,6 +425,15 @@ static bool utf8seq(scanner_t* s) {
 
 static void intern_identifier(scanner_t* s) {
   slice_t lit = scanner_lit(s);
+
+  if UNLIKELY(
+    lit.len >= strlen(CO_INTERNAL_PREFIX) &&
+    memcmp(CO_INTERNAL_PREFIX, lit.chars, strlen(CO_INTERNAL_PREFIX)) == 0)
+  {
+    return error(s,
+      "invalid identifier; prefix '" CO_INTERNAL_PREFIX "' reserved for internal use");
+  }
+
   s->sym = sym_intern(lit.chars, lit.len);
   loc_set_width(&s->loc, lit.len);
 }
@@ -443,7 +452,7 @@ static void identifier_utf8(scanner_t* s) {
   }
   s->tok = TID;
   intern_identifier(s);
-  // TODO: loc_set_width(&s->loc, utf8_len);
+  // TODO utf8_len: loc_set_width(&s->loc, utf8_len);
 }
 
 
@@ -484,6 +493,7 @@ static void identifier(scanner_t* s) {
     return identifier_utf8(s);
   s->tok = TID;
   s->insertsemi = true;
+  loc_set_width(&s->loc, scanner_lit(s).len);
   intern_identifier(s);
   maybe_keyword(s);
 }

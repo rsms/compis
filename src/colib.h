@@ -556,15 +556,25 @@ static inline WARN_UNUSED_RESULT bool __must_check_unlikely(bool unlikely) {
 #if __has_builtin(__builtin_add_overflow_p)
   #define would_add_overflow(a, b) \
     __builtin_add_overflow_p((a), (b), (__typeof__((a) + (b)))0)
+  #define would_mul_overflow(a, b) \
+    __builtin_mul_overflow_p((a), (b), (__typeof__((a) * (b)))0)
 #elif __has_builtin(__builtin_add_overflow)
   #define would_add_overflow(a, b) ({ \
     __typeof__((a) + (b)) tmp__; \
     __builtin_add_overflow((a), (b), &tmp__); \
   })
+  #define would_mul_overflow(a, b) ({ \
+    __typeof__((a) * (b)) tmp__; \
+    __builtin_mul_overflow((a), (b), &tmp__); \
+  })
 #else
   // best effort (triggers ubsan if enabled)
   #define would_add_overflow(a, b) ({ \
     __typeof__((a) + (b)) tmp__ = (i64)(a) + (i64)(b); \
+    (u64)tmp__ < (u64)(a);
+  })
+  #define would_mul_overflow(a, b) ({ \
+    __typeof__((a) * (b)) tmp__ = (i64)(a) * (i64)(b); \
     (u64)tmp__ < (u64)(a);
   })
 #endif

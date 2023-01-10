@@ -32,6 +32,7 @@
   _( EXPR_INTLIT )\
   _( EXPR_FLOATLIT )\
   _( EXPR_STRLIT )\
+  _( EXPR_ARRAYLIT )\
 // end FOREACH_NODEKIND
 #define FOREACH_NODEKIND_TYPE(_) \
   /* primitive types */\
@@ -299,6 +300,7 @@ DEF_ARRAY_TYPE_API(drop_t, droparray)
 typedef struct { expr_t; u64 intval; } intlit_t;
 typedef struct { expr_t; double f64val; } floatlit_t;
 typedef struct { expr_t; u8* bytes; usize len; } strlit_t;
+typedef struct { expr_t; loc_t endloc; ptrarray_t values; } arraylit_t;
 typedef struct { expr_t; sym_t name; node_t* nullable ref; } idexpr_t;
 typedef struct { expr_t; op_t op; expr_t* expr; } unaryop_t;
 typedef struct { expr_t; op_t op; expr_t* left; expr_t* right; } binop_t;
@@ -401,6 +403,7 @@ typedef struct irval_ {
     f32            f32val;
     f64            f64val;
     void* nullable ptr;
+    slice_t        bytes; // pointer into AST node, e.g. strlit_t
   } aux;
 
   struct {
@@ -565,6 +568,10 @@ typedef struct compiler {
 
 
 extern node_t* last_resort_node;
+
+// name prefix reserved for implementation
+// note: if you change this, also update coprelude.h
+#define CO_INTERNAL_PREFIX "__co_"
 
 // universe constants
 extern type_t* type_void;

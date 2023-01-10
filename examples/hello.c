@@ -4,8 +4,8 @@
 // foo defined in foo.co
 long foo(long x, long y);
 
-void printu32(unsigned int v) {
-  printf("%u\n", v);
+void printu64(unsigned long long v) {
+  printf("%llu\n", v);
 }
 
 int main(int argc, const char* argv[argc+1]) {

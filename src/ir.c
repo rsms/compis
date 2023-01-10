@@ -377,9 +377,14 @@ static irval_t* insertval(
 
 
 static void pusharg(irval_t* dst, irval_t* arg) {
-  assert(dst->argc < countof(dst->argv));
-  dst->argv[dst->argc++] = arg;
   arg->nuse++;
+  if UNLIKELY(dst->argc >= countof(dst->argv)) {
+    dlog("TODO unbounded pusharg");
+    // TODO: allow dynamic size & growth of v->argv
+    // seterr(c, ErrCanceled);
+    return;
+  }
+  dst->argv[dst->argc++] = arg;
 }
 
 
@@ -814,15 +819,15 @@ static u32 owners_indexof(ircons_t* c, irval_t* v, u32 depth) {
 
 
 static void backpropagate_drop_to_ast(ircons_t* c, irval_t* v, irval_t* dropv) {
-  dlog("TODO backprop drop v%u", v->id);
   assertf(c->dropstack.len, "drop outside owners scope");
   droparray_t* drops = c->dropstack.v[c->dropstack.len - 1];
 
   sym_t name = v->var.dst ? v->var.dst : v->var.src;
   if (!name)
     name = dropv->var.dst ? dropv->var.dst : dropv->var.src;
-  assertf(name != NULL,
-    "NOT IMPLEMENTED: %s of v%u without var name", __FUNCTION__, v->id);
+
+  assertf(name != NULL, "%s of v%u without var name", __FUNCTION__, v->id);
+  // if this is triggered, there might be a bug in assign_local
 
   // TODO FIXME ast_ma instead of ir_ma:
   drop_t* d = droparray_alloc(drops, c->ir_ma, 1);
@@ -1233,10 +1238,13 @@ static irval_t* param(ircons_t* c, local_t* n) {
 
 
 static irval_t* assign_local(ircons_t* c, local_t* dst, irval_t* v) {
-  if (dst->name == sym__)
+  sym_t name = dst->name;
+  if (name == sym__) {
+    assertf(!type_isowner(dst->type), "owner without temporary name");
     return v;
-  v->var.dst = dst->name;
-  var_write(c, dst->name, v);
+  }
+  v->var.dst = name;
+  var_write(c, name, v);
   return v;
 }
 
@@ -1247,14 +1255,17 @@ static irval_t* vardef(ircons_t* c, local_t* n) {
     irval_t* v1 = load_expr(c, n->init);
     v1->type = n->type; // needed in case dst is subtype of v, e.g. "dst ?T <= v T"
     v = move_or_copy(c, v1, n->loc, NULL);
-    if (v == v1 && v->comment && *v->comment) {
-      commentf(c, v, "%s aka %s", v->comment, n->name);
-    } else {
-      comment(c, v, n->name);
+    if (n->name != sym__) {
+      if (v == v1 && v->comment && *v->comment) {
+        commentf(c, v, "%s aka %s", v->comment, n->name);
+      } else {
+        comment(c, v, n->name);
+      }
     }
   } else {
     v = pushval(c, c->b, OP_ZERO, n->loc, n->type);
-    comment(c, v, n->name);
+    if (n->name != sym__)
+      comment(c, v, n->name);
     // owning var without initializer is initially dead
     if (type_isowner(v->type)) {
       // must owners_add explicitly since we don't pass replace_owner to move_or_copy
@@ -1365,10 +1376,19 @@ static irval_t* call(ircons_t* c, call_t* n) {
 
   irval_t* recv = load_expr(c, n->recv);
 
-  dlog("TODO call args");
-
   irval_t* v = pushval(c, c->b, OP_CALL, n->loc, n->type);
   pusharg(v, recv);
+
+  for (u32 i = 0; i < n->args.len; i++) {
+    expr_t* arg = n->args.v[i];
+    irval_t* arg_v = load_expr(c, arg);
+    if (type_isowner(arg_v->type))
+      move_owner_outside(c, arg_v);
+    // if (arg_v->op != OP_MOVE)
+    //   arg_v = move_or_copy(c, arg_v, arg->loc, NULL);
+    pusharg(v, arg_v);
+  }
+
   if (type_isowner(v->type))
     owners_add(c, v);
   return v;
@@ -1743,7 +1763,24 @@ static irval_t* intlit(ircons_t* c, intlit_t* n) {
 
 
 static irval_t* strlit(ircons_t* c, strlit_t* n) {
-  return push_TODO_val(c, c->b, n->type, "strlit");
+  irval_t* v = pushval(c, c->b, OP_STR, n->loc, n->type);
+  v->aux.bytes.bytes = n->bytes;
+  v->aux.bytes.len = n->len;
+  return v;
+}
+
+
+static irval_t* arraylit(ircons_t* c, arraylit_t* n) {
+  irval_t* v = pushval(c, c->b, OP_ARRAY, n->loc, n->type);
+  for (u32 i = 0; i < n->values.len; i++) {
+    expr_t* cn = n->values.v[i];
+    irval_t* vv = load_expr(c, cn);
+    if (vv->op != OP_MOVE)
+      vv = move_or_copy(c, vv, cn->loc, NULL);
+    pusharg(v, vv);
+  }
+  comment(c, v, "arraylit");
+  return v;
 }
 
 
@@ -2049,7 +2086,6 @@ static irval_t* expr(ircons_t* c, void* expr_node) {
   case EXPR_CALL:      return call(c, (call_t*)n);
   case EXPR_TYPECONS:  return typecons(c, (typecons_t*)n);
   case EXPR_DEREF:     return deref(c, n, (unaryop_t*)n);
-  case EXPR_FLOATLIT:  return floatlit(c, (floatlit_t*)n);
   case EXPR_ID:        return idexpr(c, (idexpr_t*)n);
   case EXPR_FUN:       return funexpr(c, (fun_t*)n);
   case EXPR_IF:        return ifexpr(c, (ifexpr_t*)n);
@@ -2060,8 +2096,14 @@ static irval_t* expr(ircons_t* c, void* expr_node) {
   case EXPR_INTLIT:
     return intlit(c, (intlit_t*)n);
 
+  case EXPR_FLOATLIT:
+    return floatlit(c, (floatlit_t*)n);
+
   case EXPR_STRLIT:
     return strlit(c, (strlit_t*)n);
+
+  case EXPR_ARRAYLIT:
+    return arraylit(c, (arraylit_t*)n);
 
   case EXPR_VAR:
   case EXPR_LET:

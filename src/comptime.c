@@ -430,6 +430,7 @@ static void* eval1(ctx_t* ctx, void* np) {
   case EXPR_INTLIT:
   case EXPR_FLOATLIT:
   case EXPR_STRLIT:
+  case EXPR_ARRAYLIT:
     return n;
 
   case EXPR_ID:     return idexpr(ctx, np);
