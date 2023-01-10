@@ -696,13 +696,21 @@ static void implicit_rvalue_deref(typecheck_t* a, const type_t* ltype, expr_t** 
 }
 
 
+static bool name_is_co_internal(sym_t name) {
+  return (
+    *name == CO_INTERNAL_PREFIX[0] &&
+    strlen(name) >= strlen(CO_INTERNAL_PREFIX) &&
+    memcmp(CO_INTERNAL_PREFIX, name, strlen(CO_INTERNAL_PREFIX)) == 0 );
+}
+
+
 static bool report_unused(typecheck_t* a, const void* expr_node) {
   assert(node_isexpr(expr_node));
   const expr_t* n = expr_node;
 
   if (nodekind_islocal(n->kind)) {
     local_t* var = (local_t*)n;
-    if (var->name != sym__ && noerror(a)) {
+    if (var->name != sym__ && !name_is_co_internal(var->name) && noerror(a)) {
       warning(a, var->nameloc, "unused %s %s", fmtkind(n), var->name);
       return true;
     }
@@ -1894,6 +1902,8 @@ static void check_call_type_struct(typecheck_t* a, call_t* call, structtype_t* t
       idexpr(a, (idexpr_t*)arg);
     }
 
+    use(arg);
+
     typectx_pop(a);
 
     if UNLIKELY(!type_isassignable(a->compiler, f->type, arg->type)) {
@@ -1924,6 +1934,8 @@ static void call_type_prim(typecheck_t* a, call_t** np, type_t* dst) {
   typectx_push(a, dst);
   expr(a, arg);
   typectx_pop(a);
+
+  use(arg);
 
   call->type = dst;
 
@@ -2062,6 +2074,7 @@ static void call_fun(typecheck_t* a, call_t* call, funtype_t* ft) {
     expr_t* arg = call->args.v[i];
     local_t* param = paramsv[i];
 
+
     typectx_push(a, param->type);
 
     if (arg->kind == EXPR_PARAM) {
@@ -2092,6 +2105,8 @@ static void call_fun(typecheck_t* a, call_t* call, funtype_t* ft) {
       exprp(a, (expr_t**)&call->args.v[i]);
       arg = call->args.v[i]; // reload
     }
+
+    use(arg);
 
     typectx_pop(a);
 

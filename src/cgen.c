@@ -1319,8 +1319,8 @@ static void structinit(cgen_t* g, const structtype_t* t, const ptrarray_t* args)
 
 static void zeroinit_array(cgen_t* g, const arraytype_t* t) {
   if (t->len == 0) {
-    // runtime dynamic array "{cap, len uint; T* ptr}"
-    PRINT("{0,0,NULL}");
+    // runtime dynamic array "{ cap, len uint; T* ptr }"
+    PRINT("{0}");
     return;
   }
   // (u32[5]){0u}
@@ -1378,7 +1378,7 @@ again:
     break;
   case TYPE_SLICE:
   case TYPE_MUTSLICE:
-    PRINT("{0,NULL}");
+    PRINT("{0}");
     break;
   case TYPE_ARRAY:
     return zeroinit_array(g, (arraytype_t*)t);
