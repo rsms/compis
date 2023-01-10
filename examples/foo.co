@@ -1,25 +1,26 @@
 
 // pub "c" fun printu64(u64) void
 
-fun lol(a [i16]) {
-  //
+fun consume_i16_array(a [i16]) {
+  // drop(a)
 }
 
 fun arrays_literals(x i32) {
-  // var _ &[int]    // slice
-  // var _ mut&[int] // mutable slice
-  // var _ [i16]     // variably-sized array (growable at runtime)
-  // var _ [u32 3]   // fixed-size array
+  var _ &[int]    // slice
+  var _ mut&[int] // mutable slice
+  var _ [i16]     // runtime-dynamic array
+  var _ [u32 3]   // fixed-size array
 
   var _         = [x, 2, 3]   // [i32 3]
-  var _ [int 5] = [1, 2, 3]   // [int 5], last two elements are zero-initialized
+  var _ [int 5] = [1, 2, 3]   // [int 5]
+  //var _ [int 2] = [1, 2, 3] // error: excess value
+
+  // runtime-dynamic arrays are owned types
   var a [i16]   = [1, 2, 3]   // [i16]
-  //var _ [int 2] = [1, 2, 3] // error: excess value in array literal
-  lol(a)
+  consume_i16_array(a) // ownership moved to function
 
-  // TODO allow [T] <= [T N] compatibility
+  // TODO allow [T N] initializer for dynamic arrays
 }
-
 
 pub "c" fun foo(x, y int) int {
   arrays_literals(i32(x))
