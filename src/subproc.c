@@ -9,15 +9,7 @@
 #include <signal.h>
 
 
-// #define TRACE_SUBPROC
-
-
-#if defined(TRACE_SUBPROC) && defined(CO_DEVBUILD)
-  #define trace(fmt, va...) _dlog(3, "sproc", __FILE__, __LINE__, fmt, ##va)
-#else
-  #undef TRACE_SUBPROC
-  #define trace(fmt, va...) ((void)0)
-#endif
+#define trace(fmt, va...) _trace(opt_trace_subproc, 3, "subproc", fmt, ##va)
 
 
 static pid_t g_parent_pid = 0;

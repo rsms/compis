@@ -412,63 +412,58 @@ static err_t dump_ast(const node_t* ast) {
 }
 
 
-#if DEBUG
-  #define DUMP_AST() { \
-    dlog("————————— AST —————————"); \
-    if ((err = dump_ast((node_t*)unit))) \
-      goto end_parser; \
-  }
-  #define PRINT_AST() DUMP_AST()
-#else
-  #define DUMP_AST()  ((void)0)
-  #define PRINT_AST() if (c->opt_printast) { dump_ast((node_t*)unit); }
-#endif
-
-
 static err_t compile_co_to_c(compiler_t* c, input_t* input, const char* cfile) {
-  // format intermediate C filename cfile
-  dlog("[compile_co_to_c] cfile: %s", cfile);
   u32 errcount = c->errcount;
   err_t err = 0;
+  bool printed_trace_ast = false;
 
-  // bump allocator for AST
+  // create bump allocator for AST
   mem_t ast_mem = mem_alloc_zeroed(c->ma, 1024*1024*100);
   if (ast_mem.p == NULL)
     return ErrNoMem;
   memalloc_t ast_ma = memalloc_bump(ast_mem.p, ast_mem.size, MEMALLOC_STORAGE_ZEROED);
 
-  // parse
-  dlog("————————— parse —————————");
+  // create parser
   parser_t parser;
   if (!parser_init(&parser, c)) {
     err = ErrNoMem;
     goto end;
   }
+
+  // parse
+  dlog_if(opt_trace_parse, "————————— parse —————————");
   unit_t* unit = parser_parse(&parser, ast_ma, input);
   if (c->errcount > errcount) {
-    PRINT_AST();
     err = ErrCanceled;
     goto end_parser;
   }
-  DUMP_AST();
+  if (opt_trace_parse && c->opt_printast) {
+    dlog("————————— AST after parse —————————");
+    printed_trace_ast = true;
+    dump_ast((node_t*)unit);
+  }
 
   // typecheck
-  dlog("————————— typecheck —————————");
+  dlog_if(opt_trace_typecheck, "————————— typecheck —————————");
   if (( err = typecheck(&parser, unit) ))
     goto end_parser;
-  PRINT_AST();
   if (c->errcount > errcount) {
     err = ErrCanceled;
     goto end_parser;
+  }
+  if (opt_trace_typecheck && c->opt_printast) {
+    dlog("————————— AST after typecheck —————————");
+    printed_trace_ast = true;
+    dump_ast((node_t*)unit);
   }
 
   // dlog("abort");abort(); // XXX
 
   // analyze (ir)
-  dlog("————————— analyze —————————");
+  dlog_if(opt_trace_ir, "————————— IR —————————");
   memalloc_t ir_ma = ast_ma;
   if (( err = analyze(c, unit, ir_ma) )) {
-    dlog("analyze: err=%s", err_str(err));
+    dlog("IR analyze: err=%s", err_str(err));
     goto end_parser;
   }
   if (c->errcount > errcount) {
@@ -476,18 +471,25 @@ static err_t compile_co_to_c(compiler_t* c, input_t* input, const char* cfile) {
     goto end_parser;
   }
 
+  // print AST, if requested
+  if (c->opt_printast) {
+    c->opt_printast = false;
+    if (printed_trace_ast)
+      dlog("————————— AST (final) —————————");
+    dump_ast((node_t*)unit);
+  }
 
   // generate C code
-  dlog("————————— cgen —————————");
+  dlog_if(opt_trace_cgen, "————————— cgen —————————");
   cgen_t g;
   if (!cgen_init(&g, c, c->ma))
     goto end_parser;
   err = cgen_generate(&g, unit);
   if (!err) {
-    #ifdef CO_DEVBUILD
+    if (opt_trace_cgen) {
       fprintf(stderr, "——————————\n%.*s\n——————————\n",
         (int)g.outbuf.len, g.outbuf.chars);
-    #endif
+    }
     dlog("cgen %s -> %s", input->name, cfile);
     err = writefile(cfile, 0660, buf_slice(g.outbuf));
   }
@@ -495,6 +497,10 @@ static err_t compile_co_to_c(compiler_t* c, input_t* input, const char* cfile) {
 
 
 end_parser:
+  if (c->opt_printast) {
+    // in case an error occurred, print AST "what we have so far"
+    dump_ast((node_t*)unit);
+  }
   parser_dispose(&parser);
 end:
   mem_free(c->ma, &ast_mem);

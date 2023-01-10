@@ -131,14 +131,15 @@ unstash()
 static u8 kStash;
 
 //—————————————————————————————————————————————————————————————————————————————————————
-// TRACE_SCOPESTACK: define to log trace on stderr
+// TRACE_SCOPESTACK: define to trace details on stderr
 //#define TRACE_SCOPESTACK
 
 #define TRACE_KEY_FMT  "\"%s\""
 #define TRACE_KEY(key) ((const char*)(key))
 
-#if defined(TRACE_SCOPESTACK) && defined(CO_DEVBUILD)
-  #define trace(s, fmt, args...) dlog("[scope %u] " fmt, level(s), ##args)
+#if defined(TRACE_SCOPESTACK) && defined(DEBUG)
+  #define trace(s, fmt, args...) \
+    _trace(true, 7, "scope", "[%u] " fmt, level(s), ##args)
   static u32 level(const scope_t* nullable s) {
     u32 n = 0;
     if (s && s->len > 2) for (u32 base = s->base; base > 0; n++) {

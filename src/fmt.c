@@ -58,22 +58,24 @@ const char* op_fmt(op_t op) {
   switch ((enum op)op) {
   case OP_ALIAS:
   case OP_ARG:
+  case OP_ARRAY:
   case OP_BORROW:
   case OP_BORROW_MUT:
   case OP_CALL:
+  case OP_CAST:
   case OP_DROP:
   case OP_FCONST:
   case OP_FUN:
+  case OP_GEP:
   case OP_ICONST:
   case OP_MOVE:
   case OP_NOOP:
   case OP_OCHECK:
   case OP_PHI:
   case OP_STORE:
+  case OP_STR:
   case OP_VAR:
   case OP_ZERO:
-  case OP_CAST:
-  case OP_GEP:
     return op_name(op);
 
   // unary

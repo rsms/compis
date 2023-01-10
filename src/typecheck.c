@@ -5,15 +5,9 @@
 
 #include <stdlib.h> // strtof
 
-#define TRACE_TYPECHECK
 
-#if defined(TRACE_TYPECHECK) && DEBUG
-  #define trace(fmt, va...)  \
-    _dlog(4, "TC", __FILE__, __LINE__, "%*s" fmt, a->traceindent*2, "", ##va)
-#else
-  #undef TRACE_TYPECHECK
-  #define trace(fmt, va...) ((void)0)
-#endif
+#define trace(fmt, va...) \
+  _trace(opt_trace_typecheck, 4, "TC", "%*s" fmt, a->traceindent*2, "", ##va)
 
 
 static const char* fmtnode(typecheck_t* a, u32 bufindex, const void* nullable n);
@@ -38,7 +32,7 @@ static const char* fmtkind(const void* node) {
 }
 
 
-#if defined(TRACE_TYPECHECK) && defined(CO_DEVBUILD)
+#ifdef DEBUG
   #define trace_node(a, msg, np) ({ \
     const node_t* __n = *(const node_t**)(np); \
     trace("%s%-14s: %s", (msg), nodekind_name(__n->kind), fmtnode((a), 0, __n)); \
@@ -51,6 +45,8 @@ static const char* fmtkind(const void* node) {
   } nodetrace_t;
 
   static void _trace_cleanup(nodetrace_t* nt) {
+    if (!opt_trace_typecheck)
+      return;
     typecheck_t* a = nt->a;
     a->traceindent--;
     type_t* t = NULL;
@@ -79,7 +75,6 @@ static const char* fmtkind(const void* node) {
       {(a), (const node_t**)(np), (msg)};
 
 #else
-  #undef TRACE_TYPECHECK
   #define trace_node(a,msg,n) ((void)0)
   #define TRACE_NODE(a,msg,n) ((void)0)
 #endif

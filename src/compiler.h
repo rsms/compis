@@ -573,7 +573,7 @@ extern node_t* last_resort_node;
 // note: if you change this, also update coprelude.h
 #define CO_INTERNAL_PREFIX "__co_"
 
-// universe constants
+// universe constants (universe.c)
 extern type_t* type_void;
 extern type_t* type_unknown;
 extern type_t* type_bool;

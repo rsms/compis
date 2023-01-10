@@ -332,13 +332,6 @@ typedef double             f64;
 // panic prints msg to stderr and calls TRAP()
 #define panic(fmt, args...) _panic(__FILE__, __LINE__, __FUNCTION__, fmt, ##args)
 
-// CO_DEVBUILD forces DEBUG to be enabled (can enable CO_DEVBUILD in release builds)
-#if defined(CO_DEVBUILD)
-  #undef DEBUG
-  #undef NDEBUG
-  #define DEBUG
-#endif
-
 // void assert(expr condition)
 #undef assert
 #define comptime_assert(condition, msg) _Static_assert(condition, msg)
@@ -497,14 +490,41 @@ typedef double             f64;
 
 // void dlog(const char* fmt, ...)
 #ifdef DEBUG
-  #define dlog(fmt, args...) _dlog(-1, NULL, __FILE__, __LINE__, fmt, ##args)
+  #define dlog(fmt, args...) \
+    _dlog(-1, NULL, __FILE__, __LINE__, fmt, ##args)
+
+  #define dlog_if(condition, fmt, args...) ( (condition) ? \
+    _dlog(-1, NULL, __FILE__, __LINE__, fmt, ##args) : ((void)0) ) \
+
+  #define _trace(condition, color, prefix, fmt, args...) \
+    ( (condition) ? _dlog((color), (prefix), __FILE__, __LINE__, fmt, ##args) \
+                  : ((void)0) )
 #else
-  #define dlog(fmt, ...) ((void)0)
+  #define dlog(fmt, ...)                         ((void)0)
+  #define dlog_if(condition, fmt, ...)           ((void)0)
+  #define _trace(condition, color, fmt, args...) ((void)0)
 #endif
 
 // void log(const char* fmt, ...)
 #undef log // math.h
 #define log(fmt, args...) fprintf(stderr, fmt "\n", ##args)
+
+// debug-build only CLI options (build.c)
+#if DEBUG
+  extern bool opt_trace_parse;
+  extern bool opt_trace_typecheck;
+  extern bool opt_trace_comptime;
+  extern bool opt_trace_ir;
+  extern bool opt_trace_cgen;
+  extern bool opt_trace_subproc;
+#else
+  #define opt_trace_parse     false
+  #define opt_trace_typecheck false
+  #define opt_trace_comptime  false
+  #define opt_trace_ir        false
+  #define opt_trace_cgen      false
+  #define opt_trace_subproc   false
+#endif
 
 // no more includes beyond this point; enable default non-nullable pointers
 ASSUME_NONNULL_BEGIN
@@ -513,10 +533,12 @@ EXTERN_C _Noreturn void _panic(
   const char* file, int line, const char* fun, const char* fmt, ...)
   ATTR_FORMAT(printf, 4, 5);
 
-EXTERN_C void _dlog(
-  int color, const char* nullable prefix,
-  const char* file, int line,
-  const char* fmt, ...) ATTR_FORMAT(printf, 5, 6);
+#ifdef DEBUG
+  EXTERN_C void _dlog(
+    int color, const char* nullable prefix,
+    const char* file, int line,
+    const char* fmt, ...) ATTR_FORMAT(printf, 5, 6);
+#endif
 
 //—————————————————————————————————————————————————————————————————————————————————————
 // overflow checking

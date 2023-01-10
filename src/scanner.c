@@ -4,7 +4,8 @@
 #include "abuf.h"
 
 
-// #define DEBUG_SCANNING
+// TRACE_TOKENS: define to trace each token scanned
+//#define TRACE_TOKENS
 
 
 static const struct { const char* s; u8 len; tok_t t; } keywordtab[] = {
@@ -660,12 +661,14 @@ static void scan0(scanner_t* s) {
 void scanner_next(scanner_t* s) {
   s->tokend = s->inp;
   scan0(s);
-  #ifdef DEBUG_SCANNING
+
+  #if defined(DEBUG) && defined(TRACE_TOKENS)
     char locstr[128];
     loc_fmt(s->loc, locstr, sizeof(locstr), &s->compiler->locmap);
     const char* name = tok_name(s->tok);
     slice_t lit = scanner_lit(s);
-    log("scan>  %s\t%-12s \"%.*s\"\t%llu\t0x%llx",
-      locstr, name, (int)lit.len, lit.chars, s->litint, s->litint);
+    _dlog(3, "S", __FILE__, __LINE__,
+      "%-12s \"%.*s\"\t%llu\t0x%llx\t%s",
+      name, (int)lit.len, lit.chars, s->litint, s->litint, locstr);
   #endif
 }

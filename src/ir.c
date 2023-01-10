@@ -3,11 +3,6 @@
 #include "compiler.h"
 #include <stdlib.h> // for debug_graphviz hack
 
-#define TRACE_ANALYSIS
-#ifndef CO_DEVBUILD
-  #undef TRACE_ANALYSIS
-#endif
-
 
 typedef array_type(map_t) maparray_t;
 DEF_ARRAY_TYPE_API(map_t, maparray)
@@ -36,10 +31,14 @@ typedef struct {
     u32        base;   // current scope's base index
   } owners;
 
-  #ifdef TRACE_ANALYSIS
+  #if DEBUG
     int traceindent;
   #endif
 } ircons_t;
+
+
+#define trace(fmt, va...) \
+  _trace(opt_trace_ir, 1, "IR", "%*s" fmt, c->traceindent*2, "", ##va)
 
 
 static irval_t   bad_irval = { 0 };
@@ -75,15 +74,12 @@ static const char* fmttmp(ircons_t* c, u32 bufindex, const char* fmt, ...) {
 
 UNUSED static const char* fmtnode(u32 bufindex, const void* nullable n) {
   buf_t* buf = tmpbuf(bufindex);
-  err_t err = node_fmt(buf, n, /*depth*/0);
-  assertf(err == 0, "node_fmt");
+  safecheckexpr( node_fmt(buf, n, /*depth*/0), ErrOk);
   return buf->chars;
 }
 
 
-#ifdef TRACE_ANALYSIS
-  #define trace(fmt, va...)  \
-    _dlog(1, "IR", __FILE__, __LINE__, "%*s" fmt, c->traceindent*2, "", ##va)
+#ifdef DEBUG
   // static void trace_node(ircons_t* c, const char* msg, const node_t* n)
   #define trace_node(msg, n) \
     trace("%s%-14s: %s", (msg), nodekind_name((n)->kind), fmtnode(0, (n)))
@@ -97,7 +93,6 @@ UNUSED static const char* fmtnode(u32 bufindex, const void* nullable n) {
     trace_node(prefix, (node_t*)n); \
     TRACE_SCOPE();
 #else
-  #define trace(fmt, va...)     ((void)0)
   #define TRACE_NODE(prefix, n) ((void)0)
   #define TRACE_SCOPE()         ((void)0)
 #endif
@@ -612,11 +607,13 @@ static void stash_block_vars(ircons_t* c, irblock_t* b) {
   if (c->vars.len == 0)
     return;
 
-  #ifdef TRACE_ANALYSIS
-    trace("stash %u var%s accessed by b%u", c->vars.len, c->vars.len==1?"":"s", b->id);
-    for (const mapent_t* e = map_it(&c->vars); map_itnext(&c->vars, &e); ) {
-      irval_t* v = e->value;
-      trace("  - %s %s = v%u", (const char*)e->key, fmtnode(0, v->type), v->id);
+  #ifdef DEBUG
+    if (opt_trace_ir) {
+      trace("stash %u var%s accessed by b%u", c->vars.len, c->vars.len==1?"":"s", b->id);
+      for (const mapent_t* e = map_it(&c->vars); map_itnext(&c->vars, &e); ) {
+        irval_t* v = e->value;
+        trace("  - %s %s = v%u", (const char*)e->key, fmtnode(0, v->type), v->id);
+      }
     }
   #endif
 
@@ -646,9 +643,6 @@ static void stash_block_vars(ircons_t* c, irblock_t* b) {
 static irblock_t* end_block(ircons_t* c) {
   // transfer live locals and seals c->b if needed
   trace("%s b%u", __FUNCTION__, c->b->id);
-  #ifdef TRACE_ANALYSIS
-  // c->traceindent++;
-  #endif
 
   irblock_t* b = c->b;
   c->b = &bad_irblock;
@@ -664,20 +658,21 @@ static irblock_t* end_block(ircons_t* c) {
   }
 
   // // dump state of vars
-  // #ifdef TRACE_ANALYSIS
-  // trace("defvars");
-  // for (u32 bi = 0; bi < c->defvars.len; bi++) {
-  //   map_t* vars = &c->defvars.v[bi];
-  //   if (vars->len == 0)
-  //     continue;
-  //   trace("  b%u", bi);
-  //   for (const mapent_t* e = map_it(vars); map_itnext(vars, &e); ) {
-  //     sym_t name = e->key;
-  //     irval_t* v = e->value;
-  //     trace("    %s %s = v%u", name, fmtnode(0, v->type), v->id);
+  // #ifdef DEBUG
+  // if (opt_trace_ir) {
+  //   trace("defvars");
+  //   for (u32 bi = 0; bi < c->defvars.len; bi++) {
+  //     map_t* vars = &c->defvars.v[bi];
+  //     if (vars->len == 0)
+  //       continue;
+  //     trace("  b%u", bi);
+  //     for (const mapent_t* e = map_it(vars); map_itnext(vars, &e); ) {
+  //       sym_t name = e->key;
+  //       irval_t* v = e->value;
+  //       trace("    %s %s = v%u", name, fmtnode(0, v->type), v->id);
+  //     }
   //   }
   // }
-  // c->traceindent--;
   // #endif
 
   return b;
@@ -818,6 +813,12 @@ static u32 owners_indexof(ircons_t* c, irval_t* v, u32 depth) {
 // }
 
 
+static bool zeroinit_owner_needs_drop(ircons_t* c, type_t* t) {
+  // return true for any owning type which for its zeroinit needs drop()
+  return false;
+}
+
+
 static void backpropagate_drop_to_ast(ircons_t* c, irval_t* v, irval_t* dropv) {
   assertf(c->dropstack.len, "drop outside owners scope");
   droparray_t* drops = c->dropstack.v[c->dropstack.len - 1];
@@ -909,7 +910,7 @@ static void drop(ircons_t* c, irval_t* v, loc_t loc) {
     if (v->var.dst)
       comment(c, dropv, v->var.dst);
   }
-  trace("drop v%u in b%u", v->id, c->b->id);
+  trace("\e[1;33m" "drop v%u in b%u" "\e[0m", v->id, c->b->id);
   backpropagate_drop_to_ast(c, v, dropv);
 }
 
@@ -1270,8 +1271,11 @@ static irval_t* vardef(ircons_t* c, local_t* n) {
     if (type_isowner(v->type)) {
       // must owners_add explicitly since we don't pass replace_owner to move_or_copy
       owners_add(c, v);
-      deadset_add(c, &c->deadset, v->id);
-      // create_liveness_var(c, v);
+      if (!zeroinit_owner_needs_drop(c, v->type)) {
+        // mark as dead since the type's zeroinit doesn't need drop (no side effects)
+        deadset_add(c, &c->deadset, v->id);
+        // create_liveness_var(c, v);
+      }
     }
   }
   return assign_local(c, n, v);

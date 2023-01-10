@@ -27,8 +27,17 @@ static bool opt_genasm = false;
 static bool opt_logld = false;
 static bool opt_nomain = false;
 static const char* opt_builddir = "build";
+#if DEBUG
+  static bool opt_trace_all = false;
+  bool opt_trace_parse = false;
+  bool opt_trace_typecheck = false;
+  bool opt_trace_comptime = false;
+  bool opt_trace_ir = false;
+  bool opt_trace_cgen = false;
+  bool opt_trace_subproc = false;
+#endif
 
-#define FOREACH_CLI_OPTION(S, SV, L, LV) \
+#define FOREACH_CLI_OPTION(S, SV, L, LV,  DEBUG_L, DEBUG_LV) \
   /* S( var, ch, name,          descr) */\
   /* SV(var, ch, name, valname, descr) */\
   /* L( var,     name,          descr) */\
@@ -44,6 +53,14 @@ static const char* opt_builddir = "build";
   L( &opt_genirdot, "write-ir-dot", "Write IR as Graphviz .dot file to build dir")\
   L( &opt_logld,    "print-ld-cmd", "Print linker invocation to stderr")\
   L( &opt_nomain,   "no-auto-main", "Don't auto-generate C ABI \"main\" for main.main")\
+  /* debug-only options */\
+  DEBUG_L( &opt_trace_all,       "co-trace",           "Trace everything")\
+  DEBUG_L( &opt_trace_parse,     "co-trace-parse",     "Trace parsing")\
+  DEBUG_L( &opt_trace_typecheck, "co-trace-typecheck", "Trace type checking")\
+  DEBUG_L( &opt_trace_comptime,  "co-trace-comptime",  "Trace comptime eval")\
+  DEBUG_L( &opt_trace_ir,        "co-trace-ir",        "Trace IR")\
+  DEBUG_L( &opt_trace_cgen,      "co-trace-cgen",      "Trace code generation")\
+  DEBUG_L( &opt_trace_subproc,   "co-trace-subproc",   "Trace subprocess execution")\
 // end FOREACH_CLI_OPTION
 
 #include "cliopt.inc.h"
@@ -51,8 +68,8 @@ static const char* opt_builddir = "build";
 static void help(const char* prog) {
   printf(
     "Compis, your friendly neighborhood compiler\n"
-    "usage: co %s [options] [--] <source> ...\n"
-    "options:\n"
+    "Usage: co %s [options] [--] <source> ...\n"
+    "Options:\n"
     "",
     prog);
   print_options();
@@ -76,6 +93,16 @@ int main_build(int argc, char* argv[]) {
   int optind = parse_cli_options(argc, argv, help);
   if (optind < 0)
     return 1;
+
+  #if DEBUG
+    // --co-trace turns on all trace flags
+    opt_trace_parse |= opt_trace_all;
+    opt_trace_typecheck |= opt_trace_all;
+    opt_trace_comptime |= opt_trace_all;
+    opt_trace_ir |= opt_trace_all;
+    opt_trace_cgen |= opt_trace_all;
+    opt_trace_subproc |= opt_trace_all;
+  #endif
 
   if (optind == argc)
     errx(1, "missing input source");

@@ -4,18 +4,10 @@
 #include "abuf.h"
 
 
-#define TRACE_CGEN
-
-
 typedef struct { usize v[2]; } sizetuple_t;
 
 
-#if defined(TRACE_CGEN) && defined(CO_DEVBUILD)
-  #define trace(fmt, va...) _dlog(6, "cgen", __FILE__, __LINE__, fmt, ##va)
-#else
-  #undef TRACE_CGEN
-  #define trace(fmt, va...) ((void)0)
-#endif
+#define trace(fmt, va...)  _trace(opt_trace_cgen, 6, "cgen", fmt, ##va)
 
 
 bool cgen_init(cgen_t* g, compiler_t* c, memalloc_t out_ma) {
@@ -69,7 +61,7 @@ static void _error(cgen_t* g, origin_t origin, const char* fmt, ...) {
 }
 
 
-static const char* fmtnode(cgen_t* g, u32 bufindex, const void* nullable n) {
+UNUSED static const char* fmtnode(cgen_t* g, u32 bufindex, const void* nullable n) {
   buf_t* buf = tmpbuf(bufindex);
   err_t err = node_fmt(buf, n, /*depth*/0);
   if (!err)
@@ -92,7 +84,7 @@ static const char* fmtnode(cgen_t* g, u32 bufindex, const void* nullable n) {
 
 //#define INTERNAL_SEP    "·" // U+00B7 MIDDLE DOT (UTF8: "\xC2\xB7")
 #define CO_TYPE_PREFIX CO_INTERNAL_PREFIX "t_"
-#define ANON_PREFIX    CO_INTERNAL_PREFIX "anon_"
+#define ANON_PREFIX    CO_INTERNAL_PREFIX "v"
 #define ANON_FMT       ANON_PREFIX "%x"
 
 #define CHAR(ch)             ( buf_push(&g->outbuf, (ch)), ((void)0) )
@@ -257,15 +249,17 @@ static const char* operator(op_t op) {
 }
 
 
-static bool type_is_interned_def(const type_t* t) {
-  return t->kind == TYPE_STRUCT
-      || t->kind == TYPE_OPTIONAL
-      || t->kind == TYPE_ALIAS
-      || t->kind == TYPE_ARRAY
-      || t->kind == TYPE_SLICE
-      || t->kind == TYPE_MUTSLICE
-      ;
-}
+#if DEBUG
+  static bool type_is_interned_def(const type_t* t) {
+    return t->kind == TYPE_STRUCT
+        || t->kind == TYPE_OPTIONAL
+        || t->kind == TYPE_ALIAS
+        || t->kind == TYPE_ARRAY
+        || t->kind == TYPE_SLICE
+        || t->kind == TYPE_MUTSLICE
+        ;
+  }
+#endif
 
 
 static const type_t* unwind_aliastypes(const type_t* t) {
@@ -1172,9 +1166,9 @@ static void fun_proto(cgen_t* g, const fun_t* fun) {
   funtype_t* ft = (funtype_t*)fun->type;
 
   switch (fun->visibility) {
-    case VISIBILITY_PRIVATE: PRINT(CO_INTERNAL_PREFIX "vis_pri static "); break;
-    case VISIBILITY_PKG:     PRINT(CO_INTERNAL_PREFIX "vis_pkg "); break;
-    case VISIBILITY_PUBLIC:  PRINT(CO_INTERNAL_PREFIX "vis_pub "); break;
+    case VISIBILITY_PRIVATE: PRINT("static "); break;
+    case VISIBILITY_PKG:     PRINT(CO_INTERNAL_PREFIX "pkg "); break;
+    case VISIBILITY_PUBLIC:  PRINT(CO_INTERNAL_PREFIX "pub "); break;
   }
 
   type(g, ft->result);

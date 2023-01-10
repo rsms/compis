@@ -11,11 +11,13 @@ typedef struct cliopt {
   const char* nullable   valname;
   cli_valload_t nullable valload;
   const char*            descr;
+#ifdef DEBUG
+  bool                   isdebug;
+#endif
 } cliopt_t;
 
 
 static bool cli_valload_str(void* valptr, const char* value) {
-  dlog("cli_valload_str");
   *(const char**)valptr = value;
   return true;
 }
@@ -37,14 +39,23 @@ static cliopt_t options[] = {
   #define _SV(p, c, name, valname, descr) {(void*)(p), valname, _VL(p), descr},
   #define _L( p,    name,          descr) {(void*)(p), NULL, NULL, descr},
   #define _LV(p,    name, valname, descr) {(void*)(p), valname, _VL(p), descr},
+  #ifdef DEBUG
+    #define _DL( p,    name,          descr) {(void*)(p), NULL, NULL, descr, 1},
+    #define _DLV(p,    name, valname, descr) {(void*)(p), valname, _VL(p), descr, 1},
+  #else
+    #define _DL( p,    name,          descr)
+    #define _DLV(p,    name, valname, descr)
+  #endif
 
-  FOREACH_CLI_OPTION(_S, _SV, _L, _LV)
-  {0}
+  FOREACH_CLI_OPTION(_S, _SV, _L, _LV, _DL, _DLV)
 
   #undef _S
   #undef _SV
   #undef _L
   #undef _LV
+  #undef _DL
+  #undef _DLV
+
   #undef _VL
 };
 
@@ -56,14 +67,23 @@ static const struct option longopt_spec[] = {
   #define _SV(p, c, name, valname, descr)  {name, required_argument, NULL, c},
   #define _L( p,    name,          descr)  {name, no_argument,       &dummyvar, 1},
   #define _LV(p,    name, valname, descr)  {name, required_argument, &dummyvar, 1},
+  #ifdef DEBUG
+    #define _DL( p,    name,          descr)  {name, no_argument,       &dummyvar, 1},
+    #define _DLV(p,    name, valname, descr)  {name, required_argument, &dummyvar, 1},
+  #else
+    #define _DL( p,    name,          descr)
+    #define _DLV(p,    name, valname, descr)
+  #endif
 
-  FOREACH_CLI_OPTION(_S, _SV, _L, _LV)
+  FOREACH_CLI_OPTION(_S, _SV, _L, _LV, _DL, _DLV)
   {0}
 
   #undef _S
   #undef _SV
   #undef _L
   #undef _LV
+  #undef _DL
+  #undef _DLV
 };
 
 
@@ -78,7 +98,7 @@ static int parse_cli_options(int argc, char** argv, void(*helpfn)(const char* pr
     #define _SV(p, c, name, valname, descr)  c,':',
     #define _IGN(...)
 
-    FOREACH_CLI_OPTION(_S, _SV, _IGN, _IGN)
+    FOREACH_CLI_OPTION(_S, _SV, _IGN, _IGN, _IGN, _IGN)
     0
 
     #undef _S
@@ -96,7 +116,7 @@ static int parse_cli_options(int argc, char** argv, void(*helpfn)(const char* pr
       #define _S( p, c, ...)  case c: *p = true; break;
       #define _SV(p, c, ...)  case c: _VL(p)((void*)p, optarg); break;
       #define _IGN(...)
-      FOREACH_CLI_OPTION(_S, _SV, _IGN, _IGN)
+      FOREACH_CLI_OPTION(_S, _SV, _IGN, _IGN, _IGN, _IGN)
       #undef _S
       #undef _SV
       #undef _IGN
@@ -129,15 +149,18 @@ static int parse_cli_options(int argc, char** argv, void(*helpfn)(const char* pr
 }
 
 
-static void print_options() {
+static void print_options1(bool isdebug) {
   // calculate description column
   int descr_col = 0;
   int descr_max_col = 30;
   int descr_sep_w = 2; // spaces separating argspec and description
-  for (int i = 0; ; i++) {
+  for (usize i = 0; i < countof(options); i++) {
+    #if DEBUG
+      if (options[i].isdebug != isdebug)
+        continue;
+    #endif
     struct option o = longopt_spec[i];
-    if (o.name == NULL)
-      break;
+    assertnotnull(o.name);
     int w = 6 + (o.name ? 2 + strlen(o.name) : 0);
     // e.g. "  -c  ", "  -c, --name" or "      --name"
     if (options[i].valname)
@@ -148,10 +171,12 @@ static void print_options() {
   }
 
   // print
-  for (int i = 0; ; i++) {
+  for (usize i = 0; i < countof(options); i++) {
+    #if DEBUG
+      if (options[i].isdebug != isdebug)
+        continue;
+    #endif
     struct option o = longopt_spec[i];
-    if (o.name == NULL)
-      break;
     long startcol = ftell(stdout);
     if (o.flag == NULL) {
       if (strlen(o.name) == 0) {
@@ -172,6 +197,22 @@ static void print_options() {
       printf("%*s%s\n", (descr_col - w) + descr_sep_w, "", options[i].descr);
     }
   }
+}
+
+
+static void print_options() {
+  print_options1(false);
+
+  // if there are debug-build options, print them separately
+  #if DEBUG
+    for (usize i = 0; i < countof(options); i++) {
+      if (options[i].isdebug) {
+        printf("Options only available in compis debug build:\n");
+        print_options1(true);
+        break;
+      }
+    }
+  #endif
 }
 
 ASSUME_NONNULL_END

@@ -9,10 +9,6 @@
 #include "compiler.h"
 
 
-#define TRACE_COMPTIME
-#define TRACE_COMPTIME_RESULT  // also trace result of each evaluation
-
-
 typedef array_type(u64) u64array_t;
 DEF_ARRAY_TYPE_API(u64, u64array)
 
@@ -34,26 +30,14 @@ typedef struct {
   intlit_t* nullable const_true;
   intlit_t* nullable const_false;
 
-  #ifdef TRACE_COMPTIME
+  #ifdef DEBUG
     int traceindent;
   #endif
 } ctx_t;
 
 
-#if defined(TRACE_COMPTIME) && defined(CO_DEVBUILD)
-  #define trace(fmt, va...)  \
-    _dlog(5, "eval", __FILE__, __LINE__, "%*s" fmt, ctx->traceindent*2, "", ##va)
-
-  // static void _trace_scope_end(ctx_t** cp) { (*cp)->traceindent--; }
-  // #define TRACE_SCOPE() \
-  //   ctx->traceindent++; \
-  //   ctx_t* __tracer __attribute__((__cleanup__(_trace_scope_end),__unused__)) = ctx
-#else
-  #undef TRACE_COMPTIME
-  #undef TRACE_COMPTIME_RESULT
-  #define trace(fmt, va...) ((void)0)
-  // #define TRACE_SCOPE()     ((void)0)
-#endif
+#define trace(fmt, va...) \
+  _trace(opt_trace_comptime, 5, "comptime", "%*s" fmt, ctx->traceindent*2, "", ##va)
 
 
 static void seterr(ctx_t* ctx, err_t err) {
@@ -384,8 +368,11 @@ static void* retexpr(ctx_t* ctx, retexpr_t* n) {
 
 static void* eval1(ctx_t* ctx, void* np);
 
-#ifdef TRACE_COMPTIME
+#ifdef DEBUG
   static void* eval(ctx_t* ctx, void* np) {
+    if (!opt_trace_comptime)
+      MUSTTAIL return eval1(ctx, np);
+
     node_t* n = np;
 
     ctx->traceindent++;
@@ -398,7 +385,7 @@ static void* eval1(ctx_t* ctx, void* np);
 
     assertnotnull(result);
 
-    #ifdef TRACE_COMPTIME_RESULT
+    #if 1
       buf_t* buf1 = tmpbuf(1);
       buf_clear(buf0);
       buf_clear(buf1);

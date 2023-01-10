@@ -37,9 +37,8 @@ typedef long               __co_int;
 #define __co_noalias __restrict__
 #define __co_unused  __attribute__((__unused__))
 
-#define __co_vis_pri __attribute__((__unused__))
-#define __co_vis_pkg __attribute__((__visibility__("internal")))
-#define __co_vis_pub __attribute__((__visibility__("default")))
+#define __co_pkg __attribute__((__visibility__("internal")))
+#define __co_pub __attribute__((__visibility__("default")))
 
 __attribute__((__noreturn__)) void abort(void);
 

@@ -7,8 +7,6 @@
 #include <stdlib.h>
 #include <string.h> // strncasecmp
 
-#define TRACE_PARSE
-
 
 typedef enum {
   PREC_COMMA,         // ,
@@ -31,9 +29,11 @@ typedef enum {
 } prec_t;
 
 
-#if defined(TRACE_PARSE) && defined(CO_DEVBUILD)
-  #define trace(fmt, va...)  \
-    _dlog(2, "P", __FILE__, __LINE__, "%*s" fmt, p->traceindent*2, "", ##va)
+#define trace(fmt, va...) \
+  _trace(opt_trace_parse, 2, "P", "%*s" fmt, p->traceindent*2, "", ##va)
+
+
+#ifdef DEBUG
   static void _traceindent_decr(parser_t** cp) { (*cp)->traceindent--; }
   #define TRACE_SCOPE() \
     p->traceindent++; \
@@ -49,6 +49,8 @@ typedef enum {
     const void* nullable parselet_infix, prec_t parselet_prec,
     prec_t ctx_prec)
   {
+    if (!opt_trace_parse)
+      return;
     char buf[128];
     abuf_t a = abuf_make(buf, sizeof(buf));
     abuf_fmt(&a, "infix %s ", class);
@@ -63,8 +65,6 @@ typedef enum {
     return LOG_PRATT(p, buf);
   }
 #else
-  #undef TRACE_PARSE
-  #define trace(fmt, va...) ((void)0)
   #define TRACE_SCOPE()     ((void)0)
   #define log_pratt_infix(...) ((void)0)
   #define LOG_PRATT(...) ((void)0)

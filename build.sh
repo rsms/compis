@@ -22,7 +22,7 @@ CXXFLAGS=()
 # variables configurable via CLI flags
 OUTDIR=
 OUTDIR_DEFAULT=out
-BUILD_MODE=safe  # debug | safe | fast
+BUILD_MODE=opt  # opt | opt-fast | debug
 WATCH=
 WATCH_ADDL_FILES=()
 _WATCHED=
@@ -46,27 +46,27 @@ while [[ $# -gt 0 ]]; do
   esac
   NON_WATCH_ARGS+=( "$1" )
   case "$1" in
-  -safe)   BUILD_MODE=safe; shift ;;
-  -fast)   BUILD_MODE=fast; shift ;;
-  -debug)  BUILD_MODE=debug; TESTING_ENABLED=true; DEBUGGABLE=true; shift ;;
-  -config) ONLY_CONFIGURE=true; shift ;;
-  -strip)  STRIP=true; DEBUGGABLE=false; shift ;;
-  -static) STATIC=true; shift ;;
-  -out=*)  OUTDIR=${1:5}; shift; continue ;;
-  -g)      DEBUGGABLE=true; shift ;;
-  -v)      VERBOSE=true; NINJA_ARGS+=(-v); shift ;;
-  -D*)     [ ${#1} -gt 2 ] || _err "Missing NAME after -D";XFLAGS+=( "$1" );shift;;
-  -llvm=*) WITH_LLVM=${1:6}; shift ;;
+  -opt)      BUILD_MODE=opt; shift ;;
+  -opt-fast) BUILD_MODE=opt-fast; shift ;;
+  -debug)    BUILD_MODE=debug; TESTING_ENABLED=true; DEBUGGABLE=true; shift ;;
+  -config)   ONLY_CONFIGURE=true; shift ;;
+  -strip)    STRIP=true; DEBUGGABLE=false; shift ;;
+  -static)   STATIC=true; shift ;;
+  -out=*)    OUTDIR=${1:5}; shift; continue ;;
+  -g)        DEBUGGABLE=true; shift ;;
+  -v)        VERBOSE=true; NINJA_ARGS+=(-v); shift ;;
+  -D*)       [ ${#1} -gt 2 ] || _err "Missing NAME after -D";XFLAGS+=( "$1" );shift;;
+  -llvm=*)   WITH_LLVM=${1:6}; shift ;;
   -h|-help|--help) cat << _END
 usage: $0 [options] [--] [<target> ...]
 Build mode option: (select just one)
-  -debug         Build debug product (default)
-  -safe          Build optimized product with some assertions enabled
-  -fast          Build optimized product without any assertions
+  -opt           Build optimized product with some assertions enabled (default)
+  -opt-fast      Build optimized product without any assertions
+  -debug         Build debug product with assertions and tracing capabilities
   -config        Just configure; generate ninja files (don't actually build)
 Output options:
-  -strip         Do not include debug data
-  -g             Make the build debuggable (debug symbols + basic opt only)
+  -g             Make -opt build extra debuggable (basic opt only, frame pointers)
+  -strip         Do not include debug data (negates -g)
   -out=<dir>     Build in <dir> instead of "$OUTDIR_DEFAULT/<mode>".
   -DNAME[=value] Define CPP variable NAME with value
   -llvm=<how>    Link llvm libs "static" or "shared"
@@ -177,6 +177,7 @@ $VERBOSE && { echo "CC=$CC"; echo "CXX=$CXX"; echo "CC_FILE=$CC_FILE"; }
 
 # check compiler and clear $OUTDIR if compiler changed.
 # Note that ninja takes care of rebuilding if flags changed.
+[ -x "$CC_FILE" ] || _err "LLVM not built. Run ./init.sh"
 CC_STAMP_FILE=$OUTDIR/cc.stamp
 if [ "$CC_FILE" -nt "$CC_STAMP_FILE" -o "$CC_FILE" -ot "$CC_STAMP_FILE" ]; then
   [ -f "$CC_STAMP_FILE" ] && echo "$CC_FILE changed; clearing OUTDIR"
@@ -260,6 +261,7 @@ if $CC_IS_CLANG; then
     -Wno-pragma-once-outside-header \
   )
   [ -t 1 ] && XFLAGS+=( -fcolor-diagnostics )
+
   if [ "$(uname -s)" = "Darwin" ] &&
      [ "$WITH_LLVM" != "shared" -o "$(uname -m)" != "arm64" ]
   then
@@ -317,18 +319,35 @@ if $DEBUG; then
   fi
 else
   XFLAGS+=( -DNDEBUG )
-  XFLAGS_HOST+=( -O3 -mtune=native -fomit-frame-pointer )
+  if $DEBUGGABLE; then
+    XFLAGS_HOST+=( -O1 -mtune=native \
+      -fno-omit-frame-pointer \
+      -fno-optimize-sibling-calls \
+    )
+  else
+    XFLAGS_HOST+=( -O3 -mtune=native -fomit-frame-pointer )
+  fi
   XFLAGS_WASM+=( -Oz )
   LDFLAGS_WASM+=( --lto-O3 --no-lto-legacy-pass-manager )
   # LDFLAGS_WASM+=( -z stack-size=$[128 * 1024] ) # larger stack, smaller heap
   # LDFLAGS_WASM+=( --compress-relocations --strip-debug )
   # LDFLAGS_HOST+=( -dead_strip )
-  if [ "$BUILD_MODE" = "safe" ]; then
+  if [ "$BUILD_MODE" = "opt" ]; then
     XFLAGS+=( -D${PP_PREFIX}SAFE )
   fi
+
+  # enable LTO
   if $CC_IS_CLANG; then
-    XFLAGS+=( -flto )
-    LDFLAGS_HOST+=( -flto )
+    # XFLAGS+=( -flto )
+    # LDFLAGS_HOST+=( -flto )
+    XFLAGS+=( -flto=thin )
+    LDFLAGS_HOST+=(
+      -flto=thin \
+      -Wl,--lto-O3 \
+      -Wl,-prune_after_lto,86400 \
+      -Wl,-cache_path_lto,"'$OUTDIR/lto-cache'" \
+      -Wl,-object_path_lto,"'$OUTDIR/lto-obj'" \
+    )
   fi
 fi
 
@@ -355,11 +374,11 @@ if [ -n "$WITH_LLVM" ]; then
   if [ "$WITH_LLVM" = shared ]; then
     LDFLAGS_HOST+=(
       "-Wl,-rpath,$DEPSDIR/llvm/lib" \
-      "$DEPSDIR/llvm/lib/libc0-llvm-bundle-d.dylib" \
+      "$DEPSDIR/llvm/lib/libco-llvm-bundle-d.dylib" \
     )
   else
     LDFLAGS_HOST+=(
-      "$DEPSDIR/llvm/lib/libc0-llvm-bundle.a" \
+      "$DEPSDIR/llvm/lib/libco-llvm-bundle.a" \
       "$DEPSDIR/llvm/lib/libc++.a" \
       "$DEPSDIR/llvm/lib/libunwind.a" \
     )
