@@ -242,6 +242,16 @@ First time setup:
 
     ./init.sh
 
+Requirements for compiling LLVM:
+
+- Ubuntu Linux build host:
+  - C++14 bootstrap compiler, for building llvm: `sudo apt install llvm clang`
+  - `python3` as `python` with distutils:
+    `sudo apt install python3-distutils python-is-python3 -y`
+- macOS build host:
+  - clang, which you can install via Xcode or a package manager like Homebrew or nix
+
+
 Build & test:
 
     ./build.sh -debug

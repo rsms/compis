@@ -16,10 +16,7 @@ LLVM_RELEASE=14.0.0
 LLVM_RELEASE_TAR_SHA256=87b1a068b370df5b79a892fdb2935922a8efb1fddec4cc506e30fe57b6a1d9c4
 
 # what git ref to build (commit, tag or branch)
-LLVM_GIT_REV=llvmorg-$LLVM_RELEASE
-LLVM_VERSION=${LLVM_GIT_REV#*-}
 LLVM_DESTDIR=$DESTDIR/llvm
-LLVM_GIT_URL=https://github.com/llvm/llvm-project.git
 LLVM_SRCDIR=$DEPS_DIR/llvm-src-$LLVM_RELEASE
 LLVM_BUILD_MODE=MinSizeRel
 LLVM_ENABLE_ASSERTIONS=Off
@@ -70,7 +67,7 @@ CO_LLVM_BUILD_COMPILER_RT=true
 while [[ $# -gt 0 ]]; do case "$1" in
   -h|--help) cat << _END
 usage: $0 [options]
-Builds LLVM version ${LLVM_VERSION}
+Builds LLVM version ${LLVM_RELEASE}
 options:
   -no-compiler-rt  Do not build compiler-rt
   -assertions      Enable assertions
@@ -190,8 +187,19 @@ echo "using CXX=$CXX"
 #
 # We use ninja, so we need that too.
 # Oh, and openssl needs perl to build, lol.
+#
+# Ubuntu Linux:
+#   If the build fails with an error like:
+#     ModuleNotFoundError: No module named 'distutils.spawn'
+#   Then make sure you have python3-distutils installed:
+#     sudo apt install python3-distutils python-is-python3 -y
+#   This is used by libcxx/utils/merge_archives.py, so test it with:
+#     ./llvm-src-*/libcxx/utils/merge_archives.py
+#
 
 DEPS_CHANGED=false
+
+LLVM_BUILD_DIR="$LLVM_SRCDIR/build-$LLVM_BUILD_MODE"
 
 
 # -------------------------------------------------------------------------
@@ -202,6 +210,8 @@ if [ ! -f "$ZLIB_DESTDIR/lib/libz.a" ] ||
 then
   _download_pushsrc https://zlib.net/zlib-${ZLIB_VERSION}.tar.gz $ZLIB_CHECKSUM
 
+  # -fPIC needed on Linux
+  CFLAGS=-fPIC \
   ./configure --static --prefix=
 
   make -j$(nproc)
@@ -393,14 +403,10 @@ fi # NEED_XAR
 LLVM_LIBFILES=()
 
 
-# _llvm_build <build-type> [args to cmake ...]
+# _llvm_build [args to cmake ...]
 _llvm_build() {
-  local build_type=$1 ;shift  # Debug | Release | RelWithDebInfo | MinSizeRel
-  _pushd "$LLVM_SRCDIR"
-
-  local build_dir=$(basename "build-${build_type}")
-  mkdir -p $build_dir
-  _pushd $build_dir
+  mkdir -p "$LLVM_BUILD_DIR"
+  _pushd "$LLVM_BUILD_DIR"
 
   local EXTRA_CMAKE_ARGS=()
   if command -v xcrun >/dev/null; then
@@ -427,10 +433,11 @@ _llvm_build() {
       -DCMAKE_RANLIB="$LLVM_BINDIR/llvm-ranlib" \
       -DCMAKE_AR="$LLVM_BINDIR/llvm-ar" \
     )
-  else
-    EXTRA_CMAKE_ARGS+=(
-      -DBOOTSTRAP_LLVM_ENABLE_LTO=Thin \
-    )
+  # else
+  #   EXTRA_CMAKE_ARGS+=(
+  #     -DBOOTSTRAP_LLVM_ENABLE_LTO=Thin \
+  #     -DCLANG_ENABLE_BOOTSTRAP=On \
+  #   )
   fi
 
   EXTRA_CMAKE_ARGS+=( "$@" )
@@ -442,7 +449,7 @@ _llvm_build() {
 
   for _retry in 1 2; do
     if cmake -G Ninja \
-      -DCMAKE_BUILD_TYPE=$build_type \
+      -DCMAKE_BUILD_TYPE=$LLVM_BUILD_MODE \
       -DCMAKE_INSTALL_PREFIX="$LLVM_DESTDIR" \
       -DCMAKE_PREFIX_PATH="$LLVM_DESTDIR" \
       -DCMAKE_C_COMPILER="$HOST_CC" \
@@ -469,8 +476,10 @@ _llvm_build() {
       -DLLVM_ENABLE_OCAMLDOC=OFF \
       -DLLVM_ENABLE_Z3_SOLVER=OFF \
       -DLLVM_INCLUDE_DOCS=OFF \
+      -DLLVM_ENABLE_ZLIB=1 \
+      -DZLIB_LIBRARY="$ZLIB_DESTDIR/lib/libz.a" \
+      -DZLIB_INCLUDE_DIR="$ZLIB_DESTDIR/include" \
       \
-      -DCLANG_ENABLE_BOOTSTRAP=On \
       -DCLANG_INCLUDE_DOCS=OFF \
       -DCLANG_ENABLE_OBJC_REWRITER=OFF \
       -DCLANG_ENABLE_ARCMT=OFF \
@@ -487,7 +496,7 @@ _llvm_build() {
       -DLIBCXX_LINK_TESTS_WITH_SHARED_LIBCXX=OFF \
       \
       "${EXTRA_CMAKE_ARGS[@]}" \
-      ../llvm
+      "$LLVM_SRCDIR"/llvm
     then
       break # ok; break retry loop
     fi
@@ -521,8 +530,8 @@ _update_src_llvm_driver() {
   cp -v "$LLVM_SRCDIR"/clang/tools/driver/cc1_main.cpp   llvm/driver_cc1_main.cc
   cp -v "$LLVM_SRCDIR"/clang/tools/driver/cc1as_main.cpp llvm/driver_cc1as_main.cc
   # patch driver code
-  for f in $(echo "$ETC_LLVM_DIR"/llvm-${LLVM_VERSION}-*.patch | sort); do
-    [ -e "$f" ] || _err "no patches found at $ETC_LLVM_DIR/llvm-${LLVM_VERSION}-*.patch"
+  for f in $(echo "$ETC_LLVM_DIR"/llvm-${LLVM_RELEASE}-*.patch | sort); do
+    [ -e "$f" ] || _err "no patches found at $ETC_LLVM_DIR/llvm-${LLVM_RELEASE}-*.patch"
     [ -f "$f" ] || _err "$f is not a file"
     patch -p0 < "$f"
   done
@@ -531,8 +540,125 @@ _update_src_llvm_driver() {
   #   cp ../../deps/llvm-src/clang/tools/driver/driver.cpp driver.cc
   #   cp driver.cc driver.cc.orig
   #   # edit driver.cc
-  #   diff -u driver.cc.orig driver.cc > ../../etc/llvm/llvm-LLVM_VERSION-001-driver.patch
+  #   diff -u driver.cc.orig driver.cc > ../../etc/llvm/llvm-LLVM_RELEASE-001-driver.patch
   #
+}
+
+
+LDV_FILE=$LLVM_BUILD_DIR/libco-llvm-bundle.ldv
+
+if [ "$HOST_SYS" = "Linux" ]; then
+  mkdir -p "$LLVM_BUILD_DIR"
+  cat << _END_ > "$LDV_FILE"
+{
+  global: *;
+};
+_END_
+fi
+
+
+_print_filesize() {
+  while [ $# -gt 0 ]; do
+    echo -en "$1:\t"
+    local Z
+    if [ "$HOST_SYS" = "Darwin" ]; then
+      Z=$(stat -f "%z" "$1")
+    else
+      Z=$(stat -c "%s" "$1")
+    fi
+    if [ $Z -gt 1073741824 ]; then
+      awk "BEGIN{printf \"%5.1f GB\n\", $Z / 1073741824}"
+    elif [ $Z -gt 1048575 ]; then
+      awk "BEGIN{printf \"%5.1f MB\n\", $Z / 1048576}"
+    elif [ $Z -gt 1023 ]; then
+      awk "BEGIN{printf \"%5.1f kB\n\", $Z / 1024}"
+    else
+      awk "BEGIN{printf \"%5.0f B\n\", $Z}"
+    fi
+    shift
+  done
+}
+
+
+_mk_alib_linux() {
+  # build a prelinked relocatable object
+  local ALIB_FILE=$LLVM_DESTDIR/lib/libco-llvm-bundle.a
+  local PRELINK_FILE=$LLVM_BUILD_DIR/libco-llvm-bundle.o
+  local OBJDIR=$LLVM_BUILD_DIR/libco-obj
+
+  rm -rf "$OBJDIR"
+  mkdir -p "$OBJDIR"
+  _pushd "$OBJDIR"
+
+  local f name
+  for f in "${LLVM_LIBFILES[@]}"; do
+    name=$(basename "$f" .a)
+    mkdir "$name"
+    pushd "$name" >/dev/null
+    echo "ar x $f"
+    ar x "$f"
+    popd >/dev/null
+  done
+
+  local OBJFILES=( $(echo "$OBJDIR"/*/*.o) )
+  # echo "${OBJFILES[@]}" > "$OBJDIR/index.txt"
+
+  echo "create $PRELINK_FILE"
+  ld.lld -r -o $PRELINK_FILE \
+    --lto-O3 \
+    --no-call-graph-profile-sort \
+    --as-needed \
+    --thinlto-cache-dir="$LLVM_BUILD_DIR/lto.cache" \
+    --discard-locals \
+    --version-script="$LDV_FILE" \
+    -m elf_${HOST_ARCH} \
+    -z noexecstack \
+    -z relro \
+    -z now \
+    -z defs \
+    -z notext \
+    \
+    "${OBJFILES[@]}"
+
+  echo "create $ALIB_FILE"
+  rm -f "$ALIB_FILE"
+  llvm-ar crs "$ALIB_FILE" "$PRELINK_FILE"
+
+  echo "optimize $ALIB_FILE"
+  llvm-objcopy \
+    --localize-hidden \
+    --strip-unneeded \
+    --compress-debug-sections=zlib \
+    "$ALIB_FILE"
+
+  _print_filesize "$ALIB_FILE"
+}
+
+
+_mk_dlib_linux() {
+  local DLIB_FILE=$LLVM_DESTDIR/lib/libco-llvm-bundle-d.so
+  echo "create $DLIB_FILE"
+  clang++ -shared -o $DLIB_FILE \
+    -fuse-ld=lld \
+    -flto=thin \
+    -Wl,--lto-O3,--thinlto-cache-dir="$LLVM_BUILD_DIR/lto.cache" \
+    -Werror \
+    -nostdlib++ \
+    -Wl,--color-diagnostics \
+    -Wl,--no-call-graph-profile-sort \
+    -Wl,--as-needed \
+    -Wl,--compress-debug-sections=zlib \
+    -Wl,--discard-locals \
+    -Wl,--version-script="$LDV_FILE" \
+    -Wl,-z,noexecstack \
+    -Wl,-z,relro \
+    -Wl,-z,now \
+    -Wl,-z,defs \
+    -Wl,-z,notext \
+    "${LLVM_LIBFILES[@]}"
+
+    # -ldl -lpthread
+    # -lgcc -lgcc_eh
 }
 
 
@@ -595,14 +721,14 @@ _mk_dlib_macos() {
 
 
 _mk_alib_macos() {
-  local OUTFILE=$LLVM_DESTDIR/lib/libco-llvm-bundle.a
-  local MRIFILE=$WORK_DIR/$(basename "$OUTFILE").mri
+  local ALIB_FILE=$LLVM_DESTDIR/lib/libco-llvm-bundle.a
+  local MRIFILE=$WORK_DIR/$(basename "$ALIB_FILE").mri
 
-  echo "create ${OUTFILE##$PWD/}"
+  echo "create ${ALIB_FILE##$PWD/}"
   # lld (llvm 13) does not yet support prelinking, so we produce an archive instead
 
   mkdir -p "$(dirname "$MRIFILE")"
-  echo "create $OUTFILE" > "$MRIFILE"
+  echo "create $ALIB_FILE" > "$MRIFILE"
   for f in "${LLVM_LIBFILES[@]}"; do
     echo "addlib $f" >> "$MRIFILE"
   done
@@ -610,7 +736,7 @@ _mk_alib_macos() {
   echo "end" >> "$MRIFILE"
   cat "$MRIFILE"
   llvm-ar -M < "$MRIFILE"
-  llvm-ranlib "$OUTFILE"
+  llvm-ranlib "$ALIB_FILE"
 }
 
 
@@ -620,13 +746,23 @@ _mk_lib_bundles() {
     $LLVM_DESTDIR/lib/liblld*.a \
     $LLVM_DESTDIR/lib/libclang*.a \
     $ZLIB_DESTDIR/lib/libz.a \
-    $XAR_DESTDIR/lib/libxar.a \
-    $XC_DESTDIR/lib/liblzma.a \
-    $OPENSSL_DESTDIR/lib/libcrypto.a \
-    $LIBXML2_DESTDIR/lib/libxml2.a \
   )
+
+  if $NEED_XAR; then
+    LLVM_LIBFILES+=(
+      $XAR_DESTDIR/lib/libxar.a \
+      $XC_DESTDIR/lib/liblzma.a \
+      $OPENSSL_DESTDIR/lib/libcrypto.a \
+      $LIBXML2_DESTDIR/lib/libxml2.a \
+    )
+  fi
+
   export PATH="$LLVM_DESTDIR/bin:$PATH"
   case "$HOST_SYS" in
+    Linux)
+      _mk_alib_linux
+      # _mk_dlib_linux
+      ;;
     Darwin)
       _mk_alib_macos
       _mk_dlib_macos
@@ -639,11 +775,6 @@ _mk_lib_bundles() {
 
 
 # fetch or update llvm sources
-# SOURCE_CHANGED=false
-# if _git_pull_if_needed "$LLVM_GIT_URL" "$LLVM_SRCDIR" "$LLVM_GIT_REV"; then
-#   SOURCE_CHANGED=true
-# fi
-
 SOURCE_CHANGED=false
 if [ ! -d "$LLVM_SRCDIR" ]; then
   _download \
@@ -661,7 +792,7 @@ if $FORCE || $DEPS_CHANGED || $SOURCE_CHANGED ||
    [ ! -f "$LLVM_DESTDIR/lib/libLLVMCore.a" ]
 then
 
-  _llvm_build $LLVM_BUILD_MODE -DLLVM_ENABLE_ASSERTIONS=$LLVM_ENABLE_ASSERTIONS
+  _llvm_build -DLLVM_ENABLE_ASSERTIONS=$LLVM_ENABLE_ASSERTIONS
   _update_src_llvm_driver
   _mk_lib_bundles
 

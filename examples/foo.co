@@ -1,6 +1,8 @@
 
 // pub "c" fun printu64(u64) void
 
+fun hello() {}
+
 fun consume_i16_array(a [i16]) {
   // drop(a)
 }

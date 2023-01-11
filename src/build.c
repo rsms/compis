@@ -54,13 +54,13 @@ static const char* opt_builddir = "build";
   L( &opt_logld,    "print-ld-cmd", "Print linker invocation to stderr")\
   L( &opt_nomain,   "no-auto-main", "Don't auto-generate C ABI \"main\" for main.main")\
   /* debug-only options */\
-  DEBUG_L( &opt_trace_all,       "co-trace",           "Trace everything")\
-  DEBUG_L( &opt_trace_parse,     "co-trace-parse",     "Trace parsing")\
-  DEBUG_L( &opt_trace_typecheck, "co-trace-typecheck", "Trace type checking")\
-  DEBUG_L( &opt_trace_comptime,  "co-trace-comptime",  "Trace comptime eval")\
-  DEBUG_L( &opt_trace_ir,        "co-trace-ir",        "Trace IR")\
-  DEBUG_L( &opt_trace_cgen,      "co-trace-cgen",      "Trace code generation")\
-  DEBUG_L( &opt_trace_subproc,   "co-trace-subproc",   "Trace subprocess execution")\
+  DEBUG_L( &opt_trace_all,       "trace",           "Trace everything")\
+  DEBUG_L( &opt_trace_parse,     "trace-parse",     "Trace parsing")\
+  DEBUG_L( &opt_trace_typecheck, "trace-typecheck", "Trace type checking")\
+  DEBUG_L( &opt_trace_comptime,  "trace-comptime",  "Trace comptime eval")\
+  DEBUG_L( &opt_trace_ir,        "trace-ir",        "Trace IR")\
+  DEBUG_L( &opt_trace_cgen,      "trace-cgen",      "Trace code generation")\
+  DEBUG_L( &opt_trace_subproc,   "trace-subproc",   "Trace subprocess execution")\
 // end FOREACH_CLI_OPTION
 
 #include "cliopt.inc.h"

@@ -360,7 +360,7 @@ $TESTING_ENABLED &&
 LLVM_CFLAGS=()
 LLVM_CXXFLAGS=()
 if [ -n "$WITH_LLVM" ]; then
-  XFLAGS+=( -DWITH_LLVM )
+  XFLAGS+=( -DCO_WITH_LLVM )
   CFLAGS_HOST+=( -I$DEPSDIR/llvm/include )
   CXXFLAGS_HOST+=( -I$DEPSDIR/llvm/include )
   LLVM_CFLAGS=( $($DEPSDIR/llvm/bin/llvm-config --cflags) )
@@ -374,7 +374,8 @@ if [ -n "$WITH_LLVM" ]; then
   if [ "$WITH_LLVM" = shared ]; then
     LDFLAGS_HOST+=(
       "-Wl,-rpath,$DEPSDIR/llvm/lib" \
-      "$DEPSDIR/llvm/lib/libco-llvm-bundle-d.dylib" \
+      "-L$DEPSDIR/llvm/lib" \
+      "-lco-llvm-bundle-d" \
     )
   else
     LDFLAGS_HOST+=(

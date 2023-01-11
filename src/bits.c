@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "colib.h"
+#include "bits.h"
 
 
 #define BITSET_SIZE(cap)  ( sizeof(bitset_t) + (cap)/8 )
