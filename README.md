@@ -55,7 +55,7 @@ A type is either considered "copyable" or "owning":
   any `drop()` function defined for the type is called and if the type
   is stored in heap memory, it is freed.
 
-Assigning a copyable value to variable (or using it as an rvalue expression in any situation, like passing it as an argument to a call) creates a distinct "deep" copy:
+Assigning a copyable value to a variable (or using it as an rvalue expression in any situation, like passing it as an argument to a call) creates a distinct "deep" copy:
 
     type Vec2 { x, y int }
     type Line { start, end Vec2 }
@@ -64,7 +64,7 @@ Assigning a copyable value to variable (or using it as an rvalue expression in a
     b.start.x = 2
     assert(a.start.x == 0)
 
-Assigning an owning value to a variable _moves_ the value; its previous owner becomes inaccessible and any attempt to use the old owner
+Assigning an owning value to a variable _moves_ the value; its previous owner becomes inaccessible, and any attempt to use the old owner
 causes a compile-time error.
 
     type Vec2 { x, y int }
@@ -125,7 +125,7 @@ it is possible to have multiple pointers to a value which may change at any time
 _This may change_ and Compis may introduce "borrow checking" or some version of it,
 that enforces that no aliasing can occur when dealing with references. Mutable Value Semantics is another interesting idea on this topic.
 
-References are semantically more similar to values than pointers: a reference used as an rvalue does not need to be "dereferenced" (but pointers do.)
+References are semantically more similar to values than pointers: a reference used as a rvalue does not need to be "dereferenced" (but pointers do.)
 
     fun add(x int, y &int) int {
       let result = x + y  // no need to deref '*y' here
@@ -181,7 +181,7 @@ fun example(thing Thing) i32 {
 } // "Thing dropped"
 ```
 
-When the scope of an owning value ends that value is "dropped":
+When the scope of an owning value ends, that value is "dropped":
 
 1. If the type is optional and empty, do nothing, else
 2. If there's a "drop" type function defined for the type of value, that function is called to do any custom cleanup like closing a file descriptor.
@@ -275,7 +275,7 @@ Define `CO_DEVBUILD` to enable tracing and detailed output:
 
 ## LLVM
 
-By default llvm & clang is built in release mode with assertions.
+By default, llvm & clang is built in release mode with assertions.
 There's a small but noticeable perf hit introduced by assertions.
 You can build llvm without them like this:
 
