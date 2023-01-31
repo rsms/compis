@@ -401,7 +401,7 @@ case "$HOST_ARCH-$HOST_SYS" in
 esac
 
 # system-specific flags
-case "$HOST_ARCH-$HOST_SYS" in
+case "$HOST_SYS" in
   linux) LDFLAGS_HOST+=( -static ) ;;
 esac
 
