@@ -1,5 +1,5 @@
---- llvm/driver.cc.orig  2022-03-31 11:57:29.000000000 -0700
-+++ llvm/driver.cc 2022-03-31 11:57:57.000000000 -0700
+--- a/llvm/driver.cc	 2023-01-13 09:46:16.000000000 -0800
++++ b/llvm/driver.cc	 2023-01-13 09:58:03.000000000 -0800
 @@ -207,8 +207,6 @@
                      void *MainAddr);
  extern int cc1as_main(ArrayRef<const char *> Argv, const char *Argv0,
@@ -22,8 +22,8 @@
    return 1;
  }
  
--int main(int Argc, const char **Argv) {
-+extern "C" int clang_main(int Argc, const char **Argv) {
+-int clang_main(int Argc, char **Argv) {
++extern "C" int clang_main(int Argc, char **Argv) {
    noteBottomOfStack();
    llvm::InitLLVM X(Argc, Argv);
    llvm::setBugReportMsg("PLEASE submit a bug report to " BUG_REPORT_URL

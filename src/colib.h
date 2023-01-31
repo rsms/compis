@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
+#if defined(__linux__) && !defined(_GNU_SOURCE)
+  #define _GNU_SOURCE // because glibc is a troublemaker
+#endif
 //—————————————————————————————————————————————————————————————————————————————————————
 // types
 

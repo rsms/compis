@@ -5,7 +5,7 @@
 #include "abuf.h"
 
 #include <stdlib.h>
-#include <string.h> // strncasecmp
+#include <strings.h> // strncasecmp
 
 
 typedef enum {

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
+#include <alloca.h>
 ASSUME_NONNULL_BEGIN
 
 typedef struct {

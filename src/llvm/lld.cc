@@ -53,6 +53,8 @@ static LinkFun select_linkfn(Triple& triple, const char** cliname) {
 
     case Triple::GOFF:  // ?
     case Triple::XCOFF: // ?
+    case Triple::SPIRV: // ?
+    case Triple::DXContainer: // ?
     case Triple::UnknownObjectFormat:
       break;
   }

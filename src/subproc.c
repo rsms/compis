@@ -4,7 +4,7 @@
 
 #include <sys/wait.h> // waitpid
 #include <errno.h> // ECHILD
-#include <unistd.h> // fork
+#include <unistd.h> // fork, pgrp
 #include <err.h>
 #include <signal.h>
 

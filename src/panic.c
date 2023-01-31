@@ -1,7 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
+
+// LOL, so okay, this is why I don't like glibc.
+// For flockfile to be defined in glibc, _GNU_SOURCE must be defined
+// and _POSIX_SOURCE must _not_ be defined.
+#undef _POSIX_SOURCE
+
 #include "colib.h"
 #include <stdlib.h> // abort
 #include <unistd.h> // close
+#include <stdio.h>  // flockfile
 #include <stdarg.h>
 
 // backtrace* is not a libc standard.

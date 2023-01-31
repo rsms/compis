@@ -252,8 +252,8 @@ bool compiler_fully_qualified_name(const compiler_t* c, buf_t* buf, const node_t
 // compiler_compile
 
 
-// llvm/clang_compile.cc
-extern int clang_compile(int argc, const char** argv);
+// llvm/driver.cc
+extern int clang_main(int argc, const char** argv);
 
 
 extern void sleep(int);
@@ -337,7 +337,7 @@ static err_t cc_to_asm_main(compiler_t* c, const char* cfile, const char* asmfil
     panic("out of memory");
 
   dlog("cc %s -> %s", cfile, asmfile);
-  int status = clang_compile(argc, (const char**)argv);
+  int status = clang_main(argc, (const char**)argv);
   return status == 0 ? 0 : ErrCanceled;
 }
 
@@ -368,7 +368,7 @@ static err_t cc_to_obj_main(compiler_t* c, const char* cfile, const char* ofile)
     panic("out of memory");
 
   dlog("cc %s -> %s", cfile, ofile);
-  int status = clang_compile(argc, (const char**)argv);
+  int status = clang_main(argc, (const char**)argv);
   return status == 0 ? 0 : ErrCanceled;
 }
 

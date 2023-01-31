@@ -1,46 +1,138 @@
 #!/bin/bash
-set -e
-ORIG_PWD=$PWD
-PROG=$0
-cd "$(dirname "$0")"
-_err() { echo "$PROG:" "$@" >&2 ; exit 1; }
-_checksum() { sha256sum "$@" | cut -d' ' -f1; }
+set -euo pipefail
+PWD0=$PWD
+PROJECT=`cd "$(dirname "$0")"; pwd`
 
-# project constants
-SRCDIR=src
+HOST_ARCH=$(uname -m) ; [ "$HOST_ARCH" != "arm64" ] || HOST_ARCH=aarch64
+HOST_SYS=$(uname -s) # e.g. linux, macos
+case "$HOST_SYS" in
+  Darwin) HOST_SYS=macos ;;
+  *)      HOST_SYS=$(awk '{print tolower($0)}' <<< "$HOST_SYS") ;;
+esac
+
+# —————————————————————————————————————————————————————————————————————————————————
+# functions
+
+_err() { echo "$0:" "$@" >&2; exit 1; }
+
+_hascmd() { command -v "$1" >/dev/null || return 1; }
+_needcmd() {
+  while [ $# -gt 0 ]; do
+    if ! _hascmd "$1"; then
+      _err "missing $1 -- please install or use a different shell"
+    fi
+    shift
+  done
+}
+
+_relpath() { # <path>
+  case "$1" in
+    "$PWD0/"*) echo "${1##$PWD0/}" ;;
+    "$PWD0")   echo "." ;;
+    "$HOME/"*) echo "~${1:${#HOME}}" ;;
+    *)         echo "$1" ;;
+  esac
+}
+
+_pushd() {
+  pushd "$1" >/dev/null
+  [ "$PWD" = "$PWD0" ] || echo "cd $(_relpath "$PWD")"
+}
+
+_popd() {
+  popd >/dev/null
+  [ "$PWD" = "$PWD0" ] || echo "cd $(_relpath "$PWD")"
+}
+
+_sha_verify() { # <file> [<sha256> | <sha512>]
+  local file=$1
+  local expect=$2
+  local actual=
+  echo "verifying checksum of $(_relpath "$file")"
+  case "${#expect}" in
+    128) kind=512; actual=$(sha512sum "$file" | cut -d' ' -f1) ;;
+    64)  kind=256; actual=$(sha256sum "$file" | cut -d' ' -f1) ;;
+    *)   _err "checksum $expect has incorrect length (not sha256 nor sha512)" ;;
+  esac
+  if [ "$actual" != "$expect" ]; then
+    echo "$file: SHA-$kind sum mismatch:" >&2
+    echo "  actual:   $actual" >&2
+    echo "  expected: $expect" >&2
+    return 1
+  fi
+}
+
+_download_nocache() { # <url> <outfile> [<sha256> | <sha512>]
+  local url=$1 ; local outfile=$2 ; local checksum=${3:-}
+  rm -f "$outfile"
+  mkdir -p "$(dirname "$outfile")"
+  echo "$(_relpath "$outfile"): fetch $url"
+  command -v wget >/dev/null &&
+    wget -q --show-progress -O "$outfile" "$url" ||
+    curl -L '-#' -o "$outfile" "$url"
+  [ -z "$checksum" ] || _sha_verify "$outfile" "$checksum"
+}
+
+_download() { # <url> <outfile> [<sha256> | <sha512>]
+  local url=$1 ; local outfile=$2 ; local checksum=${3:-}
+  if [ -f "$outfile" ]; then
+    [ -z "$checksum" ] && return 0
+    _sha_verify "$outfile" "$checksum" && return 0
+  fi
+  _download_nocache "$url" "$outfile" "$checksum"
+}
+
+_extract_tar() { # <file> <outdir>
+  [ $# -eq 2 ] || _err "_extract_tar"
+  local tarfile=$1
+  local outdir=$2
+  [ -e "$tarfile" ] || _err "$tarfile not found"
+
+  local extract_dir="${outdir%/}-extract-$(basename "$tarfile")"
+  rm -rf "$extract_dir"
+  mkdir -p "$extract_dir"
+
+  echo "extract $(basename "$tarfile") -> $(_relpath "$outdir")"
+  if ! XZ_OPT='-T0' tar -C "$extract_dir" -xf "$tarfile"; then
+    rm -rf "$extract_dir"
+    return 1
+  fi
+  rm -rf "$outdir"
+  mkdir -p "$(dirname "$outdir")"
+  mv -f "$extract_dir"/* "$outdir"
+  rm -rf "$extract_dir"
+}
+
+# —————————————————————————————————————————————————————————————————————————————————
+# command line
+
+OUT_DIR_BASE="$PROJECT/out"
+DEPS_DIR="$PROJECT/deps"
+DOWNLOAD_DIR="$PROJECT/deps/download"
+SRC_DIR="$PROJECT/src"
 MAIN_EXE=co
 PP_PREFIX=CO_
-WASM_SYMS=etc/wasm.syms
+WASM_SYMS="$PROJECT/etc/wasm.syms"
 
-# variables overrideable via environment variables
-DEPSDIR=${DEPSDIR:-$PWD/deps}
-NINJA=${NINJA:-ninja}
-XFLAGS=( $XFLAGS )
-CFLAGS=( $CFLAGS -fms-extensions -Wno-microsoft )
-CXXFLAGS=()
-
-# variables configurable via CLI flags
-OUTDIR=
-OUTDIR_DEFAULT=out
-BUILD_MODE=opt  # opt | opt-fast | debug
 WATCH=
 WATCH_ADDL_FILES=()
-_WATCHED=
-WITH_LLVM=
 RUN=
-NINJA_ARGS=()
 NON_WATCH_ARGS=()
+
+OUT_DIR=
+BUILD_MODE=opt  # opt | opt-fast | debug
 TESTING_ENABLED=false
 ONLY_CONFIGURE=false
 STRIP=false
-STATIC=false
 DEBUGGABLE=false
 VERBOSE=false
+ENABLE_LTO=
+NINJA_ARGS=()
+XFLAGS=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -w)      WATCH=1; shift; continue ;;
-    -_w_)    _WATCHED=1; shift; continue ;;
     -wf=*)   WATCH=1; WATCH_ADDL_FILES+=( "${1:4}" ); shift; continue ;;
     -run=*)  RUN=${1:5}; shift; continue ;;
   esac
@@ -51,25 +143,26 @@ while [[ $# -gt 0 ]]; do
   -debug)    BUILD_MODE=debug; TESTING_ENABLED=true; DEBUGGABLE=true; shift ;;
   -config)   ONLY_CONFIGURE=true; shift ;;
   -strip)    STRIP=true; DEBUGGABLE=false; shift ;;
-  -static)   STATIC=true; shift ;;
-  -out=*)    OUTDIR=${1:5}; shift; continue ;;
-  -g)        DEBUGGABLE=true; shift ;;
+  -lto)      ENABLE_LTO=true; shift ;;
+  -no-lto)   ENABLE_LTO=false; shift ;;
+  -out=*)    OUT_DIR=${1:5}; shift; continue ;;
+  -g)        DEBUGGABLE=true; STRIP=false; shift ;;
   -v)        VERBOSE=true; NINJA_ARGS+=(-v); shift ;;
   -D*)       [ ${#1} -gt 2 ] || _err "Missing NAME after -D";XFLAGS+=( "$1" );shift;;
-  -llvm=*)   WITH_LLVM=${1:6}; shift ;;
   -h|-help|--help) cat << _END
 usage: $0 [options] [--] [<target> ...]
 Build mode option: (select just one)
   -opt           Build optimized product with some assertions enabled (default)
   -opt-fast      Build optimized product without any assertions
-  -debug         Build debug product with assertions and tracing capabilities
-  -config        Just configure; generate ninja files (don't actually build)
+  -debug         Build debug product with full assertions and tracing capability
+  -config        Just configure, only generate build.ninja file
 Output options:
   -g             Make -opt build extra debuggable (basic opt only, frame pointers)
   -strip         Do not include debug data (negates -g)
-  -out=<dir>     Build in <dir> instead of "$OUTDIR_DEFAULT/<mode>".
+  -lto           Enable LTO (default for -opt)
+  -no-lto        Disable LTO (default for -debug)
+  -out=<dir>     Build in <dir> instead of "$(_relpath "$OUT_DIR_BASE/<mode>")".
   -DNAME[=value] Define CPP variable NAME with value
-  -llvm=<how>    Link llvm libs "static" or "shared"
 Misc options:
   -w             Rebuild as sources change
   -wf=<file>     Watch <file> for changes (can be provided multiple times)
@@ -83,7 +176,106 @@ _END
   *) break ;;
 esac; done
 
-#————————————————————————————————————————————————————————————————————————————————————————
+DEBUG=false; [ "$BUILD_MODE" = "debug" ] && DEBUG=true
+
+if [ -z "$ENABLE_LTO" -a "$BUILD_MODE" = "debug" ]; then
+  ENABLE_LTO=false
+elif [ -z "$ENABLE_LTO" ]; then
+  ENABLE_LTO=true
+fi
+
+if [ -z "$OUT_DIR" ]; then
+  OUT_DIR="$OUT_DIR_BASE/$BUILD_MODE"
+else
+  OUT_DIR=`cd "$OUT_DIR"; pwd`
+fi
+
+# —————————————————————————————————————————————————————————————————————————————————
+# check availability of commands that we need
+_needcmd head grep stat awk tar git ninja sha256sum
+_hascmd curl || _hascmd wget || _err "curl nor wget found in PATH"
+
+# —————————————————————————————————————————————————————————————————————————————————
+# [dep] precompiled llvm from llvmbox distribution
+LLVM_RELEASE=15.0.7
+LLVMBOX_RELEASE=$LLVM_RELEASE+1
+LLVMBOX_DESTDIR="$DEPS_DIR/llvmbox"
+LLVMBOX_RELEASES=( # github.com/rsms/llvmbox/releases/download/VERSION/sha256sum.txt
+  "3b859e76df8fcae7b8c7cf568af36b2d4eba88b8e403c9aa61320d6b77a47aff  llvmbox-15.0.7+1-x86_64-linux.tar.xz" \
+  "f3c50460907c95a6aaae30c85b64a4fd76680c7180cfb35f35a5c135f791716e  llvmbox-15.0.7+1-x86_64-macos.tar.xz" \
+  "8bb26eb983e47ac74a3393593eebd24242f3a8fd8b37de21dbca6709ec7968fe  llvmbox-dev-15.0.7+1-x86_64-linux.tar.xz" \
+  "bd508ddcfe52fee3ffa6fae47c30a1eba1d48678e3a6c5da333275de9f22a236  llvmbox-dev-15.0.7+1-x86_64-macos.tar.xz" \
+)
+LLVMBOX_URL_BASE=https://github.com/rsms/llvmbox/releases/download/v$LLVMBOX_RELEASE
+
+# find tar for host system
+LLVMBOX_SHA256_FILE=
+LLVMBOX_DEV_SHA256_FILE=
+for sha256_file in "${LLVMBOX_RELEASES[@]}"; do
+  IFS=' ' read -r sha256 file <<< "$sha256_file"
+  if [[ "$file" == "llvmbox-$LLVMBOX_RELEASE-$HOST_ARCH-$HOST_SYS.tar.xz" ]]; then
+    LLVMBOX_SHA256_FILE=$sha256_file
+  elif [[ "$file" == "llvmbox-dev-$LLVMBOX_RELEASE-$HOST_ARCH-$HOST_SYS.tar.xz" ]]; then
+    LLVMBOX_DEV_SHA256_FILE=$sha256_file
+  fi
+done
+[ -n "$LLVMBOX_SHA256_FILE" ] ||
+  _err "llvmbox not available for llvm-$LLVMBOX_RELEASE $HOST_ARCH $HOST_SYS"
+[ -n "$LLVMBOX_DEV_SHA256_FILE" ] ||
+  _err "llvmbox-dev not available for llvm-$LLVMBOX_RELEASE $HOST_ARCH $HOST_SYS"
+
+# extract llvmbox
+if [ "$(cat "$LLVMBOX_DESTDIR/version" 2>/dev/null)" != "$LLVMBOX_RELEASE" ]; then
+  IFS=' ' read -r sha256 file <<< "$LLVMBOX_SHA256_FILE"
+  _download "$LLVMBOX_URL_BASE/$file" "$DOWNLOAD_DIR/$file" "$sha256"
+  _extract_tar "$DOWNLOAD_DIR/$file" "$LLVMBOX_DESTDIR"
+  echo "$LLVMBOX_RELEASE" > "$LLVMBOX_DESTDIR/version"
+else
+  $VERBOSE && echo "$(_relpath "$LLVMBOX_DESTDIR") (base): up-to-date"
+fi
+
+# extract llvmbox-dev into llvmbox
+if [ ! -f "$LLVMBOX_DESTDIR/lib/libz.a" ]; then
+  IFS=' ' read -r sha256 file <<< "$LLVMBOX_DEV_SHA256_FILE"
+  _download "$LLVMBOX_URL_BASE/$file" "$DOWNLOAD_DIR/$file" "$sha256"
+  echo "extract $(basename "$DOWNLOAD_DIR/$file") -> $(_relpath "$LLVMBOX_DESTDIR")"
+  XZ_OPT='-T0' tar -C "$LLVMBOX_DESTDIR" --strip-components 1 -xf "$DOWNLOAD_DIR/$file"
+else
+  $VERBOSE && echo "$(_relpath "$LLVMBOX_DESTDIR") (dev): up-to-date"
+fi
+
+export CC="$LLVMBOX_DESTDIR/bin/clang"
+export CXX="$LLVMBOX_DESTDIR/bin/clang++"
+export PATH="$LLVMBOX_DESTDIR/bin:$PATH"
+
+# —————————————————————————————————————————————————————————————————————————————————
+# update clang driver code if needed
+
+SRC_VERSION_LINE="//!llvm-$LLVM_RELEASE"
+
+if [ "$(tail -n1 "$SRC_DIR/llvm/driver.cc")" != "$SRC_VERSION_LINE" ]; then
+  echo "src/llvm: LLVM version changed; updating driver code"
+
+  _download \
+    https://github.com/llvm/llvm-project/releases/download/llvmorg-$LLVM_RELEASE/clang-$LLVM_RELEASE.src.tar.xz \
+    "$DOWNLOAD_DIR/clang-$LLVM_RELEASE.src.tar.xz" \
+    a6b673ef15377fb46062d164e8ddc4d05c348ff8968f015f7f4af03f51000067
+
+  _extract_tar "$DOWNLOAD_DIR/clang-$LLVM_RELEASE.src.tar.xz" "$DEPS_DIR/clang"
+
+  _pushd "$SRC_DIR"
+  cp -v "$DEPS_DIR/clang/tools/driver/driver.cpp"     llvm/driver.cc
+  cp -v "$DEPS_DIR/clang/tools/driver/cc1_main.cpp"   llvm/driver_cc1_main.cc
+  cp -v "$DEPS_DIR/clang/tools/driver/cc1as_main.cpp" llvm/driver_cc1as_main.cc
+  patch -p1 < "$PROJECT/etc/co-llvm-$LLVM_RELEASE-driver.patch"
+  echo "$SRC_VERSION_LINE" >> llvm/driver.cc
+  _popd
+
+  rm -rf "$DEPS_DIR/clang" "$DOWNLOAD_DIR/clang-$LLVM_RELEASE.src.tar.xz"
+fi
+
+# —————————————————————————————————————————————————————————————————————————————————
+# file system watcher
 
 # -w to enter "watch & build & run" mode
 if [ -n "$WATCH" ]; then
@@ -126,13 +318,13 @@ if [ -n "$WATCH" ]; then
   while true; do
     printf "\x1bc"  # clear screen ("scroll to top" style)
     BUILD_OK=1
-    bash "./$(basename "$0")" -_w_ "${NON_WATCH_ARGS[@]}" "$@" || BUILD_OK=
+    bash "./$(basename "$0")" "${NON_WATCH_ARGS[@]}" "$@" || BUILD_OK=
     printf "\e[2m> watching files for changes...\e[m\n"
     if [ -n "$BUILD_OK" -a -n "$RUN" ]; then
       export ASAN_OPTIONS=detect_stack_use_after_return=1
       export UBSAN_OPTIONS=print_stacktrace=1
       _killcmd
-      ( $SHELL -c "$RUN" &
+      ( "${BASH:-bash}" -c "$RUN" &
         RUN_PID=$!
         echo $RUN_PID > "$RUN_PIDFILE"
         echo "$RUN (#$RUN_PID) started"
@@ -144,49 +336,12 @@ if [ -n "$WATCH" ]; then
         echo "$RUN (#$RUN_PID) exited"
       ) &
     fi
-    _fswatch "$SRCDIR" "$(basename "$0")" "${WATCH_ADDL_FILES[@]}"
+    _fswatch "$SRC_DIR" "$(basename "$0")" ${WATCH_ADDL_FILES[@]:-}
   done
   exit 0
 fi
 
-#————————————————————————————————————————————————————————————————————————————————————————
-# setup environment (select compiler, clear $OUTDIR if compiler changed)
-
-# set DEBUG based on BUILD_MODE
-DEBUG=true; [ "$BUILD_MODE" != "debug" ] && DEBUG=false
-
-# set OUTDIR, unless set with -out=<dir>
-[ -z "$OUTDIR" ] && OUTDIR=$OUTDIR_DEFAULT/$BUILD_MODE
-
-# set WITH_LLVM
-case "$WITH_LLVM" in
-  "")            WITH_LLVM=static ; $DEBUG && WITH_LLVM=shared ;;
-  static|shared) ;;
-  off)           WITH_LLVM= ;;
-  *)             _err "invalid value \"$WITH_LLVM\" for -llvm option" ;;
-esac
-
-export PATH=$DEPSDIR/llvm/bin:$PATH
-export CC=clang
-export CXX=clang++
-CC_FILE=$DEPSDIR/llvm/bin/clang
-CC_IS_CLANG=true
-CC_IS_GCC=false
-
-$VERBOSE && { echo "CC=$CC"; echo "CXX=$CXX"; echo "CC_FILE=$CC_FILE"; }
-
-# check compiler and clear $OUTDIR if compiler changed.
-# Note that ninja takes care of rebuilding if flags changed.
-[ -x "$CC_FILE" ] || _err "LLVM not built. Run ./init.sh"
-CC_STAMP_FILE=$OUTDIR/cc.stamp
-if [ "$CC_FILE" -nt "$CC_STAMP_FILE" -o "$CC_FILE" -ot "$CC_STAMP_FILE" ]; then
-  [ -f "$CC_STAMP_FILE" ] && echo "$CC_FILE changed; clearing OUTDIR"
-  rm -rf "$OUTDIR"
-  mkdir -p "$OUTDIR"
-  touch -r "$CC_FILE" "$CC_STAMP_FILE"
-fi
-
-#————————————————————————————————————————————————————————————————————————————————————————
+# —————————————————————————————————————————————————————————————————————————————————
 # construct flags
 #
 #   XFLAGS             compiler flags (common to C and C++)
@@ -195,14 +350,16 @@ fi
 #     CFLAGS           compiler flags for C
 #       CFLAGS_HOST    compiler flags for C specific to native host target
 #       CFLAGS_WASM    compiler flags for C specific to WASM target
+#       CFLAGS_LLVM    compiler flags for C files in src/llvm/
 #     CXXFLAGS         compiler flags for C++
 #       CXXFLAGS_HOST  compiler flags for C++ specific to native host target
 #       CXXFLAGS_WASM  compiler flags for C++ specific to WASM target
+#       CXXFLAGS_LLVM  compiler flags for C++ files in src/llvm/
 #   LDFLAGS            linker flags common to all targets
 #     LDFLAGS_HOST     linker flags specific to native host target (cc suite's ld)
 #     LDFLAGS_WASM     linker flags specific to WASM target (llvm's wasm-ld)
-#————————————————————————————
-XFLAGS=(
+#
+XFLAGS+=(
   -g \
   -feliminate-unused-debug-types \
   -fvisibility=hidden \
@@ -214,94 +371,45 @@ XFLAGS=(
   -Werror=incompatible-pointer-types \
   -Werror=int-conversion \
   -Werror=format \
-  "${XFLAGS[@]}" \
+  -Wcovered-switch-default \
+  -Werror=format-insufficient-args \
+  -Werror=bitfield-constant-conversion \
+  -Wno-pragma-once-outside-header \
 )
+[ -t 1 ] && XFLAGS+=( -fcolor-diagnostics )
+$TESTING_ENABLED && XFLAGS+=( -D${PP_PREFIX}TESTING_ENABLED )
 XFLAGS_HOST=()
-XFLAGS_WASM=(
-  -D${PP_PREFIX}NO_LIBC \
-  --target=wasm32 \
-  --no-standard-libraries \
-  -fvisibility=hidden \
-)
-#————————————————————————————
-CFLAGS=(
-  -std=c11 \
-  "${CFLAGS[@]}" \
-)
+XFLAGS_WASM=( --target=wasm32 -fvisibility=hidden )
+
+CFLAGS=( -std=c11 -fms-extensions -Wno-microsoft )
 CFLAGS_HOST=()
 CFLAGS_WASM=()
-#————————————————————————————
-CXXFLAGS=(
-  -std=c++14 \
-  -fvisibility-inlines-hidden \
-  -fno-exceptions \
-  -fno-rtti \
-  "${CXXFLAGS[@]}" \
-)
+CFLAGS_LLVM=()
+
+CXXFLAGS=( -std=c++14 -fvisibility-inlines-hidden -fno-exceptions -fno-rtti )
 CXXFLAGS_HOST=()
 CXXFLAGS_WASM=()
-#————————————————————————————
-LDFLAGS_HOST=(
-  $LDFLAGS \
-)
-LDFLAGS_WASM=(
-  --no-entry \
-  --no-gc-sections \
-  --export-dynamic \
-  --import-memory \
-  $LDFLAGS_WASM \
-)
-#————————————————————————————
-# compiler-specific flags
-if $CC_IS_CLANG; then
-  XFLAGS+=(
-    -Wcovered-switch-default \
-    -Werror=format-insufficient-args \
-    -Werror=bitfield-constant-conversion \
-    -Wno-pragma-once-outside-header \
-  )
-  [ -t 1 ] && XFLAGS+=( -fcolor-diagnostics )
+CXXFLAGS_LLVM=()
 
-  if [ "$(uname -s)" = "Darwin" ] &&
-     [ "$WITH_LLVM" != "shared" -o "$(uname -m)" != "arm64" ]
-  then
-    # Use lld to avoid incompatible outdated macOS system linker.
-    # If the system linker is outdated, it would fail with an error like this:
-    # "ld: could not parse object file ... Unknown attribute kind ..."
-    #
-    # Note on second check in "if" above:
-    #   macOS 11 introduced a complex dynamic linker which lld struggles with.
-    #   From Apple: (62986286)
-    #     New in macOS Big Sur 11.0.1, the system ships with a built-in dynamic
-    #     linker cache of all system-provided libraries. As part of this
-    #     change, copies of dynamic libraries are no longer present on the
-    #     filesystem. Code that attempts to check for dynamic library presence
-    #     by looking for a file at a path or enumerating a directory will fail.
-    #     Instead, check for library presence by attempting to dlopen() the
-    #     path, which will correctly check for the library in the cache.
-    #     <https://developer.apple.com/documentation/macos-release-notes/
-    #      macos-big-sur-11_0_1-release-notes#Kernel>
-    #   If we try to link using lld on macOS 12.2.1 with our llvm-build of
-    #   lld 14.0.0, we get the following error:
-    #     error: LC_DYLD_INFO_ONLY not found in deps/llvm/lib/libco-llvm-bundle-d.dylib
-    #
-    MACOS_VERSION=10.15
-    [ "$(uname -m)" = "arm64" ] && MACOS_VERSION=12.0
-    LDFLAGS_HOST+=(
-      -fuse-ld="$(dirname "$CC_FILE")/ld64.lld" \
-      -Wl,-platform_version,macos,$MACOS_VERSION,$MACOS_VERSION \
-    )
-  fi
-elif $CC_IS_GCC; then
-  [ -t 1 ] && XFLAGS+=( -fdiagnostics-color=always )
-fi
+LDFLAGS_HOST=( -gz=zlib )
+LDFLAGS_WASM=( --no-entry --no-gc-sections --export-dynamic --import-memory )
 
-# build mode- and compiler-specific flags
-if $DEBUG; then
-  XFLAGS+=( -O0 -DDEBUG )
-  if $CC_IS_CLANG; then
-    XFLAGS+=( -ferror-limit=6 )
-    # enable llvm address and UD sanitizer in debug builds
+# arch-and-system-specific flags
+case "$HOST_ARCH-$HOST_SYS" in
+  x86_64-macos)  LDFLAGS_HOST+=( -Wl,-platform_version,macos,10.15,10.15 ) ;;
+  aarch64-macos) LDFLAGS_HOST+=( -Wl,-platform_version,macos,11.0,11.0 ) ;;
+esac
+
+# system-specific flags
+case "$HOST_ARCH-$HOST_SYS" in
+  linux) LDFLAGS_HOST+=( -static ) ;;
+esac
+
+# build-mode-specific flags
+case "$BUILD_MODE" in
+  debug)
+    XFLAGS+=( -O0 -DDEBUG -ferror-limit=6 )
+    # Enable sanitizers in debug builds
     # See https://clang.llvm.org/docs/AddressSanitizer.html
     # See https://clang.llvm.org/docs/UndefinedBehaviorSanitizer.html
     XFLAGS_HOST+=(
@@ -316,81 +424,56 @@ if $DEBUG; then
       -fmacro-backtrace-limit=0 \
     )
     LDFLAGS_HOST+=( -fsanitize=address,undefined )
-  fi
+    ;;
+  opt*)
+    XFLAGS+=( -DNDEBUG )
+    XFLAGS_WASM+=( -Oz )
+    if $DEBUGGABLE; then
+      XFLAGS_HOST+=( -O1 -fno-omit-frame-pointer -fno-optimize-sibling-calls )
+    else
+      XFLAGS_HOST+=( -O3 -fomit-frame-pointer )
+    fi
+    # LDFLAGS_WASM+=( -z stack-size=$[128 * 1024] ) # larger stack, smaller heap
+    # LDFLAGS_WASM+=( --compress-relocations --strip-debug )
+    # LDFLAGS_HOST+=( -dead_strip )
+    [ "$BUILD_MODE" = opt ] && XFLAGS+=( -D${PP_PREFIX}SAFE )
+    ;;
+esac
+
+# LTO
+if $ENABLE_LTO; then
+  XFLAGS+=( -flto=thin )
+  LDFLAGS_HOST+=( -flto=thin -Wl,--lto-O3 )
+  LDFLAGS_WASM+=( -flto=thin --lto-O3 --no-lto-legacy-pass-manager )
+  LTO_CACHE_FLAG=
+  case "$HOST_SYS" in
+    linux) LTO_CACHE_FLAG=-Wl,--thinlto-cache-dir="'$OUT_DIR/lto-cache'" ;;
+    macos) LTO_CACHE_FLAG=-Wl,-cache_path_lto,"'$OUT_DIR/lto-cache'" ;;
+  esac
+  LDFLAGS_HOST+=( $LTO_CACHE_FLAG )
+  LDFLAGS_WASM+=( $LTO_CACHE_FLAG )
+fi
+
+# llvm
+LLVM_CONFIG="$LLVMBOX_DESTDIR/bin/llvm-config"
+CFLAGS_LLVM+=( $("$LLVM_CONFIG" --cflags) )
+CXXFLAGS_LLVM+=( $("$LLVM_CONFIG" --cxxflags) )
+if $ENABLE_LTO; then
+  LDFLAGS_HOST+=( -L"$LLVMBOX_DESTDIR"/lib-lto )
+  for f in "$LLVMBOX_DESTDIR"/lib-lto/lib{clang,lld,LLVM}*.a; do
+    f="$(basename "$f" .a)"
+    LDFLAGS_HOST+=( -l${f:3} )
+  done
 else
-  XFLAGS+=( -DNDEBUG )
-  if $DEBUGGABLE; then
-    XFLAGS_HOST+=( -O1 -mtune=native \
-      -fno-omit-frame-pointer \
-      -fno-optimize-sibling-calls \
-    )
-  else
-    XFLAGS_HOST+=( -O3 -mtune=native -fomit-frame-pointer )
-  fi
-  XFLAGS_WASM+=( -Oz )
-  LDFLAGS_WASM+=( --lto-O3 --no-lto-legacy-pass-manager )
-  # LDFLAGS_WASM+=( -z stack-size=$[128 * 1024] ) # larger stack, smaller heap
-  # LDFLAGS_WASM+=( --compress-relocations --strip-debug )
-  # LDFLAGS_HOST+=( -dead_strip )
-  if [ "$BUILD_MODE" = "opt" ]; then
-    XFLAGS+=( -D${PP_PREFIX}SAFE )
-  fi
-
-  # enable LTO
-  if $CC_IS_CLANG; then
-    # XFLAGS+=( -flto )
-    # LDFLAGS_HOST+=( -flto )
-    XFLAGS+=( -flto=thin )
-    LDFLAGS_HOST+=(
-      -flto=thin \
-      -Wl,--lto-O3 \
-      -Wl,-prune_after_lto,86400 \
-      -Wl,-cache_path_lto,"'$OUTDIR/lto-cache'" \
-      -Wl,-object_path_lto,"'$OUTDIR/lto-obj'" \
-    )
-  fi
+  LDFLAGS_HOST+=( -L"$LLVMBOX_DESTDIR"/lib -lall_llvm_clang_lld )
 fi
-
-# testing enabled?
-$TESTING_ENABLED &&
-  XFLAGS+=( -D${PP_PREFIX}TESTING_ENABLED )
-
-# llvm?
-# LLVM_CFLAGS & LLVM_CXXFLAGS are only used for source files in src/llvm/
-LLVM_CFLAGS=()
-LLVM_CXXFLAGS=()
-if [ -n "$WITH_LLVM" ]; then
-  XFLAGS+=( -DCO_WITH_LLVM )
-  CFLAGS_HOST+=( -I$DEPSDIR/llvm/include )
-  CXXFLAGS_HOST+=( -I$DEPSDIR/llvm/include )
-  LLVM_CFLAGS=( $($DEPSDIR/llvm/bin/llvm-config --cflags) )
-  LLVM_CXXFLAGS=(
-    -nostdinc++ -I$DEPSDIR/llvm/include/c++/v1 -stdlib=libc++ \
-    $($DEPSDIR/llvm/bin/llvm-config --cxxflags) \
-  )
-  LDFLAGS_HOST+=(
-    -lm \
-  )
-  if [ "$WITH_LLVM" = shared ]; then
-    LDFLAGS_HOST+=(
-      "-Wl,-rpath,$DEPSDIR/llvm/lib" \
-      "-L$DEPSDIR/llvm/lib" \
-      "-lco-llvm-bundle-d" \
-    )
-  else
-    LDFLAGS_HOST+=(
-      "$DEPSDIR/llvm/lib/libco-llvm-bundle.a" \
-      "$DEPSDIR/llvm/lib/libc++.a" \
-      "$DEPSDIR/llvm/lib/libunwind.a" \
-    )
-  fi
-fi
+LDFLAGS_HOST+=( $("$LLVM_CONFIG" --system-libs) )
 
 #————————————————————————————————————————————————————————————————————————————————————————
 # find source files
 #
 # name.{c,cc}       always included
-# name.ARCH.{c,cc}  specific to ARCH (e.g. wasm, x86_64, arm64, etc)
+# name.ARCH.{c,cc}  specific to ARCH (e.g. wasm, x86_64, aarch64, etc)
 # name.test.{c,cc}  only included when testing is enabled
 
 COMMON_SOURCES=()
@@ -398,8 +481,9 @@ HOST_SOURCES=()
 WASM_SOURCES=()
 TEST_SOURCES=()
 
-HOST_ARCH=$(uname -m)
-for f in $(find "$SRCDIR" -name '*.c' -or -name '*.cc'); do
+pushd "$PROJECT" >/dev/null
+SRC_DIR_REL="${SRC_DIR##$PROJECT/}"
+for f in $(find "$SRC_DIR_REL" -name '*.c' -or -name '*.cc'); do
   case "$f" in
     */test.c|*.test.c|*.test.cc)    TEST_SOURCES+=( "$f" ) ;;
     *.$HOST_ARCH.c|*.$HOST_ARCH.cc) HOST_SOURCES+=( "$f" ) ;;
@@ -407,57 +491,79 @@ for f in $(find "$SRCDIR" -name '*.c' -or -name '*.cc'); do
     *)                              COMMON_SOURCES+=( "$f" ) ;;
   esac
 done
-
-$VERBOSE && {
-  echo "TEST_SOURCES=${TEST_SOURCES[@]}"
-  echo "HOST_SOURCES=${HOST_SOURCES[@]}"
-  echo "WASM_SOURCES=${WASM_SOURCES[@]}"
-  echo "COMMON_SOURCES=${COMMON_SOURCES[@]}"
-}
+popd >/dev/null
 
 #————————————————————————————————————————————————————————————————————————————————————————
 # generate .clang_complete
 
-if $CC_IS_CLANG; then
-  echo "-I$(realpath "$SRCDIR")" > .clang_complete
-  for flag in "${XFLAGS[@]}" "${XFLAGS_HOST[@]}" "${CFLAGS_HOST[@]}"; do
-    echo "$flag" >> .clang_complete
-  done
-fi
+echo "-I$SRC_DIR" > .clang_complete
+for flag in \
+  "${XFLAGS[@]:-}" \
+  "${XFLAGS_HOST[@]:-}" \
+  "${CFLAGS_HOST[@]:-}" \
+  "${CFLAGS_LLVM[@]:-}" \
+;do
+  [ -n "$flag" ] && echo "$flag" >> .clang_complete
+done
+
+# —————————————————————————————————————————————————————————————————————————————————
+# print config when -v is set
+
+$VERBOSE && cat << END
+XFLAGS            ${XFLAGS[@]:-}
+  XFLAGS_HOST     ${XFLAGS_HOST[@]:-}
+  XFLAGS_WASM     ${XFLAGS_WASM[@]:-}
+  CFLAGS          ${CFLAGS[@]:-}
+    CFLAGS_HOST   ${CFLAGS_HOST[@]:-}
+    CFLAGS_WASM   ${CFLAGS_WASM[@]:-}
+    CFLAGS_LLVM   ${CFLAGS_LLVM[@]:-}
+  CXXFLAGS        ${CXXFLAGS[@]:-}
+    CXXFLAGS_HOST ${CXXFLAGS_HOST[@]:-}
+    CXXFLAGS_WASM ${CXXFLAGS_WASM[@]:-}
+    CXXFLAGS_LLVM ${CXXFLAGS_LLVM[@]:-}
+
+LDFLAGS        ${LDFLAGS[@]:-}
+  LDFLAGS_HOST ${LDFLAGS_HOST[@]:-}
+  LDFLAGS_WASM ${LDFLAGS_WASM[@]:-}
+
+TEST_SOURCES   ${TEST_SOURCES[@]:-}
+HOST_SOURCES   ${HOST_SOURCES[@]:-}
+WASM_SOURCES   ${WASM_SOURCES[@]:-}
+COMMON_SOURCES ${COMMON_SOURCES[@]:-}
+END
 
 #————————————————————————————————————————————————————————————————————————————————————————
 # generate build.ninja
 
-NF=$OUTDIR/new-build.ninja     # temporary file
-NINJAFILE=$OUTDIR/build.ninja  # actual build file
-NINJA_ARGS+=( -f "$NINJAFILE" )
-LINKER=$CC
+mkdir -p "$OUT_DIR/obj"
+cd "$OUT_DIR"
 
-mkdir -p "$OUTDIR/obj"
-
+NF=build.ninja.tmp
 cat << _END > $NF
 ninja_required_version = 1.3
-builddir = $OUTDIR
+builddir = $OUT_DIR
 objdir = \$builddir/obj
 
-xflags = ${XFLAGS[@]}
-xflags_host = \$xflags ${XFLAGS_HOST[@]}
-xflags_wasm = \$xflags ${XFLAGS_WASM[@]}
+xflags = ${XFLAGS[@]:-}
+xflags_host = \$xflags ${XFLAGS_HOST[@]:-}
+xflags_wasm = \$xflags ${XFLAGS_WASM[@]:-}
 
-cflags = ${CFLAGS[@]}
-cflags_host = \$xflags_host ${CFLAGS_HOST[@]}
-cflags_wasm = \$xflags_wasm ${CFLAGS_WASM[@]}
+cflags = ${CFLAGS[@]:-}
+cflags_host = \$xflags_host ${CFLAGS_HOST[@]:-}
+cflags_wasm = \$xflags_wasm ${CFLAGS_WASM[@]:-}
+cflags_llvm = ${CFLAGS_LLVM[@]:-}
 
-cxxflags = ${CXXFLAGS[@]}
-cxxflags_host = \$xflags_host ${CXXFLAGS_HOST[@]}
-cxxflags_wasm = \$xflags_wasm ${CXXFLAGS_WASM[@]}
+cxxflags = ${CXXFLAGS[@]:-}
+cxxflags_host = \$xflags_host ${CXXFLAGS_HOST[@]:-}
+cxxflags_wasm = \$xflags_wasm ${CXXFLAGS_WASM[@]:-}
+cxxflags_llvm = ${CXXFLAGS_LLVM[@]:-}
 
-ldflags_host = ${LDFLAGS_HOST[@]}
-ldflags_wasm = ${LDFLAGS_WASM[@]}
+ldflags_host = ${LDFLAGS_HOST[@]:-}
+ldflags_wasm = ${LDFLAGS_WASM[@]:-}
 
 
 rule link
-  command = $LINKER \$ldflags_host \$FLAGS -o \$out \$in
+  command = $CXX \$ldflags_host \$FLAGS -o \$out \$in
   description = link \$out
 
 rule link_wasm
@@ -503,87 +609,132 @@ rule cxx_pch_gen
 build src/parse/ast_gen.h src/parse/ast_gen.c: ast_gen src/parse/ast.h | src/parse/ast_gen.py
 build src/parse/parser_gen.h: parse_gen src/parse/parser.c | src/parse/parse_gen.py
 
+build \$objdir/llvm-includes.pch: cxx_pch_gen src/llvm/llvm-includes.hh
+  FLAGS = \$cxxflags_llvm
+
 _END
 
-if [ -n "$WITH_LLVM" ]; then
-  echo "build \$objdir/llvm-includes.pch: cxx_pch_gen src/llvm/llvm-includes.hh" >> $NF
-  echo "  FLAGS = ${LLVM_CXXFLAGS[@]}" >> $NF
-fi
 
+_objfile() {
+  echo \$objdir/${1//\//.}.o
+}
 
-_objfile() { echo \$objdir/${1//\//.}.o; }
-_gen_obj_build_rules() {
-  local TARGET=$1 ; shift
-  local OBJECT
-  local CC_RULE=cc
-  local CXX_RULE=cxx
-  if [ "$TARGET" = wasm ]; then
-    CC_RULE=cc_wasm
-    CXX_RULE=cxx_wasm
+_gen_obj_build_rules() { # <target> <srcfile> ...
+  local target=$1 ; shift
+  local srcfile
+  local objfile
+  local cc_rule=cc
+  local cxx_rule=cxx
+  if [ "$target" = wasm ]; then
+    cc_rule=cc_wasm
+    cxx_rule=cxx_wasm
   fi
-  for SOURCE in "$@"; do
-    OBJECT=$(_objfile "$TARGET-$SOURCE")
-    case "$SOURCE" in
+  for srcfile in "$@"; do
+    [ -n "$srcfile" ] || continue
+    objfile=$(_objfile "$target-$srcfile")
+    case "$srcfile" in
       */llvm/*.c)
-        [ -z "$WITH_LLVM" ] && continue
-        echo "build $OBJECT: $CC_RULE $SOURCE" >> $NF
-        echo "  FLAGS = ${LLVM_CFLAGS[@]}" >> $NF
+        echo "build $objfile: $cc_rule $srcfile" >> $NF
+        echo "  FLAGS = \$cflags_llvm" >> $NF
         ;;
       */llvm/*.cc)
-        [ -z "$WITH_LLVM" ] && continue
-        echo "build $OBJECT: $CXX_RULE $SOURCE | \$objdir/llvm-includes.pch" >> $NF
-        echo "  FLAGS = -include-pch \$objdir/llvm-includes.pch ${LLVM_CXXFLAGS[@]}" >> $NF
+        echo "build $objfile: $cxx_rule $srcfile | \$objdir/llvm-includes.pch" >> $NF
+        echo "  FLAGS = -include-pch \$objdir/llvm-includes.pch \$cxxflags_llvm" >> $NF
         ;;
       *.c)
-        echo "build $OBJECT: $CC_RULE $SOURCE" >> $NF
+        echo "build $objfile: $cc_rule $srcfile" >> $NF
         ;;
       *.cc)
-        echo "build $OBJECT: $CXX_RULE $SOURCE" >> $NF
+        echo "build $objfile: $cxx_rule $srcfile" >> $NF
         ;;
-      *) _err "don't know how to compile this file type ($SOURCE)"
+      *)
+        _err "don't know how to compile file type: \"$srcfile\""
+        ;;
     esac
-    echo "$OBJECT"
+    echo "$objfile"
   done
 }
 
-HOST_SOURCES+=( "${COMMON_SOURCES[@]}" )
-WASM_SOURCES+=( "${COMMON_SOURCES[@]}" )
+HOST_SOURCES+=( "${COMMON_SOURCES[@]:-}" )
+WASM_SOURCES+=( "${COMMON_SOURCES[@]:-}" )
 
 if $TESTING_ENABLED; then
-  HOST_SOURCES+=( "${TEST_SOURCES[@]}" )
-  WASM_SOURCES+=( "${TEST_SOURCES[@]}" )
+  HOST_SOURCES+=( "${TEST_SOURCES[@]:-}" )
+  WASM_SOURCES+=( "${TEST_SOURCES[@]:-}" )
 fi
 
-HOST_OBJECTS=( $(_gen_obj_build_rules "host" "${HOST_SOURCES[@]}") )
-echo >> $NF
-echo "build \$builddir/$MAIN_EXE: link ${HOST_OBJECTS[@]}" >> $NF
-echo >> $NF
+OBJECTS=( $(_gen_obj_build_rules "host" "${HOST_SOURCES[@]:-}") )
+if [ ${#OBJECTS[@]} ]; then
+  echo >> $NF
+  echo "build \$builddir/$MAIN_EXE: link ${OBJECTS[@]}" >> $NF
+  echo >> $NF
+fi
 
-WASM_OBJECTS=( $(_gen_obj_build_rules "wasm" "${WASM_SOURCES[@]}") )
-echo >> $NF
-echo "build \$builddir/$MAIN_EXE.wasm: link_wasm ${WASM_OBJECTS[@]}" >> $NF
-echo >> $NF
+OBJECTS=( $(_gen_obj_build_rules "wasm" "${WASM_SOURCES[@]:-}") )
+if [ ${#OBJECTS[@]} ]; then
+  echo >> $NF
+  echo "build \$builddir/$MAIN_EXE.wasm: link_wasm ${OBJECTS[@]}" >> $NF
+  echo >> $NF
+fi
 
 echo "build $MAIN_EXE: phony \$builddir/$MAIN_EXE" >> $NF
 echo "build $MAIN_EXE.wasm: phony \$builddir/$MAIN_EXE.wasm" >> $NF
 echo "default $MAIN_EXE" >> $NF
 
-# write build.ninja only if it changed
-if [ "$(_checksum $NF)" != "$(_checksum "$NINJAFILE" 2>/dev/null)" ]; then
-  mv $NF "$NINJAFILE"
-  $VERBOSE && echo "wrote $NINJAFILE"
+# —————————————————————————————————————————————————————————————————————————————————
+# write build.ninja if it changed
+NINJAFILE=build.ninja
+NINJA_ARGS+=( -f "$OUT_DIR/build.ninja" )
+
+if [ "$(sha256sum $NF | cut -d' ' -f1)" != \
+     "$(sha256sum build.ninja 2>/dev/null | cut -d' ' -f1)" ]
+then
+  mv $NF build.ninja
+  $VERBOSE && echo "$(_relpath "$PWD/build.ninja") updated"
 else
   rm $NF
-  $VERBOSE && echo "$NINJAFILE is up to date"
+  $VERBOSE && echo "$(_relpath "$PWD/build.ninja") is up-to-date"
 fi
 
 # stop now if -config is set
 $ONLY_CONFIGURE && exit
 
-# ninja
-if [ -n "$RUN" ]; then
-  $NINJA "${NINJA_ARGS[@]}" "$@"
-  echo $RUN
-  exec $SHELL -c "$RUN"
+# —————————————————————————————————————————————————————————————————————————————————
+# wipe build cache if config or tools changed
+
+cat << END > config.tmp
+TARGET $HOST_ARCH-$HOST_SYS
+LLVM $LLVMBOX_RELEASE
+XFLAGS ${XFLAGS[@]:-}
+XFLAGS_HOST ${XFLAGS_HOST[@]:-}
+XFLAGS_WASM ${XFLAGS_WASM[@]:-}
+CFLAGS ${CFLAGS[@]:-}
+CFLAGS_HOST ${CFLAGS_HOST[@]:-}
+CFLAGS_WASM ${CFLAGS_WASM[@]:-}
+CFLAGS_LLVM ${CFLAGS_LLVM[@]:-}
+CXXFLAGS ${CXXFLAGS[@]:-}
+CXXFLAGS_HOST ${CXXFLAGS_HOST[@]:-}
+CXXFLAGS_WASM ${CXXFLAGS_WASM[@]:-}
+CXXFLAGS_LLVM ${CXXFLAGS_LLVM[@]:-}
+LDFLAGS ${LDFLAGS[@]:-}
+LDFLAGS_HOST ${LDFLAGS_HOST[@]:-}
+LDFLAGS_WASM ${LDFLAGS_WASM[@]:-}
+END
+if ! diff -q config config.tmp >/dev/null 2>&1; then
+  [ -e config ] && echo "build configuration changed"
+  mv config.tmp config
+  rm -rf "$OUT_DIR/obj" "$OUT_DIR/lto-cache"
+else
+  rm config.tmp
 fi
-exec $NINJA "${NINJA_ARGS[@]}" "$@"
+
+# —————————————————————————————————————————————————————————————————————————————————
+# run ninja
+
+cd "$PROJECT"
+if [ -n "$RUN" ]; then
+  ninja "${NINJA_ARGS[@]}" "$@"
+  echo $RUN
+  exec "${BASH:-bash}" -c "$RUN"
+fi
+exec ninja "${NINJA_ARGS[@]}" "$@"

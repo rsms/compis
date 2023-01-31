@@ -4,16 +4,21 @@ ARGV0="$0"
 SCRIPT_FILE=${BASH_SOURCE[0]}
 [ -n "$SCRIPT_FILE" ] || SCRIPT_FILE=${(%):-%N}  # zsh
 [ -n "$PROJECT" ] || PROJECT=$(dirname $(dirname $(realpath "$SCRIPT_FILE")))
-HOST_SYS=$(uname -s)
-HOST_ARCH=$(uname -m)
 DEPS_DIR="$PROJECT/deps"
 OUT_DIR="$PROJECT/out"
-WORK_DIR="$OUT_DIR/etc"
-WORK_BUILD_DIR="$WORK_DIR/out"
+WORK_DIR=${WORK_DIR:-$OUT_DIR/etc}
+WORK_BUILD_DIR=${WORK_BUILD_DIR:-$WORK_DIR/out}
 DOWNLOAD_DIR="$WORK_DIR/download"
 TMPFILES_LIST="$WORK_DIR/tmpfiles.$$"
 OPT_QUIET=false
 INITIAL_PWD=${INITIAL_PWD:-$PWD}
+HOST_SYS=$(uname -s)
+HOST_ARCH=$(uname -m) ; [ "$HOST_ARCH" != "arm64" ] || HOST_ARCH=aarch64
+HOST_SYSNAME= # e.g. linux, macos
+case "$HOST_SYS" in
+  Darwin) HOST_SYSNAME=macos ;;
+  *)      HOST_SYSNAME=$(awk '{print tolower($0)}' <<< "$HOST_SYS") ;;
+esac
 
 # internal state
 SOURCE_DIR_STACK=()

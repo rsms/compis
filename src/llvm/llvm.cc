@@ -423,7 +423,7 @@ bool llvm_write_archive(
 LLVMContextRef CoLLVMContextCreate() {
   auto ctx = new LLVMContext();
   // Enable opaque pointers. This will be the default in future LLVM releases.
-  ctx->enableOpaquePointers();
+  ctx->setOpaquePointers(true);
   return wrap(ctx);
 }
 
