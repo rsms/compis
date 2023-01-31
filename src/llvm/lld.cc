@@ -160,6 +160,8 @@ static err_t build_args(
       break;
     case Triple::GOFF:  // ?
     case Triple::XCOFF: // ?
+    case Triple::DXContainer: // ?
+    case Triple::SPIRV: // ?
     case Triple::UnknownObjectFormat:
       dlog("unexpected object format");
       return ErrNotSupported;
