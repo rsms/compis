@@ -201,10 +201,15 @@ LLVM_RELEASE=15.0.7
 LLVMBOX_RELEASE=$LLVM_RELEASE+1
 LLVMBOX_DESTDIR="$DEPS_DIR/llvmbox"
 LLVMBOX_RELEASES=( # github.com/rsms/llvmbox/releases/download/VERSION/sha256sum.txt
+  "fc7f24d4464127c91c76d2a7fed15c37137b00126acffadaa89912b372d0381a  llvmbox-15.0.7+1-aarch64-linux.tar.xz" \
+  "3db9f9d42111207def5c70c16e0d473eaa65adeb89050976b431d5e806324316  llvmbox-15.0.7+1-aarch64-macos.tar.xz" \
   "3b859e76df8fcae7b8c7cf568af36b2d4eba88b8e403c9aa61320d6b77a47aff  llvmbox-15.0.7+1-x86_64-linux.tar.xz" \
   "f3c50460907c95a6aaae30c85b64a4fd76680c7180cfb35f35a5c135f791716e  llvmbox-15.0.7+1-x86_64-macos.tar.xz" \
+  "eeeada6a30246202ef63a9c6677f38499ee638cad7cca5a3b25be91c9e7bccb7  llvmbox-dev-15.0.7+1-aarch64-linux.tar.xz" \
+  "aee04221cc1fcc5c9a056a483a3a7392d7cd292baaff5ae3772ad507ed50093e  llvmbox-dev-15.0.7+1-aarch64-macos.tar.xz" \
   "8bb26eb983e47ac74a3393593eebd24242f3a8fd8b37de21dbca6709ec7968fe  llvmbox-dev-15.0.7+1-x86_64-linux.tar.xz" \
   "bd508ddcfe52fee3ffa6fae47c30a1eba1d48678e3a6c5da333275de9f22a236  llvmbox-dev-15.0.7+1-x86_64-macos.tar.xz" \
+
 )
 LLVMBOX_URL_BASE=https://github.com/rsms/llvmbox/releases/download/v$LLVMBOX_RELEASE
 
@@ -220,9 +225,9 @@ for sha256_file in "${LLVMBOX_RELEASES[@]}"; do
   fi
 done
 [ -n "$LLVMBOX_SHA256_FILE" ] ||
-  _err "llvmbox not available for llvm-$LLVMBOX_RELEASE $HOST_ARCH $HOST_SYS"
+  _err "llvmbox not available for llvm-$LLVMBOX_RELEASE-$HOST_ARCH-$HOST_SYS"
 [ -n "$LLVMBOX_DEV_SHA256_FILE" ] ||
-  _err "llvmbox-dev not available for llvm-$LLVMBOX_RELEASE $HOST_ARCH $HOST_SYS"
+  _err "llvmbox-dev not available for llvm-$LLVMBOX_RELEASE-$HOST_ARCH-$HOST_SYS"
 
 # extract llvmbox
 if [ "$(cat "$LLVMBOX_DESTDIR/version" 2>/dev/null)" != "$LLVMBOX_RELEASE" ]; then
