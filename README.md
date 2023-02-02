@@ -238,52 +238,21 @@ let f i8      // error: missing value
 
 # Building
 
-First time setup:
+Build an optimized product:
 
-    ./init.sh
+    ./build.sh
 
-Requirements for compiling LLVM:
-
-- Ubuntu Linux build host:
-  - C++14 bootstrap compiler, for building llvm: `sudo apt install llvm clang`
-  - `python3` as `python` with distutils:
-    `sudo apt install python3-distutils python-is-python3 -y`
-- macOS build host:
-  - clang, which you can install via Xcode or a package manager like Homebrew or nix
-
-
-Build & test:
+Build a debug product:
 
     ./build.sh -debug
+
+Run co:
+
     out/debug/co build -o out/hello examples/hello.c examples/foo.co
     out/hello
 
-Build & run debug build in continuous mode:
+Build & run debug product in continuous mode:
 
     ./build.sh -debug -wf=examples/foo.co \
       -run='out/debug/co build examples/hello.c examples/foo.co && build/debug/main'
 
-
-## Hacking
-
-Define `CO_DEVBUILD` to enable tracing and detailed output:
-
-    ./build.sh -debug -DCO_DEVBUILD -wf=myhack.co \
-      -run='out/debug/co build myhack.co && build/debug/main'
-
-
-
-## LLVM
-
-By default llvm & clang is built in release mode with assertions.
-There's a small but noticeable perf hit introduced by assertions.
-You can build llvm without them like this:
-
-    etc/llvm/build-llvm.sh -force -no-assertions
-
-You can also customize llvm build mode.
-Available modes: Debug, Release, RelWithDebInfo and MinSizeRel (default)
-
-    etc/llvm/build-llvm.sh -force -mode RelWithDebInfo
-
-Note: These flags can also be passed to `./init.sh`.
