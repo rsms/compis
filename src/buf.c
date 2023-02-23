@@ -32,9 +32,11 @@ void buf_initext(buf_t* b, memalloc_t ma, void* p, usize cap) {
 
 
 void buf_dispose(buf_t* b) {
-  if (!b->external)
+  if (!b->external && b->cap)
     mem_free(b->ma, (mem_t*)b);
-  b->len = 0;
+  #ifdef CO_SAFE
+  memset(b, 0, sizeof(*b));
+  #endif
 }
 
 
