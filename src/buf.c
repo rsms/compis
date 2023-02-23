@@ -44,15 +44,16 @@ bool buf_grow(buf_t* b, usize extracap) {
   usize newcap;
   if (b->cap == 0) {
     newcap = MAX(256, CEIL_POW2(extracap));
-  } else {
-    if (check_mul_overflow(b->cap, (usize)2, &newcap))
+  } else if (b->cap < extracap || check_mul_overflow(b->cap, 2lu, &newcap)) {
+    // either the current capacity is less than what we need or cap>USIZE_MAX/2
+    if (check_add_overflow(b->cap, CEIL_POW2(extracap), &newcap)) {
+      // fall back to exact growth
       if (check_add_overflow(b->cap, extracap, &newcap))
         return false;
+    }
   }
-
   if (!b->external)
     return mem_resize(b->ma, (mem_t*)b, newcap);
-
   mem_t m = mem_alloc(b->ma, newcap);
   if (!m.p)
     return false;
