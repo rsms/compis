@@ -283,12 +283,14 @@ bool compiler_fully_qualified_name(const compiler_t* c, buf_t* buf, const node_t
 // define SPAWN_TOOL_USE_FORK=1 to use fork() by default
 // Note: In my (rsms) tests on macos x86, spawning new processes (posix_spawn)
 // uses about 10x more memory than fork() in practice, likely from CoW.
-#if defined(__APPLE__) && defined(DEBUG)
-  // Note: fork() in debug builds on darwin are super slow, likely because of msan,
-  // so we disable fork()ing in those cases.
-  #define SPAWN_TOOL_USE_FORK 0
-#else
-  #define SPAWN_TOOL_USE_FORK 1
+#ifndef SPAWN_TOOL_USE_FORK
+  #if defined(__APPLE__) && defined(DEBUG)
+    // Note: fork() in debug builds on darwin are super slow, likely because of msan,
+    // so we disable fork()ing in those cases.
+    #define SPAWN_TOOL_USE_FORK 0
+  #else
+    #define SPAWN_TOOL_USE_FORK 1
+  #endif
 #endif
 
 
