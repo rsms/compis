@@ -201,14 +201,14 @@ LLVM_RELEASE=15.0.7
 LLVMBOX_RELEASE=$LLVM_RELEASE+2
 LLVMBOX_DESTDIR="$DEPS_DIR/llvmbox"
 LLVMBOX_RELEASES=( # github.com/rsms/llvmbox/releases/download/VERSION/sha256sum.txt
-  "fc7f24d4464127c91c76d2a7fed15c37137b00126acffadaa89912b372d0381a  llvmbox-15.0.7+1-aarch64-linux.tar.xz" \
-  "3db9f9d42111207def5c70c16e0d473eaa65adeb89050976b431d5e806324316  llvmbox-15.0.7+1-aarch64-macos.tar.xz" \
-  "3b859e76df8fcae7b8c7cf568af36b2d4eba88b8e403c9aa61320d6b77a47aff  llvmbox-15.0.7+1-x86_64-linux.tar.xz" \
-  "f3c50460907c95a6aaae30c85b64a4fd76680c7180cfb35f35a5c135f791716e  llvmbox-15.0.7+1-x86_64-macos.tar.xz" \
-  "eeeada6a30246202ef63a9c6677f38499ee638cad7cca5a3b25be91c9e7bccb7  llvmbox-dev-15.0.7+1-aarch64-linux.tar.xz" \
-  "aee04221cc1fcc5c9a056a483a3a7392d7cd292baaff5ae3772ad507ed50093e  llvmbox-dev-15.0.7+1-aarch64-macos.tar.xz" \
-  "8bb26eb983e47ac74a3393593eebd24242f3a8fd8b37de21dbca6709ec7968fe  llvmbox-dev-15.0.7+1-x86_64-linux.tar.xz" \
-  "bd508ddcfe52fee3ffa6fae47c30a1eba1d48678e3a6c5da333275de9f22a236  llvmbox-dev-15.0.7+1-x86_64-macos.tar.xz" \
+  "e5f0816ed2063e6bdc79c11af50889062692770034df2a2f1a9394600b01c403  llvmbox-15.0.7+2-aarch64-linux.tar.xz" \
+  "9f602547374da64d312b0a8bdb973298329afe693c1e8c154d1eaf50b5fa0d5d  llvmbox-15.0.7+2-aarch64-macos.tar.xz" \
+  "5358eab245eeb0d275d83e3205f57e0a2452be5d79dc4748163bd8268d1a6f45  llvmbox-15.0.7+2-x86_64-linux.tar.xz" \
+  "6f5a5d4d2053f7c302e4dc15191286f7196a979fe250999e3b86d3610ef86d3d  llvmbox-15.0.7+2-x86_64-macos.tar.xz" \
+  "8fc2448e05b690e98d7785e62d03d562eddb803522cf8f3e3a84e95ac654e998  llvmbox-dev-15.0.7+2-aarch64-linux.tar.xz" \
+  "36178ad59a3a98f2867488a988103d9daef3959124f74120ee7245e8f66e11fe  llvmbox-dev-15.0.7+2-aarch64-macos.tar.xz" \
+  "ba06d0b1e91bb4b280635e653614938b3c5e9f6c46a50ee88f831b946bba2208  llvmbox-dev-15.0.7+2-x86_64-linux.tar.xz" \
+  "4b327844529dee34f71a1bc8a793d1c0e0e78889515e534103b2b9d5ab94a994  llvmbox-dev-15.0.7+2-x86_64-macos.tar.xz" \
 )
 LLVMBOX_URL_BASE=https://github.com/rsms/llvmbox/releases/download/v$LLVMBOX_RELEASE
 LLVM_CONFIG="$LLVMBOX_DESTDIR/bin/llvm-config"
