@@ -213,8 +213,8 @@ typedef double             f64;
 
 // __VARG_DISP allows writing functions with compile-time variable-count arguments
 #define __VARG_DISP(a,...)   __VARG_CONCAT(a,__VARG_NARGS(__VA_ARGS__))(__VA_ARGS__)
-#define __VARG_NARGS_X(a,b,c,d,e,f,g,h,n,...) n
-#define __VARG_NARGS(...)    __VARG_NARGS_X(__VA_ARGS__,8,7,6,5,4,3,2,1,)
+#define __VARG_NARGS_X(a,b,c,d,e,f,g,h,n,o,...) o
+#define __VARG_NARGS(...)    __VARG_NARGS_X(__VA_ARGS__,9,8,7,6,5,4,3,2,1,)
 #define __VARG_CONCAT_X(a,b) a##b
 #define __VARG_CONCAT(a,b)   __VARG_CONCAT_X(a,b)
 
@@ -320,6 +320,10 @@ typedef double             f64;
 })
 #define COND_FLAG_X(flags, flag, on) \
   ((flags) ^ (( (__typeof__(flags))-(!!(on)) ^ (flags) ) & (__typeof__(flags))(flag)))
+
+// CO_PLUS_ONE can be used to define count of enums, e.g.
+// enum { FOO_COUNT = (0lu FOR_EACH_FOO(CO_PLUS_ONE)) };
+#define CO_PLUS_ONE(...) + 1lu
 
 //—————————————————————————————————————————————————————————————————————————————————————
 // debugging
@@ -668,9 +672,10 @@ typedef struct {
 
 typedef struct {
   union {
-    const void* nullable p;
-    const u8*   nullable bytes;
-    const char* nullable chars;
+    const void*        nullable p;
+    const u8*          nullable bytes;
+    const char*        nullable chars;
+    const char* const* nullable strings;
   };
   usize len;
 } slice_t;
@@ -777,6 +782,10 @@ static void mem_freev(memalloc_t, void* array, usize count, usize elemsize);
 
 // mem_freetv frees an array allocated with mem_alloctv
 #define mem_freetv(ma, array, count)  mem_freev((ma), (array), (count), sizeof(*(array)))
+
+inline static void mem_freecstr(memalloc_t ma, char* nullable cstr) {
+  if (cstr) mem_freex(ma, MEM(cstr, strlen(cstr) + 1));
+}
 
 // utilities
 char* nullable mem_strdup(memalloc_t, slice_t src, usize extracap);
@@ -943,12 +952,16 @@ usize strim_end(const char* s, usize len, char trimc);
 
 usize sfmtu64(char* buf, u64 v, u32 base);
 
-// // mutable string (null terminated)
-// typedef struct {
-//   char* nullable p; // only NULL when str_make fails to allocate memory
-//   u32 cap, len;
-// } str_t;
-// str_t str_make(memalloc_t ma, slice_t src);
+//—————————————————————————————————————————————————————————————————————————————————————
+// time
+err_t unixtime(i64* sec, u64* nsec); // date & time of day
+u64 nanotime(); // monotonic high-res
+usize fmtduration(char buf[25], u64 duration_ns);
+u64 microsleep(u64 microseconds);
+
+//—————————————————————————————————————————————————————————————————————————————————————
+// system info
+u32 sys_ncpu(); // number of available logical CPUs, logs error on failure and returns 1
 
 //—————————————————————————————————————————————————————————————————————————————————————
 // files
@@ -978,5 +991,20 @@ u32 leb128_size(u64 val); // actual bytes needed
 u32 leb128_u64_write(u8 out[LEB128_NBYTE_64], u64 val);
 u32 leb128_u32_write(u8 out[LEB128_NBYTE_32], u32 val);
 
+//—————————————————————————————————————————————————————————————————————————————————————
+// constants defined in main.c
+
+// coprogname: program name, as invoked, e.g. "compis", "cc", "ld" etc
+extern const char* coprogname;
+
+// coexefile: absolute path to executable (realpath, no symlinks)
+extern const char* coexefile;
+
+// coroot: directory of compis installation (== dirname(exefile))
+// Can be overridden with env var COROOT
+extern const char* coroot;
+
+// comaxproc: max thread concurrency (defaults to sys_ncpu, can be set with -j)
+extern u32 comaxproc;
 
 ASSUME_NONNULL_END

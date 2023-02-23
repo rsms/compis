@@ -4,8 +4,11 @@
 #include "llvmimpl.h"
 #include <sstream>
 
-// DEBUG_LLD_INVOCATION: define to print arguments used for linker invocations to stderr
-#define DEBUG_LLD_INVOCATION
+#ifdef WIN32
+  #define PATH_SEP "\\"
+#else
+  #define PATH_SEP "/"
+#endif
 
 using namespace llvm;
 
@@ -62,10 +65,209 @@ static LinkFun select_linkfn(Triple& triple, const char** cliname) {
 }
 
 
+static const char* triple_archname(const Triple& triple) {
+  return (const char*)Triple::getArchTypeName(triple.getArch()).bytes_begin();
+}
+
+
+struct LinkerArgs {
+  const CoLLVMLink&         options;
+  Triple&                   triple;
+  std::vector<const char*>& args;
+  std::vector<std::string>& tmpstrings;
+  char                      tmpbuf[PATH_MAX*2];
+
+  const char* tmpstr(std::string&& s) {
+    tmpstrings.emplace_back(s);
+    return tmpstrings.back().c_str();
+  }
+  const char* tmpstr(const std::string& s) {
+    tmpstrings.emplace_back(s);
+    return tmpstrings.back().c_str();
+  }
+
+  void addargs(std::initializer_list<const char*> v) {
+    for (auto arg : v)
+      args.emplace_back(arg);
+  }
+
+  template<typename... T>
+  void addarg(T&& ... args) { addargs({std::forward<T>(args)...}); }
+
+  void addarg(std::string&& s) {      args.emplace_back(tmpstr(std::move(s))); }
+  void addarg(const std::string& s) { args.emplace_back(tmpstr(s)); }
+  void addarg(std::string s) {        args.emplace_back(tmpstr(s)); }
+  void addarg(char* s) {              args.emplace_back(tmpstr(s)); }
+
+  void addargf(const char* fmt, ...) ATTR_FORMAT(printf, 2, 3) {
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(tmpbuf, sizeof(tmpbuf), fmt, ap);
+    addarg(tmpbuf);
+    va_end(ap);
+  }
+
+  err_t add_lto_args();
+  err_t add_coff_args();
+  err_t add_elf_arg();
+  err_t add_macho_args();
+  err_t add_wasm_args();
+
+  err_t unsupported_sys();
+};
+
+
+err_t LinkerArgs::unsupported_sys() {
+  #if DEBUG
+  auto osname = (const char*)Triple::getOSTypeName(triple.getOS()).bytes_begin();
+  dlog("lld: unsupported system %s (%s)", osname, triple.str().c_str());
+  #endif
+  return ErrNotSupported;
+}
+
+
+err_t LinkerArgs::add_lto_args() {
+  if (options.lto_level == 0)
+    return 0;
+
+  auto objformat = triple.getObjectFormat();
+
+  if (objformat != Triple::COFF) {
+    addarg(options.lto_level == 1 ? "--lto-O1" :
+           options.lto_level == 2 ? "--lto-O2" :
+                                    "--lto-O3");
+    addarg("--no-lto-legacy-pass-manager");
+    addarg("--thinlto-cache-policy=prune_after=24h");
+  }
+
+  if (*options.lto_cachedir) switch (objformat) {
+    case Triple::COFF:
+      addargf("/lldltocache:%s", options.lto_cachedir);
+      addarg("/lldltocachepolicy:prune_after=24h");
+      break;
+    case Triple::MachO:
+      addarg("-cache_path_lto", options.lto_cachedir);
+      break;
+    case Triple::ELF:
+    case Triple::Wasm:
+      addargf("--thinlto-cache-dir=%s", options.lto_cachedir);
+      break;
+    case Triple::GOFF:
+    case Triple::XCOFF:
+    case Triple::DXContainer:
+    case Triple::SPIRV:
+    case Triple::UnknownObjectFormat:
+      break;
+  }
+
+  return 0;
+}
+
+
+err_t LinkerArgs::add_coff_args() {
+  // flavor=lld-link
+  // if (options.outfile)
+  //   args.emplace_back(mktmpstr(std::string("/out:") + options.outfile));
+  // note: "/machine:" seems similar to "-arch"
+  dlog("TODO: %s", __FUNCTION__);
+  return ErrNotSupported;
+}
+
+
+err_t LinkerArgs::add_elf_arg() {
+  // flavor=ld.lld
+
+  if (triple.getOS() != Triple::Linux)
+    return unsupported_sys();
+
+  addarg("--pie");
+  addargf("--sysroot=%s", options.sysroot);
+  addarg("-EL", "--build-id", "--eh-frame-hdr");
+
+  // https://github.com/llvm/llvm-project/blob/llvmorg-15.0.7/lld/ELF/Driver.cpp#L131
+  const char* target_emu = "";
+  switch (triple.getArch()) {
+    case Triple::ArchType::aarch64: target_emu = "aarch64linux"; break;
+    case Triple::ArchType::arm:     target_emu = "armelf"; break;
+    case Triple::ArchType::riscv32: target_emu = "elf32lriscv"; break;
+    case Triple::ArchType::riscv64: target_emu = "elf64lriscv"; break;
+    case Triple::ArchType::x86_64:  target_emu = "elf_x86_64"; break;
+    case Triple::ArchType::x86:     target_emu = "elf_i386"; break;
+    default:
+      dlog("lld: unexpected arch %s", triple_archname(triple));
+      return ErrNotSupported;
+  }
+  addarg("-m", target_emu);
+
+  if (options.strip_dead)
+    addarg("-s"); // Strip all symbols. Implies --strip-debug
+
+  if (options.outfile)
+    addarg("-o", options.outfile);
+
+  addarg("-static");
+  addargf("-L%s/lib", options.sysroot);
+  addarg("-lc", "-lrt");
+
+  addargf("%s" PATH_SEP "lib" PATH_SEP "crt1.o", options.sysroot);
+
+  return 0;
+}
+
+
+err_t LinkerArgs::add_macho_args() {
+  // flavor=ld64.lld
+
+  // we only support macos (not IOS, TvOS or WatchOS)
+  if (triple.getOS() != Triple::Darwin && triple.getOS() != Triple::MacOSX)
+    return unsupported_sys();
+
+  addarg("-pie");
+  addarg("-demangle"); // demangle symbol names in diagnostics
+  addarg("-adhoc_codesign");
+  addarg("-syslibroot", options.sysroot);
+
+  // LLD expects "arm64", not "aarch64", for apple platforms
+  auto arch = triple.getArch();
+  const char* arch_name;
+  const char* macos_ver;
+  if (arch == Triple::ArchType::aarch64) {
+    arch_name = "arm64";
+    macos_ver = "11.0.0";
+  } else {
+    arch_name = triple_archname(triple);
+    macos_ver = "10.15.0";
+  }
+
+  // -platform_version <platform> <min_version> <sdk_version>
+  addarg("-platform_version", "macos", macos_ver, macos_ver);
+  addarg("-arch", arch_name);
+
+  if (options.strip_dead)
+    addarg("-dead_strip"); // remove unreferenced code and data
+
+  if (options.outfile)
+    addarg("-o", options.outfile);
+
+  addargf("-L%s/lib", options.sysroot);
+  addarg("-lc", "-lrt");
+  return 0;
+}
+
+
+err_t LinkerArgs::add_wasm_args() {
+  // flavor=wasm-ld
+  dlog("TODO: %s", __FUNCTION__);
+  addarg("--no-pie");
+  return ErrNotSupported;
+}
+
+
 // build_args selects the linker function and adds args according to options and triple.
-// This does not add options.infilev but it does add options.outfile (if not null) as that
-// flag is linker-dependent.
-// tmpstrings is a list of std::strings that should outlive the call to the returned LinkFun.
+// This does not add options.infilev but it does add options.outfile (if not null)
+// as that flag is linker-dependent.
+// tmpstrings is a list of std::strings that should outlive the call to the returned
+// LinkFun.
 static err_t build_args(
   const CoLLVMLink&         options,
   Triple&                   triple,
@@ -73,9 +275,11 @@ static err_t build_args(
   std::vector<const char*>& args,
   std::vector<std::string>& tmpstrings)
 {
-  auto mktmpstr = [&](std::string&& s) {
-    tmpstrings.emplace_back(s);
-    return tmpstrings.back().c_str();
+  LinkerArgs linker_args{
+    .options = options,
+    .triple = triple,
+    .args = args,
+    .tmpstrings = tmpstrings,
   };
 
   // select link function
@@ -85,136 +289,29 @@ static err_t build_args(
     return ErrNotSupported;
   args.emplace_back(arg0);
 
-  // common arguments
-  // (See lld flavors' respective CLI help output, e.g. deps/llvm/bin/lld -flavor ld.lld -help)
-  if (triple.getObjectFormat() == Triple::COFF) {
-    // Windows (flavor=lld-link, flagstyle="/flag")
-    // TODO consider adding "/machine:" which seems similar to "-arch"
-    if (options.outfile)
-      args.emplace_back(mktmpstr(std::string("/out:") + options.outfile));
-  } else {
-    // Rest of the world (flavor=!lld-link, flagstyle="-flag")
-    auto archname = (const char*)Triple::getArchTypeName(triple.getArch()).bytes_begin();
-    switch (triple.getOS()) {
-      case Triple::Darwin:
-      case Triple::MacOSX:
-      case Triple::IOS:
-      case Triple::TvOS:
-      case Triple::WatchOS:
-        if (triple.getArch() == Triple::ArchType::aarch64) {
-          // LLD expects "arm64", not "aarch64", for these platforms
-          archname = "arm64";
-        }
-        break;
-      default:
-        break;
-    }
-    args.emplace_back("-arch");
-    args.emplace_back(archname);
-    if (options.outfile) {
-      args.emplace_back("-o");
-      args.emplace_back(options.outfile);
-    }
-  }
+  linker_args.add_lto_args();
 
-  // LTO
-  if (options.lto_level > 0) {
-    args.emplace_back(
-      options.lto_level == 1 ? "--lto-O1" :
-      options.lto_level == 2 ? "--lto-O2" :
-                               "--lto-O3");
-    args.emplace_back("--no-lto-legacy-pass-manager");
-
-    args.emplace_back("-prune_after_lto");
-    args.emplace_back("86400"); // 1 day
-
-    if (options.lto_cachedir && *options.lto_cachedir) {
-      args.emplace_back("-cache_path_lto");
-      args.emplace_back(options.lto_cachedir);
-
-      args.emplace_back("-object_path_lto");
-      args.emplace_back(mktmpstr(std::string(options.lto_cachedir) + "/obj"));
-    }
-  }
-
-  // linker flavor-specific arguments
+  // build_args impl depending on linker implementation
   switch (triple.getObjectFormat()) {
     case Triple::COFF:
-      // flavor=lld-link
-      dlog("TODO: COFF-specific args");
-      return ErrNotSupported;
+      return linker_args.add_coff_args();
     case Triple::ELF:
-    case Triple::Wasm:
-      // flavor=ld.lld
-      args.emplace_back("--no-pie");
-      break;
+      return linker_args.add_elf_arg();
     case Triple::MachO:
-      // flavor=ld64.lld
-      //args.emplace_back("-static");
-      // ld64.lld: warning: Option `-static' is not yet implemented. Stay tuned...
-      if (options.strip_dead) {
-        // optimize
-        args.emplace_back("-dead_strip"); // Remove unreferenced code and data
-        // TODO: look into -mllvm "Options to pass to LLVM during LTO"
-      }
-      break;
-    case Triple::GOFF:  // ?
-    case Triple::XCOFF: // ?
-    case Triple::DXContainer: // ?
-    case Triple::SPIRV: // ?
+      return linker_args.add_macho_args();
+    case Triple::Wasm:
+      return linker_args.add_wasm_args();
+    case Triple::GOFF:
+    case Triple::XCOFF:
+    case Triple::DXContainer:
+    case Triple::SPIRV:
     case Triple::UnknownObjectFormat:
-      dlog("unexpected object format");
-      return ErrNotSupported;
-  }
-
-  // OS-specific arguments
-  switch (triple.getOS()) {
-    case Triple::Darwin:
-    case Triple::MacOSX:
-      // flavor=ld64.lld
-      // -platform_version <platform> <min_version> <sdk_version>
-      args.emplace_back("-platform_version");
-      args.emplace_back("macos");
-      if (triple.getArch() == Triple::ArchType::aarch64) {
-        // 11.0.0 for arm64
-        args.emplace_back("11.0.0"); // see golang.org/issues/30488
-        args.emplace_back("11.0.0");
-        args.emplace_back( // TODO: what if this path doesn't exist?
-          "-L/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/lib");
-      } else {
-        // 10.9.0 for x86 (see golang.org/issues/30488)
-        args.emplace_back("10.9.0");
-        args.emplace_back("10.9.0");
-      }
-      args.emplace_back("-lSystem"); // macOS's "syscall API"
-      //args.emplace_back("-adhoc_codesign");
       break;
-    case Triple::IOS:
-    case Triple::TvOS:
-    case Triple::WatchOS: {
-      // flavor=ld64.lld
-      #if DEBUG
-        CoLLVMVersionTuple mv;
-        llvm_triple_min_version(options.target_triple, &mv);
-        dlog("TODO min version: %d, %d, %d, %d", mv.major, mv.minor, mv.subminor, mv.build);
-        // + arg "-ios_version_min" ...
-      #endif
-      return ErrNotSupported;
-    }
-    default: {
-      #if DEBUG
-        auto osname = (const char*)Triple::getOSTypeName(triple.getOS()).bytes_begin();
-        dlog("TODO: triple.getOS()=%s", osname);
-      #endif
-      return ErrNotSupported;
-    }
   }
-
-  // args.emplace_back("-fno-unwind-tables");
-  // args.emplace_back("-dead_strip");
-
-  return 0;
+  dlog("unexpected object format");
+  return ErrNotSupported;
 }
+
 
 // _link is a helper wrapper for calling the various object-specific linker functions
 // It has been adapted from lld::safeLldMain in lld/tools/lld/lld.cpp
@@ -225,24 +322,21 @@ static err_t link_main(
   if (_lld_is_corrupt)
     return ErrMFault;
 
-  #ifdef DEBUG_LLD_INVOCATION
-  {
+  if (print_args) {
     bool first = true;
     std::string s;
     for (auto& arg : args) {
       if (first) {
         first = false;
       } else {
-        s += "' '";
+        s += " ";
       }
       s += arg;
     }
     // Note: std::ostringstream with std::copy somehow adds an extra
     // empty item at the end.
-    if (print_args)
-      fprintf(stderr, "invoking '%s'\n", s.c_str());
+    fprintf(stderr, "%s\n", s.c_str());
   }
-  #endif
 
   // stderr
   std::string errstr;
@@ -312,8 +406,11 @@ err_t llvm_link(const CoLLVMLink* optionsptr) {
   // select linker function and build arguments
   LinkFun linkfn;
   err_t err = build_args(options, triple, &linkfn, args, tmpstrings);
-  if (err)
+  if UNLIKELY(err) {
+    if (err == ErrNotSupported)
+      log("linking %s not yet implemented", triple.str().c_str());
     return err;
+  }
 
   // add input files
   for (u32 i = 0; i < options.infilec; i++)

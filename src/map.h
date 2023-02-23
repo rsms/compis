@@ -39,7 +39,7 @@ bool map_del_ptr(map_t* m, const void* key);
 
 // Iterator. Example with c-string keys
 // for (const mapent_t* e = map_it(m); map_itnext(m, &e); )
-//   dlog("%*.s => %zx", (int)e->keysize, (const char*)e->key, e->value);
+//   dlog("%.*s => %zx", (int)e->keysize, (const char*)e->key, e->value);
 inline static const mapent_t* nullable map_it(const map_t* m) { return m->entries-1; }
 bool map_itnext(const map_t* m, const mapent_t** ep);
 inline static mapent_t* nullable map_it_mut(map_t* m) { return m->entries-1; }

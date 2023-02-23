@@ -207,10 +207,11 @@ typedef struct {
   const char* nullable outfile; // output file. NULL for no output
   const char**         infilev; // input file array
   u32                  infilec; // input file count
+  const char*          sysroot;
   bool                 strip_dead;
   bool                 print_lld_args;
   int                  lto_level;
-  const char* nullable lto_cachedir;
+  const char*          lto_cachedir; // "" to disable caching
 } CoLLVMLink;
 
 typedef enum CoLLVMWriteIRFlags {
@@ -255,6 +256,12 @@ EXTERN_C const char* CoLLVMOS_name(CoLLVMOS); // canonical name
 EXTERN_C const char* CoLLVMArch_name(CoLLVMArch); // canonical name
 EXTERN_C const char* CoLLVMVendor_name(CoLLVMVendor); // canonical name
 EXTERN_C const char* CoLLVMEnvironment_name(CoLLVMEnvironment); // canonical name
+
+// —————————————————————————————————————————————————————————————————————————————————————
+// clang
+
+// llvm/driver.cc
+EXTERN_C int clang_main(int argc, char*const* argv);
 
 // —————————————————————————————————————————————————————————————————————————————————————
 // linker

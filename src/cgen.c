@@ -504,7 +504,7 @@ static bool reftype_byvalue(cgen_t* g, const reftype_t* t) {
     t->elem->kind == TYPE_SLICE ||
     t->elem->kind == TYPE_MUTSLICE ||
     t->elem->kind == TYPE_ARRAY ||
-    ( t->kind == TYPE_REF && t->elem->size <= (u64)g->compiler->ptrsize*2 )
+    ( t->kind == TYPE_REF && t->elem->size <= (u64)g->compiler->target.ptrsize*2 )
   );
 }
 

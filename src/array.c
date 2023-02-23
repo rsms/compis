@@ -15,8 +15,8 @@
 
 void array_init(array_t* a) {
   a->ptr = NULL;
-  a->cap = 0;
   a->len = 0;
+  a->cap = 0;
 }
 
 
@@ -25,8 +25,8 @@ void _array_dispose(array_t* a, memalloc_t ma, u32 elemsize) {
   mem_t m = { .p = a->ptr, .size = a->cap * elemsize };
   mem_free(ma, &m);
   a->ptr = NULL;
-  a->cap = 0;
   a->len = 0;
+  a->cap = 0;
 }
 
 
@@ -156,4 +156,35 @@ void ptrarray_move_to_end(ptrarray_t* a, u32 i) {
   assert(i < a->len);
   if (i < a->len - 1)
     ptrarray_move(a, a->len - 1, i, i+1);
+}
+
+
+#define ARRAY_ELEM_PTR(elemsize, a, i) ( (a)->ptr + ((usize)(elemsize) * (usize)(i)) )
+
+
+void* nullable _array_sortedset_assign(
+  array_t* a, memalloc_t ma, u32 elemsize,
+  const void* valptr, array_sorted_cmp_t cmpf, void* ctx)
+{
+  // binary search
+  isize insert_at_index = 0;
+  u32 mid, low = 0, high = a->len;
+  while (low < high) {
+    mid = (low + high) / 2;
+    void* existing = ARRAY_ELEM_PTR(elemsize, a, mid);
+    int cmp = cmpf(valptr, existing, ctx);
+    if (cmp == 0)
+      return existing;
+    if (cmp < 0) {
+      high = mid;
+      insert_at_index = mid;
+    } else {
+      low = mid + 1;
+      insert_at_index = mid+1;
+    }
+  }
+  void* p = _array_allocat(a, ma, elemsize, insert_at_index, 1);
+  if (p)
+    memset(p, 0, elemsize);
+  return p;
 }

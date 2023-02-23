@@ -457,7 +457,7 @@ static void transfer_nuse_to_wrapper(void* wrapper_node, void* wrapee_node) {
 static reftype_t* mkreftype(typecheck_t* a, type_t* elem, bool ismut) {
   reftype_t* t = mknode(a, reftype_t, ismut ? TYPE_MUTREF : TYPE_REF);
   t->flags = elem->flags & NF_CHECKED;
-  t->size = a->compiler->ptrsize;
+  t->size = a->compiler->target.ptrsize;
   t->align = t->size;
   t->elem = elem;
   transfer_nuse_to_wrapper(t, elem);
@@ -792,8 +792,8 @@ static void this_type(typecheck_t* a, local_t* local) {
     if (recvt->kind == TYPE_STRUCT) {
       // small structs
       structtype_t* st = (structtype_t*)recvt;
-      u64 maxsize = (u64)a->compiler->ptrsize * 2;
-      if ((u32)st->align <= a->compiler->ptrsize && st->size <= maxsize)
+      u64 maxsize = (u64)a->compiler->target.ptrsize * 2;
+      if ((u32)st->align <= a->compiler->target.ptrsize && st->size <= maxsize)
         return;
     }
   }
@@ -902,8 +902,8 @@ static void structtype(typecheck_t* a, structtype_t** tp) {
 static void arraytype_calc_size(typecheck_t* a, arraytype_t* at) {
   if (at->len == 0) {
     // type darray<T> {cap, len uint; rawptr T ptr }
-    at->align = MAX(a->compiler->ptrsize, a->compiler->intsize);
-    at->size = a->compiler->intsize*2 + a->compiler->ptrsize;
+    at->align = MAX(a->compiler->target.ptrsize, a->compiler->target.intsize);
+    at->size = a->compiler->target.intsize*2 + a->compiler->target.ptrsize;
     return;
   }
   u64 size;
@@ -1578,7 +1578,7 @@ again:
   case TYPE_UINT: basetype = a->compiler->uinttype; goto again;
   default:
     // all other type contexts results in int, uint, i64 or u64 (depending on value)
-    if (a->compiler->intsize == 8) {
+    if (a->compiler->target.intsize == 8) {
       if (isneg) {
         type = type_int;
         maxval = 0x8000000000000000llu;
@@ -1590,8 +1590,8 @@ again:
         maxval = 0xffffffffffffffffllu;
       }
     } else {
-      assertf(a->compiler->intsize >= 4 && a->compiler->intsize < 8,
-        "intsize %u not yet supported", a->compiler->intsize);
+      assertf(a->compiler->target.intsize >= 4 && a->compiler->target.intsize < 8,
+        "intsize %u not yet supported", a->compiler->target.intsize);
       if (isneg) {
         if (uintval <= 0x80000000llu)         { n->type = type_int; return; }
         if (uintval <= 0x8000000000000000llu) { n->type = type_i64; return; }

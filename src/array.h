@@ -15,11 +15,13 @@ ASSUME_NONNULL_BEGIN
 
 typedef struct {
   u8* nullable ptr;
-  u32 cap, len; // count of T items (not bytes)
+  u32 len, cap; // count of T items (not bytes)
 #if DEBUG
   memalloc_t ma;
 #endif
 } array_t;
+
+typedef int(*array_sorted_cmp_t)(const void* aptr, const void* bptr, void* ctx);
 
 #if __documentation__
 
@@ -37,6 +39,16 @@ bool array_push(T, array_t*, memalloc_t, T value);
 T array_pop(T, array_t*);
 bool array_reserve(T, array_t*, memalloc_t, u32 minavail);
 void array_remove(T, array_t*, u32 start, u32 len);
+slice_t array_slice(const array_t a);
+slice_t array_slice(const array_t a, usize start, usize len);
+
+// array_sortedset_assign keeps the array sorted while inserting only unique elements.
+// If elements are added to the array in some other way, the array may not be sorted,
+// so make sure to add all elements using this function (or don't use it at all.)
+// If there's an equivalent element in the array, its pointer is returned instead
+// of allocating a new slot.
+T* array_sortedset_assign(
+  T, array_t* a, memalloc_t, T* vptr, array_sorted_cmp_t cmpf, void* nullable ctx);
 
 // array_move moves the chunk [start,end) to index dst. For example:
 //
@@ -64,6 +76,8 @@ inline static array_t array_make() { return (array_t){ 0 }; }
 #define array_alloc(T, a, ma, len)  ( (T*)_array_alloc((a), (ma), sizeof(T), (len)) )
 #define array_allocat(T, a, ma, i, len) \
   ( (T*)_array_allocat((a), (ma), sizeof(T), (i), (len)) )
+#define array_sortedset_assign(T, a, ma, valptr, cmpf, ctx) \
+  (T*)_array_sortedset_assign((array_t*)(a), (ma), sizeof(T), (valptr), (cmpf), (ctx))
 #define array_push(T, a, ma, val) ({ \
   static_assert(co_same_type(T, __typeof__(val)), ""); \
   array_t* __a = (a); \
@@ -79,12 +93,29 @@ inline static array_t array_make() { return (array_t){ 0 }; }
   _ARRAY_MOVE(sizeof(T), (void*)(a)->ptr, (usize)(dst), (usize)(start), (usize)(end))
 
 
+// array_slice returns a slice of memory
+// 1. array_slice<T >= array_t>(const T a)
+// 2. array_slice<T >= array_t>(const T a, usize start, usize len)
+#define array_slice(...) __VARG_DISP(_array_slice,__VA_ARGS__)
+#define _array_slice1(a) \
+  ((slice_t){ .p = ((array_t*)&(a))->ptr, .len = ((array_t*)&(a))->len })
+#define _array_slice3(a, start_, len_) ({ \
+  u32 start__ = (start_), len__ = (len_); \
+  safecheck(start__ + len__ <= ((array_t*)&(a))->len); \
+  (slice_t){ .p = ((array_t*)&(a))->ptr + start__, \
+             .len = ((array_t*)&(a))->len - len__ }; \
+})
+
+
 bool _array_grow(array_t* a, memalloc_t ma, u32 elemsize, u32 extracap);
 void _array_dispose(array_t* a, memalloc_t ma, u32 elemsize);
 void _array_remove(array_t* a, u32 elemsize, u32 start, u32 len);
 void* nullable _array_alloc(array_t* a, memalloc_t ma, u32 elemsize, u32 len);
 void* nullable _array_allocat(array_t* a, memalloc_t ma, u32 elemsize, u32 i, u32 len);
 bool _array_reserve(array_t* a, memalloc_t ma, u32 elemsize, u32 minavail);
+void* nullable _array_sortedset_assign(
+  array_t* a, memalloc_t ma, u32 elemsize,
+  const void* valptr, array_sorted_cmp_t cmpf, void* nullable ctx);
 
 // void _ARRAY_MOVE(usize elemsize, void* v, usize dst, usize start, usize end)
 #define _ARRAY_MOVE(elemsize, v, dst, start, end) (                               \
@@ -150,13 +181,13 @@ static void        NAME_move(NAME_t* a, u32 dst, u32 start, u32 end)
 #if DEBUG
   #define array_type(T) struct { \
     T* nullable v; \
-    u32 cap, len; \
+    u32 len, cap; \
     memalloc_t ma; \
   }
 #else
   #define array_type(T) struct { \
     T* nullable v; \
-    u32 cap, len; \
+    u32 len, cap; \
   }
 #endif
 

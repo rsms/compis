@@ -2,17 +2,22 @@
 #include "colib.h"
 #include "subproc.h"
 
+// enable posix_spawn_file_actions_addchdir_np
+#if defined(__APPLE__) || defined(__linux__)
+  #define _DARWIN_C_SOURCE
+  #define _BSD_SOURCE
+  #define HAS_SPAWN_ADDCHDIR
+#endif
+
 #include <sys/wait.h> // waitpid
 #include <errno.h> // ECHILD
 #include <unistd.h> // fork, pgrp
 #include <err.h>
 #include <signal.h>
+#include <spawn.h>
 
 
 #define trace(fmt, va...) _trace(opt_trace_subproc, 3, "subproc", fmt, ##va)
-
-
-static pid_t g_parent_pid = 0;
 
 
 #ifdef __APPLE__
@@ -117,7 +122,7 @@ err_t subproc_await(subproc_t* p) {
     return p->err;
   }
 
-  #ifdef __APPLE__
+  #if defined(__APPLE__)
     // wait for process-group leader
     darwin_wait_pid(p->pid);
 
@@ -151,16 +156,110 @@ err_t subproc_await(subproc_t* p) {
     }
     if UNLIKELY(errno != ECHILD && p->err == 0)
       p->err = err_errno();
-  end:
+end:
   #endif
+
   subproc_close(p);
   return p->err;
 }
 
 
-err_t _subproc_spawn(
+err_t subproc_spawn(
   subproc_t* p,
-  _subproc_spawn_t fn,
+  const char* restrict exefile,
+  char*const* restrict argv,
+  char*const* restrict nullable envp,
+  const char* restrict nullable cwd)
+{
+  extern char **environ;
+  err_t err = 0;
+  int fd[2];
+
+  if (!envp)
+    envp = environ;
+
+  if (pipe(fd) < 0)
+    return err_errno();
+
+  #define CHECKERR(expr) ((err = err_errnox(expr)))
+
+  posix_spawnattr_t attrs;
+  if CHECKERR( posix_spawnattr_init(&attrs) ) {
+    dlog("posix_spawnattr_init failed");
+    goto err0;
+  }
+  if CHECKERR( posix_spawnattr_setflags(&attrs, POSIX_SPAWN_SETPGROUP) ) {
+    dlog("posix_spawnattr_setflags failed");
+    goto err0;
+  }
+
+  posix_spawn_file_actions_t actions;
+  if CHECKERR( posix_spawn_file_actions_init(&actions) ) {
+    dlog("posix_spawn_file_actions_init failed");
+    goto err1;
+  }
+  if CHECKERR( posix_spawn_file_actions_addclose(&actions, fd[0]) ) {
+    dlog("posix_spawn_file_actions_addclose failed");
+    goto err2;
+  }
+  // Note: pid=0 makes setpgid make the current process the group leader
+  if CHECKERR( posix_spawnattr_setpgroup(&actions, 0) ) {
+    dlog("posix_spawnattr_setpgroup failed");
+    goto err2;
+  }
+
+  #ifdef HAS_SPAWN_ADDCHDIR
+    if (cwd && CHECKERR( posix_spawn_file_actions_addchdir_np(&actions, cwd) )) {
+      dlog("posix_spawn_file_actions_addchdir_np failed");
+      goto err2;
+    }
+  #else
+    char prev_cwd[PATH_MAX];
+    getcwd(prev_cwd, sizeof(prev_cwd));
+    if (cwd && chdir(cwd) < 0) {
+      dlog("chdir(%s) failed", cwd);
+      err = err_errno();
+      goto err2;
+    }
+  #endif
+
+  pid_t pid;
+  if CHECKERR( posix_spawn(&pid, exefile, &actions, &attrs, argv, environ) ) {
+    dlog("posix_spawn(%s ...) failed", exefile);
+    goto err2;
+  }
+  trace("proc[%d] spawned", pid);
+  subproc_open(p, pid);
+  posix_spawn_file_actions_destroy(&actions);
+  close(fd[1]);
+
+  #ifndef HAS_SPAWN_ADDCHDIR
+    if (cwd && chdir(prev_cwd) < 0) {
+      dlog("chdir(%s) failed", prev_cwd);
+      err = err_errno();
+      goto err2;
+    }
+  #endif
+
+  #undef CHECKERR
+
+  return 0;
+
+err2:
+  posix_spawn_file_actions_destroy(&actions);
+err1:
+  posix_spawnattr_destroy(&attrs);
+err0:
+  close(fd[0]);
+  close(fd[1]);
+  return err;
+}
+
+
+err_t _subproc_fork(
+  subproc_t* p,
+  subproc_fork_t fn,
+  const char* nullable cwd,
   uintptr a, uintptr b, uintptr c, uintptr d, uintptr e, uintptr f)
 {
   #define RETURN_ON_ERROR(LIBC_CALL) \
@@ -174,15 +273,15 @@ err_t _subproc_spawn(
       err(1, #LIBC_CALL) \
 
   int fds[2];
-  RETURN_ON_ERROR( pipe(fds) );
-
   pid_t pid;
-  RETURN_ON_ERROR( (pid = fork()) );
 
+  RETURN_ON_ERROR( pipe(fds) );
+  RETURN_ON_ERROR( (pid = fork()) );
   if (pid == 0) {
     // child process
-    g_parent_pid = getpid();
-    trace("proc [%d] spawned (group leader)", g_parent_pid);
+
+    if (cwd && *cwd)
+      chdir(cwd);
 
     // create process group and communicate the fact to the parent
     EXIT_ON_ERROR( setpgrp() );
@@ -190,10 +289,8 @@ err_t _subproc_spawn(
     EXIT_ON_ERROR( write(fds[1], &(u8[1]){0}, sizeof(u8)) );
     EXIT_ON_ERROR( close(fds[1]) );
 
-
     err_t err = fn(a, b, c, d, e, f);
     int status = -(int)err;
-
     _exit(status);
     UNREACHABLE;
   }
@@ -204,6 +301,8 @@ err_t _subproc_spawn(
   read(fds[0], &tmp, sizeof(u8));
   close(fds[0]);
 
+  trace("proc [%d] (fork of %d) spawned", pid, getpid());
+
   #undef RETURN_ON_ERROR
   #undef EXIT_ON_ERROR
 
@@ -212,59 +311,45 @@ err_t _subproc_spawn(
 }
 
 
-err_t _subproc_spawn_child(
-  _subproc_spawn_t fn,
-  uintptr a, uintptr b, uintptr c, uintptr d, uintptr e, uintptr f)
-{
-  #define RETURN_ON_ERROR(LIBC_CALL) \
-    if UNLIKELY((LIBC_CALL) == -1) { \
-      warn(#LIBC_CALL); \
-      return ErrCanceled; \
-    }
-
-  #define EXIT_ON_ERROR(LIBC_CALL) \
-    if UNLIKELY((LIBC_CALL) == -1) \
-      err(1, #LIBC_CALL) \
-
-  assertf(g_parent_pid > 0, "not in parent subproc_spawn");
-
-  pid_t pid;
-  RETURN_ON_ERROR( (pid = fork()) );
-
-  if (pid == 0) {
-    // child process
-    trace("proc [%d] spawned (child of [%d])", getpid(), g_parent_pid);
-
-    err_t status = fn(a, b, c, d, e, f);
-    _exit(-(int)status);
-    UNREACHABLE;
-  }
-
-  #undef RETURN_ON_ERROR
-  #undef EXIT_ON_ERROR
-
-  return 0;
-}
-
-
 void subprocs_cancel(subprocs_t* sp) {
-  for (u32 i = 0; i < sp->len; i++)
-    kill(sp->v[i].pid, /*SIGINT*/2);
+  for (u32 i = 0; i < sp->cap; i++) {
+    if (sp->procs[i].pid)
+      kill(sp->procs[i].pid, /*SIGINT*/2);
+  }
   if (sp->promise)
     sp->promise->await = NULL;
-  sp->len = 0; // in case of use after free
   mem_freet(sp->ma, sp);
 }
 
 
-err_t subprocs_await(subprocs_t* sp) {
-  err_t err = 0;
-  for (u32 i = 0; i < sp->len; i++) {
-    err_t err1 = subproc_await(&sp->v[i]);
-    if (!err)
-      err = err1;
+static err_t _subprocs_await(subprocs_t* sp, u32 maxcount) {
+  err_t err = ErrEnd;
+
+  for (u32 i = 0; i < sp->cap; i++) {
+    subproc_t* proc = &sp->procs[i];
+
+    if (proc->pid == 0)
+      continue;
+
+    err_t err1 = subproc_await(proc);
+    if UNLIKELY(err1) {
+      if (err1)
+        dlog("subproc_await error %d", err1);
+      if (!err)
+        err = err1;
+    } else {
+      err = 0;
+    }
+
+    if (maxcount-- == 1)
+      break;
   }
-  sp->len = 0; // in case of use after free
+  return err;
+}
+
+
+err_t subprocs_await(subprocs_t* sp) {
+  err_t err = _subprocs_await(sp, U32_MAX);
   if (sp->promise)
     sp->promise->await = NULL;
   mem_freet(sp->ma, sp);
@@ -272,10 +357,31 @@ err_t subprocs_await(subprocs_t* sp) {
 }
 
 
+err_t subprocs_await_one(subprocs_t* sp) {
+  return _subprocs_await(sp, 1);
+}
+
+
 subproc_t* nullable subprocs_alloc(subprocs_t* sp) {
-  if (sp->len == countof(sp->v))
+  // select the first unused proc
+  for (u32 i = 0; i < sp->cap; i++) {
+    subproc_t* proc = &sp->procs[i];
+    if (proc->pid == 0) {
+      memset(proc, 0, sizeof(*proc));
+      return proc;
+    }
+  }
+
+  // saturated; wait for a process to finish
+  trace("subprocs_alloc waiting for subprocs_await_one");
+  err_t err = subprocs_await_one(sp);
+  if (err) {
+    trace("subprocs_await_one error %d", err);
     return NULL;
-  return &sp->v[sp->len++];
+  }
+
+  // try again
+  return subprocs_alloc(sp);
 }
 
 
@@ -290,6 +396,13 @@ subprocs_t* nullable subprocs_create_promise(memalloc_t ma, promise_t* dst_p) {
     return NULL;
   sp->ma = ma;
   sp->promise = dst_p;
+  sp->cap = comaxproc;
+  sp->procs = mem_alloctv(ma, subproc_t, sp->cap);
+  if (!sp->procs) {
+    mem_freet(ma, sp);
+    return NULL;
+  }
+
   dst_p->impl = sp;
   dst_p->await = subprocs_promise_await;
   return sp;

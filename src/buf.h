@@ -24,7 +24,7 @@ typedef struct {
 
 // note: buf_t is castable to both mem_t and slice_t
 
-// buf_init initializes a buffer (sets v, cap, len to zero and sets ma to ma.)
+// buf_init initializes a buffer (sets p, cap, len to zero and sets ma to ma.)
 // buf_initext initializes a buffer with external storage
 void buf_init(buf_t* b, memalloc_t ma);
 void buf_initext(buf_t* b, memalloc_t ma, void* p, usize cap);
@@ -63,10 +63,10 @@ inline static slice_t _buf_slice3(const buf_t b, usize start, usize len) {
 // buf_grow increases the capacity of b by at least extracap bytes
 bool buf_grow(buf_t* b, usize extracap) WARN_UNUSED_RESULT;
 
-// buf_reserve makes sure that there is at least minavail bytes available at b->v+b->len.
+// buf_reserve makes sure that there is at least minavail bytes available at b->p+b->len.
 bool buf_reserve(buf_t* b, usize minavail);
 
-// buf_alloc allocates len bytes at b->v+b->len and increments b->len by len.
+// buf_alloc allocates len bytes at b->p+b->len and increments b->len by len.
 // If there's not enough space available, buf_grow is called to grow b->cap.
 // Returns a pointer to the beginning of the allocated range, or NULL if buf_grow failed.
 u8* nullable buf_alloc(buf_t* b, usize len) WARN_UNUSED_RESULT;

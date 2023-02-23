@@ -6,17 +6,11 @@
 #include "sha256.h"
 #include "subproc.h"
 #include "llvm/llvm.h"
+#include "clang/Basic/Version.inc" // CLANG_VERSION_STRING
 
+#include <sys/stat.h>
+#include <unistd.h>
 #include <err.h>
-
-
-extern const char* COROOT; // build.c
-
-
-static void mem_freecstr(memalloc_t ma, char* nullable cstr) {
-  if (cstr)
-    mem_freex(ma, MEM(cstr, strlen(cstr) + 1));
-}
 
 
 static void set_cstr(memalloc_t ma, char*nullable* dst, slice_t src) {
@@ -46,9 +40,10 @@ void compiler_dispose(compiler_t* c) {
   buf_dispose(&c->diagbuf);
   map_dispose(&c->typeidmap, c->ma);
   locmap_dispose(&c->locmap, c->ma);
-  mem_freecstr(c->ma, c->triple);
+  strlist_dispose(&c->cflags);
   mem_freecstr(c->ma, c->buildroot);
   mem_freecstr(c->ma, c->builddir);
+  mem_freecstr(c->ma, c->sysroot);
   mem_freecstr(c->ma, c->pkgbuilddir);
   mem_freecstr(c->ma, c->pkgname);
 }
@@ -59,29 +54,23 @@ static void set_secondary_pointer_types(compiler_t* c) {
   memset(&c->u8stype, 0, sizeof(c->u8stype));
   c->u8stype.kind = TYPE_SLICE;
   c->u8stype.flags = NF_CHECKED;
-  c->u8stype.size = c->ptrsize;
-  c->u8stype.align = c->ptrsize;
+  c->u8stype.size = c->target.ptrsize;
+  c->u8stype.align = c->target.ptrsize;
   c->u8stype.elem = type_u8;
 
   // "type string &[u8]"
   memset(&c->strtype, 0, sizeof(c->strtype));
   c->strtype.kind = TYPE_ALIAS;
   c->strtype.flags = NF_CHECKED;
-  c->strtype.size = c->ptrsize;
-  c->strtype.align = c->ptrsize;
+  c->strtype.size = c->target.ptrsize;
+  c->strtype.align = c->target.ptrsize;
   c->strtype.name = sym_str;
   c->strtype.elem = (type_t*)&c->u8stype;
 }
 
 
-static void configure_target(compiler_t* c, const char* triple) {
-  set_cstr(c->ma, &c->triple, slice_cstr(triple));
-  CoLLVMTargetInfo info;
-  llvm_triple_info(triple, &info);
-  c->intsize = info.ptr_size;
-  c->ptrsize = info.ptr_size;
-  c->isbigendian = !info.is_little_endian;
-  switch (info.ptr_size) {
+static void configure_target(compiler_t* c) {
+  switch (c->target.ptrsize) {
     case 1:
       c->addrtype = type_u8;
       c->uinttype = type_u8;
@@ -98,7 +87,7 @@ static void configure_target(compiler_t* c, const char* triple) {
       c->inttype  = type_u32;
       break;
     default:
-      assert(info.ptr_size <= 8);
+      assert(c->target.ptrsize <= 8);
       c->addrtype = type_u64;
       c->uinttype = type_u64;
       c->inttype  = type_i64;
@@ -117,46 +106,45 @@ static const char* buildmode_name(buildmode_t m) {
 
 
 static void configure_buildroot(compiler_t* c, slice_t buildroot) {
-  // builddirm = {builddir}/{mode}-{triple}
-  //           | {builddir}/{mode}  when triple == llvm_host_triple()
-  //
-  // pkgbuilddir = {builddirm}/{pkgname}.pkg
+  // builddir    = {buildroot}/{mode}-{target}
+  // pkgbuilddir = {builddir}/{pkgname}.pkg
+  // sysroot     = {builddir}/sysroot
 
   set_cstr(c->ma, &c->buildroot, buildroot);
 
+  char targetstr[64];
+  target_fmt(&c->target, targetstr, sizeof(targetstr));
+  slice_t target = slice_cstr(targetstr);
+
   slice_t mode = slice_cstr(buildmode_name(c->buildmode));
-  slice_t triple = slice_cstr(c->triple);
 
   usize len = buildroot.len + 1 + mode.len;
 
-  bool isnativetarget = strcmp(llvm_host_triple(), c->triple) == 0;
+  bool isnativetarget = strcmp(llvm_host_triple(), c->target.triple) == 0;
   if (!isnativetarget)
-    len += triple.len + 1;
+    len += target.len + 1;
 
   #define APPEND(slice)  memcpy(p, (slice).p, (slice).len), p += (slice.len)
 
   mem_freecstr(c->ma, c->builddir);
-  c->builddir = mem_alloctv(c->ma, char, len + 1);
-  safecheck(c->builddir);
+  c->builddir = safechecknotnull(mem_alloctv(c->ma, char, len + 1));
   char* p = c->builddir;
   APPEND(buildroot);
   *p++ = PATH_SEPARATOR;
   APPEND(mode);
   if (!isnativetarget) {
     *p++ = '-';
-    APPEND(triple);
+    APPEND(target);
   }
   *p = 0;
 
   // pkgbuilddir
+  mem_freecstr(c->ma, c->pkgbuilddir);
   slice_t pkgname = slice_cstr(c->pkgname);
   slice_t suffix = slice_cstr(".pkg");
   slice_t builddir = { .p = c->builddir, .len = len };
   usize pkgbuilddir_len = len + 1 + pkgname.len + suffix.len;
-
-  mem_freecstr(c->ma, c->pkgbuilddir);
-  c->pkgbuilddir = mem_alloctv(c->ma, char, pkgbuilddir_len + 1);
-  safecheck(c->pkgbuilddir);
+  c->pkgbuilddir = safechecknotnull(mem_alloctv(c->ma, char, pkgbuilddir_len + 1));
   p = c->pkgbuilddir;
   APPEND(builddir);
   *p++ = PATH_SEPARATOR;
@@ -164,47 +152,88 @@ static void configure_buildroot(compiler_t* c, slice_t buildroot) {
   APPEND(suffix);
   *p = 0;
 
+  // sysroot
+  mem_freecstr(c->ma, c->sysroot);
+  c->sysroot = safechecknotnull(path_join(c->ma, c->builddir, "sysroot"));
+
   #undef APPEND
 }
 
 
-static err_t configure_cflags(compiler_t* c) {
-  buf_t* tmpbuf = &c->diagbuf;
-  bool ok = true;
-
-  #define APPEND_SLICE(slice) \
-    ok &= ptrarray_push(&c->cflags, c->ma, mem_strdup(c->ma, (slice), 0));
-  #define APPEND_STR(cstr) \
-    APPEND_SLICE(slice_cstr(cstr))
-
-  APPEND_STR("-std=c17");
-  APPEND_STR("-g");
-  APPEND_STR("-feliminate-unused-debug-types");
-  APPEND_STR("-target"); APPEND_STR(c->triple);
-
-  switch ((enum buildmode)c->buildmode) {
-    case BUILDMODE_DEBUG:
-      APPEND_STR("-O0");
-      break;
-    case BUILDMODE_OPT:
-      APPEND_STR("-O2");
-      APPEND_STR("-fomit-frame-pointer");
-      break;
-  }
-
-  buf_clear(tmpbuf);
-  buf_printf(tmpbuf, "-I%s/../../lib", COROOT);
-  APPEND_SLICE(buf_slice(c->diagbuf));
-
-  #undef APPEND_SLICE
-  #undef APPEND_STR
-
-  return ok ? 0 : ErrNoMem;
+static bool dir_exists(const char* path) {
+  struct stat st;
+  if (stat(path, &st) != 0)
+    return false;
+  return S_ISDIR(st.st_mode);
 }
 
 
-err_t compiler_configure(compiler_t* c, const char* triple, slice_t buildroot) {
-  configure_target(c, triple);
+static err_t configure_cflags(compiler_t* c) {
+  strlist_dispose(&c->cflags);
+  c->cflags = strlist_make(c->ma,
+    "-nostdinc",
+    "-nostdlib",
+    "-ffreestanding",
+    "-g",
+    "-feliminate-unused-debug-types",
+    "-target", c->target.triple);
+  strlist_addf(&c->cflags, "--sysroot=%s", c->sysroot);
+  strlist_addf(&c->cflags,
+    "-resource-dir=%s/deps/llvmbox/lib/clang/" CLANG_VERSION_STRING, coroot);
+  // note: must add <resdir>/include explicitly when -nostdinc or -no-builtin is set
+  strlist_addf(&c->cflags,
+    "-isystem%s/deps/llvmbox/lib/clang/" CLANG_VERSION_STRING "/include", coroot);
+
+  if (c->target.sys == SYS_macos) strlist_add(&c->cflags,
+    "-Wno-nullability-completeness",
+    "-include", "TargetConditionals.h");
+
+  // system and libc headers dirs
+  char targets_dir[PATH_MAX];
+  char dir[PATH_MAX];
+  char targetstr[64];
+  snprintf(targets_dir, sizeof(targets_dir), "%s/deps/llvmbox/targets", coroot);
+  target_fmt(&c->target, targetstr, sizeof(targetstr));
+  snprintf(dir, sizeof(dir), "%s/%s/include", targets_dir, targetstr);
+  if (dir_exists(dir))
+    strlist_addf(&c->cflags, "-isystem%s", dir);
+  if (*c->target.sysver) {
+    snprintf(dir, sizeof(dir), "%s/%s-%s/include",
+      targets_dir, arch_name(c->target.arch), sys_name(c->target.sys));
+    if (dir_exists(dir))
+      strlist_addf(&c->cflags, "-isystem%s", dir);
+  }
+  snprintf(dir, sizeof(dir), "%s/any-%s/include", targets_dir, sys_name(c->target.sys));
+  if (dir_exists(dir))
+    strlist_addf(&c->cflags, "-isystem%s", dir);
+
+  // end of common cflags
+  int cflags_common_len = c->cflags.len;
+  // start of compis cflags
+
+  strlist_add(&c->cflags, "-std=c17");
+  switch ((enum buildmode)c->buildmode) {
+    case BUILDMODE_DEBUG:
+      strlist_add(&c->cflags, "-O0");
+      break;
+    case BUILDMODE_OPT:
+      strlist_add(&c->cflags, "-O2", "-flto=thin", "-fomit-frame-pointer");
+      break;
+  }
+  // strlist_add(&c->cflags, "-fPIC");
+  strlist_addf(&c->cflags, "-I%s/lib", coroot);
+
+  c->cflags_common = (slice_t){
+    .strings = (const char*const*)strlist_array(&c->cflags),
+    .len = (usize)cflags_common_len };
+
+  return c->cflags.ok ? 0 : ErrNoMem;
+}
+
+
+err_t compiler_configure(compiler_t* c, const target_t* target, slice_t buildroot) {
+  c->target = *target;
+  configure_target(c);
   configure_buildroot(c, buildroot);
   err_t err = configure_cflags(c);
   return err;
@@ -249,19 +278,67 @@ bool compiler_fully_qualified_name(const compiler_t* c, buf_t* buf, const node_t
 
 
 //————————————————————————————————————————————————————————————————————————————
+// spawning tools as subprocesses, e.g. cc
+
+// define SPAWN_TOOL_USE_FORK=1 to use fork() by default
+// Note: In my (rsms) tests on macos x86, spawning new processes (posix_spawn)
+// uses about 10x more memory than fork() in practice, likely from CoW.
+#if defined(__APPLE__) && defined(DEBUG)
+  // Note: fork() in debug builds on darwin are super slow, likely because of msan,
+  // so we disable fork()ing in those cases.
+  #define SPAWN_TOOL_USE_FORK 0
+#else
+  #define SPAWN_TOOL_USE_FORK 1
+#endif
+
+
+static err_t clang_fork(char*const* restrict argv) {
+  int argc = 0;
+  for (char*const* p = argv; *p++;)
+    argc++;
+  return clang_main(argc, argv) ? ErrCanceled : 0;
+}
+
+
+err_t spawn_tool(
+  subproc_t* p, char*const* restrict argv, const char* nullable cwd, int flags)
+{
+  assert(argv[0] != NULL);
+  if (SPAWN_TOOL_USE_FORK && (flags & SPAWN_TOOL_NOFORK) == 0) {
+    const char* cmd = argv[0];
+    if (strcmp(cmd, "cc") == 0 || strcmp(cmd, "c++") == 0 || strcmp(cmd, "clang") == 0)
+      return subproc_fork(p, clang_fork, cwd, argv);
+  }
+  return subproc_spawn(p, coexefile, argv, /*envp*/NULL, cwd);
+}
+
+
+err_t compiler_spawn_tool(
+  compiler_t* c, subprocs_t* procs, strlist_t* args, const char* nullable cwd)
+{
+  char* const* argv = strlist_array(args);
+  if (!args->ok)
+    return dlog("strlist_array failed"), ErrNoMem;
+  subproc_t* p = subprocs_alloc(procs);
+  if (!p)
+    return dlog("subprocs_alloc failed"), ErrNoMem;
+  int flags = 0;
+  return spawn_tool(p, argv, cwd, flags);
+}
+
+
+//————————————————————————————————————————————————————————————————————————————
 // compiler_compile
 
 
-// llvm/driver.cc
-extern int clang_main(int argc, const char** argv);
-
-
-extern void sleep(int);
-
-
-static char** nullable makeargv(
-  compiler_t* c, int* argcp, const char* argv0, ptrarray_t base, ...)
-{
+char** nullable makeargv(
+  memalloc_t           ma,
+  int*                 argc_out, // number of arguments in returned array
+  mem_t* nullable      mem_out,  // allocated memory region
+  const char* nullable argv0,    // first argument
+  slice_t              baseargs, // base arguments array
+  ... // NULL-terminated arguments. Empty-string args are ignored.
+){
   int count = 0;
   usize size = 0;
   va_list ap;
@@ -271,24 +348,26 @@ static char** nullable makeargv(
     count++;
     size += strlen(argv0) + 1;
   }
-  for (u32 i = 0; i < base.len; i++) {
+  for (u32 i = 0; i < baseargs.len; i++) {
     count++;
-    assertnotnull(base.v[i]);
-    usize len = strlen(base.v[i]);
+    assertnotnull(baseargs.strings[i]);
+    usize len = strlen(baseargs.strings[i]);
     size += len + 1*((usize)!!len);
   }
-  va_start(ap, base);
+  va_start(ap, baseargs);
   for (const char* arg; (arg = va_arg(ap, const char*)) != NULL; ) {
     count++;
-    usize len = strlen(arg);
-    size += len + 1*((usize)!!len);
+    if (*arg) {
+      usize len = strlen(arg);
+      size += len + 1*((usize)!!len);
+    }
   }
   va_end(ap);
 
   // allocate memory
   usize arraysize = sizeof(void*) * (usize)count;
   size += arraysize;
-  mem_t m = mem_alloc(c->ma, size);
+  mem_t m = mem_alloc(ma, size);
   if (!m.p)
     return NULL;
 
@@ -307,11 +386,11 @@ static char** nullable makeargv(
   // copy strings and build argv array
   if (*argv0)
     APPEND(argv0);
-  for (u32 i = 0; i < base.len; i++) {
-    if (*(const char*)base.v[i])
-      APPEND(base.v[i]);
+  for (u32 i = 0; i < baseargs.len; i++) {
+    if (*(const char*)baseargs.strings[i])
+      APPEND(baseargs.strings[i]);
   }
-  va_start(ap, base);
+  va_start(ap, baseargs);
   for (const char* arg; (arg = va_arg(ap, const char*)) != NULL; ) {
     if (*arg)
       APPEND(arg);
@@ -320,24 +399,26 @@ static char** nullable makeargv(
 
   #undef APPEND
 
-  *argcp = argc;
+  *argc_out = argc;
+  if (mem_out)
+    *mem_out = m;
   return argv;
 }
 
 
 static err_t cc_to_asm_main(compiler_t* c, const char* cfile, const char* asmfile) {
-  int argc;
-  char** argv = makeargv(c, &argc, "clang", c->cflags,
+  strlist_t args = strlist_make(c->ma, "clang");
+  strlist_add_list(&args, &c->cflags);
+  strlist_add(&args,
     "-w", // don't produce warnings (already reported by cc_to_obj_main)
     "-S", "-xc", cfile,
-    "-o", asmfile,
-    NULL);
-
-  if (!argv)
-    panic("out of memory");
+    "-o", asmfile);
+  char* const* argv = strlist_array(&args);
+  if (!args.ok)
+    return ErrNoMem;
 
   dlog("cc %s -> %s", cfile, asmfile);
-  int status = clang_main(argc, (const char**)argv);
+  int status = clang_main(args.len, argv);
   return status == 0 ? 0 : ErrCanceled;
 }
 
@@ -345,8 +426,9 @@ static err_t cc_to_asm_main(compiler_t* c, const char* cfile, const char* asmfil
 static err_t cc_to_obj_main(compiler_t* c, const char* cfile, const char* ofile) {
   // note: clang crashes if we run it more than once in the same process
 
-  int argc;
-  char** argv = makeargv(c, &argc, "clang", c->cflags,
+  strlist_t args = strlist_make(c->ma, "clang");
+  strlist_add_list(&args, &c->cflags);
+  strlist_add(&args,
     // enable all warnings in debug builds, disable them in release builds
     #if DEBUG
       "-Wall",
@@ -355,20 +437,29 @@ static err_t cc_to_obj_main(compiler_t* c, const char* cfile, const char* ofile)
       "-Werror=incompatible-pointer-types",
       "-Werror=format-insufficient-args",
       "-Wno-unused-value",
-      "-Wno-tautological-compare", // e.g. "x == x"
+      "-Wno-tautological-compare" // e.g. "x == x"
     #else
-      "-w",
+      "-w"
     #endif
-    "-flto=thin",
+  );
+  strlist_add(&args,
     "-c", "-xc", cfile,
     "-o", ofile,
-    NULL);
+    c->opt_verbose ? "-v" : "");
 
-  if (!argv)
-    panic("out of memory");
+  char* const* argv = strlist_array(&args);
+  if (!args.ok)
+    return ErrNoMem;
 
   dlog("cc %s -> %s", cfile, ofile);
-  int status = clang_main(argc, (const char**)argv);
+
+  // if (c->opt_verbose) {
+  //   for (int i = 0; i < args.len; i++)
+  //     fprintf(stderr, &" %s"[i==0], argv[i]);
+  //   fprintf(stderr, "\n");
+  // }
+
+  int status = clang_main(args.len, argv);
   return status == 0 ? 0 : ErrCanceled;
 }
 
@@ -379,7 +470,7 @@ static err_t cc_to_obj_async(
   subproc_t* p = subprocs_alloc(sp);
   if (!p)
     return ErrNoMem;
-  return subproc_spawn(p, cc_to_obj_main, c, cfile, ofile);
+  return subproc_fork(p, cc_to_obj_main, /*cwd*/NULL, c, cfile, ofile);
 }
 
 
@@ -396,7 +487,7 @@ static err_t cc_to_asm_async(
   if (!buf_nullterm(&asmfile))
     return ErrNoMem;
 
-  return subproc_spawn(p, cc_to_asm_main, c, cfile, asmfile.chars);
+  return subproc_fork(p, cc_to_asm_main, /*cwd*/NULL, c, cfile, asmfile.chars);
 }
 
 

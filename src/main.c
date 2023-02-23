@@ -1,15 +1,25 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "llvm/llvm.h"
+#include "compiler.h"
+#include "path.h"
+
+#include <stdlib.h>
 #include <stdio.h>
-#include <string.h> // strcmp
+#include <string.h>
+#include <unistd.h> // sleep
 #include <err.h>
+#include <libgen.h>
 
 typedef bool(*linkerfn_t)(int argc, char*const* argv, bool can_exit_early);
 
-static const char* prog; // main program name
-CoLLVMOS host_os;
+const char* coprogname;
+const char* coexefile;
+static char _coroot[PATH_MAX];
+const char* coroot = _coroot;
+u32 comaxproc = 1;
 
-extern int clang_main(int argc, char*const* argv); // llvm/driver.cc
+static CoLLVMOS host_os;
+
 extern int main_build(int argc, char*const* argv); // build.c
 
 static linkerfn_t nullable ld_impl(CoLLVMOS os);
@@ -32,6 +42,7 @@ static void usage(FILE* f) {
     "Commands:\n"
     "  build [args ...]     Compis compiler\n"
     "Extra commands:\n"
+    "  targets              List supported targets\n"
     "  cc [args ...]        Clang (C & C++ compiler)\n"
     "  as [args ...]        LLVM assembler (same as cc -cc1as)\n"
     "  ar [args ...]        Object archiver\n"
@@ -41,7 +52,7 @@ static void usage(FILE* f) {
     "  ld-macho [args ...]  Linker for Mach-O\n"
     "  ld-wasm [args ...]   Linker for WebAssembly\n"
     "",
-    prog,
+    coprogname,
     host_ld);
 }
 
@@ -145,20 +156,47 @@ static linkerfn_t nullable ld_impl(CoLLVMOS os) {
 static int ld_main(int argc, char* argv[]) {
   linkerfn_t impl = ld_impl(host_os);
   if (!impl) {
-    log("%s ld: unsupported host OS %s", prog, CoLLVMOS_name(host_os));
+    log("%s: unsupported host OS %s", coprogname, CoLLVMOS_name(host_os));
     return 1;
   }
   return !impl(argc, argv, true);
 }
 
 
-int main(int argc, char* argv[]) {
-  prog = argv[0];
+bool str_endswith(const char* s, const char* suffix) {
+  usize slen = strlen(s);
+  usize suffixlen = strlen(suffix);
+  return slen >= suffixlen && memcmp(s + (slen - suffixlen), suffix, suffixlen) == 0;
+}
 
-  const char* progname = strrchr(prog, '/');
-  progname = progname ? progname + 1 : prog;
-  bool is_multicall = strcmp(progname, "co") != 0;
-  const char* cmd = is_multicall ? progname : argv[1] ? argv[1] : "";
+
+int main(int argc, char* argv[]) {
+  coprogname = strrchr(argv[0], PATH_SEPARATOR);
+  coprogname = coprogname ? coprogname + 1 : argv[0];
+  coexefile = safechecknotnull(LLVMGetMainExecutable(argv[0]));
+  safechecknotnull(dirname_r(coexefile, _coroot));
+
+  // allow overriding coroot with env var
+  const char* coroot_env = getenv("COROOT");
+  if (coroot_env && *coroot_env)
+    coroot = coroot_env;
+
+  #if DEBUG
+  if (str_endswith(coroot, "/out/debug"))
+    coroot = path_join(memalloc_ctx(), coroot, "../..");
+  #endif
+
+  comaxproc = sys_ncpu();
+  dlog("comaxproc=%u", comaxproc);
+
+  const char* exe_basename = strrchr(coexefile, PATH_SEPARATOR);
+  exe_basename = exe_basename ? exe_basename + 1 : coexefile;
+
+  bool is_multicall = (
+    strcmp(coprogname, exe_basename) != 0 &&
+    strcmp(coprogname, "compis") != 0 &&
+    strcmp(coprogname, "co") != 0 );
+  const char* cmd = is_multicall ? coprogname : argv[1] ? argv[1] : "";
   usize cmdlen = strlen(cmd);
 
   err_t err = llvm_init();
@@ -187,6 +225,9 @@ int main(int argc, char* argv[]) {
   // primary commands
   if ISCMD("build") return main_build(argc, argv);
 
+  // secondary commands
+  if ISCMD("targets") return print_supported_targets(), 0;
+
   // llvm-based commands
   if ISCMD("cc")       return clang_main(argc, argv);
   if ISCMD("ar")       return ar_main(argc, argv);
@@ -197,7 +238,7 @@ int main(int argc, char* argv[]) {
   if ISCMD("ld-wasm")  return LLDLinkWasm(argc, argv, true) ? 0 : 1;
 
   if (cmdlen == 0) {
-    log("%s: missing command (try %s -h)", prog, prog);
+    log("%s: missing command (try %s -h)", coprogname, coprogname);
     return 1;
   }
 
@@ -206,6 +247,6 @@ int main(int argc, char* argv[]) {
     return 0;
   }
 
-  log("%s: unknown command \"%s\"", prog, cmd);
+  log("%s: unknown command \"%s\"", coprogname, cmd);
   return 1;
 }

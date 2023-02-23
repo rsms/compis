@@ -8,7 +8,7 @@ void printu64(unsigned long long v) {
   printf("%llu\n", v);
 }
 
-int main(int argc, const char* argv[argc+1]) {
+int main(int argc, char* argv[]) {
   long x = 2;
   if (argc > 1)
     x = atol(argv[1]);

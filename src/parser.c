@@ -362,7 +362,7 @@ static void* mkbad(parser_t* p) {
 
 static reftype_t* mkreftype(parser_t* p, bool ismut) {
   reftype_t* t = mknode(p, reftype_t, ismut ? TYPE_MUTREF : TYPE_REF);
-  t->size = p->scanner.compiler->ptrsize;
+  t->size = p->scanner.compiler->target.ptrsize;
   t->align = t->size;
   return t;
 }
@@ -764,7 +764,7 @@ static type_t* type_struct(parser_t* p) {
 static type_t* type_ptr(parser_t* p) {
   ptrtype_t* t = mknode(p, ptrtype_t, TYPE_PTR);
   next(p);
-  t->size = p->scanner.compiler->ptrsize;
+  t->size = p->scanner.compiler->target.ptrsize;
   t->align = t->size;
   t->elem = type(p, PREC_UNARY_PREFIX);
   bubble_flags(t, t->elem);
@@ -1462,9 +1462,7 @@ static void args(parser_t* p, call_t* n, type_t* recvtype, nodeflag_t fl) {
 
   fl |= NF_RVALUE;
 
-  for (u32 paramidx = 0; ;paramidx++) {
-    // type_t* t = (paramidx < paramc) ? paramv[paramidx]->type : type_void;
-
+  for (;;) {
     expr_t* arg;
     if (currtok(p) == TID) {
       // name:value
@@ -1745,8 +1743,8 @@ error:
 static funtype_t* funtype(parser_t* p, loc_t loc, type_t* nullable recvt) {
   funtype_t* ft = mknode(p, funtype_t, TYPE_FUN);
   ft->loc = loc;
-  ft->size = p->scanner.compiler->ptrsize;
-  ft->align = p->scanner.compiler->ptrsize;
+  ft->size = p->scanner.compiler->target.ptrsize;
+  ft->align = p->scanner.compiler->target.ptrsize;
   ft->result = type_void;
 
   // parameters

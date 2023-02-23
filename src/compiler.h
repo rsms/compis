@@ -3,6 +3,8 @@
 #include "buf.h"
 #include "array.h"
 #include "map.h"
+#include "strlist.h"
+#include "subproc.h"
 
 // nodekind_t
 #define FOREACH_NODEKIND(_) \
@@ -102,6 +104,19 @@ typedef struct {
   filetype_t type;
   char       name[];
 } input_t;
+
+// note: targets are defined in targets.h
+typedef u8 arch_t; // enum arch
+typedef u8 sys_t; // enum sys
+typedef struct {
+  arch_t      arch;
+  sys_t       sys;
+  const char* sysver;    // "" = no version
+  u32         intsize;   // byte size of integer register, for "int" and "uint" types
+  u32         ptrsize;   // byte size of pointer, e.g. 8 for i64
+  bool        bigendian;
+  const char* triple;    // for LLVM, e.g. x86_64-apple-darwin19, aarch64-linux-musl
+} target_t;
 
 // loc_t is a compact representation of a source location: file, line, column & width.
 // Inspired by the Go compiler's xpos & lico. (loc_t)0 is invalid.
@@ -526,13 +541,15 @@ typedef struct {
 } cgen_t;
 
 typedef struct compiler {
-  memalloc_t  ma;          // memory allocator
-  buildmode_t buildmode;   //
-  char*       buildroot;   // where all generated files go, e.g. "build"
-  char*       builddir;    // "{buildroot}/{mode}[-{triple}]", e.g. "build/debug"
-  char*       pkgbuilddir; // "{builddir}/{pkgname}.pkg"
-  char*       pkgname;     // name of package being compiled
-  ptrarray_t  cflags;      // char*[]
+  memalloc_t  ma;            // memory allocator
+  buildmode_t buildmode;     // BUILDMODE_ constant
+  char*       buildroot;     // where all generated files go, e.g. "build"
+  char*       builddir;      // "{buildroot}/{mode}-{triple}"
+  char*       sysroot;       // "{builddir}/sysroot"
+  char*       pkgbuilddir;   // "{builddir}/{pkgname}.pkg"
+  char*       pkgname;       // name of package being compiled
+  strlist_t   cflags;        // cflags used for compis objects (includes cflags_common)
+  slice_t     cflags_common; // cflags used for all objects (slice of cflags)
 
   // diagnostics
   diaghandler_t  diaghandler; // called when errors are encountered
@@ -542,16 +559,13 @@ typedef struct compiler {
   buf_t          diagbuf;     // for diag.msg (also used as tmpbuf)
 
   // target info
-  char*       triple;      // target triple
-  u32         intsize;     // byte size of "int" and "uint" types (register sized)
-  u32         ptrsize;     // byte size of pointer, e.g. 8 for i64
-  type_t*     addrtype;    // type for storing memory addresses, e.g. u64
-  type_t*     inttype;     // "int"
-  type_t*     uinttype;    // "uint"
-  slicetype_t u8stype;     // "&[u8]"
-  aliastype_t strtype;     // "str"
+  target_t    target;   // target triple
+  type_t*     addrtype; // type for storing memory addresses, e.g. u64
+  type_t*     inttype;  // "int"
+  type_t*     uinttype; // "uint"
+  slicetype_t u8stype;  // "&[u8]"
+  aliastype_t strtype;  // "str"
   map_t       builtins;
-  bool        isbigendian;
 
   // configurable options
   bool nomain;      // don't auto-generate C ABI "main" for main.main
@@ -559,6 +573,7 @@ typedef struct compiler {
   bool opt_printir;
   bool opt_genirdot;
   bool opt_genasm;  // write machine assembly .S source file to build dir
+  bool opt_verbose;
 
   // data created during parsing & analysis
   map_t           typeidmap;
@@ -590,6 +605,33 @@ extern type_t* type_u64;
 extern type_t* type_f32;
 extern type_t* type_f64;
 
+// targets constants
+ASSUME_NONNULL_END
+#define TARGET CO_PLUS_ONE
+enum { SUPPORTED_TARGETS_COUNT = (0lu
+  #include "targets.h"
+) };
+#undef TARGET
+#undef ARCH
+#define ARCH(name, ...) ARCH_##name,
+enum arch {
+  ARCH_unknown,
+  #include "targets.h"
+  ARCH_COUNT
+};
+#undef ARCH
+#undef SYS
+#define SYS(name, ...) SYS_##name,
+enum sys {
+  SYS_unknown,
+  #include "targets.h"
+  SYS_COUNT
+};
+#undef SYS
+#undef ARCH
+#undef TARGET
+ASSUME_NONNULL_BEGIN
+extern const target_t supported_targets[];
 
 // input
 input_t* nullable input_create(memalloc_t ma, const char* filename);
@@ -598,14 +640,33 @@ err_t input_open(input_t* input);
 void input_close(input_t* input);
 filetype_t filetype_guess(const char* filename);
 
+// target = arch "-" sys ("." sysver)?
+const target_t* target_default(); // host aka "native" target
+const target_t* nullable target_find(const char* target); // null if invalid
+usize target_fmt(const target_t* t, char* buf, usize bufcap);
+const char* arch_name(arch_t);
+const char* sys_name(sys_t);
+void print_supported_targets(); // prints with log()
+
 // compiler
 void compiler_init(compiler_t*, memalloc_t, diaghandler_t, slice_t pkgname);
 void compiler_dispose(compiler_t*);
-err_t compiler_configure(compiler_t*, const char* triple, slice_t builddir);
+err_t compiler_configure(compiler_t*, const target_t* target, slice_t builddir);
 err_t compiler_compile(compiler_t*, promise_t*, input_t*, buf_t* ofile);
 bool compiler_fully_qualified_name(const compiler_t*, buf_t* dst, const node_t*);
 bool compiler_mangle(const compiler_t*, buf_t* dst, const node_t*);
 bool compiler_mangle_type(const compiler_t* c, buf_t* buf, const type_t* t);
+
+// compiler_spawn_tool spawns a compiler subprocess; calls spawn_tool()
+err_t compiler_spawn_tool(
+  compiler_t* c, subprocs_t* procs, strlist_t* args, const char* nullable cwd);
+
+// spawn_tool spawns a compiler subprocess
+// argv must be NULL terminated; argv[0] must be the name of a compis command, eg "cc"
+err_t spawn_tool(
+  subproc_t* p, char*const* restrict argv, const char* restrict nullable cwd, int flags);
+// flags for spawn_tool()
+#define SPAWN_TOOL_NOFORK (1<<0) // prohibit use of fork()
 
 // scanner
 bool scanner_init(scanner_t* s, compiler_t* c);
@@ -802,6 +863,20 @@ inline static bool scope_istoplevel(const scope_t* s) { return s->base == 0; }
 // get_tmpbuf returns a thread-local general-purpose temporary buffer
 void tmpbuf_init(memalloc_t);
 buf_t* tmpbuf(u32 bufindex /* [0-2) */);
+
+// makeargv constructs an "argv compatible" array of pointers to strings, allocated
+// in one contiguous memory region. If memory allocation fails, NULL is returned.
+// The input strings are copied into memory allocated from ma.
+// Caller is responsible for calling mem_free(ma, mem_out) on the result when done.
+// IMPORTANT: The variadic arguments must be terminated by NULL!
+char** nullable makeargv(
+  memalloc_t           ma,
+  int*                 argc_out, // number of arguments in returned array
+  mem_t* nullable      mem_out,  // allocated memory region
+  const char* nullable argv0,    // first argument
+  slice_t              baseargs, // base arguments
+  ... // NULL-terminated arguments. Empty-string args are ignored.
+);
 
 // pos
 static void locmap_dispose(locmap_t* lm, memalloc_t ma);

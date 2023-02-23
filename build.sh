@@ -198,7 +198,7 @@ _hascmd curl || _hascmd wget || _err "curl nor wget found in PATH"
 # —————————————————————————————————————————————————————————————————————————————————
 # [dep] precompiled llvm from llvmbox distribution
 LLVM_RELEASE=15.0.7
-LLVMBOX_RELEASE=$LLVM_RELEASE+1
+LLVMBOX_RELEASE=$LLVM_RELEASE+2
 LLVMBOX_DESTDIR="$DEPS_DIR/llvmbox"
 LLVMBOX_RELEASES=( # github.com/rsms/llvmbox/releases/download/VERSION/sha256sum.txt
   "fc7f24d4464127c91c76d2a7fed15c37137b00126acffadaa89912b372d0381a  llvmbox-15.0.7+1-aarch64-linux.tar.xz" \
@@ -209,9 +209,9 @@ LLVMBOX_RELEASES=( # github.com/rsms/llvmbox/releases/download/VERSION/sha256sum
   "aee04221cc1fcc5c9a056a483a3a7392d7cd292baaff5ae3772ad507ed50093e  llvmbox-dev-15.0.7+1-aarch64-macos.tar.xz" \
   "8bb26eb983e47ac74a3393593eebd24242f3a8fd8b37de21dbca6709ec7968fe  llvmbox-dev-15.0.7+1-x86_64-linux.tar.xz" \
   "bd508ddcfe52fee3ffa6fae47c30a1eba1d48678e3a6c5da333275de9f22a236  llvmbox-dev-15.0.7+1-x86_64-macos.tar.xz" \
-
 )
 LLVMBOX_URL_BASE=https://github.com/rsms/llvmbox/releases/download/v$LLVMBOX_RELEASE
+LLVM_CONFIG="$LLVMBOX_DESTDIR/bin/llvm-config"
 
 # find tar for host system
 LLVMBOX_SHA256_FILE=
@@ -323,7 +323,7 @@ if [ -n "$WATCH" ]; then
   while true; do
     printf "\x1bc"  # clear screen ("scroll to top" style)
     BUILD_OK=1
-    bash "./$(basename "$0")" "${NON_WATCH_ARGS[@]}" "$@" || BUILD_OK=
+    bash "./$(basename "$0")" ${NON_WATCH_ARGS[@]:-} "$@" || BUILD_OK=
     printf "\e[2m> watching files for changes...\e[m\n"
     if [ -n "$BUILD_OK" -a -n "$RUN" ]; then
       export ASAN_OPTIONS=detect_stack_use_after_return=1
@@ -387,7 +387,7 @@ XFLAGS_HOST=()
 XFLAGS_WASM=( --target=wasm32 -fvisibility=hidden )
 
 CFLAGS=( -std=c11 -fms-extensions -Wno-microsoft )
-CFLAGS_HOST=()
+CFLAGS_HOST=( $("$LLVM_CONFIG" --cflags) )
 CFLAGS_WASM=()
 CFLAGS_LLVM=()
 
@@ -460,8 +460,8 @@ if $ENABLE_LTO; then
 fi
 
 # llvm
-LLVM_CONFIG="$LLVMBOX_DESTDIR/bin/llvm-config"
-CFLAGS_LLVM+=( $("$LLVM_CONFIG" --cflags) )
+# CFLAGS_LLVM+=( $("$LLVM_CONFIG" --cflags) )
+CFLAGS_LLVM+=()
 CXXFLAGS_LLVM+=( $("$LLVM_CONFIG" --cxxflags) )
 if $ENABLE_LTO; then
   LDFLAGS_HOST+=( -L"$LLVMBOX_DESTDIR"/lib-lto )
@@ -609,6 +609,7 @@ rule parse_gen
 rule cxx_pch_gen
   command = $CXX \$cxxflags \$cxxflags_host \$FLAGS -x c++-header \$in -o \$out
   #clang -cc1 -emit-pch -x c++-header \$in -o \$out
+  description = compile-pch \$in
   generator = true
 
 build src/parse/ast_gen.h src/parse/ast_gen.c: ast_gen src/parse/ast.h | src/parse/ast_gen.py
