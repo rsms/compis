@@ -268,7 +268,6 @@ err2:
 err1:
   if (attrs)
     posix_spawnattr_destroy(attrs);
-err0:
   close(fd[0]);
   close(fd[1]);
   return err;
