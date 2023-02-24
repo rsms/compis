@@ -16,11 +16,19 @@
 #include <signal.h>
 #include <spawn.h>
 
+// SUBPROC_USE_PGRP: define to make subprocesses leaders of their own pgroup
+//#define SUBPROC_USE_PGRP
+
+#if DEBUG
+  #define log_errno(fmt, args...) warn(fmt, ##args)
+#else
+  #define log_errno(fmt, args...) warn("subproc")
+#endif
 
 #define trace(fmt, va...) _trace(opt_trace_subproc, 3, "subproc", fmt, ##va)
 
 
-#ifdef __APPLE__
+#if defined(SUBPROC_USE_PGRP) && defined(__APPLE__)
   // waitpid(-pgrp) isn't reliable on macOS/darwin.
   // Thank you to Julio Merino for these functions.
   // https://jmmv.dev/2019/11/wait-for-process-group-darwin.html
@@ -122,7 +130,9 @@ err_t subproc_await(subproc_t* p) {
     return p->err;
   }
 
-  #if defined(__APPLE__)
+  int status = 0;
+
+  #if defined(SUBPROC_USE_PGRP) && defined(__APPLE__)
     // wait for process-group leader
     darwin_wait_pid(p->pid);
 
@@ -130,33 +140,44 @@ err_t subproc_await(subproc_t* p) {
     darwin_pgrp_wait(p->pid);
 
     // get leader exit status
-    int status;
     if (waitpid(p->pid, &status, 0) == -1 || !WIFEXITED(status)) {
-      trace("proc [%d] died or experienced an error", p->pid);
+      trace("proc[%d] died or experienced an error", p->pid);
       p->err = ErrCanceled;
     } else {
       status = WEXITSTATUS(status);
       if (status != 0)
         p->err = status < 0 ? ErrInvalid : (err_t)-status;
-      trace("proc [%d] exited (status: %d %s)",
+      trace("proc[%d] exited (status: %d %s)",
         p->pid, status, p->err ? err_str(p->err) : "ok");
     }
-  #else
+  #elif defined(SUBPROC_USE_PGRP)
     // wait for process-group leader
-    int status = 0;
     if UNLIKELY(waitpid(p->pid, &status, 0) == -1) {
       p->err = err_errno();
-      goto end;
+    } else {
+      if (status != 0)
+        p->err = status < 0 ? ErrInvalid : (err_t)-status;
+      // wait for other process in the group
+      while (waitpid(-p->pid, NULL, 0) != -1) {}
+      if UNLIKELY(errno != ECHILD && p->err == 0)
+        p->err = err_errno();
     }
-    if (status != 0)
-      p->err = status < 0 ? ErrInvalid : (err_t)-status;
-
-    // wait for other process in the group
-    while (waitpid(-p->pid, NULL, 0) != -1) {
-    }
-    if UNLIKELY(errno != ECHILD && p->err == 0)
+  #else // not SUBPROC_USE_PGRP
+    if (waitpid(p->pid, &status, 0) < 0) {
       p->err = err_errno();
-end:
+      log_errno("waitpid %d", p->pid);
+    } else if (WIFEXITED(status)) {
+      if (WEXITSTATUS(status) != 0) {
+        p->err = err_errno();
+        trace("proc[%d] failed", p->pid);
+      }
+    } else if (WIFSIGNALED(status)) {
+      p->err = errno ? err_errno() : ErrCanceled;
+      trace("proc[%d] terminated due to signal %d", p->pid, WTERMSIG(status));
+    } else {
+      p->err = ErrCanceled;
+      trace("proc[%d] terminated due to unknown cause", p->pid);
+    }
   #endif
 
   subproc_close(p);
@@ -178,64 +199,61 @@ err_t subproc_spawn(
   if (!envp)
     envp = environ;
 
-  if (pipe(fd) < 0)
-    return err_errno();
-
   #define CHECKERR(expr) ((err = err_errnox(expr)))
 
-  posix_spawnattr_t attrs;
-  if CHECKERR( posix_spawnattr_init(&attrs) ) {
-    dlog("posix_spawnattr_init failed");
-    goto err0;
-  }
-  if CHECKERR( posix_spawnattr_setflags(&attrs, POSIX_SPAWN_SETPGROUP) ) {
-    dlog("posix_spawnattr_setflags failed");
-    goto err0;
-  }
-
   posix_spawn_file_actions_t actions;
+  posix_spawnattr_t* attrs = NULL;
+
   if CHECKERR( posix_spawn_file_actions_init(&actions) ) {
-    dlog("posix_spawn_file_actions_init failed");
+    log_errno("posix_spawn_file_actions_init");
     goto err1;
   }
-  if CHECKERR( posix_spawn_file_actions_addclose(&actions, fd[0]) ) {
-    dlog("posix_spawn_file_actions_addclose failed");
-    goto err2;
-  }
-  // Note: pid=0 makes setpgid make the current process the group leader
-  if CHECKERR( posix_spawnattr_setpgroup(&actions, 0) ) {
-    dlog("posix_spawnattr_setpgroup failed");
-    goto err2;
-  }
+
+  #ifdef SUBPROC_USE_PGRP
+    posix_spawnattr_t attrs_;
+    attrs = &attrs_;
+    if CHECKERR( posix_spawnattr_init(attrs) ) {
+      log_errno("posix_spawnattr_init");
+      goto err0;
+    }
+    if CHECKERR( posix_spawnattr_setflags(attrs, POSIX_SPAWN_SETPGROUP) ) {
+      log_errno("posix_spawnattr_setflags");
+      goto err0;
+    }
+    // Note: pid=0 makes setpgid make the current process the group leader
+    if CHECKERR( posix_spawnattr_setpgroup(&actions, 0) ) {
+      log_errno("posix_spawnattr_setpgroup");
+      goto err2;
+    }
+  #endif
 
   #ifdef HAS_SPAWN_ADDCHDIR
     if (cwd && CHECKERR( posix_spawn_file_actions_addchdir_np(&actions, cwd) )) {
-      dlog("posix_spawn_file_actions_addchdir_np failed");
+      log_errno("posix_spawn_file_actions_addchdir_np");
       goto err2;
     }
   #else
     char prev_cwd[PATH_MAX];
     getcwd(prev_cwd, sizeof(prev_cwd));
     if (cwd && chdir(cwd) < 0) {
-      dlog("chdir(%s) failed", cwd);
+      log_errno("chdir(%s)", cwd);
       err = err_errno();
       goto err2;
     }
   #endif
 
   pid_t pid;
-  if CHECKERR( posix_spawn(&pid, exefile, &actions, &attrs, argv, environ) ) {
-    dlog("posix_spawn(%s ...) failed", exefile);
+  if CHECKERR( posix_spawn(&pid, exefile, &actions, attrs, argv, environ) ) {
+    log_errno("posix_spawn(%s ...)", exefile);
     goto err2;
   }
   trace("proc[%d] spawned", pid);
   subproc_open(p, pid);
   posix_spawn_file_actions_destroy(&actions);
-  close(fd[1]);
 
   #ifndef HAS_SPAWN_ADDCHDIR
     if (cwd && chdir(prev_cwd) < 0) {
-      dlog("chdir(%s) failed", prev_cwd);
+      log_errno("chdir(%s)", prev_cwd);
       err = err_errno();
       goto err2;
     }
@@ -248,7 +266,8 @@ err_t subproc_spawn(
 err2:
   posix_spawn_file_actions_destroy(&actions);
 err1:
-  posix_spawnattr_destroy(&attrs);
+  if (attrs)
+    posix_spawnattr_destroy(attrs);
 err0:
   close(fd[0]);
   close(fd[1]);
@@ -272,10 +291,12 @@ err_t _subproc_fork(
     if UNLIKELY((LIBC_CALL) == -1) \
       err(1, #LIBC_CALL) \
 
-  int fds[2];
-  pid_t pid;
+  #ifdef SUBPROC_USE_PGRP
+    int fds[2];
+    RETURN_ON_ERROR( pipe(fds) );
+  #endif
 
-  RETURN_ON_ERROR( pipe(fds) );
+  pid_t pid;
   RETURN_ON_ERROR( (pid = fork()) );
   if (pid == 0) {
     // child process
@@ -284,10 +305,12 @@ err_t _subproc_fork(
       chdir(cwd);
 
     // create process group and communicate the fact to the parent
-    EXIT_ON_ERROR( setpgrp() );
-    EXIT_ON_ERROR( close(fds[0]) );
-    EXIT_ON_ERROR( write(fds[1], &(u8[1]){0}, sizeof(u8)) );
-    EXIT_ON_ERROR( close(fds[1]) );
+    #ifdef SUBPROC_USE_PGRP
+      EXIT_ON_ERROR( setpgrp() );
+      EXIT_ON_ERROR( close(fds[0]) );
+      EXIT_ON_ERROR( write(fds[1], &(u8[1]){0}, sizeof(u8)) );
+      EXIT_ON_ERROR( close(fds[1]) );
+    #endif
 
     err_t err = fn(a, b, c, d, e, f);
     int status = -(int)err;
@@ -296,12 +319,14 @@ err_t _subproc_fork(
   }
 
   // wait until the child has created its own process group
-  close(fds[1]);
-  u8 tmp;
-  read(fds[0], &tmp, sizeof(u8));
-  close(fds[0]);
+  #ifdef SUBPROC_USE_PGRP
+    close(fds[1]);
+    u8 tmp;
+    read(fds[0], &tmp, sizeof(u8));
+    close(fds[0]);
+  #endif
 
-  trace("proc [%d] (fork of %d) spawned", pid, getpid());
+  trace("proc[%d] spawned (fork of %d)", pid, getpid());
 
   #undef RETURN_ON_ERROR
   #undef EXIT_ON_ERROR
@@ -373,10 +398,10 @@ subproc_t* nullable subprocs_alloc(subprocs_t* sp) {
   }
 
   // saturated; wait for a process to finish
-  trace("subprocs_alloc waiting for subprocs_await_one");
+  trace("subprocs_alloc wait");
   err_t err = subprocs_await_one(sp);
   if (err) {
-    trace("subprocs_await_one error %d", err);
+    dlog("subprocs_await_one failed: %s", err_str(err));
     return NULL;
   }
 

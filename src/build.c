@@ -107,6 +107,18 @@ bool select_target() {
 }
 
 
+void set_comaxproc() {
+  char* end;
+  unsigned long n = strtoul(opt_maxproc, &end, 10);
+  if (n == ULONG_MAX || n > U32_MAX || *end || (n == 0 && errno))
+    errx(1, "invalid value for -j: %s", opt_maxproc);
+  if (n != 0) {
+    comaxproc = (u32)n;
+    dlog("setting comaxproc=%u from -j option", comaxproc);
+  }
+}
+
+
 int main_build(int argc, char* argv[]) {
   memalloc_t ma = memalloc_ctx();
 
@@ -130,16 +142,8 @@ int main_build(int argc, char* argv[]) {
   if (optind == argc)
     errx(1, "missing input source");
 
-  if (*opt_maxproc) {
-    char* end;
-    unsigned long n = strtoul(opt_maxproc, &end, 10);
-    if (n == ULONG_MAX || n > U32_MAX || *end || (n == 0 && errno))
-      errx(1, "invalid value for -j: %s", opt_maxproc);
-    if (n != 0) {
-      comaxproc = (u32)n;
-      dlog("setting comaxproc=%u from -j option", comaxproc);
-    }
-  }
+  if (*opt_maxproc)
+    set_comaxproc();
 
   assert(optind <= argc);
   argv += optind;

@@ -187,7 +187,6 @@ int main(int argc, char* argv[]) {
   #endif
 
   comaxproc = sys_ncpu();
-  dlog("comaxproc=%u", comaxproc);
 
   const char* exe_basename = strrchr(coexefile, PATH_SEPARATOR);
   exe_basename = exe_basename ? exe_basename + 1 : coexefile;
