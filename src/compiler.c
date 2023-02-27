@@ -119,7 +119,6 @@ static err_t configure_buildroot(compiler_t* c, const char* buildroot) {
   c->buildroot = mem_strdup(c->ma, (slice_t){.p=tmpbuf, .len=buildroot_len}, 0);
   if (!c->buildroot)
     return ErrNoMem;
-  dlog("c->buildroot: %s", c->buildroot);
 
   char targetstr[64];
   target_fmt(&c->target, targetstr, sizeof(targetstr));
