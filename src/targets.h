@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 //
-// If you update these definitions, also update target_default in target.c
+// If you update these definitions:
+// - also update target_default in target.c
+// - run etc/update-librt.sh (update if needed; it greps for content in this file)
 //
 #ifndef TARGET
   #define TARGET(...)

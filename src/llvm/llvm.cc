@@ -9,6 +9,18 @@ using namespace llvm;
 static const char* g_default_target_triple = "";
 
 
+// err_llvm converts an llvm error to a co err_t
+err_t err_llvm(Error e, char** nullable errmsg) {
+  if (!e)
+    return ErrOk;
+  std::error_code c = errorToErrorCode(std::move(e));
+  err_t err = err_errnox(c.value());
+  if (errmsg)
+    *errmsg = LLVMCreateMessage(c.message().c_str());
+  return err ? err : ErrInvalid;
+}
+
+
 err_t llvm_init() {
   static std::once_flag once;
   std::call_once(once, [](){
@@ -22,7 +34,7 @@ err_t llvm_init() {
       InitializeAllAsmPrinters();
       InitializeAllAsmParsers();
     #else
-      // For JIT only, call llvm::InitializeNativeTarget()
+      // For JIT only, call InitializeNativeTarget()
       InitializeNativeTarget();
 
       // Initialize some targets (see llvm/Config/Targets.def)
@@ -49,12 +61,12 @@ const char* llvm_host_triple() {
 }
 
 
-static bool llvm_error_to_errmsg(llvm::Error err, char** errmsg) {
-  assert(err);
-  std::string errstr = toString(std::move(err));
-  *errmsg = LLVMCreateMessage(errstr.c_str());
-  return false;
-}
+// static bool llvm_error_to_errmsg(Error err, char** errmsg) {
+//   assert(err);
+//   std::string errstr = toString(std::move(err));
+//   *errmsg = LLVMCreateMessage(errstr.c_str());
+//   return false;
+// }
 
 
 void llvm_triple_info(const char* triplestr, CoLLVMTargetInfo* info) {
@@ -375,48 +387,41 @@ err_t llvm_module_emit(
 }
 
 
-bool llvm_write_archive(
-  const char* arhivefile, char*const* filesv, u32 filesc, CoLLVMOS os, char** errmsg)
+err_t llvm_write_archive(
+  CoLLVMArchiveKind kind,
+  const char* outfile, char*const* infilev, u32 infilec, char** errmsg)
 {
-  object::Archive::Kind kind;
-  switch (os) {
-    case CoLLVMOS_Win32:
-      // For some reason llvm-lib passes K_GNU on windows.
-      // See lib/ToolDrivers/llvm-lib/LibDriver.cpp:168 in libDriverMain
-      kind = object::Archive::K_GNU;
-      break;
-    case CoLLVMOS_Linux:
-      kind = object::Archive::K_GNU;
-      break;
-    case CoLLVMOS_MacOSX:
-    case CoLLVMOS_Darwin:
-    case CoLLVMOS_IOS:
-      kind = object::Archive::K_DARWIN;
-      break;
-    case CoLLVMOS_OpenBSD:
-    case CoLLVMOS_FreeBSD:
-      kind = object::Archive::K_BSD;
-      break;
-    default:
-      kind = object::Archive::K_GNU;
+  // see llvm/tools/llvm-ar/llvm-ar.cpp
+  object::Archive::Kind llvmkind;
+  switch (kind) {
+    case CoLLVMArchive_GNU:      llvmkind = object::Archive::K_GNU; break;
+    case CoLLVMArchive_GNU64:    llvmkind = object::Archive::K_GNU64; break;
+    case CoLLVMArchive_BSD:      llvmkind = object::Archive::K_BSD; break;
+    case CoLLVMArchive_DARWIN:   llvmkind = object::Archive::K_DARWIN; break;
+    case CoLLVMArchive_DARWIN64: llvmkind = object::Archive::K_DARWIN64; break;
+    case CoLLVMArchive_COFF:     llvmkind = object::Archive::K_COFF; break;
+    case CoLLVMArchive_AIXBIG:   llvmkind = object::Archive::K_AIXBIG; break;
   }
+
   bool deterministic = true;
-  SmallVector<NewArchiveMember, 4> newMembers;
-  for (u32 i = 0; i < filesc; i += 1) {
-    Expected<NewArchiveMember> newMember =
-      NewArchiveMember::getFile(filesv[i], deterministic);
-    llvm::Error err = newMember.takeError();
-    if (err)
-      return llvm_error_to_errmsg(std::move(err), errmsg);
-    newMembers.push_back(std::move(*newMember));
+  Error err = Error::success();
+  SmallVector<NewArchiveMember> inputs;
+
+  for (u32 i = 0; i < infilec; i += 1) {
+    Expected<NewArchiveMember> m = NewArchiveMember::getFile(infilev[i], deterministic);
+    if (( err = m.takeError() )) {
+      dlog("NewArchiveMember::getFile failed");
+      return err_llvm(std::move(err), errmsg);
+    }
+    inputs.push_back(std::move(*m));
   }
-  bool writeSymtab = true;
+
+  bool writeSymtab = true; // "ranlib"
   bool thin = false;
-  llvm::Error err = writeArchive(
-    arhivefile, newMembers, writeSymtab, kind, deterministic, thin);
+  err = writeArchive(outfile, inputs, writeSymtab, llvmkind, deterministic, thin);
   if (err)
-    return llvm_error_to_errmsg(std::move(err), errmsg);
-  return false;
+    return err_llvm(std::move(err), errmsg);
+  return 0;
 }
 
 
@@ -476,15 +481,15 @@ char* LLVMGetMainExecutable(const char* argv0) {
   // This just needs to be some symbol in the binary; C++ doesn't
   // allow taking the address of ::main however.
   void* P = (void*)(intptr_t)LLVMGetMainExecutable;
-  return strdup(llvm::sys::fs::getMainExecutable(argv0, P).c_str());
+  return strdup(sys::fs::getMainExecutable(argv0, P).c_str());
 }
 
 
 int LLVMCreateDirectories(const char* path, size_t pathlen, int perms) {
   bool IgnoreExisting = true;
-  llvm::sys::fs::perms perms2 = llvm::sys::fs::perms(perms);
+  sys::fs::perms perms2 = sys::fs::perms(perms);
   std::string path2(path, pathlen);
-  std::error_code err = llvm::sys::fs::create_directories(path2, IgnoreExisting, perms2);
+  std::error_code err = sys::fs::create_directories(path2, IgnoreExisting, perms2);
   return err.value();
 }
 

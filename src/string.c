@@ -66,16 +66,19 @@ usize sfmtu64(char* buf, u64 v, u32 base) {
 }
 
 
-// str_t str_make(memalloc_t ma, slice_t src) {
-//   usize len = MIN((usize)U32_MAX, src.len);
-//   mem_t m = mem_alloc(ma, len + 1);
-//   if UNLIKELY(m.p == NULL)
-//     return (str_t){0};
-//   str_t s;
-//   s.p = m.p;
-//   memcpy(s.p, src.p, len);
-//   s.p[len] = 0;
-//   s.cap = (u32)MIN((usize)U32_MAX, m.size);
-//   s.len = (u32)len;
-//   return s;
-// }
+char* _strcat(char* buf, usize bufcap, usize count, ...) {
+  va_list ap;
+  char* p = buf;
+  assert(bufcap > 0);
+  va_start(ap, count);
+  while (count--) {
+    const char* s = va_arg(ap, const char*);
+    usize len = va_arg(ap, usize);
+    assert(p + len < buf + bufcap);
+    memcpy(p, s, len);
+    p += len;
+  }
+  va_end(ap);
+  *p = 0;
+  return buf;
+}

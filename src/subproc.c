@@ -36,7 +36,6 @@
   #include <sys/sysctl.h>
   #include <sys/types.h>
 
-  #include <assert.h>
   #include <errno.h>
   #include <stddef.h>
   #include <stdlib.h>
@@ -268,6 +267,9 @@ err2:
 err1:
   if (attrs)
     posix_spawnattr_destroy(attrs);
+#ifdef SUBPROC_USE_PGRP
+err0:
+#endif
   close(fd[0]);
   close(fd[1]);
   return err;
@@ -351,7 +353,6 @@ static err_t _subprocs_await(subprocs_t* sp, u32 maxcount) {
 
   for (u32 i = 0; i < sp->cap; i++) {
     subproc_t* proc = &sp->procs[i];
-
     if (proc->pid == 0)
       continue;
 
@@ -400,7 +401,9 @@ subproc_t* nullable subprocs_alloc(subprocs_t* sp) {
   trace("subprocs_alloc wait");
   err_t err = subprocs_await_one(sp);
   if (err) {
-    dlog("subprocs_await_one failed: %s", err_str(err));
+    // ErrEnd here if subprocs_cancel has been called
+    if (err != ErrEnd)
+      dlog("subprocs_await_one failed: %s", err_str(err));
     return NULL;
   }
 
@@ -418,15 +421,16 @@ subprocs_t* nullable subprocs_create_promise(memalloc_t ma, promise_t* dst_p) {
   subprocs_t* sp = mem_alloct(ma, subprocs_t);
   if (!sp)
     return NULL;
+  if (comaxproc > 4096)
+    dlog("subproc: limiting maxproc to 4096");
   sp->ma = ma;
   sp->promise = dst_p;
-  sp->cap = comaxproc;
+  sp->cap = MIN(comaxproc, 4096);
   sp->procs = mem_alloctv(ma, subproc_t, sp->cap);
   if (!sp->procs) {
     mem_freet(ma, sp);
     return NULL;
   }
-
   dst_p->impl = sp;
   dst_p->await = subprocs_promise_await;
   return sp;

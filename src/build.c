@@ -3,6 +3,7 @@
 #include "path.h"
 #include "compiler.h"
 #include "subproc.h"
+#include "bgtask.h"
 
 #include <stdlib.h> // exit
 #include <unistd.h> // getopt
@@ -210,11 +211,9 @@ typedef struct {
 err_t build_syslibs_if_needed(compiler_t* c);
 
 
-static err_t link_exe(compiler_t* c, buildfile_t* buildfilev, usize buildfilec) {
-  err_t err = build_syslibs_if_needed(c);
-  if (err)
-    return err;
-
+static err_t link_exe(
+  compiler_t* c, bgtask_t* task, buildfile_t* buildfilev, usize buildfilec)
+{
   const char* outfile = *opt_out ? opt_out : make_output_file(c);
 
   // TODO: -Llibdir
@@ -230,6 +229,8 @@ static err_t link_exe(compiler_t* c, buildfile_t* buildfilev, usize buildfilec) 
     .lto_level = c->buildmode == BUILDMODE_DEBUG ? 0 : 2,
     .lto_cachedir = "",
   };
+
+  err_t err = 0;
 
   char* lto_cachedir = NULL;
   if (link.lto_level > 0) {
@@ -250,7 +251,8 @@ static err_t link_exe(compiler_t* c, buildfile_t* buildfilev, usize buildfilec) 
   for (usize i = 0; i < buildfilec; i++)
     link.infilev[i] = buildfilev[i].ofile.chars;
 
-  log("link %s", outfile);
+  task->n++;
+  bgtask_setstatusf(task, "link %s", outfile);
   err = llvm_link(&link);
 
   mem_freetv(c->ma, link.infilev, buildfilec);
@@ -269,11 +271,8 @@ static err_t build_exe(char*const* srcfilev, usize filecount) {
   if (filecount == 0)
     return ErrInvalid;
 
-  slice_t builddir = slice_cstr(opt_builddir);
-  slice_t pkgname = slice_cstr("main"); // TODO FIXME
-
   compiler_t c;
-  compiler_init(&c, memalloc_ctx(), &diaghandler, pkgname);
+  compiler_init(&c, memalloc_ctx(), &diaghandler, "main"); // FIXME pkgname
   c.opt_printast = opt_printast;
   c.opt_printir = opt_printir;
   c.opt_genirdot = opt_genirdot;
@@ -281,10 +280,18 @@ static err_t build_exe(char*const* srcfilev, usize filecount) {
   c.opt_verbose = opt_verbose;
   c.nomain = opt_nomain;
   c.buildmode = opt_debug ? BUILDMODE_DEBUG : BUILDMODE_OPT;
-  if (err || ( err = compiler_configure(&c, opt_target, builddir) )) {
+  if (err || ( err = compiler_configure(&c, opt_target, opt_builddir) )) {
     compiler_dispose(&c);
     return err;
   }
+
+  // build system libraries, if needed
+  if (!opt_nolink && (err = build_syslibs_if_needed(&c)))
+    return err;
+
+  // create output dir
+  if (( err = fs_mkdirs(c.pkgbuilddir, 0770) ))
+    goto end;
 
   // fv is an array of files we are building
   buildfile_t* fv = mem_alloctv(c.ma, buildfile_t, filecount);
@@ -297,13 +304,12 @@ static err_t build_exe(char*const* srcfilev, usize filecount) {
     buf_init(&fv[i].ofile, c.ma);
   }
 
-  // create output dir
-  if (( err = fs_mkdirs(c.pkgbuilddir, strlen(c.pkgbuilddir), 0770) ))
-    goto end;
+  bgtask_t* task = bgtask_start(c.ma, c.pkgname, (u32)filecount + !opt_nolink, 0);
 
   // compile object files
   for (usize i = 0; i < filecount; i++) {
-    log("compile %s", fv[i].input->name);
+    task->n++;
+    bgtask_setstatusf(task, "compile %s", relpath(fv[i].input->name));
     if (( err = compiler_compile(&c, &fv[i].promise, fv[i].input, &fv[i].ofile) ))
       break;
   }
@@ -317,12 +323,17 @@ static err_t build_exe(char*const* srcfilev, usize filecount) {
 
   // link executable
   if (!err && !opt_nolink)
-    err = link_exe(&c, fv, filecount);
+    err = link_exe(&c, task, fv, filecount);
+
+  bgtask_end(task);
+  task = NULL;
 
 end:
   for (usize i = 0; i < filecount; i++)
     input_free(fv[i].input, c.ma);
   mem_freetv(c.ma, fv, filecount);
   compiler_dispose(&c);
+  if (task)
+    bgtask_end(task);
   return err;
 }

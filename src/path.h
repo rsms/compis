@@ -32,6 +32,14 @@ usize path_cleann(char* restrict buf, usize bufcap, const char*restrict path, us
 char* nullable path_join(memalloc_t, const char* path1, const char* path2);
 char* nullable path_joinslice(memalloc_t, slice_t path1, slice_t path2);
 
+inline static bool path_isabs(const char* path) {
+  return *path == PATH_SEPARATOR;
+}
+
+// relpath returns the path relative to the initial current working directory
+const char* relpath(const char* path);
+void relpath_init();
+
 // dirname_alloca allocates space on stack and calls dirname_r.
 // char* path_clean_alloca(const char* path)
 #define dirname_alloca(path) ({ \

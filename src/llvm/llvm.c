@@ -65,6 +65,21 @@ static err_t select_target_machine(
 }
 
 
+CoLLVMArchiveKind llvm_sys_archive_kind(sys_t sys) {
+  switch ((enum target_sys)sys) {
+    // note: llvm/lib/Object/ArchiveWriter.cpp switches to DARWIN64/GNU64 if needed
+    case SYS_macos: return CoLLVMArchive_DARWIN;
+    case SYS_linux: return CoLLVMArchive_GNU;
+    // case SYS_openbsd: case SYS_freebsd: return CoLLVMArchive_BSD;
+    case SYS_none:
+    case SYS_COUNT:
+      break;
+  }
+  safefail("invalid sys_t %u", sys);
+  return CoLLVMArchive_GNU;
+}
+
+
 void llvm_module_init(CoLLVMModule* m, BuildCtx* build, const char* name) {
   m->build = build;
   m->M = LLVMModuleCreateWithNameInContext(name, CoLLVMContextCreate());

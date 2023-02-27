@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 #include "../colib.h"
+#include "../target.h"
 
 // FIXME
 typedef struct {
@@ -174,6 +175,17 @@ typedef enum CoLLVMObjectFormat {
 
 // -- end constants copied from include/llvm/ADT/Triple.h --
 
+typedef enum CoLLVMArchiveKind {
+  // from include/llvm/Object/Archive.h
+  CoLLVMArchive_GNU,
+  CoLLVMArchive_GNU64,
+  CoLLVMArchive_BSD,
+  CoLLVMArchive_DARWIN,
+  CoLLVMArchive_DARWIN64,
+  CoLLVMArchive_COFF,
+  CoLLVMArchive_AIXBIG,
+} CoLLVMArchiveKind;
+
 typedef struct {
   BuildCtx*      build;
   void*          M;  // LLVMModuleRef
@@ -280,15 +292,18 @@ EXTERN_C bool LLDLinkWasm(int argc, char*const* argv, bool can_exit_early);
 // —————————————————————————————————————————————————————————————————————————————————————
 // archive
 
+// llvm_sys_archive_kind returns the archive type for OS sys
+CoLLVMArchiveKind llvm_sys_archive_kind(sys_t sys);
+
 // llvm_write_archive creates an archive (like the ar tool) at archivefile.
 // filesv is an array of object filenames.
 // Returns false on error and sets errmsg; caller should dispose with LLVMDisposeMessage.
-EXTERN_C bool llvm_write_archive(
-  const char* archivefile,
-  char*const* filesv,
-  u32         filesc,
-  CoLLVMOS    os,
-  char**      errmsg);
+EXTERN_C err_t llvm_write_archive(
+  CoLLVMArchiveKind kind,
+  const char*       outfile,
+  char*const*       infilev,
+  u32               infilec,
+  char** nullable   errmsg);
 
 // —————————————————————————————————————————————————————————————————————————————————————
 // module functions

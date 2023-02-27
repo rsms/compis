@@ -10,9 +10,8 @@
 
 
 u32 sys_ncpu() {
-  u32 count = 0;
-
   #if defined(__linux__)
+    u32 count = 0;
     unsigned long mask[1024];
     if (sched_getaffinity(0, sizeof(mask), (void*)mask) != 0)
       goto err;
@@ -23,16 +22,18 @@ u32 sys_ncpu() {
         mask[i] >>= 1;
       }
     }
+    return count == 0 ? 1 : count;
   #elif defined(__APPLE__)
     // see *-macos/include/sys/sysctl.h
-    u64 value;
+    i32 value;
     usize len = sizeof(value);
     if (sysctlbyname("hw.activecpu", &value, &len, NULL, 0) != 0)
       goto err;
-    count = value > U32_MAX ? U32_MAX : (u32)value;
+    if (value > 0)
+      return (u32)value;
+    return 1;
   #endif
 
-  return count == 0 ? 1 : count;
 err:
   log("sys_ncpu failure, errno=%d", errno);
   return 1;

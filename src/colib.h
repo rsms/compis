@@ -745,7 +745,7 @@ static mem_t mem_alloc(memalloc_t, usize size);
 // Returns .p=NULL on failure.
 static mem_t mem_alloc_zeroed(memalloc_t, usize size);
 
-// mem_alloctv allocates a zero-initialized array of count elements of size elemsize
+// mem_allocv allocates a zero-initialized array of count elements of size elemsize
 void* nullable mem_allocv(memalloc_t, usize count, usize elemsize);
 
 // mem_alloct allocates a zero-initialized element of type T
@@ -952,6 +952,37 @@ usize strim_end(const char* s, usize len, char trimc);
 
 usize sfmtu64(char* buf, u64 v, u32 base);
 
+// strcat_alloca joins strings into memory allocated on stack with alloca
+// char* strcat_alloca(const char* cstr ...)
+#define strcat_alloca(args...) __VARG_DISP(_strcat_alloca, args)
+char* _strcat(char* buf, usize bufcap, usize count, ...); // string.c
+#define _strcat_alloca1(s1) ({ \
+  const char* const s__ = (s1); \
+  usize const z__ = strlen(s__[0])+1; \
+  _strcat(safechecknotnull(alloca(z__)), z__, 1, s__,z__); \
+})
+#define _strcat_alloca2(s1,s2) ({ \
+  const char* const s__[] = { (s1),(s2) }; \
+  usize const z__[] = { strlen(s__[0]),strlen(s__[1]) }; \
+  usize bz__ = z__[0]+z__[1]+1; \
+  _strcat(safechecknotnull(alloca(bz__)), bz__, \
+    2, s__[0],z__[0],s__[1],z__[1]); \
+})
+#define _strcat_alloca3(s1,s2,s3) ({ \
+  const char* const s__[] = { (s1),(s2),(s3) }; \
+  usize const z__[] = { strlen(s__[0]),strlen(s__[1]),strlen(s__[2]) }; \
+  usize bz__ = z__[0]+z__[1]+z__[2]+1; \
+  _strcat(safechecknotnull(alloca(bz__)), bz__, \
+    3, s__[0],z__[0],s__[1],z__[1],s__[2],z__[2]); \
+})
+#define _strcat_alloca4(s1,s2,s3,s4) ({ \
+  const char* const s__[] = { (s1),(s2),(s3),(s4) }; \
+  usize const z__[] = { strlen(s__[0]),strlen(s__[1]),strlen(s__[2]),strlen(s__[3]) }; \
+  usize bz__ = z__[0]+z__[1]+z__[2]+z__[3]+1; \
+  _strcat(safechecknotnull(alloca(bz__)), bz__, \
+    4, s__[0],z__[0],s__[1],z__[1],s__[2],z__[2],s__[3],z__[3]); \
+})
+
 //—————————————————————————————————————————————————————————————————————————————————————
 // time
 err_t unixtime(i64* sec, u64* nsec); // date & time of day
@@ -969,7 +1000,10 @@ u32 sys_ncpu(); // number of available logical CPUs, logs error on failure and r
 err_t mmap_file(const char* filename, mem_t* data_out);
 err_t mmap_unmap(mem_t);
 err_t writefile(const char* filename, u32 mode, slice_t data);
-err_t fs_mkdirs(const char* path, usize pathlen, int perms);
+err_t fs_mkdirs(const char* path, int perms); // creates parent directories, if needed
+err_t fs_remove(const char* path); // recursively removes directories
+bool fs_isfile(const char* path); // true if S_ISREG, after resolving any symlinks
+bool fs_isdir(const char* path); // true if S_ISDIR, after resolving any symlinks
 
 //—————————————————————————————————————————————————————————————————————————————————————
 // promise

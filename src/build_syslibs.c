@@ -1,175 +1,19 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "colib.h"
 #include "compiler.h"
-#include "subproc.h"
+#include "cbuild.h"
 #include "strlist.h"
 #include "path.h"
 #include "bgtask.h"
 #include "llvm/llvm.h"
 
+#include "librt_info.h"
+
 #include <unistd.h>
 #include <libgen.h>
 #include <sys/stat.h>
 #include <stdlib.h>
-
-
-static const char* librt_sources[] = {
-  // (cd deps/llvmbox/src/builtins && ls -1 *.c)
-  "absvdi2.c",
-  "absvsi2.c",
-  "absvti2.c",
-  "adddf3.c",
-  "addsf3.c",
-  "addtf3.c",
-  "addvdi3.c",
-  "addvsi3.c",
-  "addvti3.c",
-  "apple_versioning.c",
-  // "ashldi3.c",
-  // "ashlti3.c",
-  // "ashrdi3.c",
-  // "ashrti3.c",
-  // "bswapdi2.c",
-  // "bswapsi2.c",
-  // "clear_cache.c",
-  // "clzdi2.c",
-  // "clzsi2.c",
-  // "clzti2.c",
-  // "cmpdi2.c",
-  // "cmpti2.c",
-  // "comparedf2.c",
-  // "comparesf2.c",
-  // "comparetf2.c",
-  // "ctzdi2.c",
-  // "ctzsi2.c",
-  // "ctzti2.c",
-  // "divdc3.c",
-  // "divdf3.c",
-  // "divdi3.c",
-  // "divmoddi4.c",
-  // "divmodsi4.c",
-  // "divmodti4.c",
-  // "divsc3.c",
-  // "divsf3.c",
-  // "divsi3.c",
-  // "divtc3.c",
-  // "divtf3.c",
-  // "divti3.c",
-  // "extenddftf2.c",
-  // "extendhfsf2.c",
-  // "extendhftf2.c",
-  // "extendsfdf2.c",
-  // "extendsftf2.c",
-  // "ffsdi2.c",
-  // "ffssi2.c",
-  // "ffsti2.c",
-  // "fixdfdi.c",
-  // "fixdfsi.c",
-  // "fixdfti.c",
-  // "fixsfdi.c",
-  // "fixsfsi.c",
-  // "fixsfti.c",
-  // "fixtfdi.c",
-  // "fixtfsi.c",
-  // "fixtfti.c",
-  // "fixunsdfdi.c",
-  // "fixunsdfsi.c",
-  // "fixunsdfti.c",
-  // "fixunssfdi.c",
-  // "fixunssfsi.c",
-  // "fixunssfti.c",
-  // "fixunstfdi.c",
-  // "fixunstfsi.c",
-  // "fixunstfti.c",
-  // "floatdidf.c",
-  // "floatdisf.c",
-  // "floatditf.c",
-  // "floatsidf.c",
-  // "floatsisf.c",
-  // "floatsitf.c",
-  // "floattidf.c",
-  // "floattisf.c",
-  // "floattitf.c",
-  // "floatundidf.c",
-  // "floatundisf.c",
-  // "floatunditf.c",
-  // "floatunsidf.c",
-  // "floatunsisf.c",
-  // "floatunsitf.c",
-  // "floatuntidf.c",
-  // "floatuntisf.c",
-  // "floatuntitf.c",
-  // "fp_mode.c",
-  // "int_util.c",
-  // "lshrdi3.c",
-  // "lshrti3.c",
-  // "moddi3.c",
-  // "modsi3.c",
-  // "modti3.c",
-  // "muldc3.c",
-  // "muldf3.c",
-  // "muldi3.c",
-  // "mulodi4.c",
-  // "mulosi4.c",
-  // "muloti4.c",
-  // "mulsc3.c",
-  // "mulsf3.c",
-  // "multc3.c",
-  // "multf3.c",
-  // "multi3.c",
-  // "mulvdi3.c",
-  // "mulvsi3.c",
-  // "mulvti3.c",
-  // "negdf2.c",
-  // "negdi2.c",
-  // "negsf2.c",
-  // "negti2.c",
-  // "negvdi2.c",
-  // "negvsi2.c",
-  // "negvti2.c",
-  // "os_version_check.c",
-  // "paritydi2.c",
-  // "paritysi2.c",
-  // "parityti2.c",
-  // "popcountdi2.c",
-  // "popcountsi2.c",
-  // "popcountti2.c",
-  // "powidf2.c",
-  // "powisf2.c",
-  // "powitf2.c",
-  // "subdf3.c",
-  // "subsf3.c",
-  // "subtf3.c",
-  // "subvdi3.c",
-  // "subvsi3.c",
-  // "subvti3.c",
-  // "trampoline_setup.c",
-  // "truncdfhf2.c",
-  // "truncdfsf2.c",
-  // "truncsfhf2.c",
-  // "trunctfdf2.c",
-  // "trunctfhf2.c",
-  // "trunctfsf2.c",
-  // "ucmpdi2.c",
-  // "ucmpti2.c",
-  // "udivdi3.c",
-  // "udivmoddi4.c",
-  // "udivmodsi4.c",
-  // "udivmodti4.c",
-  // "udivsi3.c",
-  // "udivti3.c",
-  // "umoddi3.c",
-  // "umodsi3.c",
-  // "umodti3.c",
-};
-
-
-static bool file_exists(const char* path) {
-  struct stat st;
-  if (stat(path, &st) != 0)
-    return false;
-  return S_ISREG(st.st_mode);
-}
+#include <string.h>
 
 
 static char* lib_path(compiler_t* c, char buf[PATH_MAX], const char* filename) {
@@ -181,12 +25,18 @@ static char* lib_path(compiler_t* c, char buf[PATH_MAX], const char* filename) {
 
 static bool must_build_libc(compiler_t* c) {
   char buf[PATH_MAX];
-  const char* filename = c->target.sys == SYS_macos ? "libSystem.tbd" : "libc.a";
-  dlog("check %s", lib_path(c, buf, filename));
-  return !file_exists(lib_path(c, buf, filename));
+  const char* filename;
+  switch ((enum target_sys)c->target.sys) {
+    case SYS_macos: filename = "libSystem.tbd"; break;
+    case SYS_linux: filename = "libc.a"; break;
+    case SYS_none: case SYS_COUNT: safefail("invalid target"); break;
+  };
+  dlog("check %s", relpath(lib_path(c, buf, filename)));
+  return !fs_isfile(lib_path(c, buf, filename));
 }
 
-static err_t build_libc(compiler_t* c, subprocs_t* subprocs) {
+
+static err_t build_libc(compiler_t* c) {
   dlog("%s", __FUNCTION__);
   if (c->target.sys == SYS_macos) {
     // copy .tbd files (of which most are symlinks)
@@ -196,155 +46,130 @@ static err_t build_libc(compiler_t* c, subprocs_t* subprocs) {
 }
 
 
-static const char* sys_getcwd() {
-  static char buf[PATH_MAX];
-  return getcwd(buf, sizeof(buf));
-}
-
-
-static void srclist_add(
-  strlist_t* srclist, const char* objdir, const char** srcv, usize srcc)
-{
-  for (usize i = 0; i < srcc; i++) {
-    strlist_addf(srclist, "%s/%s.o", objdir, srcv[i]);
-    strlist_add(srclist, srcv[i]);
-  }
-}
-
-
-static char* const* nullable srclist_finalize(strlist_t* srclist) {
-  char* const* v = strlist_array(srclist);
-  return srclist->ok ? v : NULL;
-}
-
-
-static int str_cmp(const char** a, const char** b, void* ctx) {
-  return strcmp(*a, *b);
-}
-
-
-static bool array_sortedset_addcstr(ptrarray_t* a, memalloc_t ma, const char* str) {
-  const char** vp = array_sortedset_assign(
-    const char*, a, ma, &str, (array_sorted_cmp_t)str_cmp, NULL);
-  if UNLIKELY(!vp)
-    return false;
-  if (*vp)
-    return true;
-  return (*vp = mem_strdup(ma, slice_cstr(str), 0)) != NULL;
-}
-
-
-static err_t srclist_mkdirs(strlist_t* srclist) {
-  err_t err = 0;
-  char dir[PATH_MAX];
-  memalloc_t ma = srclist->buf.ma;
-  ptrarray_t dirs = {0};
-
-  char* const* v = strlist_array(srclist);
-  for (int i = 0; i < srclist->len; i += 2) {
-    if (dirname_r(v[i], dir) == NULL) {
-      err = ErrOverflow;
-      break;
-    }
-    if UNLIKELY(!array_sortedset_addcstr(&dirs, ma, dir)) {
-      err = ErrNoMem;
-      break;
-    }
-  }
-
-  if (!err) for (u32 i = 0; i < dirs.len; i++) {
-    const char* dir = (const char*)dirs.v[i];
-    if (( err = fs_mkdirs(dir, strlen(dir), 0755) ))
-      break;
-  }
-
-  ptrarray_dispose(&dirs, ma);
-  return err;
-}
-
-
 static bool must_build_librt(compiler_t* c) {
   char buf[PATH_MAX];
-  dlog("check %s", lib_path(c, buf, "librt.a"));
-  return !file_exists(lib_path(c, buf, "librt.a"));
+  dlog("check %s", relpath(lib_path(c, buf, "librt.a")));
+  return !fs_isfile(lib_path(c, buf, "librt.a"));
 }
 
 
+static err_t librt_add_aarch64_lse_sources(cbuild_t* b) {
+  // adapted from compiler-rt/lib/builtins/CMakeLists.txt
+  const char* pats[] = { "cas", "swp", "ldadd", "ldclr", "ldeor", "ldset" };
+  for (usize i = 0; i < countof(pats); i++) {
+    for (u32 sizem = 0; sizem < 5; sizem++) { // 1 2 4 8 16
+      for (u32 model = 1; model < 5; model++) { // 1 2 3 4
+        const char* pat = pats[i];
+        bool is_cas = i == 0; // strcmp(pat, "cas") == 0;
+        if (!is_cas && sizem == 4)
+          continue;
+        cobj_t* obj = cbuild_add_source(b, "aarch64/lse.S");
+        if (!obj)
+          return ErrNoMem;
+        cobj_addcflagf(b, obj, "-DL_%s", pat);
+        cobj_addcflagf(b, obj, "-DSIZE=%u", 1u << sizem);
+        cobj_addcflagf(b, obj, "-DMODEL=%u", model);
+        cobj_setobjfilef(b, obj, "aarch64/lse_%s_%u_%u.o", pat, 1u << sizem, model);
+      }
+    }
+  }
+  return 0;
+}
 
-static err_t build_librt(compiler_t* c, subprocs_t* subprocs) {
+
+static err_t build_librt(compiler_t* c) {
   dlog("%s", __FUNCTION__);
 
-  strlist_t cc = strlist_make(c->ma, "cc");
-  strlist_add_array(&cc, c->cflags_common.strings, c->cflags_common.len);
-  strlist_add(&cc,
+  cbuild_t build;
+  cbuild_init(&build, c, "librt");
+  build.srcdir = path_join_alloca(coroot, "lib/librt");
+
+  // see compiler-rt/lib/builtins/CMakeLists.txt
+  strlist_add(&build.cc,
     "-std=c11",
     "-Os",
     "-fPIC",
     "-fno-builtin",
     "-fomit-frame-pointer",
-    c->buildmode == BUILDMODE_OPT ? "-flto=thin" : "-g",
-    "-c", "-o");
+    "-fvisibility=hidden");
 
-  strlist_t cc_snapshot = strlist_save(&cc);
+  if (c->target.arch == ARCH_riscv32)
+    strlist_add(&build.cc, "-fforce-enable-int128");
+
+  strlist_addf(&build.cc, "-I%s", build.srcdir);
+
+  // TODO: cmake COMPILER_RT_HAS_FCF_PROTECTION_FLAG
+  // if (compiler_accepts_flag_for_target("-fcf-protection=full"))
+  //   strlist_add(&build.cc, "-fcf-protection=full")
+
+  // TODO: cmake COMPILER_RT_HAS_ASM_LSE
+  // if (compiles("asm(\".arch armv8-a+lse\");asm(\"cas w0, w1, [x2]\");"))
+  //   strlist_add(&build.cc, "-DHAS_ASM_LSE=1");
+
+  // TODO: cmake COMPILER_RT_HAS_FLOAT16
+  // if (compiles("_Float16 f(_Float16 x){return x;}"))
+  //   strlist_add(&build.cc, "-DCOMPILER_RT_HAS_FLOAT16=1");
+
+  strlist_add(&build.cc, c->buildmode == BUILDMODE_OPT ? "-flto=thin" : "-g");
   err_t err = 0;
-  char* srcdir = path_join_alloca(coroot, "deps/llvmbox/src/builtins");
-  char* objdir = path_join_alloca(sys_getcwd(), c->builddir, "librt.obj");
 
-  // build list of source & output file pairs
-  strlist_t srclist = strlist_make(c->ma);
-  srclist_add(&srclist, objdir, librt_sources, countof(librt_sources));
-  char* const* srclistv = srclist_finalize(&srclist);
-  if (!srclistv) {
+  // find source list for target
+  const librt_srclist_t* srclist = NULL;
+  for (u32 i = 0; i < countof(librt_srclist); i++) {
+    const librt_srclist_t* t = &librt_srclist[i];
+    if (c->target.arch == t->arch && c->target.sys == t->sys &&
+        strcmp(c->target.sysver, t->sysver) == 0)
+    {
+      srclist = t;
+      break;
+    }
+  }
+  if (!srclist)
+    panic("no librt impl for target");
+
+  // find sources
+  if (!cobjarray_reserve(&build.objs, c->ma, countof(librt_sources))) {
     err = ErrNoMem;
     goto end;
   }
-  if (( err = srclist_mkdirs(&srclist) ))
-    goto end;
-
-  bgtask_t* task = bgtask_start(c->ma, "librt", srclist.len / 2, 0);
-
-  for (int i = 0; i < srclist.len; i += 2) {
-    task->n++;
-    bgtask_setstatusf(task, "cc %s", srclistv[i+1]);
-    strlist_add(&cc, srclistv[i], srclistv[i+1]);
-    err = compiler_spawn_tool(c, subprocs, &cc, srcdir);
-    strlist_restore(&cc, cc_snapshot); // undo addition of source-specific args to cc
-    if (err)
-      break;
+  for (u32 i = 0; i < countof(srclist->sources)*8; i++) {
+    if (!(srclist->sources[i / 8] & ((u8)1u << (i % 8))))
+      continue;
+    const char* srcfile = librt_sources[i];
+    if (c->target.arch == ARCH_aarch64 && strcmp(srcfile, "aarch64/lse.S") == 0) {
+      // This file is special -- it is compiled many times with different ppc defs
+      // to produce different objects for different function signatures.
+      // See compiler-rt/lib/builtins/CMakeLists.txt
+      if (( err = librt_add_aarch64_lse_sources(&build) ))
+        goto end;
+    } else {
+      cbuild_add_source(&build, srcfile);
+    }
   }
 
-  bgtask_end(task);
+  // TODO: cmake COMPILER_RT_HAS_BFLOAT16
+  // if (compiles("__bf16 f(__bf16 x) {return x;}")) {
+  //   strlist_addf(&srclist, "%s/truncdfbf2.c.o", objdir);
+  //   strlist_add(&srclist, "truncdfbf2.c");
+  //   strlist_addf(&srclist, "%s/truncsfbf2.c.o", objdir);
+  //   strlist_add(&srclist, "truncsfbf2.c");
+  // }
+
+  char tmpbuf[PATH_MAX];
+  const char* outfile = lib_path(c, tmpbuf, "librt.a");
+  err = cbuild_build(&build, outfile);
 
 end:
-  strlist_dispose(&cc);
+  cbuild_dispose(&build);
   return err;
 }
 
 
 err_t build_syslibs_if_needed(compiler_t* c) {
-  bool need_libc = must_build_libc(c);
-  bool need_librt = must_build_librt(c);
-
-  if (!(need_libc | need_librt))
-    return 0;
-
-  promise_t promise = {0};
-
-  // create subprocs attached to promise
-  subprocs_t* subprocs = subprocs_create_promise(c->ma, &promise);
-  if (!subprocs)
-    return ErrNoMem;
-
   err_t err = 0;
-  if (need_libc)
-    err = build_libc(c, subprocs);
-  if (need_librt && !err)
-    err = build_librt(c, subprocs);
-
-  if (err) {
-    subprocs_cancel(subprocs);
+  if (must_build_libc(c) && (err = build_libc(c)))
     return err;
-  }
-
-  return promise_await(&promise);
+  if (must_build_librt(c) && (err = build_librt(c)))
+    return err;
+  return err;
 }

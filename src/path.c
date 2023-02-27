@@ -2,6 +2,35 @@
 #include "colib.h"
 #include "path.h"
 
+#include <unistd.h>
+
+
+static char initcwd[PATH_MAX]; // note: NOT null terminated
+static usize initcwd_len = 0;
+
+
+void relpath_init() {
+  getcwd(initcwd, sizeof(initcwd));
+  initcwd_len = strlen(initcwd);
+  if (initcwd_len > 1)
+    initcwd[initcwd_len++] = '/';
+}
+
+
+const char* relpath(const char* path) {
+  if (*path == 0 || *path != '/')
+    return path;
+  usize len = strlen(path);
+  if (len == initcwd_len-1) {
+    if (memcmp(path, initcwd, len) == 0)
+      return ".";
+  } else if (len >= initcwd_len) {
+    if (memcmp(path, initcwd, initcwd_len) == 0)
+      return path + initcwd_len;
+  }
+  return path;
+}
+
 
 usize path_dirlen(const char* filename, usize len) {
   isize i = slastindexofn(filename, len, PATH_SEPARATOR);

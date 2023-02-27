@@ -10,6 +10,7 @@
 
 #include <sys/stat.h>
 #include <unistd.h>
+#include <stdlib.h>
 #include <err.h>
 
 
@@ -20,12 +21,12 @@ static void set_cstr(memalloc_t ma, char*nullable* dst, slice_t src) {
 }
 
 
-void compiler_set_pkgname(compiler_t* c, slice_t pkgname) {
-  set_cstr(c->ma, &c->pkgname, pkgname);
+void compiler_set_pkgname(compiler_t* c, const char* pkgname) {
+  set_cstr(c->ma, &c->pkgname, slice_cstr(pkgname));
 }
 
 
-void compiler_init(compiler_t* c, memalloc_t ma, diaghandler_t dh, slice_t pkgname) {
+void compiler_init(compiler_t* c, memalloc_t ma, diaghandler_t dh, const char* pkgname) {
   memset(c, 0, sizeof(*c));
   c->ma = ma;
   c->diaghandler = dh;
@@ -105,12 +106,20 @@ static const char* buildmode_name(buildmode_t m) {
 }
 
 
-static void configure_buildroot(compiler_t* c, slice_t buildroot) {
+static err_t configure_buildroot(compiler_t* c, const char* buildroot) {
   // builddir    = {buildroot}/{mode}-{target}
   // pkgbuilddir = {builddir}/{pkgname}.pkg
   // sysroot     = {builddir}/sysroot
 
-  set_cstr(c->ma, &c->buildroot, buildroot);
+  char tmpbuf[PATH_MAX + 1];
+  if (!realpath(buildroot, tmpbuf))
+    return err_errno();
+  usize buildroot_len = strlen(tmpbuf);
+  mem_freecstr(c->ma, c->buildroot);
+  c->buildroot = mem_strdup(c->ma, (slice_t){.p=tmpbuf, .len=buildroot_len}, 0);
+  if (!c->buildroot)
+    return ErrNoMem;
+  dlog("c->buildroot: %s", c->buildroot);
 
   char targetstr[64];
   target_fmt(&c->target, targetstr, sizeof(targetstr));
@@ -118,7 +127,7 @@ static void configure_buildroot(compiler_t* c, slice_t buildroot) {
 
   slice_t mode = slice_cstr(buildmode_name(c->buildmode));
 
-  usize len = buildroot.len + 1 + mode.len;
+  usize len = buildroot_len + 1 + mode.len;
 
   bool isnativetarget = strcmp(llvm_host_triple(), c->target.triple) == 0;
   if (!isnativetarget)
@@ -127,9 +136,11 @@ static void configure_buildroot(compiler_t* c, slice_t buildroot) {
   #define APPEND(slice)  memcpy(p, (slice).p, (slice).len), p += (slice.len)
 
   mem_freecstr(c->ma, c->builddir);
-  c->builddir = safechecknotnull(mem_alloctv(c->ma, char, len + 1));
+  c->builddir = mem_alloctv(c->ma, char, len + 1);
+  if (!c->builddir)
+    return ErrNoMem;
   char* p = c->builddir;
-  APPEND(buildroot);
+  APPEND(slice_cstr(c->buildroot));
   *p++ = PATH_SEPARATOR;
   APPEND(mode);
   if (!isnativetarget) {
@@ -144,7 +155,9 @@ static void configure_buildroot(compiler_t* c, slice_t buildroot) {
   slice_t suffix = slice_cstr(".pkg");
   slice_t builddir = { .p = c->builddir, .len = len };
   usize pkgbuilddir_len = len + 1 + pkgname.len + suffix.len;
-  c->pkgbuilddir = safechecknotnull(mem_alloctv(c->ma, char, pkgbuilddir_len + 1));
+  c->pkgbuilddir = mem_alloctv(c->ma, char, pkgbuilddir_len + 1);
+  if (!c->pkgbuilddir)
+    return ErrNoMem;
   p = c->pkgbuilddir;
   APPEND(builddir);
   *p++ = PATH_SEPARATOR;
@@ -154,17 +167,13 @@ static void configure_buildroot(compiler_t* c, slice_t buildroot) {
 
   // sysroot
   mem_freecstr(c->ma, c->sysroot);
-  c->sysroot = safechecknotnull(path_join(c->ma, c->builddir, "sysroot"));
+  c->sysroot = path_join(c->ma, c->builddir, "sysroot");
+  if (!c->sysroot)
+    return ErrNoMem;
+
+  return 0;
 
   #undef APPEND
-}
-
-
-static bool dir_exists(const char* path) {
-  struct stat st;
-  if (stat(path, &st) != 0)
-    return false;
-  return S_ISDIR(st.st_mode);
 }
 
 
@@ -195,16 +204,16 @@ static err_t configure_cflags(compiler_t* c) {
   snprintf(targets_dir, sizeof(targets_dir), "%s/deps/llvmbox/targets", coroot);
   target_fmt(&c->target, targetstr, sizeof(targetstr));
   snprintf(dir, sizeof(dir), "%s/%s/include", targets_dir, targetstr);
-  if (dir_exists(dir))
+  if (fs_isdir(dir))
     strlist_addf(&c->cflags, "-isystem%s", dir);
   if (*c->target.sysver) {
     snprintf(dir, sizeof(dir), "%s/%s-%s/include",
       targets_dir, arch_name(c->target.arch), sys_name(c->target.sys));
-    if (dir_exists(dir))
+    if (fs_isdir(dir))
       strlist_addf(&c->cflags, "-isystem%s", dir);
   }
   snprintf(dir, sizeof(dir), "%s/any-%s/include", targets_dir, sys_name(c->target.sys));
-  if (dir_exists(dir))
+  if (fs_isdir(dir))
     strlist_addf(&c->cflags, "-isystem%s", dir);
 
   // end of common cflags
@@ -231,11 +240,12 @@ static err_t configure_cflags(compiler_t* c) {
 }
 
 
-err_t compiler_configure(compiler_t* c, const target_t* target, slice_t buildroot) {
+err_t compiler_configure(compiler_t* c, const target_t* target, const char* buildroot) {
   c->target = *target;
   configure_target(c);
-  configure_buildroot(c, buildroot);
-  err_t err = configure_cflags(c);
+  err_t err = configure_buildroot(c, buildroot);
+  if (!err)
+    err = configure_cflags(c);
   return err;
 }
 
@@ -281,16 +291,17 @@ bool compiler_fully_qualified_name(const compiler_t* c, buf_t* buf, const node_t
 // spawning tools as subprocesses, e.g. cc
 
 // define SPAWN_TOOL_USE_FORK=1 to use fork() by default
-// Note: In my (rsms) tests on macos x86, spawning new processes (posix_spawn)
-// uses about 10x more memory than fork() in practice, likely from CoW.
 #ifndef SPAWN_TOOL_USE_FORK
-  #if defined(__APPLE__) && defined(DEBUG)
-    // Note: fork() in debug builds on darwin are super slow, likely because of msan,
-    // so we disable fork()ing in those cases.
-    #define SPAWN_TOOL_USE_FORK 0
-  #else
-    #define SPAWN_TOOL_USE_FORK 1
-  #endif
+  #define SPAWN_TOOL_USE_FORK 1
+  // Note: In my (rsms) tests on macos x86, spawning new processes (posix_spawn)
+  // uses about 10x more memory than fork() in practice, likely from CoW.
+  // #if defined(__APPLE__) && defined(DEBUG)
+  //   // Note: fork() in debug builds on darwin are super slow, likely because of msan,
+  //   // so we disable fork()ing in those cases.
+  //   #define SPAWN_TOOL_USE_FORK 0
+  // #else
+  //   #define SPAWN_TOOL_USE_FORK 1
+  // #endif
 #endif
 
 
@@ -315,17 +326,33 @@ err_t spawn_tool(
 }
 
 
-err_t compiler_spawn_tool(
-  compiler_t* c, subprocs_t* procs, strlist_t* args, const char* nullable cwd)
+err_t compiler_spawn_tool_p(
+  compiler_t* c, subproc_t* p, strlist_t* args, const char* nullable cwd)
 {
   char* const* argv = strlist_array(args);
   if (!args->ok)
     return dlog("strlist_array failed"), ErrNoMem;
+  int flags = 0;
+  return spawn_tool(p, argv, cwd, flags);
+}
+
+
+err_t compiler_spawn_tool(
+  compiler_t* c, subprocs_t* procs, strlist_t* args, const char* nullable cwd)
+{
   subproc_t* p = subprocs_alloc(procs);
   if (!p)
     return dlog("subprocs_alloc failed"), ErrNoMem;
-  int flags = 0;
-  return spawn_tool(p, argv, cwd, flags);
+  return compiler_spawn_tool_p(c, p, args, cwd);
+}
+
+
+err_t compiler_run_tool_sync(compiler_t* c, strlist_t* args, const char* nullable cwd) {
+  subproc_t p = {0};
+  err_t err = compiler_spawn_tool_p(c, &p, args, cwd);
+  if (err)
+    return err;
+  return subproc_await(&p);
 }
 
 

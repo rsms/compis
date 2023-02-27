@@ -77,19 +77,18 @@ static int ar_main(int argc, char*const* argv) {
   //   return 1;
   // }
 
-  const char* archivefile = argv[1];
+  const char* outfile = argv[1];
   char*const* filesv = &argv[2];
-  u32         filesc = argc-2;
-  CoLLVMOS    os = host_os;
+  u32 filesc = argc-2;
   char* errmsg = "?";
+  CoLLVMArchiveKind arkind = llvm_sys_archive_kind(target_default()->sys);
 
-  bool ok = llvm_write_archive(archivefile, filesv, filesc, os, &errmsg);
-  if (!ok) {
-    warnx("ld: %s", errmsg);
-    LLVMDisposeMessage(errmsg);
-    return 1;
-  }
-  return 0;
+  err_t err = llvm_write_archive(arkind, outfile, filesv, filesc, &errmsg);
+  if (!err)
+    return 0;
+  warnx("%s", errmsg);
+  LLVMDisposeMessage(errmsg);
+  return 1;
 }
 
 
@@ -175,6 +174,7 @@ int main(int argc, char* argv[]) {
   coprogname = coprogname ? coprogname + 1 : argv[0];
   coexefile = safechecknotnull(LLVMGetMainExecutable(argv[0]));
   safechecknotnull(dirname_r(coexefile, _coroot));
+  relpath_init();
 
   // allow overriding coroot with env var
   const char* coroot_env = getenv("COROOT");
@@ -185,8 +185,6 @@ int main(int argc, char* argv[]) {
   if (str_endswith(coroot, "/out/debug"))
     coroot = path_join(memalloc_ctx(), coroot, "../..");
   #endif
-
-  comaxproc = sys_ncpu();
 
   const char* exe_basename = strrchr(coexefile, PATH_SEPARATOR);
   exe_basename = exe_basename ? exe_basename + 1 : coexefile;
@@ -220,6 +218,8 @@ int main(int argc, char* argv[]) {
     argc--;
     argv++;
   }
+
+  comaxproc = sys_ncpu();
 
   // primary commands
   if ISCMD("build") return main_build(argc, argv);

@@ -3,8 +3,8 @@
 #include "strlist.h"
 
 
-static void strlist_addnv(strlist_t* a, int count, va_list ap) {
-  int len = 0;
+static void strlist_addnv(strlist_t* a, u32 count, va_list ap) {
+  u32 len = 0;
   while (count--) {
     const char* arg = va_arg(ap, const char*);
     if (arg && *arg) {
@@ -27,7 +27,7 @@ strlist_t _strlist_make2(memalloc_t ma, const char* a) {
   return al;
 }
 
-strlist_t _strlist_makea(memalloc_t ma, int count, ...) {
+strlist_t _strlist_makea(memalloc_t ma, u32 count, ...) {
   strlist_t a = _strlist_make1(ma);
   va_list ap;
   va_start(ap, count);
@@ -47,16 +47,14 @@ void strlist_dispose(strlist_t* a) {
 }
 
 
-void strlist_add_raw(strlist_t* a, const char* src, usize len, int count) {
+void strlist_add_raw(strlist_t* a, const char* src, usize len, u32 count) {
   if (len == 0)
     return;
   usize extralen = (usize)(src[len-1] != 0);
   u8* p = buf_alloc(&a->buf, len + extralen);
-  dlog("buf_alloc(%zu) => %p", len + extralen, p);
   if UNLIKELY(!p) {
     a->ok = false;
   } else {
-    dlog("cpy '%.*s'", (int)len, src);
     memcpy(p, src, len);
     if (extralen)
       p[len] = 0;
@@ -66,13 +64,19 @@ void strlist_add_raw(strlist_t* a, const char* src, usize len, int count) {
 }
 
 
-void _strlist_add2(strlist_t* a, const char* cstr) {
-  a->ok &= buf_append(&a->buf, cstr, strlen(cstr) + 1); // include null terminator
-  a->ok &= !check_add_overflow(a->len, 1, &a->len);
+void strlist_add_list(strlist_t* a, const strlist_t* b) {
+  if (b->len > 0)
+    strlist_add_raw(a, b->buf.p, b->buf.len, b->len);
 }
 
 
-void _strlist_adda(strlist_t* a, int count, ...) {
+void _strlist_add2(strlist_t* a, const char* cstr) {
+  a->ok &= buf_append(&a->buf, cstr, strlen(cstr) + 1); // include null terminator
+  a->ok &= !check_add_overflow(a->len, 1u, &a->len);
+}
+
+
+void _strlist_adda(strlist_t* a, u32 count, ...) {
   va_list ap;
   va_start(ap, count);
   strlist_addnv(a, count, ap);
@@ -80,22 +84,26 @@ void _strlist_adda(strlist_t* a, int count, ...) {
 }
 
 
-ATTR_FORMAT(printf, 2, 3)
-void strlist_addf(strlist_t* a, const char* fmt, ...) {
-  va_list ap;
-  va_start(ap, fmt);
+void strlist_addv(strlist_t* a, const char* fmt, va_list ap) {
   a->ok &= buf_vprintf(&a->buf, fmt, ap);
-  va_end(ap);
   if UNLIKELY(!a->ok)
     return;
   assertf(a->buf.len < a->buf.cap, "buf_vprintf did not reserve space for null");
   a->buf.len++;
-  a->ok &= !check_add_overflow(a->len, 1, &a->len);
+  a->ok &= !check_add_overflow(a->len, 1u, &a->len);
+}
+
+
+void strlist_addf(strlist_t* a, const char* fmt, ...) {
+  va_list ap;
+  va_start(ap, fmt);
+  strlist_addv(a, fmt, ap);
+  va_end(ap);
 }
 
 
 void strlist_add_many(strlist_t* a, ...) {
-  int len = 0;
+  u32 len = 0;
   va_list ap;
   va_start(ap, a);
   for (const char* arg; (arg = va_arg(ap, const char*)) != NULL; ) {
@@ -109,13 +117,8 @@ void strlist_add_many(strlist_t* a, ...) {
 }
 
 
-void strlist_add_list(strlist_t* a, const strlist_t* b) {
-  strlist_add_raw(a, b->buf.p, b->buf.len, b->len);
-}
-
-
 void strlist_add_array(strlist_t* a, const char*const* src, usize len) {
-  if (len > I32_MAX || check_add_overflow(a->len, (int)len, &a->len)) {
+  if (len > U32_MAX || check_add_overflow(a->len, (u32)len, &a->len)) {
     a->ok = false;
     return;
   }
@@ -133,7 +136,7 @@ void strlist_restore(strlist_t* a, const strlist_t snapshot) {
 char* const* strlist_array(strlist_t* a) {
   // the index array is stored after the argument strings in a->buf's free space
   char** v = (char**)ALIGN2((uintptr)(a->buf.p + a->buf.len), sizeof(void*));
-  if (a->_ap == (void*)v)
+  if (a->_ap == (void*)v && v)
     return a->_ap;
 
   usize len = (usize)a->len + 1 + 1; // +1 for NULL terminator, +1 for alignment padding
