@@ -124,7 +124,7 @@ BUILD_MODE=opt  # opt | opt-fast | debug
 TESTING_ENABLED=false
 ONLY_CONFIGURE=false
 STRIP=false
-DEBUGGABLE=false
+DEBUGGABLE=true
 VERBOSE=false
 ENABLE_LTO=
 NINJA_ARGS=()
@@ -308,7 +308,10 @@ if [ -n "$WATCH" ]; then
   _killcmd() {
     local RUN_PID=$(cat "$RUN_PIDFILE" 2>/dev/null)
     if [ -n "$RUN_PID" ]; then
-      kill $RUN_PID 2>/dev/null && echo "killing #$RUN_PID"
+      # kill -- -$RUN_PID 2>/dev/null || echo "killing #$RUN_PID"
+      echo "killing #$RUN_PID"
+      kill $RUN_PID 2>/dev/null || true
+      pkill -15 -P $RUN_PID 2>/dev/null || true
       ( sleep 0.1 ; kill -9 "$RUN_PID" 2>/dev/null || true ) &
       rm -f "$RUN_PIDFILE"
     fi
@@ -323,22 +326,20 @@ if [ -n "$WATCH" ]; then
   while true; do
     printf "\x1bc"  # clear screen ("scroll to top" style)
     BUILD_OK=1
-    bash "./$(basename "$0")" ${NON_WATCH_ARGS[@]:-} "$@" || BUILD_OK=
+    "$BASH" "./$(basename "$0")" ${NON_WATCH_ARGS[@]:-} "$@" || BUILD_OK=
     printf "\e[2m> watching files for changes...\e[m\n"
     if [ -n "$BUILD_OK" -a -n "$RUN" ]; then
       export ASAN_OPTIONS=detect_stack_use_after_return=1
       export UBSAN_OPTIONS=print_stacktrace=1
       _killcmd
-      ( "${BASH:-bash}" -c "$RUN" &
+      ( "$BASH" -c "trap \"pkill -P \$\$\" SIGTERM SIGINT SIGHUP; $RUN" &
         RUN_PID=$!
         echo $RUN_PID > "$RUN_PIDFILE"
         echo "$RUN (#$RUN_PID) started"
-        wait
-        # TODO: get exit code from $RUN
-        # Some claim wait sets the exit code, but not in my bash.
-        # The idea would be to capture exit code from wait:
-        #   status=$?
-        echo "$RUN (#$RUN_PID) exited"
+        set +e
+        wait $RUN_PID
+        echo "$RUN [$RUN_PID] exited: $?"
+        rm -f "$RUN_PIDFILE"
       ) &
     fi
     _fswatch "$SRC_DIR" "$(basename "$0")" ${WATCH_ADDL_FILES[@]:-}
@@ -365,7 +366,6 @@ fi
 #     LDFLAGS_WASM     linker flags specific to WASM target (llvm's wasm-ld)
 #
 XFLAGS+=(
-  -g \
   -feliminate-unused-debug-types \
   -fvisibility=hidden \
   -Wall -Wextra -Wvla \
@@ -413,7 +413,7 @@ esac
 # build-mode-specific flags
 case "$BUILD_MODE" in
   debug)
-    XFLAGS+=( -O0 -DDEBUG -ferror-limit=6 )
+    XFLAGS+=( -g -O0 -DDEBUG -ferror-limit=6 )
     # Enable sanitizers in debug builds
     # See https://clang.llvm.org/docs/AddressSanitizer.html
     # See https://clang.llvm.org/docs/UndefinedBehaviorSanitizer.html
@@ -433,10 +433,11 @@ case "$BUILD_MODE" in
   opt*)
     XFLAGS+=( -DNDEBUG )
     XFLAGS_WASM+=( -Oz )
+    XFLAGS_HOST+=( -O3 )
     if $DEBUGGABLE; then
-      XFLAGS_HOST+=( -O1 -fno-omit-frame-pointer -fno-optimize-sibling-calls )
+      XFLAGS_HOST+=( -g -fno-omit-frame-pointer -fno-optimize-sibling-calls )
     else
-      XFLAGS_HOST+=( -O3 -fomit-frame-pointer )
+      XFLAGS_HOST+=( -fomit-frame-pointer )
     fi
     # LDFLAGS_WASM+=( -z stack-size=$[128 * 1024] ) # larger stack, smaller heap
     # LDFLAGS_WASM+=( --compress-relocations --strip-debug )
