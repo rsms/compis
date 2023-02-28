@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 #include <alloca.h>
+#include <libgen.h>
 ASSUME_NONNULL_BEGIN
 
 #ifdef WIN32
@@ -26,22 +27,27 @@ usize path_dirlen(const char* path, usize len);
 // If the path consists entirely of slashes, returns "/".
 const char* path_base(const char* path);
 
-usize path_clean(char* restrict buf, usize bufcap, const char* restrict path);
-usize path_cleann(char* restrict buf, usize bufcap, const char*restrict path, usize len);
-
-char* nullable path_join(memalloc_t, const char* path1, const char* path2);
-char* nullable path_joinslice(memalloc_t, slice_t path1, slice_t path2);
-
-inline static bool path_isabs(const char* path) {
-  return *path == PATH_SEPARATOR;
+// path_clean resolves parent paths ("..") and eliminates redundant "/" and "./",
+// reducing 'path' to a clean, canonical form. E.g. "a/b/../c//./d" => "a/c/d"
+static char* path_clean(char* path); // returns 'path'
+usize path_cleanx(char* buf, usize bufcap, const char* path, usize pathlen);
+inline static char* path_clean(char* path) {
+  usize len = strlen(path);
+  return path_cleanx(path, len + 1, path, len), path;
 }
+
+// path_join joins two strings together. Calls path_clean on the result.
+usize path_join(char* dst, usize dstcap, const char* path1, const char* path2);
+char* nullable path_join_m(memalloc_t, const char* path1, const char* path2);
+
+inline static bool path_isabs(const char* path) { return *path == PATH_SEPARATOR; }
 
 // relpath returns the path relative to the initial current working directory
 const char* relpath(const char* path);
 void relpath_init();
 
 // dirname_alloca allocates space on stack and calls dirname_r.
-// char* path_clean_alloca(const char* path)
+// char* dirname_alloca(const char* path)
 #define dirname_alloca(path) ({ \
   const char* p__ = (path); usize z__ = strlen(p__); \
   char* s__ = safechecknotnull(alloca(z__ + 1)); \
@@ -49,19 +55,7 @@ void relpath_init();
   s__; \
 })
 
-// path_clean_alloca allocates space on stack and calls path_clean.
-// char* path_clean_alloca(const char* path)
-#define path_clean_alloca(path) ({ \
-  const char* p__ = (path); usize z__ = strlen(p__); \
-  char* s__ = safechecknotnull(alloca(z__ + 1)); \
-  UNUSED usize n__ = path_clean(s__, z__ + 1, p__); \
-  safecheck(n__ <= z__); \
-  s__; \
-})
-
-// path_join_alloca allocates space on stack and joins two paths together.
-// path_join_alloca does NOT call path_clean (like path_join does.)
-//
+// path_join_alloca allocates space on stack and joins two or more paths together.
 // char* path_join_alloca(const char* path1, const char* path2)
 // char* path_join_alloca(const char* path1, const char* path2, const char* path3)
 #define path_join_alloca(args...) __VARG_DISP(_path_join_alloca, args)
@@ -73,6 +67,7 @@ void relpath_init();
   s__[z1__] = '/'; \
   memcpy(&s__[z1__+1], p2__, z2__); \
   s__[z1__+1+z2__] = 0; \
+  path_cleanx(s__, z1__ + 1 + z2__ + 1, s__, z1__ + 1 + z2__); \
   s__; \
 })
 #define _path_join_alloca3(p1, p2, p3) ({ \
@@ -86,6 +81,7 @@ void relpath_init();
   s__[z1__+1+z2__] = '/'; \
   memcpy(&s__[z1__+1+z2__+1], p3__, z3__); \
   s__[z1__+1+z2__+1+z3__] = 0; \
+  path_cleanx(s__, z1__+1+z2__+1+z3__+1, s__, z1__+1+z2__+1+z3__); \
   s__; \
 })
 

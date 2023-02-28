@@ -166,13 +166,22 @@ static err_t configure_buildroot(compiler_t* c, const char* buildroot) {
 
   // sysroot
   mem_freecstr(c->ma, c->sysroot);
-  c->sysroot = path_join(c->ma, c->builddir, "sysroot");
+  c->sysroot = path_join_m(c->ma, c->builddir, "sysroot");
   if (!c->sysroot)
     return ErrNoMem;
 
   return 0;
 
   #undef APPEND
+}
+
+
+static err_t add_target_sysdir_if_exists(const char* path, void* cp) {
+  compiler_t* c = cp;
+  char* idir = strcat_alloca(path, "/include");
+  if (fs_isdir(idir))
+    strlist_addf(&c->cflags, "-isystem%s", idir);
+  return 0;
 }
 
 
@@ -197,23 +206,7 @@ static err_t configure_cflags(compiler_t* c) {
     "-include", "TargetConditionals.h");
 
   // system and libc headers dirs
-  char targets_dir[PATH_MAX];
-  char dir[PATH_MAX];
-  char targetstr[64];
-  snprintf(targets_dir, sizeof(targets_dir), "%s/deps/llvmbox/targets", coroot);
-  target_fmt(&c->target, targetstr, sizeof(targetstr));
-  snprintf(dir, sizeof(dir), "%s/%s/include", targets_dir, targetstr);
-  if (fs_isdir(dir))
-    strlist_addf(&c->cflags, "-isystem%s", dir);
-  if (*c->target.sysver) {
-    snprintf(dir, sizeof(dir), "%s/%s-%s/include",
-      targets_dir, arch_name(c->target.arch), sys_name(c->target.sys));
-    if (fs_isdir(dir))
-      strlist_addf(&c->cflags, "-isystem%s", dir);
-  }
-  snprintf(dir, sizeof(dir), "%s/any-%s/include", targets_dir, sys_name(c->target.sys));
-  if (fs_isdir(dir))
-    strlist_addf(&c->cflags, "-isystem%s", dir);
+  target_foreach_sysdir(&c->target, add_target_sysdir_if_exists, c);
 
   // end of common cflags
   int cflags_common_len = c->cflags.len;

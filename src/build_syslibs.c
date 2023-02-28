@@ -9,11 +9,14 @@
 
 #include "librt_info.h"
 
-#include <unistd.h>
+#include <dirent.h>
+#include <err.h>
+#include <errno.h>
 #include <libgen.h>
-#include <sys/stat.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 
 static char* lib_path(compiler_t* c, char buf[PATH_MAX], const char* filename) {
@@ -36,13 +39,81 @@ static bool must_build_libc(compiler_t* c) {
 }
 
 
-static err_t build_libc(compiler_t* c) {
-  dlog("%s", __FUNCTION__);
-  if (c->target.sys == SYS_macos) {
-    // copy .tbd files (of which most are symlinks)
-    dlog("TODO: copy .tbd files (of which most are symlinks)");
+static err_t copy_files(const char* srcdir, const char* dstdir) {
+  dlog("copy_files %s/ -> %s/", relpath(srcdir), relpath(dstdir));
+
+  DIR* dp = opendir(srcdir);
+  if (dp == NULL) {
+    warn("opendir(%s)", srcdir);
+    return err_errno();
   }
+
+  char srcfile[PATH_MAX];
+  char dstfile[PATH_MAX];
+
+  usize srcfilelen = MIN(strlen(srcdir), PATH_MAX - 2);
+  memcpy(srcfile, srcdir, srcfilelen);
+  srcfile[srcfilelen++] = '/';
+
+  usize dstfilelen = MIN(strlen(dstdir), PATH_MAX - 2);
+  memcpy(dstfile, dstdir, dstfilelen);
+  dstfile[dstfilelen++] = '/';
+
+  struct dirent* d;
+  while ((d = readdir(dp)) != NULL) {
+    if (*d->d_name == '.')
+      continue;
+
+    usize srcnamelen = MIN(strlen(d->d_name), PATH_MAX - srcfilelen);
+    memcpy(&srcfile[srcfilelen], d->d_name, srcnamelen);
+    srcfile[srcfilelen + srcnamelen] = 0;
+
+    usize dstnamelen = MIN(strlen(d->d_name), PATH_MAX - dstfilelen);
+    memcpy(&dstfile[dstfilelen], d->d_name, dstnamelen);
+    dstfile[dstfilelen + dstnamelen] = 0;
+
+    dlog("cp %s -> %s", relpath(srcfile), relpath(dstfile));
+    err_t err = fs_copyfile(srcfile, dstfile, 0);
+    if (err)
+      return err;
+  }
+  closedir(dp);
   return 0;
+}
+
+
+static err_t copy_sysroot_lib_dir(const char* path, void* cp) {
+  compiler_t* c = cp;
+  char* libdir = strcat_alloca(path, "/lib");
+  if (!fs_isdir(libdir))
+    return 0;
+  char* dstdir = path_join_alloca(c->sysroot, "lib");
+  return copy_files(libdir, dstdir);
+}
+
+
+static err_t build_libc_musl(compiler_t* c) {
+  cbuild_t build;
+  cbuild_init(&build, c, "librt");
+  build.srcdir = path_join_alloca(coroot, "lib/librt");
+  err_t err = 0;
+
+  log("TODO NOT IMPLEMENTED: %s", __FUNCTION__);
+
+  cbuild_dispose(&build);
+  return err;
+}
+
+
+static err_t build_libc(compiler_t* c) {
+  err_t err = target_foreach_sysdir(&c->target, copy_sysroot_lib_dir, c);
+  if (err)
+    return err;
+
+  if (c->target.sys == SYS_linux)
+    return build_libc_musl(c);
+
+  return err;
 }
 
 
@@ -78,8 +149,6 @@ static err_t librt_add_aarch64_lse_sources(cbuild_t* b) {
 
 
 static err_t build_librt(compiler_t* c) {
-  dlog("%s", __FUNCTION__);
-
   cbuild_t build;
   cbuild_init(&build, c, "librt");
   build.srcdir = path_join_alloca(coroot, "lib/librt");

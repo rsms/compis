@@ -49,14 +49,7 @@ const char* path_base(const char* path) {
 }
 
 
-usize path_clean(char* restrict buf, usize bufcap, const char* restrict path) {
-  return path_cleann(buf, bufcap, path, strlen(path));
-}
-
-
-usize path_cleann(
-  char* restrict buf, usize bufcap, const char* restrict path, usize len)
-{
+usize path_cleanx(char* buf, usize bufcap, const char* path, usize len) {
   usize r = 0;      // read offset
   usize w = 0;      // write offset
   usize wl = 0;     // logical bytes written
@@ -119,37 +112,14 @@ end:
 }
 
 
-char* nullable path_joinslice(memalloc_t ma, slice_t path1, slice_t path2) {
-  usize size = path1.len + 1 + path2.len + 1;
-
-  char* result = mem_strdup(ma, path1, 1 + path2.len);
-  if UNLIKELY(!result)
-    return NULL;
-
-  char* stmp = mem_strdup(ma, path1, 1 + path2.len);
-  if UNLIKELY(!stmp) {
-    mem_freetv(ma, result, size);
-    return NULL;
-  }
-  char* p = stmp + path1.len;
-  *p++ = PATH_SEPARATOR;
-  memcpy(p, path2.p, path2.len);
-  p[path2.len] = 0;
-
-  usize n = path_cleann(result, size, stmp, size-1);
-
-  mem_freetv(ma, stmp, size);
-
-  if UNLIKELY(n >= size) {
-    mem_freetv(ma, result, size);
-    return NULL;
-  }
-
-  return result;
+usize path_join(char* dst, usize dstcap, const char* path1, const char* path2) {
+  usize len = (usize)snprintf(dst, dstcap, "%s/%s", path1, path2);
+  return path_cleanx(dst, dstcap, dst, MIN(len, dstcap - 1));
 }
 
 
-char* nullable path_join(memalloc_t ma, const char* path1, const char* path2) {
-  return path_joinslice(ma, slice_cstr(path1), slice_cstr(path2));
+char* nullable path_join_m(memalloc_t ma, const char* path1, const char* path2) {
+  mem_t m = mem_alloc(ma, strlen(path1) + 1 + strlen(path2) + 1);
+  path_join(m.p, m.size, path1, path2);
+  return m.p;
 }
-

@@ -190,16 +190,6 @@ static input_t* open_input(memalloc_t ma, const char* filename) {
 }
 
 
-static char* nullable make_output_file(compiler_t* c) {
-  return path_join(c->ma, c->builddir, c->pkgname);
-}
-
-
-static char* nullable make_lto_cachedir(compiler_t* c) {
-  return path_join(c->ma, c->builddir, "llvm");
-}
-
-
 typedef struct {
   input_t*  input;
   buf_t     ofile;
@@ -212,10 +202,9 @@ err_t build_syslibs_if_needed(compiler_t* c);
 
 
 static err_t link_exe(
-  compiler_t* c, bgtask_t* task, buildfile_t* buildfilev, usize buildfilec)
+  compiler_t* c, bgtask_t* task, const char* outfile,
+  buildfile_t* infilev, usize infilec)
 {
-  const char* outfile = *opt_out ? opt_out : make_output_file(c);
-
   // TODO: -Llibdir
   // char libflag[PATH_MAX];
   // snprintf(libflag, sizeof(libflag), "-L%s", c->libdir);
@@ -223,7 +212,7 @@ static err_t link_exe(
   CoLLVMLink link = {
     .target_triple = c->target.triple,
     .outfile = outfile,
-    .infilec = buildfilec,
+    .infilec = infilec,
     .sysroot = c->sysroot,
     .print_lld_args = opt_verbose || opt_logld,
     .lto_level = c->buildmode == BUILDMODE_DEBUG ? 0 : 2,
@@ -232,35 +221,25 @@ static err_t link_exe(
 
   err_t err = 0;
 
-  char* lto_cachedir = NULL;
-  if (link.lto_level > 0) {
-    char* lto_cachedir = make_lto_cachedir(c);
-    if (!outfile || !lto_cachedir) {
-      err = ErrNoMem;
-      goto end;
-    }
-    link.lto_cachedir = lto_cachedir;
-  }
+  if (link.lto_level > 0)
+    link.lto_cachedir = path_join_alloca(c->builddir, "llvm");
 
   // linker wants an array of cstring pointers
-  link.infilev = mem_alloctv(c->ma, const char*, buildfilec);
+  link.infilev = mem_alloctv(c->ma, const char*, infilec);
   if (!link.infilev) {
     err = ErrNoMem;
     goto end;
   }
-  for (usize i = 0; i < buildfilec; i++)
-    link.infilev[i] = buildfilev[i].ofile.chars;
+  for (usize i = 0; i < infilec; i++)
+    link.infilev[i] = infilev[i].ofile.chars;
 
   task->n++;
   bgtask_setstatusf(task, "link %s", outfile);
   err = llvm_link(&link);
 
-  mem_freetv(c->ma, link.infilev, buildfilec);
+  mem_freetv(c->ma, link.infilev, infilec);
 
 end:
-  if (outfile && outfile != opt_out)
-    mem_freecstr(c->ma, (char*)outfile);
-  mem_freecstr(c->ma, lto_cachedir);
   return err;
 }
 
@@ -304,7 +283,15 @@ static err_t build_exe(char*const* srcfilev, usize filecount) {
     buf_init(&fv[i].ofile, c.ma);
   }
 
-  bgtask_t* task = bgtask_start(c.ma, c.pkgname, (u32)filecount + !opt_nolink, 0);
+  const char* outfile;
+  if (*opt_out) {
+    outfile = opt_out;
+  } else {
+    outfile = path_join_alloca(c.builddir, c.pkgname);
+  }
+
+  bgtask_t* task = bgtask_start(c.ma, relpath(outfile), (u32)filecount + !opt_nolink, 0);
+  // bgtask_t* task = bgtask_start(c.ma, c.pkgname, (u32)filecount + !opt_nolink, 0);
 
   // compile object files
   for (usize i = 0; i < filecount; i++) {
@@ -323,7 +310,7 @@ static err_t build_exe(char*const* srcfilev, usize filecount) {
 
   // link executable
   if (!err && !opt_nolink)
-    err = link_exe(&c, task, fv, filecount);
+    err = link_exe(&c, task, outfile, fv, filecount);
 
   bgtask_end(task);
   task = NULL;

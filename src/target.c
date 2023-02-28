@@ -163,3 +163,35 @@ usize target_fmt(const target_t* t, char* buf, usize bufcap) {
   }
   return n < 0 ? 0 : (usize)n;
 }
+
+
+err_t target_foreach_sysdir(target_t* t, target_sysdir_visitor_t visitor, void* ctx) {
+  char path[PATH_MAX];
+
+  usize offs = (usize)snprintf(path, sizeof(path), "%s/lib/sysroot/", coroot);
+  safecheck(offs < sizeof(path));
+  if (offs >= sizeof(path))
+    offs = sizeof(path) - 1;
+  usize pathcap = sizeof(path) - offs;
+
+  err_t err = 0;
+
+  target_fmt(t, &path[offs], pathcap);
+  if (( err = visitor(path, ctx) ))
+    goto end;
+
+  if (*t->sysver) {
+    snprintf(&path[offs], pathcap, "any-%s.%s", sys_name(t->sys), t->sysver);
+    if (( err = visitor(path, ctx) ))
+      goto end;
+    snprintf(&path[offs], pathcap, "%s-%s", arch_name(t->arch), sys_name(t->sys));
+    if (( err = visitor(path, ctx) ))
+      goto end;
+  }
+
+  snprintf(&path[offs], pathcap, "any-%s", sys_name(t->sys));
+  err = visitor(path, ctx);
+
+end:
+  return err;
+}

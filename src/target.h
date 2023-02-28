@@ -56,6 +56,11 @@ const char* arch_name(arch_t);
 const char* sys_name(sys_t);
 void print_supported_targets(); // prints with log()
 
+// target_foreach_sysdir calls visitor for each possible "sysroots" dir for target.
+// Returns the first error returned from visitor.
+typedef err_t (*target_sysdir_visitor_t)(const char* s, void* ctx);
+err_t target_foreach_sysdir(target_t* t, target_sysdir_visitor_t visitor, void* ctx);
+
 
 ASSUME_NONNULL_END
 #ifdef __cplusplus

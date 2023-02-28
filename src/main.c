@@ -183,7 +183,7 @@ int main(int argc, char* argv[]) {
 
   #if DEBUG
   if (str_endswith(coroot, "/out/debug"))
-    coroot = path_join(memalloc_ctx(), coroot, "../..");
+    coroot = path_join_m(memalloc_ctx(), coroot, "../..");
   #endif
 
   const char* exe_basename = strrchr(coexefile, PATH_SEPARATOR);

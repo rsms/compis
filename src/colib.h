@@ -1002,6 +1002,7 @@ err_t mmap_unmap(mem_t);
 err_t writefile(const char* filename, u32 mode, slice_t data);
 err_t fs_mkdirs(const char* path, int perms); // creates parent directories, if needed
 err_t fs_remove(const char* path); // recursively removes directories
+err_t fs_copyfile(const char* srcpath, const char* dstpath, int flags);
 bool fs_isfile(const char* path); // true if S_ISREG, after resolving any symlinks
 bool fs_isdir(const char* path); // true if S_ISDIR, after resolving any symlinks
 
