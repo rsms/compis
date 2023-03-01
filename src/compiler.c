@@ -111,13 +111,7 @@ static err_t configure_buildroot(compiler_t* c, const char* buildroot) {
   // pkgbuilddir = {builddir}/{pkgname}.pkg
   // sysroot     = {builddir}/sysroot
 
-  char tmpbuf[PATH_MAX + 1];
-  if (!realpath(buildroot, tmpbuf))
-    return err_errno();
-  usize buildroot_len = strlen(tmpbuf);
-  mem_freecstr(c->ma, c->buildroot);
-  c->buildroot = mem_strdup(c->ma, (slice_t){.p=tmpbuf, .len=buildroot_len}, 0);
-  if (!c->buildroot)
+  if (!( c->buildroot = path_abs(c->ma, buildroot) ))
     return ErrNoMem;
 
   char targetstr[64];
@@ -126,7 +120,7 @@ static err_t configure_buildroot(compiler_t* c, const char* buildroot) {
 
   slice_t mode = slice_cstr(buildmode_name(c->buildmode));
 
-  usize len = buildroot_len + 1 + mode.len;
+  usize len = strlen(c->buildroot) + 1 + mode.len;
 
   bool isnativetarget = strcmp(llvm_host_triple(), c->target.triple) == 0;
   if (!isnativetarget)
