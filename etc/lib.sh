@@ -1,290 +1,111 @@
-set -e
-
-ARGV0="$0"
+PWD0=${PWD0:-$PWD}
 SCRIPT_FILE=${BASH_SOURCE[0]}
-[ -n "$SCRIPT_FILE" ] || SCRIPT_FILE=${(%):-%N}  # zsh
-[ -n "$PROJECT" ] || PROJECT=$(dirname $(dirname $(realpath "$SCRIPT_FILE")))
+PROJECT=$(dirname $(dirname $(realpath "$SCRIPT_FILE")))
 DEPS_DIR="$PROJECT/deps"
 OUT_DIR="$PROJECT/out"
-WORK_DIR=${WORK_DIR:-$OUT_DIR/etc}
-WORK_BUILD_DIR=${WORK_BUILD_DIR:-$WORK_DIR/out}
-DOWNLOAD_DIR="$WORK_DIR/download"
-TMPFILES_LIST="$WORK_DIR/tmpfiles.$$"
-OPT_QUIET=false
-INITIAL_PWD=${INITIAL_PWD:-$PWD}
-HOST_SYS=$(uname -s)
-HOST_ARCH=$(uname -m) ; [ "$HOST_ARCH" != "arm64" ] || HOST_ARCH=aarch64
-HOST_SYSNAME= # e.g. linux, macos
-case "$HOST_SYS" in
-  Darwin) HOST_SYSNAME=macos ;;
-  *)      HOST_SYSNAME=$(awk '{print tolower($0)}' <<< "$HOST_SYS") ;;
-esac
+DOWNLOAD_DIR="$DEPS_DIR/download"
+LLVMBOX="$DEPS_DIR/llvmbox"
 
-# internal state
-SOURCE_DIR_STACK=()
-ATEXIT=()
+_err() { echo "$0:" "$@" >&2; exit 1; }
 
-__atexit() {
-  set +e
-  cd "$PROJECT" # in case PWD is a dir being unmounted or deleted
-  # execute each command in stack order (FIFO)
-  local idx
-  for (( idx=${#ATEXIT[@]}-1 ; idx>=0 ; idx-- )) ; do
-    # echo "[atexit]" "${ATEXIT[idx]}"
-    eval "${ATEXIT[idx]}"
-  done
-  # clean up temporary files
-  if [ -f "$TMPFILES_LIST" ]; then
-    while IFS= read -r f; do
-      # echo "[atexit]" rm -rf "$f"
-      rm -rf "$f"
-    done < "$TMPFILES_LIST"
-    rm -f "$TMPFILES_LIST"
-  fi
-  set -e
-}
-_onsigint() {
-  echo
-  exit
-}
-trap __atexit EXIT
-trap _onsigint SIGINT
-
-
-_log() { $OPT_QUIET || echo "$@" >&2; }
-
-
-_err() {
-  echo "$ARGV0:" "$@" >&2
-  exit 1
-}
-
-# _relpath path [parentpath]
-# Prints path relative to parentpath (or INITIAL_PWD if parentpath is not given)
-_relpath() {
-  local parentdir=${2:-$INITIAL_PWD}
+_relpath() { # <path>
   case "$1" in
-    "$parentdir/"*)
-      echo "${1##${2:-$INITIAL_PWD}/}"
-      ;;
-    "$parentdir")
-      echo "."
-      ;;
-    *)
-    echo "$1"
-      ;;
+    "$PWD0/"*) echo "${1##$PWD0/}" ;;
+    "$PWD0")   echo "." ;;
+    # "$HOME/"*) echo "~${1:${#HOME}}" ;;
+    *)         echo "$1" ;;
   esac
-}
-
-# _random_id [bytecount]
-_random_id() {
-  local bytes=${1:-32}
-  head -c $bytes /dev/urandom | sha1sum | cut -d' ' -f1
 }
 
 _pushd() {
-  local old_pwd=$PWD
   pushd "$1" >/dev/null
-  $OPT_QUIET || echo "changed directory to $(_relpath "$PWD")"
+  [ "$PWD" = "$PWD0" ] || echo "cd $(_relpath "$PWD")"
 }
 
 _popd() {
-  local old_pwd=$PWD
   popd >/dev/null
-  $OPT_QUIET || echo "returned to directory $(_relpath "$PWD")"
+  [ "$PWD" = "$PWD0" ] || echo "cd $(_relpath "$PWD")"
 }
 
-# _tmpfile
-# Prints a unique filename that can be written to which is automatically
-# deleted when the script exits.
-_tmpfile() {
-  mkdir -p "$WORK_DIR/tmp"
-  local file="$WORK_DIR/tmp/$(_random_id 8).$$"
-  mkdir -p "$(dirname "$TMPFILES_LIST")"
-  echo "$file" >> "$TMPFILES_LIST"
-  echo "$file"
+_copy() {
+  printf "copy"
+  local past=
+  for arg in "$@"; do case "$arg" in
+    -*) [ -z "$past" ] || printf " %s" "$(_relpath "$arg")";;
+    --) past=1 ;;
+    *)  printf " %s" "$(_relpath "$arg")" ;;
+  esac; done
+  printf "\n"
+  cp -R "$@"
 }
 
-# _downloaded_file filename|url
-# Prints absolute path to a file downloaded by _download
-_downloaded_file() {
-  echo "$DOWNLOAD_DIR/$(basename "$1")"
+_cpd() {
+  echo "copy $(($#-1)) files to $(_relpath "${@: -1}")/"
+  mkdir -p "${@: -1}"
+  cp -r "$@"
 }
 
-# _checksum_sha{1,256,512} [<file>]
-_checksum_sha1()   { sha1sum   "$@" | cut -d' ' -f1; }
-_checksum_sha256() { sha256sum "$@" | cut -d' ' -f1; }
-_checksum_sha512() { sha512sum "$@" | cut -d' ' -f1; }
-
-# _verify_checksum [-silent] file checksum
-# checksum can be prefixed with sha1: sha256: or sha512: (e.g. sha256:checksum)
-_verify_checksum() {
-  local silent
-  if [ "$1" = "-silent" ]; then silent=y; shift; fi
-  local file="$1"
-  local expected="$2"
-  local prog=sha1sum
-  case "${#expected}" in
-    128) prog=sha512sum ;;
-    64)  prog=sha256sum ;;
-    *)   prog=sha1sum ;;
+_sha_verify() { # <file> [<sha256> | <sha512>]
+  local file=$1
+  local expect=$2
+  local actual=
+  echo "verifying checksum of $(_relpath "$file")"
+  case "${#expect}" in
+    128) kind=512; actual=$(sha512sum "$file" | cut -d' ' -f1) ;;
+    64)  kind=256; actual=$(sha256sum "$file" | cut -d' ' -f1) ;;
+    *)   _err "checksum $expect has incorrect length (not sha256 nor sha512)" ;;
   esac
-  local actual=$("$prog" "$file" | cut -f 1 -d ' ')
-  if [ "$expected" != "$actual" ]; then
-    if [ -z "$silent" ]; then
-      echo "Checksum mismatch: $file" >&2
-      echo "  Actual:   $actual" >&2
-      echo "  Expected: $expected" >&2
-    fi
+  if [ "$actual" != "$expect" ]; then
+    echo "$file: SHA-$kind sum mismatch:" >&2
+    echo "  actual:   $actual" >&2
+    echo "  expected: $expect" >&2
     return 1
   fi
 }
 
-# _download url checksum [filename]
-# Download file from url. If filename is not given (basename url) is used.
-# If DOWNLOAD_DIR/filename exists, then only download if the checksum does not match.
-_download() {
-  local url="$1"
-  local checksum="$2"
-  local filename="$DOWNLOAD_DIR/$(basename "${3:-"$url"}")"
-  local did_download
-  while [ ! -e "$filename" ] ||
-        ! _verify_checksum -silent "$filename" "$checksum"
-  do
-    if [ -n "$did_download" ]; then
-      _verify_checksum "$filename" "$checksum"  # for error message
-      return 1
-    fi
-    rm -rf "$filename"
-    echo "fetch $url -> $filename"
-    mkdir -p "$(dirname "$filename")"
-    curl -L --progress-bar -o "$filename" "$url"
-    did_download=y
-  done
+_download_nocache() { # <url> <outfile> [<sha256> | <sha512>]
+  local url=$1 ; local outfile=$2 ; local checksum=${3:-}
+  rm -f "$outfile"
+  mkdir -p "$(dirname "$outfile")"
+  echo "$(_relpath "$outfile"): fetch $url"
+  command -v wget >/dev/null &&
+    wget -q --show-progress -O "$outfile" "$url" ||
+    curl -L '-#' -o "$outfile" "$url"
+  [ -z "$checksum" ] || _sha_verify "$outfile" "$checksum"
 }
 
-# _extract_tar tarfile outdir
-_extract_tar() {
-  local tarfile="$1"
-  local outdir="$2"
-  local name=$(basename "$tarfile")
+_download() { # <url> <outfile> [<sha256> | <sha512>]
+  local url=$1 ; local outfile=$2 ; local checksum=${3:-}
+  if [ -f "$outfile" ]; then
+    [ -z "$checksum" ] && return 0
+    _sha_verify "$outfile" "$checksum" && return 0
+  fi
+  _download_nocache "$url" "$outfile" "$checksum"
+}
+
+_extract_tar() { # <file> <outdir>
+  [ $# -eq 2 ] || _err "_extract_tar"
+  local tarfile=$1
+  local outdir=$2
   [ -e "$tarfile" ] || _err "$tarfile not found"
-  local extract_dir="$WORK_BUILD_DIR/.extract-$name"
+  local extract_dir="${outdir%/}-extract-$(basename "$tarfile")"
   rm -rf "$extract_dir"
   mkdir -p "$extract_dir"
-  echo "extracting ${tarfile##$PWD/} -> ${outdir##$PWD/}"
-  XZ_OPT='-T0' tar -C "$extract_dir" -xf "$tarfile"
+  echo "extract $(basename "$tarfile") -> $(_relpath "$outdir")"
+  if ! XZ_OPT='-T0' tar -C "$extract_dir" -xf "$tarfile"; then
+    rm -rf "$extract_dir"
+    return 1
+  fi
   rm -rf "$outdir"
   mkdir -p "$(dirname "$outdir")"
   mv -f "$extract_dir"/* "$outdir"
   rm -rf "$extract_dir"
 }
 
-# _pushsrc filename|url
-_pushsrc() {
-  local filename="$(basename "$1")"
-  local archive="$DOWNLOAD_DIR/$filename"
-  local name="$(basename "$(basename "$filename" .xz)" .gz)"
-  name="$(basename "$(basename "$name" .tar)" .tgz)"
-  _extract_tar "$archive" "$WORK_BUILD_DIR/$name"
-  SOURCE_DIR_STACK+=( "$WORK_BUILD_DIR/$name" )
-  _pushd "$WORK_BUILD_DIR/$name"
-}
-
-# _download_pushsrc url sha1sum [filename]
-_download_pushsrc() {
-  local url=$1
-  local checksum=$2
-  local filename="$DOWNLOAD_DIR/$(basename "${3:-"$url"}")"
-  _download "$url" "$checksum" "$filename"
-  _pushsrc "$filename"
-}
-
-_popsrc() {
-  _popd
-  # cleanup
-  if [ ${#SOURCE_DIR_STACK[@]} -gt 0 ]; then
-    local i=$(( ${#SOURCE_DIR_STACK[@]} - 1 ))
-    local srcdir="${SOURCE_DIR_STACK[$i]}"
-    unset "SOURCE_DIR_STACK[$i]"
-    rm -rf "$srcdir"
-  fi
-}
-
-# _pidfile_kill pidfile
-_pidfile_kill() {
-  local pidfile="$1"
-  # echo "_pidfile_kill $1"
-  if [ -f "$pidfile" ]; then
-    local pid=$(cat "$pidfile" 2>/dev/null)
-    # echo "_pidfile_kill pid=$pid"
-    [ -z "$pid" ] || kill $pid 2>/dev/null || true
-    rm -f "$pidfile"
-  fi
-}
-
-# _in_PATH <path>
-_in_PATH() {
-  case "$PATH" in
-    "$1:"*|*":$1:"*|*":$1") return 0 ;;
-  esac
-  return 1
-}
-
-# _git_hash_is_symbolic <hash|name>
-_git_hash_is_symbolic() {
-  if (echo "$1" | grep -q -E '^[a-fA-F0-9]+$'); then
-    return 1
-  fi
-}
-
-# _git_HEAD_is <hash|name>
-_git_HEAD_is() {
-  # local want_hash=$(git rev-parse "$1")
-  local want_hash=$1
-  if _git_hash_is_symbolic "$want_hash"; then
-    want_hash=$(git rev-list -n 1 "$want_hash")
-  fi
-  local head_hash=$(git rev-parse HEAD)
-  [ "$want_hash" = "$head_hash" ] || return 1
-}
-
-# _git_is_dirty [<gitdir>]
-_git_is_dirty() {
-  local gitargs0=()
-  local gitargs1=(--untracked-files=no --ignore-submodules=dirty --porcelain)
-  [ -z "$1" ] || gitargs0+=( -C "$1" )
-  [ -n "$(git "${gitargs0[@]}" status "${gitargs1[@]}" 2> /dev/null)" ] || return 1
-}
-
-# _git_pull_if_needed <repourl> <gitdir> <hash|name>
-_git_pull_if_needed() {
-  local repourl=$1 ; shift
-  local gitdir=$1  ; shift
-  local githash=$1 ; shift
-  if [ -d "$gitdir" ]; then
-    _pushd "$gitdir"
-
-    if _git_HEAD_is "$githash"; then
-      echo "git source is up to date (at $githash)"
-      _popd
-      return 1  # up to date
-    fi
-
-    _log git fetch origin
-         git fetch origin
-
-    if _git_is_dirty; then
-      _log "git pull aborted: there are local uncommitted changes in $PWD"
-      git status -s --untracked-files=no --ignore-submodules=dirty
-      exit 1
-    fi
-
-    _log git checkout "$githash"
-         git checkout "$githash"
-    _popd
-  else
-    _log git clone --branch "$githash" "$repourl" "$gitdir"
-         git clone --branch "$githash" "$repourl" "$gitdir"
-  fi
+_co_targets() {
+  local TARGETS=()  # ( "arch,sys,sysver" , ... )
+  while IFS=, read -r arch sys sysver rest; do
+    TARGETS+=( "${arch:7},$sys,$sysver" )
+  done <<< "$(awk '$1 ~ /^TARGET\(/' "$PROJECT/src/targets.h" | sed -E 's/[ "]//g')"
+  echo "${TARGETS[@]}"
 }
