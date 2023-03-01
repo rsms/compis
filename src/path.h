@@ -42,6 +42,10 @@ char* nullable path_join_m(memalloc_t, const char* path1, const char* path2);
 
 inline static bool path_isabs(const char* path) { return *path == PATH_SEPARATOR; }
 
+// path_abs resolves path relative to cwd and calls path_clean on the result.
+// Note: It does not resolve symlinks (use realpath for that.)
+char* nullable path_abs(memalloc_t, const char* path);
+
 // relpath returns the path relative to the initial current working directory
 const char* relpath(const char* path);
 void relpath_init();

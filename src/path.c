@@ -120,6 +120,22 @@ usize path_join(char* dst, usize dstcap, const char* path1, const char* path2) {
 
 char* nullable path_join_m(memalloc_t ma, const char* path1, const char* path2) {
   mem_t m = mem_alloc(ma, strlen(path1) + 1 + strlen(path2) + 1);
-  path_join(m.p, m.size, path1, path2);
+  if (m.p)
+    path_join(m.p, m.size, path1, path2);
   return m.p;
+}
+
+
+char* nullable path_abs(memalloc_t ma, const char* path) {
+  if (path_isabs(path)) {
+    usize pathlen = strlen(path);
+    mem_t m = mem_alloc(ma, pathlen + 1);
+    if (m.p)
+      path_cleanx(m.p, m.size, m.p, pathlen);
+    return m.p;
+  } else {
+    char cwd[PATH_MAX];
+    safechecknotnull(getcwd(cwd, sizeof(cwd)));
+    return path_join_m(ma, cwd, path);
+  }
 }
