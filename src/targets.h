@@ -2,7 +2,8 @@
 //
 // If you update these definitions:
 // - also update target_default in target.c
-// - run etc/update-librt.sh (update if needed; it greps for content in this file)
+// - inspect _co_targets function in etc/lib.sh and update if needed
+//   (it greps for content in this file)
 //
 #ifndef TARGET
   #define TARGET(...)
