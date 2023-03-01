@@ -234,7 +234,7 @@ static err_t link_exe(
     link.infilev[i] = infilev[i].ofile.chars;
 
   task->n++;
-  bgtask_setstatusf(task, "link %s", outfile);
+  bgtask_setstatusf(task, "link %s", relpath(outfile));
   err = llvm_link(&link);
 
   mem_freetv(c->ma, link.infilev, infilec);
@@ -290,7 +290,9 @@ static err_t build_exe(char*const* srcfilev, usize filecount) {
     outfile = path_join_alloca(c.builddir, c.pkgname);
   }
 
-  bgtask_t* task = bgtask_start(c.ma, relpath(outfile), (u32)filecount + !opt_nolink, 0);
+  int taskflags = c.opt_verbose ? BGTASK_NOFANCY : 0;
+  u32 tasklen = (u32)filecount + !opt_nolink;
+  bgtask_t* task = bgtask_start(c.ma, relpath(outfile), tasklen, taskflags);
   // bgtask_t* task = bgtask_start(c.ma, c.pkgname, (u32)filecount + !opt_nolink, 0);
 
   // compile object files
