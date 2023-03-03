@@ -132,6 +132,7 @@ static err_t build_libc_musl(compiler_t* c) {
     "-ffreestanding",
     "-frounding-math",
     "-Wa,--noexecstack",
+    "-w", // disable warnings (TODO: find a way to disable only pedantic warnings)
     "-D_XOPEN_SOURCE=700" );
   strlist_add(&build.cc,
     "-Os",
@@ -141,14 +142,6 @@ static err_t build_libc_musl(compiler_t* c) {
     "-fno-asynchronous-unwind-tables",
     "-ffunction-sections",
     "-fdata-sections" );
-  strlist_add(&build.cc,
-    "-Wno-string-plus-int",
-    "-Wno-ignored-attributes",
-    "-Wno-dangling-else",
-    "-Wno-ignored-attributes",
-    "-Wno-deprecated-non-prototype",
-    "-Wno-shift-op-parentheses",
-    "-Wno-parentheses" );
   strlist_addf(&build.cc, "-Iarch/%s", arch_name(c->target.arch));
   strlist_add(&build.cc,  "-Iarch/generic",
                           "-Isrc/include",
