@@ -248,9 +248,11 @@ else
   $VERBOSE && echo "$(_relpath "$LLVMBOX_DESTDIR") (dev): up-to-date"
 fi
 
+NINJA=${NINJA:-$(command -v ninja 2>/dev/null || true)}
 export CC="$LLVMBOX_DESTDIR/bin/clang"
 export CXX="$LLVMBOX_DESTDIR/bin/clang++"
 export PATH="$LLVMBOX_DESTDIR/bin:$PATH"
+[ -n "$NINJA" ] || NINJA=$LLVMBOX_DESTDIR/bin/ninja
 
 # —————————————————————————————————————————————————————————————————————————————————
 # update clang driver code if needed
@@ -432,6 +434,7 @@ esac
 # system-specific flags
 case "$HOST_SYS" in
   linux) LDFLAGS_HOST+=( -static ) ;;
+  macos) LDFLAGS_HOST+=( -Wl,-adhoc_codesign ) ;;
 esac
 
 # build-mode-specific flags
@@ -751,6 +754,8 @@ CXXFLAGS ${CXXFLAGS[@]:-}
 CXXFLAGS_HOST ${CXXFLAGS_HOST[@]:-}
 CXXFLAGS_WASM ${CXXFLAGS_WASM[@]:-}
 CXXFLAGS_LLVM ${CXXFLAGS_LLVM[@]:-}
+END
+cat << END > lconfig.tmp
 LDFLAGS ${LDFLAGS[@]:-}
 LDFLAGS_HOST ${LDFLAGS_HOST[@]:-}
 LDFLAGS_WASM ${LDFLAGS_WASM[@]:-}
@@ -759,6 +764,10 @@ if ! diff -q config config.tmp >/dev/null 2>&1; then
   [ -e config ] && echo "build configuration changed"
   mv config.tmp config
   rm -rf "$OUT_DIR/obj" "$OUT_DIR/lto-cache"
+elif ! diff -q lconfig lconfig.tmp >/dev/null 2>&1; then
+  [ -e config ] && echo "linker configuration changed"
+  mv lconfig.tmp lconfig
+  rm -f "$OUT_DIR/$MAIN_EXE"
 else
   rm config.tmp
 fi
@@ -768,8 +777,8 @@ fi
 
 cd "$PROJECT"
 if [ -n "$RUN" ]; then
-  ninja "${NINJA_ARGS[@]}" "$@"
+  "$NINJA" "${NINJA_ARGS[@]}" "$@"
   echo $RUN
   exec "${BASH:-bash}" -c "$RUN"
 fi
-exec ninja "${NINJA_ARGS[@]}" "$@"
+exec "$NINJA" "${NINJA_ARGS[@]}" "$@"
