@@ -451,6 +451,10 @@ case "$BUILD_MODE" in
     else
       XFLAGS_HOST+=( -fomit-frame-pointer )
     fi
+    case $HOST_ARCH in
+      # minimum Haswell-gen x86 CPUs <https://clang.llvm.org/docs/UsersManual.html#x86>
+      x86_64) XFLAGS_HOST+=( -march=x86-64-v3 ) ;;
+    esac
     # LDFLAGS_WASM+=( -z stack-size=$[128 * 1024] ) # larger stack, smaller heap
     # LDFLAGS_WASM+=( --compress-relocations --strip-debug )
     # LDFLAGS_HOST+=( -dead_strip )
