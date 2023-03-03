@@ -19,8 +19,7 @@
 ARCH(aarch64)
 ARCH(arm)
 ARCH(i386)
-ARCH(riscv32)
-ARCH(riscv64)
+ARCH(riscv64)  // no riscv32 since musl doesn't (yet) support it
 ARCH(wasm32)
 ARCH(wasm64)
 ARCH(x86_64)
@@ -34,7 +33,6 @@ SYS(linux)
 TARGET(aarch64, linux, "", 8, 8, "aarch64-linux-musl")
 TARGET(arm,     linux, "", 4, 4, "arm-linux-musl")
 TARGET(i386,    linux, "", 4, 4, "i386-linux-musl")
-TARGET(riscv32, linux, "", 4, 4, "riscv32-linux-musl")
 TARGET(riscv64, linux, "", 8, 8, "riscv64-linux-musl")
 TARGET(x86_64,  linux, "", 8, 8, "x86_64-linux-musl")
 
@@ -46,4 +44,3 @@ TARGET(x86_64,  macos, "10", 8, 8, "x86_64-apple-darwin19")
 TARGET(x86_64,  macos, "11", 8, 8, "x86_64-apple-darwin20")
 TARGET(x86_64,  macos, "12", 8, 8, "x86_64-apple-darwin21")
 TARGET(x86_64,  macos, "13", 8, 8, "x86_64-apple-darwin22")
-
