@@ -28,7 +28,6 @@ _gen_sources() {
     var=${var//-/__} # foo___bar___b-z.c => foo___bar___b__z.c
     var=${var//./_}  # foo___bar___b__z.c => foo___bar___b__z_c
     declare -g SRCIDX__${var}=$n
-    echo "SRCIDX $f = $n"
     (( n += 1 ))
   done
 }
@@ -108,7 +107,6 @@ _target_sources() {
     name=${name//-/__}
     name=${name//./_}
     name=SRCIDX__${name}
-    echo "USE $arch $f = ${!name}" >&2
     indices+=( ${!name} )
   done
 

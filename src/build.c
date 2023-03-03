@@ -30,6 +30,7 @@ static bool opt_genasm = false;
 static bool opt_logld = false;
 static bool opt_nolink = false;
 static bool opt_nomain = false;
+static bool opt_version = false;
 static const char* opt_builddir = "build";
 #if DEBUG
   static bool opt_trace_all = false;
@@ -61,6 +62,7 @@ static const char* opt_builddir = "build";
   L( &opt_logld,    "print-ld-cmd", "Print linker invocation to stderr")\
   L( &opt_nolink,   "no-link",      "Only compile, don't link")\
   L( &opt_nomain,   "no-auto-main", "Don't auto-generate C ABI \"main\" for main.main")\
+  L( &opt_version,  "version",      "Print Compis version on stdout and exit")\
   /* debug-only options */\
   DEBUG_L( &opt_trace_all,       "trace",           "Trace everything")\
   DEBUG_L( &opt_trace_parse,     "trace-parse",     "Trace parsing")\
@@ -75,7 +77,7 @@ static const char* opt_builddir = "build";
 
 static void help(const char* prog) {
   printf(
-    "Compis, your friendly neighborhood compiler\n"
+    "Compis " CO_VERSION_STR ", your friendly neighborhood compiler\n"
     "Usage: co %s [options] [--] <source> ...\n"
     "Options:\n"
     "",
@@ -119,6 +121,11 @@ int main_build(int argc, char* argv[]) {
     opt_trace_cgen |= opt_trace_all;
     opt_trace_subproc |= opt_trace_all;
   #endif
+
+  if (opt_version) {
+    print_co_version();
+    return 0;
+  }
 
   if (optind == argc)
     errx(1, "missing input source");

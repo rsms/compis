@@ -153,11 +153,11 @@ while [[ $# -gt 0 ]]; do
 usage: $0 [options] [--] [<target> ...]
 Build mode option: (select just one)
   -opt           Build optimized product with some assertions enabled (default)
-  -opt-fast      Build optimized product without any assertions
+  -opt-fast      Build optimized product with no assertions
   -debug         Build debug product with full assertions and tracing capability
   -config        Just configure, only generate build.ninja file
 Output options:
-  -g             Make -opt build extra debuggable (basic opt only, frame pointers)
+  -g             Make -opt-fast debuggable (default for -opt and -debug)
   -strip         Do not include debug data (negates -g)
   -lto           Enable LTO (default for -opt)
   -no-lto        Disable LTO (default for -debug)
@@ -410,6 +410,18 @@ CXXFLAGS_LLVM=()
 
 LDFLAGS_HOST=( -gz=zlib )
 LDFLAGS_WASM=( --no-entry --no-gc-sections --export-dynamic --import-memory )
+
+# version
+CO_VERSION=$(cat "$PROJECT/version.txt")
+IFS=. read -r CO_VER_MAJ CO_VER_MIN CO_VER_BUILD <<< "$CO_VERSION"
+IFS=+ read -r CO_VER_BUILD CO_VER_TAG <<< "$CO_VER_BUILD"
+XFLAGS+=(
+  -DCO_VERSION_STR="\\\"$CO_VERSION\\\"" \
+  -DCO_VERSION="$(printf "0x%02x%02x%02x00" $CO_VER_MAJ $CO_VER_MIN $CO_VER_BUILD)" \
+)
+if [ -d "$PROJECT/.git" ]; then
+  XFLAGS+=( -DCO_VERSION_GIT_STR="\\\"$(git -C "$PROJECT" rev-parse HEAD)\\\"" )
+fi
 
 # arch-and-system-specific flags
 case "$HOST_ARCH-$HOST_SYS" in

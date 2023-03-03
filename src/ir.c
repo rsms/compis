@@ -1863,7 +1863,7 @@ static void postorder_dfs(ircons_t* c, irfun_t* f, irblock_t** order) {
 }
 
 
-static void check_borrowing(ircons_t* c, irfun_t* f) {
+UNUSED static void check_borrowing(ircons_t* c, irfun_t* f) {
   // dump_irfun(f, c->ma);
   dlog("TODO %s", __FUNCTION__);
 

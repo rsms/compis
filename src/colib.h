@@ -1045,4 +1045,6 @@ extern const char* coroot;
 // comaxproc: max thread concurrency (defaults to sys_ncpu, can be set with -j)
 extern u32 comaxproc;
 
+void print_co_version();
+
 ASSUME_NONNULL_END

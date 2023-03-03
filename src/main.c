@@ -2,6 +2,7 @@
 #include "llvm/llvm.h"
 #include "compiler.h"
 #include "path.h"
+#include "clang/Basic/Version.inc" // CLANG_VERSION_STRING
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -9,6 +10,9 @@
 #include <unistd.h> // sleep
 #include <err.h>
 #include <libgen.h>
+
+#include "../lib/musl/src/internal/version.h"
+#define MUSL_VERSION_STR VERSION
 
 typedef bool(*linkerfn_t)(int argc, char*const* argv, bool can_exit_early);
 
@@ -37,7 +41,7 @@ static void usage(FILE* f) {
   }
 
   fprintf(f,
-    "Compis, your friendly neighborhood programming language\n"
+    "Compis " CO_VERSION_STR ", your friendly neighborhood programming language\n"
     "Usage: %s <command> [args ...]\n"
     "Commands:\n"
     "  build [args ...]     Compis compiler\n"
@@ -55,6 +59,22 @@ static void usage(FILE* f) {
     coprogname,
     host_ld);
 }
+
+
+void print_co_version() {
+  printf("compis " CO_VERSION_STR);
+  #ifdef CO_VERSION_GIT_STR
+    printf(" (" CO_VERSION_GIT_STR ")");
+  #endif
+  const target_t* host = target_default();
+  printf(
+    " %s-%s"
+    ", llvm " CLANG_VERSION_STRING
+    ", musl " MUSL_VERSION_STR
+    "\n",
+    arch_name(host->arch), sys_name(host->sys));
+}
+
 
 static int ar_main(int argc, char*const* argv) {
   // TODO: accept --target triple (where we really only parse the os)
@@ -236,6 +256,11 @@ int main(int argc, char* argv[]) {
 
   if (strstr(cmd, "-h") || strstr(cmd, "help")) {
     usage(stdout);
+    return 0;
+  }
+
+  if (strstr(cmd, "--version")) {
+    print_co_version();
     return 0;
   }
 

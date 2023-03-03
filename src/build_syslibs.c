@@ -239,8 +239,8 @@ static err_t build_librt(compiler_t* c) {
     "-fomit-frame-pointer",
     "-fvisibility=hidden");
 
-  if (c->target.arch == ARCH_riscv32)
-    strlist_add(&build.cc, "-fforce-enable-int128");
+  // if (c->target.arch == ARCH_riscv32)
+  //   strlist_add(&build.cc, "-fforce-enable-int128");
 
   strlist_addf(&build.cc, "-I%s", build.srcdir);
   strlist_add_array(&build.cc, c->cflags_sysinc.strings, c->cflags_sysinc.len);
