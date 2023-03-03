@@ -12,7 +12,7 @@ esac
 CO_VERSION=$(cat "$PROJECT/version.txt")
 BUILDDIR=out/dist
 DESTDIR=out/dist/compis-$CO_VERSION-$ARCH-$SYS
-ARCHIVE=$DESTDIR.tar.xz
+ARCHIVE_SHA256SUM=$DESTDIR.sha256.txt
 
 echo "building from scratch in $BUILDDIR"
 rm -rf $BUILDDIR
@@ -31,5 +31,10 @@ for f in lib/*; do
   _copy $f $DESTDIR/$(basename $f)
 done
 
-echo "creating $ARCHIVE"
-_create_tar_xz_from_dir $DESTDIR $ARCHIVE
+echo "creating $DESTDIR.tar.xz"
+_create_tar_xz_from_dir $DESTDIR $DESTDIR.tar.xz
+
+echo "creating $DESTDIR.sha256.txt"
+( cd $(dirname $DESTDIR) &&
+  sha256sum $(basename $DESTDIR.tar.xz) > $(basename $DESTDIR.sha256.txt)
+)
