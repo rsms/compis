@@ -27,7 +27,7 @@ _popd() {
   [ "$PWD" = "$PWD0" ] || echo "cd $(_relpath "$PWD")"
 }
 
-_copy() {
+_copy() { # <arg to cp> ...
   printf "copy"
   local past=
   for arg in "$@"; do case "$arg" in
@@ -43,6 +43,13 @@ _cpd() {
   echo "copy $(($#-1)) files to $(_relpath "${@: -1}")/"
   mkdir -p "${@: -1}"
   cp -r "$@"
+}
+
+_symlink() { # <linkfile-to-create> <target>
+  echo "symlink $(_relpath "$1") -> $(_relpath "$2")"
+  [ ! -e "$1" ] || [ -L "$1" ] || _err "$(_relpath "$1") exists (not a link)"
+  rm -f "$1"
+  ln -fs "$2" "$1"
 }
 
 _sha_verify() { # <file> [<sha256> | <sha512>]
@@ -69,7 +76,7 @@ _download_nocache() { # <url> <outfile> [<sha256> | <sha512>]
   mkdir -p "$(dirname "$outfile")"
   echo "$(_relpath "$outfile"): fetch $url"
   command -v wget >/dev/null &&
-    wget -q --show-progress -O "$outfile" "$url" ||
+    wget -O "$outfile" "$url" ||
     curl -L '-#' -o "$outfile" "$url"
   [ -z "$checksum" ] || _sha_verify "$outfile" "$checksum"
 }

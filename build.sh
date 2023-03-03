@@ -68,7 +68,7 @@ _download_nocache() { # <url> <outfile> [<sha256> | <sha512>]
   mkdir -p "$(dirname "$outfile")"
   echo "$(_relpath "$outfile"): fetch $url"
   command -v wget >/dev/null &&
-    wget -q --show-progress -O "$outfile" "$url" ||
+    wget -q -O "$outfile" "$url" ||
     curl -L '-#' -o "$outfile" "$url"
   [ -z "$checksum" ] || _sha_verify "$outfile" "$checksum"
 }
