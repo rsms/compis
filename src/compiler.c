@@ -172,38 +172,54 @@ static err_t configure_buildroot(compiler_t* c, const char* buildroot) {
 
 static err_t add_target_sysdir_if_exists(const char* path, void* cp) {
   compiler_t* c = cp;
-  char* idir = strcat_alloca(path, "/include");
-  if (fs_isdir(idir))
-    strlist_addf(&c->cflags, "-isystem%s", idir);
+  if (fs_isdir(path))
+    strlist_addf(&c->cflags, "-isystem%s", path);
   return 0;
 }
 
 
 static err_t configure_cflags(compiler_t* c) {
   strlist_dispose(&c->cflags);
+
+  // flags used for all C and assembly compilation
   c->cflags = strlist_make(c->ma,
-    "-nostdinc",
     "-nostdlib",
-    "-ffreestanding",
     "-g",
-    "-feliminate-unused-debug-types",
     "-target", c->target.triple);
   strlist_addf(&c->cflags, "--sysroot=%s", c->sysroot);
   strlist_addf(&c->cflags,
     "-resource-dir=%s/deps/llvmbox/lib/clang/" CLANG_VERSION_STRING, coroot);
+  if (c->target.sys == SYS_macos) strlist_add(&c->cflags,
+    "-Wno-nullability-completeness");
+
+  // end of common flags
+  u32 flags_common_end = c->cflags.len;
+  // start of common cflags
+
+  strlist_add(&c->cflags,
+    "-nostdinc",
+    "-ffreestanding",
+    "-feliminate-unused-debug-types");
+
   // note: must add <resdir>/include explicitly when -nostdinc or -no-builtin is set
   strlist_addf(&c->cflags,
     "-isystem%s/deps/llvmbox/lib/clang/" CLANG_VERSION_STRING "/include", coroot);
 
-  if (c->target.sys == SYS_macos) strlist_add(&c->cflags,
-    "-Wno-nullability-completeness",
-    "-include", "TargetConditionals.h");
-
-  // system and libc headers dirs
-  target_foreach_sysdir(&c->target, add_target_sysdir_if_exists, c);
-
   // end of common cflags
-  int cflags_common_len = c->cflags.len;
+  u32 cflags_common_end = c->cflags.len;
+
+  // system-header dirs
+  target_visit_dirs(&c->target, "lib/sysinc", add_target_sysdir_if_exists, c);
+  if (c->target.sys == SYS_linux) {
+    strlist_addf(&c->cflags, "-I%s/lib/musl/include/%s",
+      coroot, arch_name(c->target.arch));
+    strlist_addf(&c->cflags, "-I%s/lib/musl/include", coroot);
+  }
+  if (c->target.sys == SYS_macos) {
+    strlist_add(&c->cflags, "-include", "TargetConditionals.h");
+  }
+  u32 cflags_sysinc_end = c->cflags.len;
+
   // start of compis cflags
 
   strlist_add(&c->cflags, "-std=c17");
@@ -218,9 +234,13 @@ static err_t configure_cflags(compiler_t* c) {
   // strlist_add(&c->cflags, "-fPIC");
   strlist_addf(&c->cflags, "-I%s/lib", coroot);
 
-  c->cflags_common = (slice_t){
-    .strings = (const char*const*)strlist_array(&c->cflags),
-    .len = (usize)cflags_common_len };
+  const char*const* argv = (const char*const*)strlist_array(&c->cflags);
+  c->sflags_common = (slice_t){ .strings = argv, .len = (usize)flags_common_end };
+  c->cflags_common = (slice_t){ .strings = argv, .len = (usize)cflags_common_end };
+  c->cflags_sysinc = (slice_t){
+    .strings = &argv[cflags_common_end],
+    .len = (usize)(cflags_sysinc_end - cflags_common_end),
+  };
 
   return c->cflags.ok ? 0 : ErrNoMem;
 }
@@ -279,8 +299,8 @@ bool compiler_fully_qualified_name(const compiler_t* c, buf_t* buf, const node_t
 // define SPAWN_TOOL_USE_FORK=1 to use fork() by default
 #ifndef SPAWN_TOOL_USE_FORK
   #define SPAWN_TOOL_USE_FORK 1
-  // Note: In my (rsms) tests on macos x86, spawning new processes (posix_spawn)
-  // uses about 10x more memory than fork() in practice, likely from CoW.
+  // // Note: In my (rsms) tests on macos x86, spawning new processes (posix_spawn)
+  // // uses about 10x more memory than fork() in practice, likely from CoW.
   // #if defined(__APPLE__) && defined(DEBUG)
   //   // Note: fork() in debug builds on darwin are super slow, likely because of msan,
   //   // so we disable fork()ing in those cases.
@@ -305,8 +325,11 @@ err_t spawn_tool(
   assert(argv[0] != NULL);
   if (SPAWN_TOOL_USE_FORK && (flags & SPAWN_TOOL_NOFORK) == 0) {
     const char* cmd = argv[0];
-    if (strcmp(cmd, "cc") == 0 || strcmp(cmd, "c++") == 0 || strcmp(cmd, "clang") == 0)
+    if (strcmp(cmd, "cc") == 0 || strcmp(cmd, "c++") == 0 ||
+        strcmp(cmd, "clang") == 0 || strcmp(cmd, "as") == 0)
+    {
       return subproc_fork(p, clang_fork, cwd, argv);
+    }
   }
   return subproc_spawn(p, coexefile, argv, /*envp*/NULL, cwd);
 }
@@ -328,7 +351,7 @@ err_t compiler_spawn_tool(
 {
   subproc_t* p = subprocs_alloc(procs);
   if (!p)
-    return dlog("subprocs_alloc failed"), ErrNoMem;
+    return dlog("subprocs_alloc failed"), ErrCanceled;
   return compiler_spawn_tool_p(c, p, args, cwd);
 }
 
@@ -466,8 +489,7 @@ static err_t cc_to_obj_main(compiler_t* c, const char* cfile, const char* ofile)
   if (!args.ok)
     return ErrNoMem;
 
-  dlog("cc %s -> %s", cfile, ofile);
-
+  // dlog("cc %s -> %s", relpath(cfile), relpath(ofile));
   // if (c->opt_verbose) {
   //   for (int i = 0; i < args.len; i++)
   //     fprintf(stderr, &" %s"[i==0], argv[i]);

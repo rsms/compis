@@ -260,6 +260,7 @@ static err_t build_exe(char*const* srcfilev, usize filecount) {
   c.nomain = opt_nomain;
   c.buildmode = opt_debug ? BUILDMODE_DEBUG : BUILDMODE_OPT;
   if (err || ( err = compiler_configure(&c, opt_target, opt_builddir) )) {
+    dlog("compiler_configure: %s", err_str(err));
     compiler_dispose(&c);
     return err;
   }
@@ -292,8 +293,7 @@ static err_t build_exe(char*const* srcfilev, usize filecount) {
 
   int taskflags = c.opt_verbose ? BGTASK_NOFANCY : 0;
   u32 tasklen = (u32)filecount + !opt_nolink;
-  bgtask_t* task = bgtask_start(c.ma, relpath(outfile), tasklen, taskflags);
-  // bgtask_t* task = bgtask_start(c.ma, c.pkgname, (u32)filecount + !opt_nolink, 0);
+  bgtask_t* task = bgtask_start(c.ma, c.pkgname, tasklen, taskflags);
 
   // compile object files
   for (usize i = 0; i < filecount; i++) {

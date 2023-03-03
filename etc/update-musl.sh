@@ -2,7 +2,7 @@
 set -euo pipefail
 source "$(dirname "$0")/lib.sh"
 
-SUPPORTED_ARCHS=( aarch64 arm i386 riscv64 x86_64 )
+SUPPORTED_ARCHS=( aarch64 arm i386 riscv64 x86_64 )  # TODO: use _co_targets
 
 MUSL_VERSION=1.2.3
 MUSL_SHA256=7d5b0b6062521e4627e099e4c9dc8248d32a30285e959b7eecaa780cf8cfd4a4
@@ -123,6 +123,26 @@ done
 find . -empty -type d -delete
 
 "$LLVMBOX"/bin/llvmbox-dedup-target-files include
+
+# ————————————————————————————————————————————————————————————————————————————————————
+# rename include dirs
+#
+# Some "internal" headers in src/ include "public" headers in include/,
+# but we have moved include/ to include/any-linux/. For example:
+#   lib/musl/src/include/features.h
+#   #include "../../include/features.h"
+# We needed to do this for the llvmbox-dedup-target-files tool to work.
+# Now we need to rename the dirs so that include/ is found.
+
+mv include/any-linux include2
+for arch in "${SUPPORTED_ARCHS[@]}"; do
+  f=include/$arch-linux
+  [ -d "$f" ] || continue
+  [ ! -e include2/$arch ] || _err "duplicate entry: include2/$arch"
+  mv "$f" include2/$arch
+done
+rmdir include
+mv include2 include
 
 # ————————————————————————————————————————————————————————————————————————————————————
 # re-generate src/musl_info.h

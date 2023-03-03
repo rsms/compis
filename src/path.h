@@ -27,6 +27,10 @@ usize path_dirlen(const char* path, usize len);
 // If the path consists entirely of slashes, returns "/".
 const char* path_base(const char* path);
 
+// path_ext returns a pointer to the filename extension, or end of path if none.
+// e.g. path_ext("a.b/c.d") => ".d", path_ext("a.b/c") => ""
+const char* path_ext(const char* path);
+
 // path_clean resolves parent paths ("..") and eliminates redundant "/" and "./",
 // reducing 'path' to a clean, canonical form. E.g. "a/b/../c//./d" => "a/c/d"
 static char* path_clean(char* path); // returns 'path'

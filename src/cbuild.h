@@ -5,10 +5,21 @@
 #include "strlist.h"
 ASSUME_NONNULL_BEGIN
 
+typedef u8 cobj_srctype_t;
+enum cobj_srctype {
+  COBJ_TYPE_C,        // .c, .C
+  COBJ_TYPE_ASSEMBLY, // .s, .S
+};
+
+typedef u8 cobj_flags_t;
+#define COBJ_EXCLUDE_FROM_LIB  (1<<0)  // don't include when linking library product
+
 typedef struct {
   const char*         srcfile;
   char* nullable      objfile;
   strlist_t* nullable cflags;
+  cobj_srctype_t      srctype;
+  cobj_flags_t        flags;
 } cobj_t;
 
 typedef array_type(cobj_t) cobjarray_t;
@@ -22,6 +33,8 @@ typedef struct {
   compiler_t*    c;
   strlist_t      cc;
   strlist_t      cc_snapshot;
+  strlist_t      as;
+  strlist_t      as_snapshot;
   cbuild_kind_t  kind;
   char*          name;
   const char*    srcdir;
@@ -42,6 +55,6 @@ inline static bool cbuild_config_ended(cbuild_t* b) { return b->cc_snapshot.len 
 
 err_t cbuild_build(cbuild_t* b, const char* outfile);
 
-inline static bool cbuild_ok(cbuild_t* b) { return b->cc.ok; }
+inline static bool cbuild_ok(cbuild_t* b) { return b->cc.ok & b->as.ok; }
 
 ASSUME_NONNULL_END

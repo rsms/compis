@@ -8,6 +8,7 @@
 #include "llvm/llvm.h"
 
 #include "librt_info.h"
+#include "musl_info.h"
 
 #include <dirent.h>
 #include <err.h>
@@ -82,38 +83,121 @@ static err_t copy_files(const char* srcdir, const char* dstdir) {
 }
 
 
+#define FIND_SRCLIST(target, srclist) \
+  ((__typeof__(srclist[0])*)_find_srclist( \
+    target, srclist, sizeof(srclist[0]), countof(srclist)))
+
+
+static const void* _find_srclist(
+  target_t* t, const void* listp, usize stride, usize listc)
+{
+  for (usize i = 0; i < listc; i++) {
+    const targetdesc_t* t2 = listp + i*stride;
+    if (t->arch == t2->arch && t->sys == t2->sys && strcmp(t->sysver, t2->sysver) == 0)
+      return t2;
+  }
+  assert(listc > 0);
+  safefail("no impl");
+  return listp;
+}
+
+
 static err_t copy_sysroot_lib_dir(const char* path, void* cp) {
   compiler_t* c = cp;
-  char* libdir = strcat_alloca(path, "/lib");
-  if (!fs_isdir(libdir))
+  if (!fs_isdir(path))
     return 0;
   char* dstdir = path_join_alloca(c->sysroot, "lib");
-  return copy_files(libdir, dstdir);
+  return copy_files(path, dstdir);
 }
 
 
 static err_t build_libc_musl(compiler_t* c) {
+  char tmpbuf[PATH_MAX];
+
   cbuild_t build;
-  cbuild_init(&build, c, "librt");
-  build.srcdir = path_join_alloca(coroot, "lib/librt");
+  cbuild_init(&build, c, "libc");
+  build.srcdir = path_join_alloca(coroot, "lib/musl");
   err_t err = 0;
 
-  log("TODO NOT IMPLEMENTED: %s", __FUNCTION__);
+  // flags for compiling assembly sources
+  strlist_add(&build.as,
+    "-Wa,--noexecstack",
+    "-Os",
+    "-pipe" );
 
+  // flags for compiling C sources
+  strlist_add(&build.cc,
+    "-std=c99",
+    "-nostdinc",
+    "-ffreestanding",
+    "-frounding-math",
+    "-Wa,--noexecstack",
+    "-D_XOPEN_SOURCE=700" );
+  strlist_add(&build.cc,
+    "-Os",
+    "-pipe",
+    "-fomit-frame-pointer",
+    "-fno-unwind-tables",
+    "-fno-asynchronous-unwind-tables",
+    "-ffunction-sections",
+    "-fdata-sections" );
+  strlist_add(&build.cc,
+    "-Wno-string-plus-int",
+    "-Wno-ignored-attributes",
+    "-Wno-dangling-else",
+    "-Wno-ignored-attributes",
+    "-Wno-deprecated-non-prototype",
+    "-Wno-shift-op-parentheses",
+    "-Wno-parentheses" );
+  strlist_addf(&build.cc, "-Iarch/%s", arch_name(c->target.arch));
+  strlist_add(&build.cc,  "-Iarch/generic",
+                          "-Isrc/include",
+                          "-Isrc/internal" );
+  strlist_addf(&build.cc, "-Iinclude/%s", arch_name(c->target.arch));
+  strlist_add(&build.cc,  "-Iinclude" );
+  strlist_add_array(&build.cc, c->cflags_sysinc.strings, c->cflags_sysinc.len);
+
+  // add sources
+  const musl_srclist_t* srclist = FIND_SRCLIST(&c->target, musl_srclist);
+  if (!cobjarray_reserve(&build.objs, c->ma, countof(musl_sources))) {
+    err = ErrNoMem;
+    goto end;
+  }
+  for (u32 i = 0; i < countof(srclist->sources)*8; i++) {
+    if (!(srclist->sources[i / 8] & ((u8)1u << (i % 8))))
+      continue;
+    cbuild_add_source(&build, musl_sources[i]);
+  }
+
+  // add crt sources
+  char* crt1src = strcat_alloca("crt/", srclist->crt1);
+  cobj_t* obj = cbuild_add_source(&build, crt1src);
+  // cobj_addcflagf(&build, obj, "");
+  obj->flags |= COBJ_EXCLUDE_FROM_LIB;
+  cobj_setobjfilef(&build, obj, "%s/lib/crt1.o", c->sysroot);
+
+  // build
+  const char* outfile = lib_path(c, tmpbuf, "libc.a");
+  err = cbuild_build(&build, outfile);
+
+end:
   cbuild_dispose(&build);
   return err;
 }
 
 
 static err_t build_libc(compiler_t* c) {
-  err_t err = target_foreach_sysdir(&c->target, copy_sysroot_lib_dir, c);
-  if (err)
-    return err;
-
-  if (c->target.sys == SYS_linux)
-    return build_libc_musl(c);
-
-  return err;
+  switch ((enum target_sys)c->target.sys) {
+    case SYS_macos:
+      return target_visit_dirs(&c->target, "lib/darwin", copy_sysroot_lib_dir, c);
+    case SYS_linux:
+      return build_libc_musl(c);
+    case SYS_COUNT:
+    case SYS_none:
+      break;
+  }
+  safefail("target.sys #%u", c->target.sys);
+  return ErrInvalid;
 }
 
 
@@ -140,7 +224,7 @@ static err_t librt_add_aarch64_lse_sources(cbuild_t* b) {
         cobj_addcflagf(b, obj, "-DL_%s", pat);
         cobj_addcflagf(b, obj, "-DSIZE=%u", 1u << sizem);
         cobj_addcflagf(b, obj, "-DMODEL=%u", model);
-        cobj_setobjfilef(b, obj, "aarch64/lse_%s_%u_%u.o", pat, 1u << sizem, model);
+        cobj_setobjfilef(b, obj, "aarch64.lse_%s_%u_%u.o", pat, 1u << sizem, model);
       }
     }
   }
@@ -166,6 +250,7 @@ static err_t build_librt(compiler_t* c) {
     strlist_add(&build.cc, "-fforce-enable-int128");
 
   strlist_addf(&build.cc, "-I%s", build.srcdir);
+  strlist_add_array(&build.cc, c->cflags_sysinc.strings, c->cflags_sysinc.len);
 
   // TODO: cmake COMPILER_RT_HAS_FCF_PROTECTION_FLAG
   // if (compiler_accepts_flag_for_target("-fcf-protection=full"))
@@ -183,18 +268,7 @@ static err_t build_librt(compiler_t* c) {
   err_t err = 0;
 
   // find source list for target
-  const librt_srclist_t* srclist = NULL;
-  for (u32 i = 0; i < countof(librt_srclist); i++) {
-    const librt_srclist_t* t = &librt_srclist[i];
-    if (c->target.arch == t->arch && c->target.sys == t->sys &&
-        strcmp(c->target.sysver, t->sysver) == 0)
-    {
-      srclist = t;
-      break;
-    }
-  }
-  if (!srclist)
-    panic("no librt impl for target");
+  const librt_srclist_t* srclist = FIND_SRCLIST(&c->target, librt_srclist);
 
   // find sources
   if (!cobjarray_reserve(&build.objs, c->ma, countof(librt_sources))) {

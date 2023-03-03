@@ -18,7 +18,9 @@
 void cbuild_init(cbuild_t* b, compiler_t* c, const char* name) {
   b->c = c;
   b->cc = strlist_make(c->ma, "cc");
+  b->as = strlist_make(c->ma, "cc");
   strlist_add_array(&b->cc, c->cflags_common.strings, c->cflags_common.len);
+  strlist_add_array(&b->as, c->sflags_common.strings, c->sflags_common.len);
 
   usize namelen = strlen(name);
   usize objdircap = strlen(c->builddir) + 1 + namelen + strlen(OBJDIR_SUFFIX) + 1;
@@ -33,6 +35,7 @@ void cbuild_init(cbuild_t* b, compiler_t* c, const char* name) {
 
   b->srcdir = ".";
   memset(&b->cc_snapshot, 0, sizeof(b->cc_snapshot));
+  memset(&b->as_snapshot, 0, sizeof(b->cc_snapshot));
   memset(&b->objs, 0, sizeof(b->objs));
 }
 
@@ -48,6 +51,7 @@ void cbuild_dispose(cbuild_t* b) {
   cobjarray_dispose(&b->objs, ma);
   mem_freecstr(ma, b->objdir);
   strlist_dispose(&b->cc);
+  strlist_dispose(&b->as);
 }
 
 
@@ -60,6 +64,8 @@ cobj_t* nullable cbuild_add_source(cbuild_t* b, const char* srcfile) {
   cobj_t* obj = &b->objs.v[b->objs.len++];
   memset(obj, 0, sizeof(*obj));
   obj->srcfile = srcfile;
+  if (strcasecmp(path_ext(srcfile), ".s") == 0)
+    obj->srctype = COBJ_TYPE_ASSEMBLY;
   return obj;
 }
 
@@ -111,7 +117,9 @@ void cobj_setobjfilef(cbuild_t* b, cobj_t* obj, const char* fmt, ...) {
 void cbuild_end_config(cbuild_t* b) {
   assertf(!cbuild_config_ended(b), "%s called twice", __FUNCTION__);
   strlist_add(&b->cc, "-c", "-o");
+  strlist_add(&b->as, "-c", "-o");
   b->cc_snapshot = strlist_save(&b->cc);
+  b->as_snapshot = strlist_save(&b->as);
 }
 
 
@@ -120,8 +128,15 @@ static const char* cbuild_objfile(cbuild_t* b, const cobj_t* obj) {
     if (path_isabs(obj->objfile))
       return obj->objfile;
     snprintf(b->objfile, sizeof(b->objfile), "%s/%s", b->objdir, obj->objfile);
-  } else {
-    snprintf(b->objfile, sizeof(b->objfile), "%s/%s.o", b->objdir, obj->srcfile);
+    return b->objfile;
+  }
+  // based on srcfile, e.g. "foo/bar.c" => "{objdir}/foo bar.c.o"
+  int len = snprintf(b->objfile, sizeof(b->objfile), "%s/%s.o", b->objdir, obj->srcfile);
+  safecheckf((usize)len < sizeof(b->objfile), "pathname overflow %s", obj->srcfile);
+  // sub '/' -> ' '
+  for (usize i = strlen(b->objdir) + 1; i < (usize)len; i++) {
+    if (b->objfile[i] == '/')
+      b->objfile[i] = ' ';
   }
   return b->objfile;
 }
@@ -192,26 +207,28 @@ static err_t cbuild_build_compile(cbuild_t* b, bgtask_t* task, strlist_t* objfil
   for (u32 i = 0; i < b->objs.len; i++) {
     cobj_t* obj = &b->objs.v[i];
     const char* objfile = cbuild_objfile(b, obj);
+    strlist_t* args = obj->srctype == COBJ_TYPE_C ? &b->cc : &b->as;
 
-    strlist_add(&b->cc, objfile, obj->srcfile);
+    strlist_add(args, objfile, obj->srcfile);
     if (obj->cflags)
-      strlist_add_list(&b->cc, obj->cflags);
+      strlist_add_list(args, obj->cflags);
 
     task->n++;
     if (obj->objfile && *obj->objfile) {
       // custom objfile (ie may be compiling the same source as multiple objects)
-      bgtask_setstatusf(task, "cc %s (%s)",
+      bgtask_setstatusf(task, "compile %s (%s)",
         relpath(obj->srcfile), path_base(obj->objfile));
     } else {
-      bgtask_setstatusf(task, "cc %s", relpath(obj->srcfile));
+      bgtask_setstatusf(task, "compile %s", relpath(obj->srcfile));
     }
 
-    err = compiler_spawn_tool(b->c, subprocs, &b->cc, b->srcdir);
-    strlist_restore(&b->cc, b->cc_snapshot); // reset cc args
+    err = compiler_spawn_tool(b->c, subprocs, args, b->srcdir);
+    strlist_restore(args, obj->srctype == COBJ_TYPE_C ? b->cc_snapshot : b->as_snapshot);
     if (err)
       break;
 
-    strlist_add(objfiles, objfile);
+    if ((obj->flags & COBJ_EXCLUDE_FROM_LIB) == 0)
+      strlist_add(objfiles, objfile);
   }
 
   // wait for compiler jobs to complete

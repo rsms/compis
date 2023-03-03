@@ -950,6 +950,9 @@ const char* strim_begin(const char* s, usize len, char trimc);
 // e.g. strim_end("hello  ", 7, ' ') => 5
 usize strim_end(const char* s, usize len, char trimc);
 
+// str_endswith returns true if null-terminated string s ends with suffix
+bool str_endswith(const char* s, const char* suffix);
+
 usize sfmtu64(char* buf, u64 v, u32 base);
 
 // strcat_alloca joins strings into memory allocated on stack with alloca

@@ -537,7 +537,9 @@ typedef struct compiler {
   char*       pkgbuilddir;   // "{builddir}/{pkgname}.pkg"
   char*       pkgname;       // name of package being compiled
   strlist_t   cflags;        // cflags used for compis objects (includes cflags_common)
+  slice_t     sflags_common; // flags used for all assembly objects (slice of cflags)
   slice_t     cflags_common; // cflags used for all objects (slice of cflags)
+  slice_t     cflags_sysinc; // cflags with -isystemPATH for current target
 
   // diagnostics
   diaghandler_t  diaghandler; // called when errors are encountered

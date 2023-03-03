@@ -165,14 +165,20 @@ usize target_fmt(const target_t* t, char* buf, usize bufcap) {
 }
 
 
-err_t target_foreach_sysdir(target_t* t, target_sysdir_visitor_t visitor, void* ctx) {
+err_t target_visit_dirs(
+  target_t* t, const char* basedir, target_str_visitor_t visitor, void* ctx)
+{
   char path[PATH_MAX];
 
-  usize offs = (usize)snprintf(path, sizeof(path), "%s/lib/sysroot/", coroot);
-  safecheck(offs < sizeof(path));
-  if (offs >= sizeof(path))
-    offs = sizeof(path) - 1;
+  usize offs = (usize)snprintf(path, sizeof(path), "%s/%s", coroot, basedir);
+  safecheck(offs < sizeof(path) - 1);
+  if (offs >= sizeof(path) - 1)
+    offs = sizeof(path) - 2;
   usize pathcap = sizeof(path) - offs;
+  if (*basedir) {
+    pathcap--;
+    path[offs++] = '/';
+  }
 
   err_t err = 0;
 

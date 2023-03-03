@@ -19,6 +19,12 @@ typedef struct {
   const char* triple;    // for LLVM, e.g. x86_64-apple-darwin19, aarch64-linux-musl
 } target_t;
 
+typedef struct {
+  arch_t      arch;
+  sys_t       sys;
+  const char* sysver;
+} targetdesc_t;
+
 ASSUME_NONNULL_END
 #define TARGET CO_PLUS_ONE
 enum { SUPPORTED_TARGETS_COUNT = (0lu
@@ -56,10 +62,12 @@ const char* arch_name(arch_t);
 const char* sys_name(sys_t);
 void print_supported_targets(); // prints with log()
 
-// target_foreach_sysdir calls visitor for each possible "sysroots" dir for target.
+typedef err_t (*target_str_visitor_t)(const char* s, void* ctx);
+
+// target_visit_sysinc_dirs calls visitor for each possible dir for target,
+// rooted in "{coroot}/{basedir}/", or if basedir is "", just "{coroot}/".
 // Returns the first error returned from visitor.
-typedef err_t (*target_sysdir_visitor_t)(const char* s, void* ctx);
-err_t target_foreach_sysdir(target_t* t, target_sysdir_visitor_t visitor, void* ctx);
+err_t target_visit_dirs(target_t*, const char* basedir, target_str_visitor_t, void* ctx);
 
 
 ASSUME_NONNULL_END

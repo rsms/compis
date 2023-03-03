@@ -186,7 +186,9 @@ fi
 
 if [ -z "$OUT_DIR" ]; then
   OUT_DIR="$OUT_DIR_BASE/$BUILD_MODE"
+  mkdir -p "$OUT_DIR"
 else
+  mkdir -p "$OUT_DIR"
   OUT_DIR=`cd "$OUT_DIR"; pwd`
 fi
 
@@ -198,17 +200,14 @@ _hascmd curl || _hascmd wget || _err "curl nor wget found in PATH"
 # —————————————————————————————————————————————————————————————————————————————————
 # [dep] precompiled llvm from llvmbox distribution
 LLVM_RELEASE=15.0.7
-LLVMBOX_RELEASE=$LLVM_RELEASE+2
+LLVMBOX_RELEASE=$LLVM_RELEASE+3
 LLVMBOX_DESTDIR="$DEPS_DIR/llvmbox"
 LLVMBOX_RELEASES=( # github.com/rsms/llvmbox/releases/download/VERSION/sha256sum.txt
-  "e5f0816ed2063e6bdc79c11af50889062692770034df2a2f1a9394600b01c403  llvmbox-15.0.7+2-aarch64-linux.tar.xz" \
-  "9f602547374da64d312b0a8bdb973298329afe693c1e8c154d1eaf50b5fa0d5d  llvmbox-15.0.7+2-aarch64-macos.tar.xz" \
-  "5358eab245eeb0d275d83e3205f57e0a2452be5d79dc4748163bd8268d1a6f45  llvmbox-15.0.7+2-x86_64-linux.tar.xz" \
-  "6f5a5d4d2053f7c302e4dc15191286f7196a979fe250999e3b86d3610ef86d3d  llvmbox-15.0.7+2-x86_64-macos.tar.xz" \
-  "8fc2448e05b690e98d7785e62d03d562eddb803522cf8f3e3a84e95ac654e998  llvmbox-dev-15.0.7+2-aarch64-linux.tar.xz" \
-  "36178ad59a3a98f2867488a988103d9daef3959124f74120ee7245e8f66e11fe  llvmbox-dev-15.0.7+2-aarch64-macos.tar.xz" \
-  "ba06d0b1e91bb4b280635e653614938b3c5e9f6c46a50ee88f831b946bba2208  llvmbox-dev-15.0.7+2-x86_64-linux.tar.xz" \
-  "4b327844529dee34f71a1bc8a793d1c0e0e78889515e534103b2b9d5ab94a994  llvmbox-dev-15.0.7+2-x86_64-macos.tar.xz" \
+  "672bf8d94228880ece00082794936514f97cd50e23c1b5045ed06db4b4f80333  llvmbox-15.0.7+3-x86_64-linux.tar.xz" \
+  "a508cf2ef7199726f041e4ae0e92650636a4fc14ba1f37b40ae9694b198d0785  llvmbox-15.0.7+3-x86_64-macos.tar.xz" \
+  "513b49be901c3502e28e17e6748cc350dfd35a0261faae9a84256b07748799db  llvmbox-dev-15.0.7+3-x86_64-linux.tar.xz" \
+  "746dd6fb68fe2dac217de3e81cf048829530af4c5b4f65fffb36e404d21a62bd  llvmbox-dev-15.0.7+3-x86_64-macos.tar.xz" \
+
 )
 LLVMBOX_URL_BASE=https://github.com/rsms/llvmbox/releases/download/v$LLVMBOX_RELEASE
 LLVM_CONFIG="$LLVMBOX_DESTDIR/bin/llvm-config"
@@ -277,6 +276,19 @@ if [ "$(tail -n1 "$SRC_DIR/llvm/driver.cc")" != "$SRC_VERSION_LINE" ]; then
   _popd
 
   rm -rf "$DEPS_DIR/clang" "$DOWNLOAD_DIR/clang-$LLVM_RELEASE.src.tar.xz"
+fi
+
+# —————————————————————————————————————————————————————————————————————————————————
+# generate lib/sysinc if missing
+
+if [ ! -d lib/sysinc ]; then
+  printf "Generating lib/sysinc from lib/sysinc-src ..."
+  LOGFILE="$OUT_DIR/gen-sysinc.log"
+  if ! $BASH "$PROJECT/etc/gen-sysinc.sh" > "$LOGFILE" 2>&1; then
+    echo " failed. See $(_relpath "$LOGFILE")" >&2
+    exit 1
+  fi
+  echo
 fi
 
 # —————————————————————————————————————————————————————————————————————————————————

@@ -3,6 +3,7 @@
 #include "path.h"
 
 #include <unistd.h>
+#include <string.h>
 
 
 static char initcwd[PATH_MAX]; // note: NOT null terminated
@@ -46,6 +47,13 @@ const char* path_base(const char* path) {
   for (; p != path && *(p-1) != PATH_SEPARATOR; )
     p--;
   return p;
+}
+
+
+const char* path_ext(const char* path) {
+  path = path_base(path);
+  const char* p = strrchr(path, '.');
+  return p && p > path ? p : path+strlen(path);
 }
 
 

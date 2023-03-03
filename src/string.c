@@ -66,6 +66,13 @@ usize sfmtu64(char* buf, u64 v, u32 base) {
 }
 
 
+bool str_endswith(const char* s, const char* suffix) {
+  usize slen = strlen(s);
+  usize suffixlen = strlen(suffix);
+  return slen >= suffixlen && memcmp(s + (slen - suffixlen), suffix, suffixlen) == 0;
+}
+
+
 char* _strcat(char* buf, usize bufcap, usize count, ...) {
   va_list ap;
   char* p = buf;

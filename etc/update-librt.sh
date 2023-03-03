@@ -488,7 +488,7 @@ done
 _popd
 
 # ————————————————————————————————————————————————————————————————————————————————————
-# generate build files
+# generate header
 
 _pushd "$DESTDIR"
 
@@ -564,15 +564,13 @@ _target_sources() {
 # generate mapping for each target to corresponding sources
 (
   echo "typedef struct {"
-  echo "  arch_t      arch;"
-  echo "  sys_t       sys;"
-  echo "  const char* sysver;"
-  echo "  u8          sources[$BM_NBYTE]; // bitmap indexing librt_srclist"
+  echo "  targetdesc_t target;"
+  echo "  u8 sources[$BM_NBYTE]; // bitmap index into librt_sources"
   echo "} librt_srclist_t;"
   echo "static const librt_srclist_t librt_srclist[] = {"
   for target_info in $(_co_targets); do  # ( "arch,sys,sysver" , ... )
     IFS=, read -r arch sys sysver <<< "$target_info"
-    printf "  {ARCH_%s, SYS_%s, \"%s\", {" $arch $sys $sysver
+    printf "  {{ARCH_%s, SYS_%s, \"%s\"}, {" $arch $sys $sysver
     _target_sources
     echo "}},"
   done

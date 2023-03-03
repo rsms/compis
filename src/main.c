@@ -162,13 +162,6 @@ static int ld_main(int argc, char* argv[]) {
 }
 
 
-bool str_endswith(const char* s, const char* suffix) {
-  usize slen = strlen(s);
-  usize suffixlen = strlen(suffix);
-  return slen >= suffixlen && memcmp(s + (slen - suffixlen), suffix, suffixlen) == 0;
-}
-
-
 int main(int argc, char* argv[]) {
   coprogname = strrchr(argv[0], PATH_SEPARATOR);
   coprogname = coprogname ? coprogname + 1 : argv[0];
