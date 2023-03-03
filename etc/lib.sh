@@ -109,6 +109,25 @@ _extract_tar() { # <file> <outdir>
   rm -rf "$extract_dir"
 }
 
+_create_tar_xz_from_dir() { # <srcdir> <dstfile>
+  command -v tar >/dev/null || _err "can't find \"tar\" in PATH"
+  local archive=$2
+  [[ "$archive" == *".tar.xz" ]] || _err "$archive doesn't end with .tar.xz"
+  case "$archive" in
+    /*) ;;
+    *)  archive="$PWD/$archive" ;;
+  esac
+  mkdir -p "$(dirname "$archive")"
+  local srcdir="$(realpath "$1")"
+  if command -v xz >/dev/null; then
+    tar -C "$(dirname "$srcdir")" -c "$(basename "$srcdir")" \
+    | xz -9 -f -T0 -v > "$archive"
+  else
+    XZ_OPT='-9 -T0' \
+    tar -C "$(dirname "$srcdir")" -cJpf "$archive" "$(basename "$srcdir")"
+  fi
+}
+
 _co_targets() {
   local TARGETS=()  # ( "arch,sys,sysver" , ... )
   while IFS=, read -r arch sys sysver rest; do

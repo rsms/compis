@@ -12,15 +12,16 @@ esac
 CO_VERSION=$(cat "$PROJECT/version.txt")
 BUILDDIR=out/dist
 DESTDIR=out/dist/compis-$CO_VERSION-$ARCH-$SYS
+ARCHIVE=$DESTDIR.tar.xz
 
 echo "building from scratch in $BUILDDIR"
 rm -rf $BUILDDIR
 ./build.sh -opt -out=$BUILDDIR
 
+echo "creating $DESTDIR"
 rm -rf $DESTDIR
 mkdir -p $DESTDIR/lib
 mv $BUILDDIR/co $DESTDIR/compis
-
 for f in lib/*; do
   case $f in
     .*|*-src) continue ;;
@@ -29,3 +30,6 @@ for f in lib/*; do
   esac
   _copy $f $DESTDIR/$(basename $f)
 done
+
+echo "creating $ARCHIVE"
+_create_tar_xz_from_dir $DESTDIR $ARCHIVE
