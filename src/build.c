@@ -88,27 +88,7 @@ static void help(const char* prog) {
 static err_t build_exe(char*const* srcfilev, usize filecount);
 
 
-bool select_target() {
-  const char* targetstr = "";
-  targetstr = "aarch64-linux";
-  const target_t* target = target_find(targetstr);
-  if (!target) {
-    log("Invalid target \"%s\"", targetstr);
-    log("See `%s targets` for a list of supported targets.", coexefile);
-    return false;
-  }
-  #if DEBUG
-  {
-    char tmpbuf[64];
-    target_fmt(target, tmpbuf, sizeof(tmpbuf));
-    dlog("targeting %s", tmpbuf);
-  }
-  #endif
-  return true;
-}
-
-
-void set_comaxproc() {
+static void set_comaxproc() {
   char* end;
   unsigned long n = strtoul(opt_maxproc, &end, 10);
   if (n == ULONG_MAX || n > U32_MAX || *end || (n == 0 && errno))
@@ -152,7 +132,7 @@ int main_build(int argc, char* argv[]) {
 
   if (!( opt_target = target_find(opt_targetstr) )) {
     log("Invalid target \"%s\"", opt_targetstr);
-    log("See `%s targets` for a list of supported targets", coexefile);
+    log("See `%s targets` for a list of supported targets", relpath(coexefile));
     return 1;
   }
   #if DEBUG
