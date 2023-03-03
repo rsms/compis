@@ -116,7 +116,7 @@ static err_t build_libc_musl(compiler_t* c) {
 
   cbuild_t build;
   cbuild_init(&build, c, "libc");
-  build.srcdir = path_join_alloca(coroot, "lib/musl");
+  build.srcdir = path_join_alloca(coroot, "musl");
   err_t err = 0;
 
   // flags for compiling assembly sources
@@ -182,7 +182,7 @@ end:
 static err_t build_libc(compiler_t* c) {
   switch ((enum target_sys)c->target.sys) {
     case SYS_macos:
-      return target_visit_dirs(&c->target, "lib/darwin", copy_sysroot_lib_dir, c);
+      return target_visit_dirs(&c->target, "darwin", copy_sysroot_lib_dir, c);
     case SYS_linux:
       return build_libc_musl(c);
     case SYS_COUNT:
@@ -228,7 +228,7 @@ static err_t librt_add_aarch64_lse_sources(cbuild_t* b) {
 static err_t build_librt(compiler_t* c) {
   cbuild_t build;
   cbuild_init(&build, c, "librt");
-  build.srcdir = path_join_alloca(coroot, "lib/librt");
+  build.srcdir = path_join_alloca(coroot, "librt");
 
   // see compiler-rt/lib/builtins/CMakeLists.txt
   strlist_add(&build.cc,

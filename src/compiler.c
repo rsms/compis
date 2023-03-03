@@ -187,8 +187,7 @@ static err_t configure_cflags(compiler_t* c) {
     "-g",
     "-target", c->target.triple);
   strlist_addf(&c->cflags, "--sysroot=%s", c->sysroot);
-  strlist_addf(&c->cflags,
-    "-resource-dir=%s/deps/llvmbox/lib/clang/" CLANG_VERSION_STRING, coroot);
+  strlist_addf(&c->cflags, "-resource-dir=%s/clangres", coroot);
   if (c->target.sys == SYS_macos) strlist_add(&c->cflags,
     "-Wno-nullability-completeness");
 
@@ -201,19 +200,17 @@ static err_t configure_cflags(compiler_t* c) {
     "-ffreestanding",
     "-feliminate-unused-debug-types");
 
-  // note: must add <resdir>/include explicitly when -nostdinc or -no-builtin is set
-  strlist_addf(&c->cflags,
-    "-isystem%s/deps/llvmbox/lib/clang/" CLANG_VERSION_STRING "/include", coroot);
+  // note: must add <resdir>/include explicitly when -nostdinc is set
+  strlist_addf(&c->cflags, "-isystem%s/clangres/include", coroot);
 
   // end of common cflags
   u32 cflags_common_end = c->cflags.len;
 
   // system-header dirs
-  target_visit_dirs(&c->target, "lib/sysinc", add_target_sysdir_if_exists, c);
+  target_visit_dirs(&c->target, "sysinc", add_target_sysdir_if_exists, c);
   if (c->target.sys == SYS_linux) {
-    strlist_addf(&c->cflags, "-I%s/lib/musl/include/%s",
-      coroot, arch_name(c->target.arch));
-    strlist_addf(&c->cflags, "-I%s/lib/musl/include", coroot);
+    strlist_addf(&c->cflags, "-I%s/musl/include/%s", coroot, arch_name(c->target.arch));
+    strlist_addf(&c->cflags, "-I%s/musl/include", coroot);
   }
   if (c->target.sys == SYS_macos) {
     strlist_add(&c->cflags, "-include", "TargetConditionals.h");
@@ -232,7 +229,7 @@ static err_t configure_cflags(compiler_t* c) {
       break;
   }
   // strlist_add(&c->cflags, "-fPIC");
-  strlist_addf(&c->cflags, "-I%s/lib", coroot);
+  strlist_addf(&c->cflags, "-I%s/co", coroot);
 
   const char*const* argv = (const char*const*)strlist_array(&c->cflags);
   c->sflags_common = (slice_t){ .strings = argv, .len = (usize)flags_common_end };
