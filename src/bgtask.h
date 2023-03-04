@@ -8,6 +8,7 @@ typedef struct {
   u32        ntotal;     // total number of jobs (you can change this anytime)
   u32        n;          // number of jobs started
   u64        start_time; // nanotime
+  long       fpos;
   int        flags;
   u32        prefixlen;
   char       linebuf[];
@@ -18,7 +19,8 @@ typedef struct {
 #define BGTASK_NOFANCY (1<<1) // never use ANSI terminal control
 
 bgtask_t* bgtask_start(memalloc_t ma, const char* name, u32 ntotal, int flags);
-void bgtask_end(bgtask_t* bgt);
+void bgtask_end(bgtask_t* bgt, const char* fmt, ...);
+void bgtask_end_nomsg(bgtask_t* bgt);
 void bgtask_setstatus(bgtask_t* bgt, const char* cstr);
 void bgtask_setstatusf(bgtask_t* bgt, const char* fmt, ...) ATTR_FORMAT(printf,2,3);
 

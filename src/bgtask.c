@@ -6,11 +6,12 @@
 #include <termios.h>
 #include <sys/ioctl.h>
 
-#define LINEBUF_CAP     512lu
-#define DONE_PREFIX     "done in "
-#define CLEAR_AFTER_CUR "\x1B[K"
-#define OUTPUT_FILE     stdout
-#define OUTPUT_FILENO   STDOUT_FILENO
+#define LINEBUF_CAP   512lu
+#define DONE_PREFIX   "done in "
+#define FANCY_START   "\x1B[1F"
+#define FANCY_END     "\x1B[K\n"
+#define OUTPUT_FILE   stdout
+#define OUTPUT_FILENO STDOUT_FILENO
 
 // BUFAVAIL: given a pointer 'ptr' into bgt->linebuf, return available space at ptr
 #define BUFAVAIL(bgt, ptr)  ((usize)(uintptr)(((bgt)->linebuf + LINEBUF_CAP) - (ptr)))
@@ -25,6 +26,7 @@ bgtask_t* bgtask_start(memalloc_t ma, const char* name, u32 ntotal, int flags) {
   bgt->ma = ma;
   bgt->ntotal = ntotal;
   bgt->start_time = nanotime();
+  bgt->fpos = -1;
 
   // set BGTASK_FANCY (unless set in flags)
   if ((flags & (BGTASK_NOFANCY | BGTASK_FANCY)) == 0) {
@@ -37,7 +39,7 @@ bgtask_t* bgtask_start(memalloc_t ma, const char* name, u32 ntotal, int flags) {
   // build prefix
   char* buf = bgt->linebuf;
   if (bgt->flags & BGTASK_FANCY)
-    *buf++ = '\r';
+    buf += strlen(FANCY_START); // reserve space
   *buf++ = '[';
   usize namelen = MIN((usize)LINEBUF_CAP/2, strlen(name));
   if (namelen > 0) {
@@ -51,27 +53,6 @@ bgtask_t* bgtask_start(memalloc_t ma, const char* name, u32 ntotal, int flags) {
     bgtask_setstatus(bgt, name);
 
   return bgt;
-}
-
-
-static char* _setstatus_begin(bgtask_t* bgt) {
-  char* buf = bgt->linebuf + bgt->prefixlen;
-  assert(buf+1 < bgt->linebuf + LINEBUF_CAP);
-  if (bgt->n == 0) {
-    *buf++ = ']';
-    *buf++ = ' ';
-  } else {
-    usize avail = BUFAVAIL(bgt, buf);
-    int n;
-    if (bgt->ntotal) {
-      n = snprintf(buf, avail, " %u/%u] ", bgt->n, bgt->ntotal);
-    } else {
-      n = snprintf(buf, avail, " %u] ", bgt->n);
-    }
-    if (n > 0)
-      buf += MIN((usize)n, avail - 1);
-  }
-  return buf;
 }
 
 
@@ -101,10 +82,33 @@ static char* _clip_ellipsis(bgtask_t* bgt, usize len, usize maxlen) {
 }
 
 
+static char* _setstatus_begin(bgtask_t* bgt) {
+  char* buf = bgt->linebuf + bgt->prefixlen;
+  assert(buf+1 < bgt->linebuf + LINEBUF_CAP);
+  if (bgt->n == 0) {
+    *buf++ = ']';
+    *buf++ = ' ';
+  } else {
+    usize avail = BUFAVAIL(bgt, buf);
+    int n;
+    if (bgt->ntotal) {
+      int digits = u64log10(bgt->ntotal) * (bgt->flags & BGTASK_FANCY);
+      n = snprintf(buf, avail, " %*u/%u] ", digits, bgt->n, bgt->ntotal);
+    } else {
+      n = snprintf(buf, avail, " %u] ", bgt->n);
+    }
+    if (n > 0)
+      buf += MIN((usize)n, avail - 1);
+  }
+  return buf;
+}
+
+
 static void _setstatus_end(bgtask_t* bgt, char* buf) {
   FILE* fp = OUTPUT_FILE;
 
   usize haslf = (usize)(*(buf-1) == '\n');
+  char* bufstart = bgt->linebuf;
 
   if (bgt->flags & BGTASK_FANCY) {
     // limit to console width
@@ -119,23 +123,35 @@ static void _setstatus_end(bgtask_t* bgt, char* buf) {
         buf += haslf;
       }
     }
-  }
 
-  if (haslf == 0) {
-    usize z = (bgt->flags & BGTASK_FANCY) ? strlen(CLEAR_AFTER_CUR) : strlen("\n");
-    char* minbuf = bgt->linebuf + LINEBUF_CAP - z;
+    // if nothing has been printed since the previous line,
+    // move cursor to beginning of previous line
+    if (ftell(fp) == bgt->fpos) {
+      // note: linebuf has len(FANCY_START) bytes reserved
+      memcpy(bgt->linebuf, FANCY_START, strlen(FANCY_START));
+    } else {
+      bufstart += strlen(FANCY_START);
+    }
+
+    char* minbuf = bgt->linebuf + LINEBUF_CAP - strlen(FANCY_END);
     if (buf > minbuf)
       buf = minbuf;
-    memcpy(buf, (bgt->flags & BGTASK_FANCY) ? CLEAR_AFTER_CUR : "\n", z);
-    buf += z;
+    memcpy(buf, FANCY_END, strlen(FANCY_END));
+    buf += strlen(FANCY_END);
+  } else {
+    char* lastbyte = buf++;
+    if (lastbyte >= bgt->linebuf + LINEBUF_CAP) {
+      buf = bgt->linebuf + LINEBUF_CAP;
+      lastbyte = buf - 1;
+    }
+    *lastbyte = '\n';
   }
 
-  // *buf++ = '\n'; // DEBUG: for testing fancy results
-
-  usize len = (usize)(uintptr)(buf - bgt->linebuf);
+  usize len = (usize)(uintptr)(buf - bufstart);
   assert(buf < bgt->linebuf + LINEBUF_CAP);
-  fwrite(bgt->linebuf, len, 1, fp);
+  fwrite(bufstart, len, 1, fp);
   fflush(fp);
+  bgt->fpos = ftell(fp);
 }
 
 
@@ -153,38 +169,53 @@ void bgtask_setstatusf(bgtask_t* bgt, const char* fmt, ...) {
   usize cap = BUFAVAIL(bgt, buf);
   va_start(ap, fmt);
   int w = vsnprintf(buf, cap, fmt, ap);
+  safecheck(w >= 0);
   va_end(ap);
-  if (w < 0)
-    return;
   _setstatus_end(bgt, buf + MIN(cap - 1, (usize)w));
 }
 
 
-void bgtask_end(bgtask_t* bgt) {
-  if (bgt->flags & BGTASK_FANCY) {
-    char* buf = _setstatus_begin(bgt);
-    usize len = MIN(BUFAVAIL(bgt, buf), strlen(DONE_PREFIX));
-    memcpy(buf, DONE_PREFIX, len);
-    buf += len;
-    if (BUFAVAIL(bgt, buf) >= 25)
-      buf += fmtduration(buf, nanotime() - bgt->start_time);
-    if (BUFAVAIL(bgt, buf) >= strlen(CLEAR_AFTER_CUR)) {
-      memcpy(buf, CLEAR_AFTER_CUR, strlen(CLEAR_AFTER_CUR));
-      buf += strlen(CLEAR_AFTER_CUR);
-    }
-    if (BUFAVAIL(bgt, buf) > 0) {
-      *buf++ = '\n';
-    } else {
-      *(buf-1) = '\n';
-    }
-    _setstatus_end(bgt, buf);
-  }
-
-  // free memory
+void bgtask_end_nomsg(bgtask_t* bgt) {
   memalloc_t ma = bgt->ma;
   usize size = sizeof(bgtask_t) + LINEBUF_CAP;
   #if CO_SAFE
     memset(bgt, 0, size);
   #endif
   mem_freex(ma, MEM(bgt, size));
+}
+
+
+void bgtask_end(bgtask_t* bgt, const char* fmt, ...) {
+  va_list ap;
+  usize fmtlen = strlen(fmt);
+
+  char* buf = NULL;
+  if (fmtlen || (bgt->flags & BGTASK_FANCY))
+    buf = _setstatus_begin(bgt);
+
+  if (fmtlen) {
+    va_start(ap, fmt);
+    usize cap = BUFAVAIL(bgt, buf);
+    int w = vsnprintf(buf, cap, fmt, ap);
+    safecheck(w >= 0);
+    va_end(ap);
+    buf = buf + MIN(cap - 1, (usize)w);
+    if (BUFAVAIL(bgt, buf) >= 25+3) {
+      *buf++ = ' ';
+      *buf++ = '(';
+      buf += fmtduration(buf, nanotime() - bgt->start_time);
+      *buf++ = ')';
+    }
+  } else if (bgt->flags & BGTASK_FANCY) {
+    usize len = MIN(BUFAVAIL(bgt, buf), strlen(DONE_PREFIX));
+    memcpy(buf, DONE_PREFIX, len);
+    buf += len;
+    if (BUFAVAIL(bgt, buf) >= 25)
+      buf += fmtduration(buf, nanotime() - bgt->start_time);
+  }
+
+  if (buf)
+    _setstatus_end(bgt, buf);
+
+  bgtask_end_nomsg(bgt);
 }

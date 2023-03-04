@@ -508,20 +508,6 @@ err_t node_repr(buf_t* buf, const node_t* n) {
 }
 
 
-static u32 u64log10(u64 u) {
-  // U64_MAX 18446744073709551615
-  u32 w = 20;
-  u64 x = 10000000000000000000llu;
-  while (w > 1) {
-    if (u >= x)
-      break;
-    x /= 10;
-    w--;
-  }
-  return w;
-}
-
-
 origin_t node_origin(const locmap_t* lm, const node_t* n) {
   origin_t r = origin_make(lm, n->loc);
   switch (n->kind) {
@@ -535,7 +521,7 @@ origin_t node_origin(const locmap_t* lm, const node_t* n) {
 
   case EXPR_INTLIT:
     if (r.width == 0)
-      r.width = u64log10(((intlit_t*)n)->intval); // FIXME e.g. 0xbeef
+      r.width = (u32)u64log10(((intlit_t*)n)->intval); // FIXME e.g. 0xbeef
     break;
 
   case EXPR_ID:

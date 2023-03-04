@@ -301,7 +301,7 @@ static err_t build_exe(char*const* srcfilev, usize filecount) {
   if (!err && !opt_nolink)
     err = link_exe(&c, task, outfile, fv, filecount);
 
-  bgtask_end(task);
+  bgtask_end(task, "%s", relpath(outfile));
   task = NULL;
 
 end:
@@ -310,6 +310,6 @@ end:
   mem_freetv(c.ma, fv, filecount);
   compiler_dispose(&c);
   if (task)
-    bgtask_end(task);
+    bgtask_end_nomsg(task);
   return err;
 }

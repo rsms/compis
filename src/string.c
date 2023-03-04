@@ -73,6 +73,20 @@ bool str_endswith(const char* s, const char* suffix) {
 }
 
 
+int u64log10(u64 u) {
+  // U64_MAX 18446744073709551615
+  int w = 20;
+  u64 x = 10000000000000000000llu;
+  while (w > 1) {
+    if (u >= x)
+      break;
+    x /= 10;
+    w--;
+  }
+  return w;
+}
+
+
 char* _strcat(char* buf, usize bufcap, usize count, ...) {
   va_list ap;
   char* p = buf;

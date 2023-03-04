@@ -5,20 +5,6 @@
 #include "abuf.h"
 
 
-static u32 u32log10(u32 u) {
-  return u >= 1000000000 ? 10 :
-         u >= 100000000 ? 9 :
-         u >= 10000000 ? 8 :
-         u >= 1000000 ? 7 :
-         u >= 100000 ? 6 :
-         u >= 10000 ? 5 :
-         u >= 1000 ? 4 :
-         u >= 100 ? 3 :
-         u >= 10 ? 2 :
-         1;
-}
-
-
 const char* tok_name(tok_t t) {
   assert(t < TOK_COUNT);
   static const char* names[TOK_COUNT] = {
@@ -176,7 +162,7 @@ static void add_srclines(compiler_t* c, origin_t origin, abuf_t* s) {
   }
 
   c->diag.srclines = s->p;
-  int lnw = u32log10(endline);
+  int lnw = u64log10((u64)endline);
 
   for (;;) {
     int linew = (int)(end - p);

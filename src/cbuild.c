@@ -314,7 +314,7 @@ static err_t cbuild_build(cbuild_t* b, const char* outfile) {
 
 end:
   cbuild_clean_objdir(b);
-  bgtask_end(task);
+  bgtask_end(task, "");
   strlist_dispose(&objfiles);
   return err;
 }
