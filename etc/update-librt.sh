@@ -568,8 +568,8 @@ _target_sources() {
   echo "  u8 sources[$BM_NBYTE]; // bitmap index into librt_sources"
   echo "} librt_srclist_t;"
   echo "static const librt_srclist_t librt_srclist[] = {"
-  for target_info in $(_co_targets); do  # ( "arch,sys,sysver" , ... )
-    IFS=, read -r arch sys sysver <<< "$target_info"
+  for target_info in $(_co_targets); do  # ( "arch,sys,sysver,..." ... )
+    IFS=, read -r arch sys sysver ign <<< "$target_info"
     printf "  {{ARCH_%s, SYS_%s, \"%s\"}, {" $arch $sys $sysver
     _target_sources
     echo "}},"

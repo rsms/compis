@@ -52,6 +52,19 @@ _symlink() { # <linkfile-to-create> <target>
   ln -fs "$2" "$1"
 }
 
+_hascmd() { # <cmd>
+  command -v "$1" >/dev/null || return 1
+}
+
+_needcmd() {
+  while [ $# -gt 0 ]; do
+    if ! _hascmd "$1"; then
+      _err "missing $1 -- please install or use a different shell"
+    fi
+    shift
+  done
+}
+
 _sha_verify() { # <file> [<sha256> | <sha512>]
   local file=$1
   local expect=$2
@@ -128,10 +141,26 @@ _create_tar_xz_from_dir() { # <srcdir> <dstfile>
   fi
 }
 
-_co_targets() {
-  local TARGETS=()  # ( "arch,sys,sysver" , ... )
-  while IFS=, read -r arch sys sysver rest; do
-    TARGETS+=( "${arch:7},$sys,$sysver" )
-  done <<< "$(awk '$1 ~ /^TARGET\(/' "$PROJECT/src/targets.h" | sed -E 's/[ "]//g')"
-  echo "${TARGETS[@]}"
+_co_targets() { # -> "arch,sys,sysver,intsize,ptrsize,llvm_triple" ...
+  awk '$1 ~ /^TARGET\(/' "$PROJECT/src/targets.h" |
+  sed -E 's/[ "]//g' |
+  sed -E 's/^TARGET\((.+)\)$/\1/'
+}
+
+_version_gte() { # <v> <minv>
+  local v1 v2 v3 min_v1 min_v2 min_v3
+  IFS=. read -r v1 v2 v3 <<< "$1"
+  IFS=. read -r min_v1 min_v2 min_v3 <<< "$2"
+  [ -n "$min_v2" ] || min_v2=0
+  [ -n "$min_v3" ] || min_v3=0
+  [ -n "$v2" ] || v2=$min_v2
+  [ -n "$v3" ] || v3=$min_v3
+  # echo "v   $v1 $v2 $v3"
+  # echo "min $min_v1 $min_v2 $min_v3"
+  if [ "$v1" -lt "$min_v1" ]; then return 1; fi
+  if [ "$v1" -gt "$min_v1" ]; then return 0; fi
+  if [ "$v2" -lt "$min_v2" ]; then return 1; fi
+  if [ "$v2" -gt "$min_v2" ]; then return 0; fi
+  if [ "$v3" -lt "$min_v3" ]; then return 1; fi
+  if [ "$v3" -gt "$min_v3" ]; then return 0; fi
 }

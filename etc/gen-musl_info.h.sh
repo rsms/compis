@@ -39,8 +39,8 @@ TIME32_SOURCES=( compat/time32/*.c )
 _gen_sources "${TIME32_SOURCES[@]}"
 
 # ARCH_{arch}_SOURCES=()
-for target_info in $(_co_targets); do  # ( "arch,sys,sysver" , ... )
-  IFS=, read -r arch sys sysver <<< "$target_info"
+for target_info in $(_co_targets); do  # ( "arch,sys,sysver,..." ... )
+  IFS=, read -r arch sys sysver ign <<< "$target_info"
   [ "$sys" = linux ] || continue
   ARCH_SOURCES=()
   for f in src/*/$arch/*.[csS] src/malloc/mallocng/$arch/*.[csS]; do
@@ -137,8 +137,8 @@ _crt_source() {
   echo "  u8 sources[$BM_NBYTE];"
   echo "} musl_srclist_t;"
   echo "static const musl_srclist_t musl_srclist[] = {"
-  for target_info in $(_co_targets); do  # ( "arch,sys,sysver" , ... )
-    IFS=, read -r arch sys sysver <<< "$target_info"
+  for target_info in $(_co_targets); do  # ( "arch,sys,sysver,..." ... )
+    IFS=, read -r arch sys sysver ign <<< "$target_info"
     [ "$sys" = linux ] || continue
     printf "  {{ARCH_%s, SYS_%s, \"%s\"}, " $arch $sys $sysver
     _crt_source crt1
