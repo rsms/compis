@@ -60,7 +60,9 @@ static err_t copy_files(const char* srcdir, const char* dstdir) {
   memcpy(dstfile, dstdir, dstfilelen);
   dstfile[dstfilelen++] = '/';
 
+  err_t err = 0;
   struct dirent* d;
+
   while ((d = readdir(dp)) != NULL) {
     if (*d->d_name == '.')
       continue;
@@ -74,12 +76,11 @@ static err_t copy_files(const char* srcdir, const char* dstdir) {
     dstfile[dstfilelen + dstnamelen] = 0;
 
     dlog("cp %s -> %s", relpath(srcfile), relpath(dstfile));
-    err_t err = fs_copyfile(srcfile, dstfile, 0);
-    if (err)
-      return err;
+    if (( err = fs_copyfile(srcfile, dstfile, 0) ))
+      break;
   }
   closedir(dp);
-  return 0;
+  return err;
 }
 
 
