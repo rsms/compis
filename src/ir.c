@@ -64,7 +64,7 @@ static void seterr(ircons_t* c, err_t err) {
 
 ATTR_FORMAT(printf, 3, 4)
 static const char* fmttmp(ircons_t* c, u32 bufindex, const char* fmt, ...) {
-  buf_t* buf = tmpbuf(bufindex);
+  buf_t* buf = tmpbuf_get(bufindex);
   va_list ap;
   va_start(ap, fmt);
   buf_vprintf(buf, fmt, ap);
@@ -74,7 +74,7 @@ static const char* fmttmp(ircons_t* c, u32 bufindex, const char* fmt, ...) {
 
 
 UNUSED static const char* fmtnode(u32 bufindex, const void* nullable n) {
-  buf_t* buf = tmpbuf(bufindex);
+  buf_t* buf = tmpbuf_get(bufindex);
   safecheckexpr( node_fmt(buf, n, /*depth*/0), ErrOk);
   return buf->chars;
 }

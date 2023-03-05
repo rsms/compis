@@ -184,10 +184,6 @@ typedef struct {
 } buildfile_t;
 
 
-// build_syslibs.c
-err_t build_syslibs_if_needed(compiler_t* c);
-
-
 static err_t link_exe(
   compiler_t* c, bgtask_t* task, const char* outfile,
   buildfile_t* infilev, usize infilec)

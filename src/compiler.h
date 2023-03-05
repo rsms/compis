@@ -823,13 +823,14 @@ inline static bool scope_istoplevel(const scope_t* s) { return s->base == 0; }
 // temporary buffers
 // get_tmpbuf returns a thread-local general-purpose temporary buffer
 void tmpbuf_init(memalloc_t);
-buf_t* tmpbuf(u32 bufindex /* [0-2) */);
+buf_t* tmpbuf_get(u32 bufindex /* [0-2) */);
 
 // makeargv constructs an "argv compatible" array of pointers to strings, allocated
 // in one contiguous memory region. If memory allocation fails, NULL is returned.
 // The input strings are copied into memory allocated from ma.
 // Caller is responsible for calling mem_free(ma, mem_out) on the result when done.
 // IMPORTANT: The variadic arguments must be terminated by NULL!
+// DEPRECATED: use strlist instead.
 char** nullable makeargv(
   memalloc_t           ma,
   int*                 argc_out, // number of arguments in returned array
@@ -838,6 +839,9 @@ char** nullable makeargv(
   slice_t              baseargs, // base arguments
   ... // NULL-terminated arguments. Empty-string args are ignored.
 );
+
+// syslibs
+err_t build_syslibs_if_needed(compiler_t* c);
 
 // pos
 static void locmap_dispose(locmap_t* lm, memalloc_t ma);

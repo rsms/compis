@@ -950,6 +950,9 @@ const char* strim_begin(const char* s, usize len, char trimc);
 // e.g. strim_end("hello  ", 7, ' ') => 5
 usize strim_end(const char* s, usize len, char trimc);
 
+// str_endswith returns true if null-terminated string s begins with prefix
+bool str_startswith(const char* s, const char* prefix);
+
 // str_endswith returns true if null-terminated string s ends with suffix
 bool str_endswith(const char* s, const char* suffix);
 

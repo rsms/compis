@@ -262,7 +262,7 @@ static void out_of_mem(parser_t* p) {
 
 
 static const char* fmttok(parser_t* p, u32 bufindex, tok_t tok, slice_t lit) {
-  buf_t* buf = tmpbuf(bufindex);
+  buf_t* buf = tmpbuf_get(bufindex);
   buf_reserve(buf, 64);
   tok_descr(buf->p, buf->cap, tok, lit);
   return buf->chars;
@@ -270,7 +270,7 @@ static const char* fmttok(parser_t* p, u32 bufindex, tok_t tok, slice_t lit) {
 
 
 static const char* fmtnode(parser_t* p, u32 bufindex, const void* n) {
-  buf_t* buf = tmpbuf(bufindex);
+  buf_t* buf = tmpbuf_get(bufindex);
   err_t err = node_fmt(buf, n, /*depth*/0);
   if (!err)
     return buf->chars;
@@ -1972,7 +1972,7 @@ static stmt_t* stmt_pub(parser_t* p) {
     } else if (slice_eq_cstri(str, "CO")) {
       // abi is already "CO"
     } else {
-      buf_t* buf = tmpbuf(0);
+      buf_t* buf = tmpbuf_get(0);
       if (!buf_appendrepr(buf, str.bytes, str.len)) {
         out_of_mem(p);
       } else {

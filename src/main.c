@@ -129,6 +129,10 @@ static int ld_main(int argc, char* argv[]) {
 }
 
 
+// cc.c
+int cc_main(int argc, char* argv[]);
+
+
 int main(int argc, char* argv[]) {
   coprogname = strrchr(argv[0], PATH_SEPARATOR);
   coprogname = coprogname ? coprogname + 1 : argv[0];
@@ -191,7 +195,7 @@ int main(int argc, char* argv[]) {
   if ISCMD("targets") return print_supported_targets(), 0;
 
   // llvm-based commands
-  if ISCMD("cc")       return clang_main(argc, argv);
+  if ISCMD("cc")       return cc_main(argc, argv);
   if ISCMD("ar")       return ar_main(argc, argv);
   if ISCMD("ld")       return ld_main(argc, argv);
   if ISCMD("ld-macho") return LLDLinkMachO(argc, argv, true) ? 0 : 1;

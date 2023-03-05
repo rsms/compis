@@ -4,7 +4,7 @@
 
 static _Thread_local buf_t _tmpbuf[2];
 
-buf_t* tmpbuf(u32 bufindex) {
+buf_t* tmpbuf_get(u32 bufindex) {
   assert(bufindex < countof(_tmpbuf));
   buf_t* buf = &_tmpbuf[bufindex];
   buf_clear(buf);

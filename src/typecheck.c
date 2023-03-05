@@ -397,7 +397,7 @@ static bool noerror(typecheck_t* a) {
 
 
 static const char* fmtnode(typecheck_t* a, u32 bufindex, const void* nullable n) {
-  buf_t* buf = tmpbuf(bufindex);
+  buf_t* buf = tmpbuf_get(bufindex);
   err_t err = node_fmt(buf, n, /*depth*/0);
   if (!err)
     return buf->chars;
@@ -499,7 +499,7 @@ static expr_t* mkretexpr(typecheck_t* a, expr_t* value, loc_t loc) {
 
 
 static char* mangle(typecheck_t* a, const node_t* n) {
-  buf_t* buf = tmpbuf(0);
+  buf_t* buf = tmpbuf_get(0);
   compiler_mangle(a->compiler, buf, n);
   char* s = mem_strdup(a->ast_ma, buf_slice(*buf), 0);
   if UNLIKELY(!s) {
@@ -1530,7 +1530,7 @@ static void floatlit(typecheck_t* a, floatlit_t* n) {
   if (a->typectx == type_f32) {
     n->type = type_f32;
     // FIXME: better way to check f32 value (than via sprintf & strtof)
-    buf_t* buf = tmpbuf(0);
+    buf_t* buf = tmpbuf_get(0);
     if UNLIKELY(!buf_printf(buf, "%g", n->f64val))
       out_of_mem(a);
     float f = strtof(buf->chars, NULL);

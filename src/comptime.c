@@ -84,7 +84,7 @@ static void* error_operation_not_supported(
 
 
 UNUSED static const char* fmtnode(ctx_t* ctx, u32 bufindex, const void* nullable n) {
-  buf_t* buf = tmpbuf(bufindex);
+  buf_t* buf = tmpbuf_get(bufindex);
   err_t err = node_fmt(buf, n, /*depth*/0);
   if (!err)
     return buf->chars;
@@ -376,7 +376,7 @@ static void* eval1(ctx_t* ctx, void* np);
     node_t* n = np;
 
     ctx->traceindent++;
-    buf_t* buf0 = tmpbuf(0);
+    buf_t* buf0 = tmpbuf_get(0);
     buf_clear(buf0);
     node_fmt(buf0, (node_t*)n, 0);
     trace("→ %s %s ...", nodekind_name(n->kind), buf0->chars);
@@ -386,7 +386,7 @@ static void* eval1(ctx_t* ctx, void* np);
     assertnotnull(result);
 
     #if 1
-      buf_t* buf1 = tmpbuf(1);
+      buf_t* buf1 = tmpbuf_get(1);
       buf_clear(buf0);
       buf_clear(buf1);
       node_fmt(buf0, (node_t*)n, 0);

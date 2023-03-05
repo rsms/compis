@@ -62,7 +62,7 @@ static void _error(cgen_t* g, origin_t origin, const char* fmt, ...) {
 
 
 UNUSED static const char* fmtnode(cgen_t* g, u32 bufindex, const void* nullable n) {
-  buf_t* buf = tmpbuf(bufindex);
+  buf_t* buf = tmpbuf_get(bufindex);
   err_t err = node_fmt(buf, n, /*depth*/0);
   if (!err)
     return buf->chars;
