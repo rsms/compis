@@ -70,17 +70,24 @@ cobj_t* nullable cbuild_add_source(cbuild_t* b, const char* srcfile) {
 }
 
 
-ATTR_FORMAT(printf, 3, 4)
-void cobj_addcflagf(cbuild_t* b, cobj_t* obj, const char* fmt, ...) {
+strlist_t* nullable cobj_cflags(cbuild_t* b, cobj_t* obj) {
   if (!obj->cflags) {
     if (!( obj->cflags = mem_alloct(b->c->ma, strlist_t) ))
-      return;
+      return NULL;
     strlist_init(obj->cflags, b->c->ma);
   }
+  return obj->cflags;
+}
+
+
+bool cobj_addcflagf(cbuild_t* b, cobj_t* obj, const char* fmt, ...) {
+  if (!cobj_cflags(b, obj))
+    return false;
   va_list ap;
   va_start(ap, fmt);
   strlist_addv(obj->cflags, fmt, ap);
   va_end(ap);
+  return true;
 }
 
 
@@ -166,7 +173,7 @@ static err_t cbuild_mkdirs(cbuild_t* b) {
 
   for (u32 i = 0; i < b->objs.len; i++) {
     cobj_t* obj = &b->objs.v[i];
-    if (dirname_r(cbuild_objfile(b, obj), dir) == NULL) {
+    if (path_dir(dir, sizeof(dir), cbuild_objfile(b, obj)) >= sizeof(dir)) {
       err = ErrOverflow;
       break;
     }
@@ -247,7 +254,7 @@ static err_t cbuild_create_archive(
 
   err_t err;
 
-  char* dir = dirname_alloca(outfile);
+  char* dir = path_dir_alloca(outfile);
   if (( err = fs_mkdirs(dir, 0755) ))
     return err;
 
@@ -281,6 +288,12 @@ static err_t cbuild_build(cbuild_t* b, const char* outfile) {
   if (!cbuild_ok(b)) {
     dlog("cbuild_ok");
     return ErrNoMem;
+  }
+  for (u32 i = 0; i < b->objs.len; i++) {
+    if (b->objs.v[i].cflags && !b->objs.v[i].cflags->ok) {
+      dlog("obj(%s).cflags.ok==false", b->objs.v[i].srcfile);
+      return ErrNoMem;
+    }
   }
 
   // create directories

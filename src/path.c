@@ -39,6 +39,56 @@ usize path_dirlen(const char* filename, usize len) {
 }
 
 
+usize path_dir(char* buf, usize bufcap, const char* path) {
+  // examples:
+  //   "a/b/c"    => "a/b"
+  //   "a/b//c//" => "a/b"
+  //   "a"        => "."
+  //   "a//"      => "."
+  //   ""         => "."
+  //   "/a"       => "/"
+  //   "/"        => "/"
+  //   "/////"    => "/"
+  char singlec;
+  if (!path || *path == 0) {
+    singlec = '.';
+    goto singlechar;
+  }
+  usize i = strlen(path) - 1;
+  // trim away trailing separators, e.g. "a/b//c//" => "a/b//c" (or "//" => "/")
+  for (; path[i] == PATH_SEPARATOR; i--) {
+    if (i == 0) {
+      singlec = PATH_SEPARATOR;
+      goto singlechar;
+    }
+  }
+  // skip last component, e.g. "a/b//c" => "a/b//" (or "a" => ".")
+  for (; path[i] != PATH_SEPARATOR; i--) {
+    if (i == 0) {
+      singlec = '.';
+      goto singlechar;
+    }
+  }
+  // trim away trailing separators, e.g. "a/b//" => "a/b" (or "/a/" => "/")
+  for (; path[i] == PATH_SEPARATOR; i--) {
+    if (i == 0) {
+      singlec = PATH_SEPARATOR;
+      goto singlechar;
+    }
+  }
+  usize len = MIN(bufcap, i + 1);
+  if (len > 0) {
+    memcpy(buf, path, len);
+    buf[len] = 0;
+  }
+  return i + 1;
+singlechar:
+  if (bufcap > 1 && singlec) *buf++ = singlec;
+  if (bufcap > 0) *buf = 0;
+  return (usize)(singlec != 0);
+}
+
+
 const char* path_base(const char* path) {
   if (path[0] == 0)
     return path;

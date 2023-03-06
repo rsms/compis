@@ -176,7 +176,7 @@ retry:
   if (++nretries == 2) {
     // end
   } else if (errno == ENOENT && dstdir == NULL) {
-    dstdir = dirname_alloca(dstpath);
+    dstdir = path_dir_alloca(dstpath);
     fs_mkdirs(dstdir, 0755);
     goto retry;
   } else if (errno == EEXIST) {
@@ -208,7 +208,7 @@ retry:
   if (++nretries == 2) {
     // end
   } else if (errno == ENOENT && dstdir == NULL) {
-    dstdir = dirname_alloca(dstpath);
+    dstdir = path_dir_alloca(dstpath);
     fs_mkdirs(dstdir, 0755);
     goto retry;
   } else if (errno == EEXIST) {

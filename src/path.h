@@ -22,6 +22,11 @@ ASSUME_NONNULL_BEGIN
 // Returns 0 if path does not contain a directory part.
 usize path_dirlen(const char* path, usize len);
 
+// path_dir writes all but the last path component to bug.
+// Returns bytes written to buf as if bufcap was infinite.
+// E.g. "foo/bar/baz.x" => "foo/bar", "/lol" => "/"
+usize path_dir(char* buf, usize bufcap, const char* path);
+
 // path_base returns a pointer to the last path element. E.g. "foo/bar/baz.x" => "baz.x"
 // If the path is empty, returns "".
 // If the path consists entirely of slashes, returns "/".
@@ -54,12 +59,13 @@ char* nullable path_abs(memalloc_t, const char* path);
 const char* relpath(const char* path);
 void relpath_init();
 
-// dirname_alloca allocates space on stack and calls dirname_r.
-// char* dirname_alloca(const char* path)
-#define dirname_alloca(path) ({ \
-  const char* p__ = (path); usize z__ = strlen(p__); \
-  char* s__ = safechecknotnull(alloca(z__ + 1)); \
-  safechecknotnull(dirname_r(p__, s__)); \
+// path_dir_alloca allocates space on stack and calls path_dir.
+// char* path_dir_alloca(const char* path)
+#define path_dir_alloca(path) ({ \
+  const char* p__ = (path); usize z__ = strlen(p__) + 1lu; \
+  /* +(z__==1) for "" => "." */ \
+  char* s__ = safechecknotnull(alloca(z__ + (z__ == 1))); \
+  path_dir(s__, z__ + (z__ == 1), p__); \
   s__; \
 })
 

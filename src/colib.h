@@ -325,6 +325,13 @@ typedef double             f64;
 // enum { FOO_COUNT = (0lu FOR_EACH_FOO(CO_PLUS_ONE)) };
 #define CO_PLUS_ONE(...) + 1lu
 
+// CO_STRX(NAME) => "value"
+// e.g.
+//   #define FOO 123
+//   puts(CO_STRX(FOO)); // "123"
+#define CO_STRX(s) CO_STR(s)
+#define CO_STR(s) #s
+
 //—————————————————————————————————————————————————————————————————————————————————————
 // debugging
 #include <stdio.h>

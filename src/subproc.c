@@ -302,8 +302,12 @@ err_t _subproc_fork(
   if (pid == 0) {
     // child process
 
-    if (cwd && *cwd)
-      chdir(cwd);
+    if (cwd && *cwd) {
+      if (chdir(cwd) == -1) {
+        warn("chdir(%s)", cwd);
+        _exit(-(int)err_errno());
+      }
+    }
 
     // create process group and communicate the fact to the parent
     #ifdef SUBPROC_USE_PGRP

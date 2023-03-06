@@ -26,7 +26,7 @@ bgtask_t* bgtask_start(memalloc_t ma, const char* name, u32 ntotal, int flags) {
   bgt->ma = ma;
   bgt->ntotal = ntotal;
   bgt->start_time = nanotime();
-  bgt->fpos = -1;
+  bgt->fpos = -1000000;
 
   // set BGTASK_FANCY (unless set in flags)
   if ((flags & (BGTASK_NOFANCY | BGTASK_FANCY)) == 0) {

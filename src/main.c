@@ -52,10 +52,10 @@ static void usage(FILE* f) {
     "  as [args ...]        LLVM assembler (same as cc -cc1as)\n"
     "  ar [args ...]        Object archiver\n"
     "%s" // ld for host, if any
-    "  ld-coff [args ...]   Linker for COFF\n"
-    "  ld-elf [args ...]    Linker for ELF\n"
-    "  ld-macho [args ...]  Linker for Mach-O\n"
-    "  ld-wasm [args ...]   Linker for WebAssembly\n"
+    "  ld.lld [args ...]    Linker for ELF\n"
+    "  ld64.lld [args ...]  Linker for Mach-O\n"
+    "  lld-link [args ...]  Linker for COFF\n"
+    "  wasm-ld [args ...]   Linker for WebAssembly\n"
     "For help with a specific command:\n"
     "  %s <command> --help\n"
     "",
@@ -137,7 +137,7 @@ int main(int argc, char* argv[]) {
   coprogname = strrchr(argv[0], PATH_SEPARATOR);
   coprogname = coprogname ? coprogname + 1 : argv[0];
   coexefile = safechecknotnull(LLVMGetMainExecutable(argv[0]));
-  safechecknotnull(dirname_r(coexefile, _coroot));
+  safecheckx(path_dir(_coroot, sizeof(_coroot), coexefile) < sizeof(_coroot));
   relpath_init();
 
   // allow overriding coroot with env var
@@ -147,7 +147,7 @@ int main(int argc, char* argv[]) {
 
   #if DEBUG
   if (str_endswith(coroot, "/out/debug"))
-    coroot = path_join_m(memalloc_ctx(), coroot, "../..");
+    coroot = path_join_m(memalloc_ctx(), coroot, "../../lib");
   #endif
 
   const char* exe_basename = strrchr(coexefile, PATH_SEPARATOR);
@@ -164,10 +164,6 @@ int main(int argc, char* argv[]) {
     log("%s: missing command; try `%s help`", coprogname, coprogname);
     return 1;
   }
-
-  err_t err = llvm_init();
-  if (err)
-    errx(1, "llvm_init: %s", err_str(err));
 
   #define ISCMD(s) (cmdlen == strlen(s) && memcmp(cmd, (s), cmdlen) == 0)
 
@@ -186,7 +182,14 @@ int main(int argc, char* argv[]) {
     argv++;
   }
 
+  // initialize global state
+  memalloc_t ma = memalloc_ctx();
   comaxproc = sys_ncpu();
+  tmpbuf_init(ma);
+  sym_init(ma);
+  err_t err = llvm_init();
+  if (err)
+    errx(1, "llvm_init: %s", err_str(err));
 
   // primary commands
   if ISCMD("build") return main_build(argc, argv);
@@ -198,10 +201,10 @@ int main(int argc, char* argv[]) {
   if ISCMD("cc")       return cc_main(argc, argv);
   if ISCMD("ar")       return ar_main(argc, argv);
   if ISCMD("ld")       return ld_main(argc, argv);
-  if ISCMD("ld-macho") return LLDLinkMachO(argc, argv, true) ? 0 : 1;
-  if ISCMD("ld-elf")   return LLDLinkELF(argc, argv, true) ? 0 : 1;
-  if ISCMD("ld-coff")  return LLDLinkCOFF(argc, argv, true) ? 0 : 1;
-  if ISCMD("ld-wasm")  return LLDLinkWasm(argc, argv, true) ? 0 : 1;
+  if ISCMD("ld.lld")   return LLDLinkELF(argc, argv, true) ? 0 : 1;
+  if ISCMD("ld64.lld") return LLDLinkMachO(argc, argv, true) ? 0 : 1;
+  if ISCMD("lld-link") return LLDLinkCOFF(argc, argv, true) ? 0 : 1;
+  if ISCMD("wasm-ld")  return LLDLinkWasm(argc, argv, true) ? 0 : 1;
 
   if (ISCMD("help") || ISCMD("--help") || ISCMD("-h")) {
     usage(stdout);

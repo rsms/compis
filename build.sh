@@ -2,106 +2,7 @@
 set -euo pipefail
 PWD0=$PWD
 PROJECT=`cd "$(dirname "$0")"; pwd`
-
-HOST_ARCH=$(uname -m) ; [ "$HOST_ARCH" != "arm64" ] || HOST_ARCH=aarch64
-HOST_SYS=$(uname -s) # e.g. linux, macos
-case "$HOST_SYS" in
-  Darwin) HOST_SYS=macos ;;
-  *)      HOST_SYS=$(awk '{print tolower($0)}' <<< "$HOST_SYS") ;;
-esac
-
-# —————————————————————————————————————————————————————————————————————————————————
-# functions
-
-_err() { echo "$0:" "$@" >&2; exit 1; }
-
-_hascmd() { command -v "$1" >/dev/null || return 1; }
-_needcmd() {
-  while [ $# -gt 0 ]; do
-    if ! _hascmd "$1"; then
-      _err "missing $1 -- please install or use a different shell"
-    fi
-    shift
-  done
-}
-
-_relpath() { # <path>
-  case "$1" in
-    "$PWD0/"*) echo "${1##$PWD0/}" ;;
-    "$PWD0")   echo "." ;;
-    "$HOME/"*) echo "~${1:${#HOME}}" ;;
-    *)         echo "$1" ;;
-  esac
-}
-
-_pushd() {
-  pushd "$1" >/dev/null
-  [ "$PWD" = "$PWD0" ] || echo "cd $(_relpath "$PWD")"
-}
-
-_popd() {
-  popd >/dev/null
-  [ "$PWD" = "$PWD0" ] || echo "cd $(_relpath "$PWD")"
-}
-
-_sha_verify() { # <file> [<sha256> | <sha512>]
-  local file=$1
-  local expect=$2
-  local actual=
-  echo "verifying checksum of $(_relpath "$file")"
-  case "${#expect}" in
-    128) kind=512; actual=$(sha512sum "$file" | cut -d' ' -f1) ;;
-    64)  kind=256; actual=$(sha256sum "$file" | cut -d' ' -f1) ;;
-    *)   _err "checksum $expect has incorrect length (not sha256 nor sha512)" ;;
-  esac
-  if [ "$actual" != "$expect" ]; then
-    echo "$file: SHA-$kind sum mismatch:" >&2
-    echo "  actual:   $actual" >&2
-    echo "  expected: $expect" >&2
-    return 1
-  fi
-}
-
-_download_nocache() { # <url> <outfile> [<sha256> | <sha512>]
-  local url=$1 ; local outfile=$2 ; local checksum=${3:-}
-  rm -f "$outfile"
-  mkdir -p "$(dirname "$outfile")"
-  echo "$(_relpath "$outfile"): fetch $url"
-  command -v wget >/dev/null &&
-    wget -q -O "$outfile" "$url" ||
-    curl -L '-#' -o "$outfile" "$url"
-  [ -z "$checksum" ] || _sha_verify "$outfile" "$checksum"
-}
-
-_download() { # <url> <outfile> [<sha256> | <sha512>]
-  local url=$1 ; local outfile=$2 ; local checksum=${3:-}
-  if [ -f "$outfile" ]; then
-    [ -z "$checksum" ] && return 0
-    _sha_verify "$outfile" "$checksum" && return 0
-  fi
-  _download_nocache "$url" "$outfile" "$checksum"
-}
-
-_extract_tar() { # <file> <outdir>
-  [ $# -eq 2 ] || _err "_extract_tar"
-  local tarfile=$1
-  local outdir=$2
-  [ -e "$tarfile" ] || _err "$tarfile not found"
-
-  local extract_dir="${outdir%/}-extract-$(basename "$tarfile")"
-  rm -rf "$extract_dir"
-  mkdir -p "$extract_dir"
-
-  echo "extract $(basename "$tarfile") -> $(_relpath "$outdir")"
-  if ! XZ_OPT='-T0' tar -C "$extract_dir" -xf "$tarfile"; then
-    rm -rf "$extract_dir"
-    return 1
-  fi
-  rm -rf "$outdir"
-  mkdir -p "$(dirname "$outdir")"
-  mv -f "$extract_dir"/* "$outdir"
-  rm -rf "$extract_dir"
-}
+source "$PROJECT/etc/lib.sh"
 
 # —————————————————————————————————————————————————————————————————————————————————
 # command line
@@ -113,6 +14,7 @@ SRC_DIR="$PROJECT/src"
 MAIN_EXE=co
 PP_PREFIX=CO_
 WASM_SYMS="$PROJECT/etc/wasm.syms"
+TARGET=
 
 WATCH=
 WATCH_ADDL_FILES=()
@@ -146,16 +48,18 @@ while [[ $# -gt 0 ]]; do
   -lto)      ENABLE_LTO=true; shift ;;
   -no-lto)   ENABLE_LTO=false; shift ;;
   -out=*)    OUT_DIR=${1:5}; shift; continue ;;
+  -target=*) TARGET=${1:8}; shift; continue ;;
   -g)        DEBUGGABLE=true; STRIP=false; shift ;;
   -v)        VERBOSE=true; NINJA_ARGS+=(-v); shift ;;
   -D*)       [ ${#1} -gt 2 ] || _err "Missing NAME after -D";XFLAGS+=( "$1" );shift;;
   -h|-help|--help) cat << _END
 usage: $0 [options] [--] [<target> ...]
 Build mode option: (select just one)
-  -opt           Build optimized product with some assertions enabled (default)
-  -opt-fast      Build optimized product with no assertions
-  -debug         Build debug product with full assertions and tracing capability
-  -config        Just configure, only generate build.ninja file
+  -opt             Build optimized product with some assertions enabled (default)
+  -opt-fast        Build optimized product with no assertions
+  -debug           Build debug product with full assertions and tracing capability
+  -config          Just configure, only generate build.ninja file
+  -target=<target> Build for <target> (e.g. x86_64-macos, aarch64-linux)
 Output options:
   -g             Make -opt-fast debuggable (default for -opt and -debug)
   -strip         Do not include debug data (negates -g)
@@ -164,11 +68,11 @@ Output options:
   -out=<dir>     Build in <dir> instead of "$(_relpath "$OUT_DIR_BASE/<mode>")".
   -DNAME[=value] Define CPP variable NAME with value
 Misc options:
-  -w             Rebuild as sources change
-  -wf=<file>     Watch <file> for changes (can be provided multiple times)
-  -run=<cmd>     Run <cmd> after successful build
-  -v             Verbose log messages and disables pretty ninja output
-  -help          Show help on stdout and exit
+  -w         Rebuild as sources change
+  -wf=<file> Watch <file> for changes (can be provided multiple times)
+  -run=<cmd> Run <cmd> after successful build
+  -v         Verbose log messages and disables pretty ninja output
+  -help      Show help on stdout and exit
 _END
     exit ;;
   --) break ;;
@@ -184,8 +88,52 @@ elif [ -z "$ENABLE_LTO" ]; then
   ENABLE_LTO=true
 fi
 
+# —————————————————————————————————————————————————————————————————————————————————
+# target
+
+HOST_ARCH=$(uname -m) ; [ "$HOST_ARCH" != "arm64" ] || HOST_ARCH=aarch64
+HOST_SYS=$(uname -s) # e.g. linux, macos
+case "$HOST_SYS" in
+  Darwin) HOST_SYS=macos ;;
+  *)      HOST_SYS=$(awk '{print tolower($0)}' <<< "$HOST_SYS") ;;
+esac
+
+# cross compilation
+TARGET_ARCH=$HOST_ARCH
+TARGET_SYS=$HOST_SYS
+if [ -n "$TARGET" ]; then
+  [[ "$TARGET" != *"."* ]] || _err "unexpected version in target \"$TARGET\""
+  for target_info in $(_co_targets); do
+    # arch,sys,sysver,intsize,ptrsize,llvm_triple
+    IFS=, read -r arch sys sysver intsize ptrsize llvm_triple <<< "$target_info"
+    if [ "$TARGET" = "$arch-$sys" ]; then
+      TARGET="$arch-$sys"
+      TARGET_ARCH=$arch
+      TARGET_SYS=$sys
+      TARGET_TRIPLE=$llvm_triple
+      break
+    fi
+  done
+  if [ -z "$TARGET_TRIPLE" ]; then
+    echo "$0: Invalid target: $TARGET" >&2
+    printf "Available targets:" >&2
+    for target_info in $(_co_targets); do
+      IFS=, read -r arch sys sysver ign <<< "$target_info"
+      [ -n "$sysver" ] && printf " $arch-$sys.$sysver" || printf " $arch-$sys"
+    done >&2
+    echo >&2
+    exit 1
+  fi
+  $VERBOSE && echo "TARGET=$TARGET"
+  $VERBOSE && echo "TARGET_TRIPLE=$TARGET_TRIPLE"
+fi
+
+# —————————————————————————————————————————————————————————————————————————————————
+# OUT_DIR
+
 if [ -z "$OUT_DIR" ]; then
   OUT_DIR="$OUT_DIR_BASE/$BUILD_MODE"
+  test $TARGET && OUT_DIR="$OUT_DIR-$TARGET"
   mkdir -p "$OUT_DIR"
 else
   mkdir -p "$OUT_DIR"
@@ -194,25 +142,29 @@ fi
 
 # —————————————————————————————————————————————————————————————————————————————————
 # check availability of commands that we need
-_needcmd head grep stat awk tar git ninja sha256sum
+_needcmd head grep stat awk tar git sha256sum
 _hascmd curl || _hascmd wget || _err "curl nor wget found in PATH"
 
 # —————————————————————————————————————————————————————————————————————————————————
-# [dep] precompiled llvm from llvmbox distribution
+# llvmbox
+
 LLVM_RELEASE=15.0.7
 LLVMBOX_RELEASE=$LLVM_RELEASE+3
 LLVMBOX_DESTDIR="$DEPS_DIR/llvmbox"
 LLVMBOX_RELEASES=( # github.com/rsms/llvmbox/releases/download/VERSION/sha256sum.txt
+  "b7cc09f1864be3c2c2dca586224c932082638c8c6d60ca9e92e29564b729eb3e  llvmbox-15.0.7+3-aarch64-linux.tar.xz" \
+  "2df11c8106d844957ef49997c07d970eb5730a964586dd20f7c155aa9409376f  llvmbox-15.0.7+3-aarch64-macos.tar.xz" \
   "672bf8d94228880ece00082794936514f97cd50e23c1b5045ed06db4b4f80333  llvmbox-15.0.7+3-x86_64-linux.tar.xz" \
   "a508cf2ef7199726f041e4ae0e92650636a4fc14ba1f37b40ae9694b198d0785  llvmbox-15.0.7+3-x86_64-macos.tar.xz" \
+  "a1603875d1f9a5eb327a596266c1f10b3c6be8f50e1313216c9924e5415284e5  llvmbox-dev-15.0.7+3-aarch64-linux.tar.xz" \
+  "b339ad359e52ce9cd6cddcd68a908412a1d178dd5848710906621c96f5d6b41e  llvmbox-dev-15.0.7+3-aarch64-macos.tar.xz" \
   "513b49be901c3502e28e17e6748cc350dfd35a0261faae9a84256b07748799db  llvmbox-dev-15.0.7+3-x86_64-linux.tar.xz" \
   "746dd6fb68fe2dac217de3e81cf048829530af4c5b4f65fffb36e404d21a62bd  llvmbox-dev-15.0.7+3-x86_64-macos.tar.xz" \
-
 )
 LLVMBOX_URL_BASE=https://github.com/rsms/llvmbox/releases/download/v$LLVMBOX_RELEASE
 LLVM_CONFIG="$LLVMBOX_DESTDIR/bin/llvm-config"
 
-# find tar for host system
+# find llvmbox for host system
 LLVMBOX_SHA256_FILE=
 LLVMBOX_DEV_SHA256_FILE=
 for sha256_file in "${LLVMBOX_RELEASES[@]}"; do
@@ -246,6 +198,28 @@ if [ ! -f "$LLVMBOX_DESTDIR/lib/libz.a" ]; then
   XZ_OPT='-T0' tar -C "$LLVMBOX_DESTDIR" --strip-components 1 -xf "$DOWNLOAD_DIR/$file"
 else
   $VERBOSE && echo "$(_relpath "$LLVMBOX_DESTDIR") (dev): up-to-date"
+fi
+
+# cross compilation: extract llvmbox-dev into dedicated directory
+if test $TARGET && [ "$TARGET_ARCH-$TARGET_SYS" != "$HOST_ARCH-$HOST_SYS" ]; then
+  TARGET_LLVMBOX_DEV="$LLVMBOX_DESTDIR-$TARGET"
+  LLVMBOX_DEV_SHA256_FILE=
+  for sha256_file in "${LLVMBOX_RELEASES[@]}"; do
+    IFS=' ' read -r sha256 tar_file <<< "$sha256_file"
+    if [ "$tar_file" = "llvmbox-dev-$LLVMBOX_RELEASE-$TARGET_ARCH-$TARGET_SYS.tar.xz" ]
+    then
+      LLVMBOX_DEV_SHA256_FILE=$sha256_file
+      break
+    fi
+  done
+  [ -n "$LLVMBOX_DEV_SHA256_FILE" ] ||
+    _err "unsupported target $TARGET (no llvmbox distribution found for this target)"
+  if [ ! -f "$TARGET_LLVMBOX_DEV/lib/libz.a" ]; then
+    _download "$LLVMBOX_URL_BASE/$tar_file" "$DOWNLOAD_DIR/$tar_file" "$sha256"
+    _extract_tar "$DOWNLOAD_DIR/$tar_file" "$TARGET_LLVMBOX_DEV"
+  else
+    $VERBOSE && echo "$(_relpath "$TARGET_LLVMBOX_DEV"): up-to-date"
+  fi
 fi
 
 NINJA=${NINJA:-$(command -v ninja 2>/dev/null || true)}
@@ -441,21 +415,34 @@ esac
 case "$BUILD_MODE" in
   debug)
     XFLAGS+=( -g -O0 -DDEBUG -ferror-limit=6 )
-    # Enable sanitizers in debug builds
-    # See https://clang.llvm.org/docs/AddressSanitizer.html
-    # See https://clang.llvm.org/docs/UndefinedBehaviorSanitizer.html
     XFLAGS_HOST+=(
-      -fsanitize=address,undefined \
-      -fsanitize-address-use-after-scope \
-      -fsanitize=float-divide-by-zero \
-      -fsanitize=null \
-      -fsanitize=nonnull-attribute \
-      -fsanitize=nullability \
       -fno-omit-frame-pointer \
       -fno-optimize-sibling-calls \
       -fmacro-backtrace-limit=0 \
     )
-    LDFLAGS_HOST+=( -fsanitize=address,undefined )
+    # Enable sanitizers in debug builds
+    # See https://clang.llvm.org/docs/AddressSanitizer.html
+    # See https://clang.llvm.org/docs/UndefinedBehaviorSanitizer.html
+    #
+    # TODO FIXME: sanitizers disabled on linux.
+    #
+    # Currently llvmbox is static only, without a dylib interpreter
+    # (musl is only built statically.)
+    # Further, if we link with just -static-libsan, lld still creates a dynamic
+    # exe, and if we add -static-pie then the executable crashes, likely because
+    # use of incorrect crt start files:
+    #   XFLAGS_HOST+=( -static-libsan -fsanitize=undefined )
+    #   LDFLAGS_HOST+=( -static-pie -static-libsan -fsanitize=undefined )
+    #
+    if [ "$HOST_SYS" != linux ]; then
+      XFLAGS_HOST+=(
+        -fsanitize=address,undefined \
+        -fsanitize-address-use-after-scope \
+      )
+      # ubsan options
+      XFLAGS_HOST+=( -fsanitize=signed-integer-overflow,float-divide-by-zero,null,alignment,nonnull-attribute,nullability )
+      LDFLAGS_HOST+=( -fsanitize=address,undefined )
+    fi
     ;;
   opt*)
     XFLAGS+=( -DNDEBUG )

@@ -5,6 +5,7 @@
 #include "strlist.h"
 #include "path.h"
 #include "bgtask.h"
+#include "lockfile.h"
 #include "llvm/llvm.h"
 
 #include "librt_info.h"
@@ -164,11 +165,18 @@ static err_t build_libc_musl(compiler_t* c) {
   }
 
   // add crt sources
-  char* crt1src = strcat_alloca("crt/", srclist->crt1);
-  cobj_t* obj = cbuild_add_source(&build, crt1src);
-  // cobj_addcflagf(&build, obj, "");
-  obj->flags |= COBJ_EXCLUDE_FROM_LIB;
-  cobj_setobjfilef(&build, obj, "%s/lib/crt1.o", c->sysroot);
+  #define ADD_CRT_SOURCE(NAME, CFLAGS...) { \
+    char* srcfile = strcat_alloca("crt/", srclist->NAME); \
+    cobj_t* obj = cbuild_add_source(&build, srcfile); \
+    obj->flags |= COBJ_EXCLUDE_FROM_LIB; \
+    cobj_setobjfilef(&build, obj, "%s/lib/" CO_STRX(NAME) ".o", c->sysroot); \
+  }
+  ADD_CRT_SOURCE(crt1, "-DCRT")
+  ADD_CRT_SOURCE(rcrt1, "-DCRT", "-fPIC")
+  ADD_CRT_SOURCE(Scrt1, "-DCRT", "-fPIC")
+  ADD_CRT_SOURCE(crti, "-DCRT")
+  ADD_CRT_SOURCE(crtn, "-DCRT")
+  #undef ADD_CRT_SOURCE
 
   // build
   const char* outfile = lib_path(c, tmpbuf, "libc.a");
@@ -232,17 +240,21 @@ static err_t build_librt(compiler_t* c) {
   build.srcdir = path_join_alloca(coroot, "librt");
 
   // see compiler-rt/lib/builtins/CMakeLists.txt
-  strlist_add(&build.cc,
-    "-std=c11",
+  const char* common_flags[] = {
     "-Os",
     "-fPIC",
     "-fno-builtin",
     "-fomit-frame-pointer",
-    "-fvisibility=hidden");
+    "-fvisibility=hidden",
+    c->buildmode == BUILDMODE_OPT ? "-flto=thin" : "-g",
+    // (c->target.arch == ARCH_riscv32) ? "-fforce-enable-int128" : "",
+  };
+  strlist_add_array(&build.as, common_flags, countof(common_flags));
+  strlist_add_array(&build.cc, common_flags, countof(common_flags));
 
-  // if (c->target.arch == ARCH_riscv32)
-  //   strlist_add(&build.cc, "-fforce-enable-int128");
+  strlist_add(&build.cc, "-std=c11");
 
+  strlist_addf(&build.as, "-I%s", build.srcdir);
   strlist_addf(&build.cc, "-I%s", build.srcdir);
   strlist_add_array(&build.cc, c->cflags_sysinc.strings, c->cflags_sysinc.len);
 
@@ -258,7 +270,7 @@ static err_t build_librt(compiler_t* c) {
   // if (compiles("_Float16 f(_Float16 x){return x;}"))
   //   strlist_add(&build.cc, "-DCOMPILER_RT_HAS_FLOAT16=1");
 
-  strlist_add(&build.cc, c->buildmode == BUILDMODE_OPT ? "-flto=thin" : "-g");
+  // strlist_add(&build.cc, c->buildmode == BUILDMODE_OPT ? "-flto=thin" : "-g");
   err_t err = 0;
 
   // find source list for target
@@ -303,10 +315,32 @@ end:
 
 
 err_t build_syslibs_if_needed(compiler_t* c) {
-  err_t err = 0;
+  if (!must_build_libc(c) && !must_build_librt(c))
+    return 0;
+
+  err_t err;
+  lockfile_t lockfile;
+  char* lockfile_path = path_join_alloca(c->sysroot, "syslibs-build.lock");
+
+  long lockee_pid;
+  err = lockfile_trylock(&lockfile, lockfile_path, &lockee_pid);
+  if (err) {
+    if (err != ErrExists)
+      return err;
+    log("waiting for compis (pid %ld) to finish...", lockee_pid);
+    err = lockfile_lock(&lockfile, lockfile_path);
+    if (err)
+      return err;
+  }
+
+  // note: must check again in case another process won and build the libs
+
   if (must_build_libc(c) && (err = build_libc(c)))
-    return err;
+    goto end;
   if (must_build_librt(c) && (err = build_librt(c)))
-    return err;
+    goto end;
+
+end:
+  lockfile_unlock(&lockfile);
   return err;
 }

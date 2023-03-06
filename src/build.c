@@ -103,11 +103,6 @@ static void set_comaxproc() {
 
 
 int main_build(int argc, char* argv[]) {
-  memalloc_t ma = memalloc_ctx();
-
-  tmpbuf_init(ma);
-  sym_init(ma);
-
   int optind = parse_cli_options(argc, argv, help);
   if (optind < 0)
     return 1;

@@ -47,7 +47,8 @@ void cbuild_init(cbuild_t* b, compiler_t* c, const char* name);
 void cbuild_dispose(cbuild_t* b);
 
 cobj_t* nullable cbuild_add_source(cbuild_t* b, const char* srcfile);
-void cobj_addcflagf(cbuild_t*, cobj_t*, const char* fmt, ...) ATTR_FORMAT(printf,3,4);
+strlist_t* nullable cobj_cflags(cbuild_t* b, cobj_t* obj);
+bool cobj_addcflagf(cbuild_t*, cobj_t*, const char* fmt, ...) ATTR_FORMAT(printf,3,4);
 void cobj_setobjfilef(cbuild_t*, cobj_t*, const char* fmt, ...) ATTR_FORMAT(printf,3,4);
 
 void cbuild_end_config(cbuild_t* b);

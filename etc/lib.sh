@@ -58,9 +58,7 @@ _hascmd() { # <cmd>
 
 _needcmd() {
   while [ $# -gt 0 ]; do
-    if ! _hascmd "$1"; then
-      _err "missing $1 -- please install or use a different shell"
-    fi
+    _hascmd "$1" || _err "$1 not found in PATH"
     shift
   done
 }
@@ -88,9 +86,9 @@ _download_nocache() { # <url> <outfile> [<sha256> | <sha512>]
   rm -f "$outfile"
   mkdir -p "$(dirname "$outfile")"
   echo "$(_relpath "$outfile"): fetch $url"
-  command -v wget >/dev/null &&
-    wget -O "$outfile" "$url" ||
-    curl -L '-#' -o "$outfile" "$url"
+  command -v curl >/dev/null &&
+    curl -L '-#' -o "$outfile" "$url" ||
+    wget -O "$outfile" "$url"
   [ -z "$checksum" ] || _sha_verify "$outfile" "$checksum"
 }
 

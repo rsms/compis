@@ -183,9 +183,8 @@ static err_t configure_cflags(compiler_t* c) {
 
   // flags used for all C and assembly compilation
   c->cflags = strlist_make(c->ma,
-    "-nostdlib",
-    "-g",
-    "-target", c->target.triple);
+    "-nostdlib");
+  strlist_addf(&c->cflags, "--target=%s", c->target.triple);
   strlist_addf(&c->cflags, "--sysroot=%s", c->sysroot);
   strlist_addf(&c->cflags, "-resource-dir=%s/clangres", coroot);
   if (c->target.sys == SYS_macos) strlist_add(&c->cflags,
@@ -197,8 +196,7 @@ static err_t configure_cflags(compiler_t* c) {
 
   strlist_add(&c->cflags,
     "-nostdinc",
-    "-ffreestanding",
-    "-feliminate-unused-debug-types");
+    "-ffreestanding");
 
   // note: must add <resdir>/include explicitly when -nostdinc is set
   strlist_addf(&c->cflags, "-isystem%s/clangres/include", coroot);
@@ -219,7 +217,10 @@ static err_t configure_cflags(compiler_t* c) {
 
   // start of compis cflags
 
-  strlist_add(&c->cflags, "-std=c17");
+  strlist_add(&c->cflags,
+    "-std=c17",
+    "-g",
+    "-feliminate-unused-debug-types");
   switch ((enum buildmode)c->buildmode) {
     case BUILDMODE_DEBUG:
       strlist_add(&c->cflags, "-O0");

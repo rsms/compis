@@ -48,6 +48,7 @@ char* const* strlist_array(strlist_t* a);
 // ———————————————————————————————————————————————————————————————————————————————
 // implementation
 
+inline static void _strlist_add1(strlist_t* _) {}
 void _strlist_add2(strlist_t* a, const char* cstr);
 void _strlist_adda(strlist_t* a, u32 count, ...);
 #define _strlist_add3(a, args...) _strlist_adda(a, 2, args)
