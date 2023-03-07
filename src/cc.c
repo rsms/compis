@@ -22,36 +22,53 @@ int cc_main(int user_argc, char* user_argv[]) {
   bool nostdinc = false;
   bool freestanding = false;
   bool nolink = false;
+  bool iscompiling = false;
+  bool ispastflags = false;
 
   // process input command-line args
   for (int i = 1; i < user_argc; i++) {
     const char* arg = user_argv[i];
-    if (streq(arg, "-nostdlib") || streq(arg, "-nolibc")) {
-      nostdlib = true;
-    } else if (streq(arg, "-nostdinc") ||
-          streq(arg, "--no-standard-includes") ||
-          streq(arg, "-nostdlibinc"))
-    {
-      nostdinc = true;
-    } else if (streq(arg, "-ffreestanding")) {
-      freestanding = true;
-    } else if (streq(arg, "-c") || streq(arg, "-S") || streq(arg, "-E")) {
-      nolink = true;
-    } else if (streq(arg, "-v") || streq(arg, "--verbose")) {
-      c.opt_verbose = true;
-      coverbose = true;
-    } else if (streq(arg, "-O0")) {
-      c.buildmode = BUILDMODE_DEBUG;
-    } else if (str_startswith(arg, "-O")) {
-      c.buildmode = BUILDMODE_OPT;
-    } else if (streq(arg, "-target")) {
-      panic("TODO -target");
-    } else if (str_startswith(arg, "--target=")) {
-      arg += strlen("--target=");
-      if (!( target = target_find(arg) )) {
-        log("Invalid target \"%s\"", arg);
-        log("See `%s targets` for a list of supported targets", relpath(coexefile));
-        return 1;
+    if (*arg == '-' && !ispastflags) {
+      if (streq(arg, "-nostdlib") || streq(arg, "-nolibc")) {
+        nostdlib = true;
+      } else if (streq(arg, "-nostdinc") ||
+            streq(arg, "--no-standard-includes") ||
+            streq(arg, "-nostdlibinc"))
+      {
+        nostdinc = true;
+      } else if (streq(arg, "-ffreestanding")) {
+        freestanding = true;
+      } else if (streq(arg, "-c") || streq(arg, "-S") || streq(arg, "-E")) {
+        nolink = true;
+      } else if (streq(arg, "-v") || streq(arg, "--verbose")) {
+        c.opt_verbose = true;
+        coverbose = true;
+      } else if (streq(arg, "-O0")) {
+        c.buildmode = BUILDMODE_DEBUG;
+      } else if (str_startswith(arg, "-O")) {
+        c.buildmode = BUILDMODE_OPT;
+      } else if (streq(arg, "-target")) {
+        panic("TODO -target");
+      } else if (str_startswith(arg, "--target=")) {
+        arg += strlen("--target=");
+        if (!( target = target_find(arg) )) {
+          log("Invalid target \"%s\"", arg);
+          log("See `%s targets` for a list of supported targets", relpath(coexefile));
+          return 1;
+        }
+      } else if (streq(arg, "--")) {
+        ispastflags = true;
+      }
+    } else {
+      const char* ext = path_ext(arg);
+      if (*ext++ == '.' && *ext) {
+        if (ext[1] == 0) {
+          char c = *ext;
+          if (c == 'c' || c == 'C' || c == 's' || c == 'S')
+            iscompiling = true;
+        } else if (strieq(ext, "cc") || strieq(ext, "cpp")) {
+          iscompiling = true;
+        }
       }
     }
   }
@@ -74,15 +91,17 @@ int cc_main(int user_argc, char* user_argv[]) {
     // no builtins, no libc, no librt
     strlist_add(&args, "-nostdinc", "-nostdlib");
   } else {
-    // add fundamental "target" compilation flags
-    strlist_add_array(&args, c.cflags_common.strings, c.cflags_common.len);
+    if (iscompiling) {
+      // add fundamental "target" compilation flags
+      strlist_add_array(&args, c.cflags_common.strings, c.cflags_common.len);
+    }
 
     // add include flags for system headers and libc
     if (!nostdinc && !freestanding)
       strlist_add_array(&args, c.cflags_sysinc.strings, c.cflags_sysinc.len);
 
     // add linker flags
-    if (nolink || (!nostdlib && !freestanding)) {
+    if (!nolink && !nostdlib && !freestanding) {
       strlist_addf(&args, "-L%s/lib", c.sysroot);
       strlist_add(&args, "-lc", "-lrt");
     }
