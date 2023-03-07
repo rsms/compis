@@ -10,8 +10,19 @@ you can mix .c and .co source files. It accomplishes this by bundling some LLVM 
 Usage:
 
 ```shell
-$ co build -o foo main.co
+$ compis build -o foo main.co
 $ ./foo
+```
+
+Since Compis bundles clang & lld, you can use it as a C compiler with cross-compilation capabilities:
+
+```shell
+$ compis cc -o hello hello.c
+$ ./hello
+Hello world
+$ compis cc --target=aarch64-macos -o hello2 hello.c
+$ file hello2
+hello2: Mach-O 64-bit executable arm64
 ```
 
 ## Features
