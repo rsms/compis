@@ -1,0 +1,27 @@
+--- a/src/llvm/llvm-ar.cc
++++ b/src/llvm/llvm-ar.cc
+@@ -1444,7 +1444,7 @@ static int ranlib_main(int argc, char **argv) {
+   return 0;
+ }
+ 
+-int llvm_ar_main(int argc, char **argv) {
++extern "C" int llvm_ar_main(int argc, char **argv) {
+   InitLLVM X(argc, argv);
+   ToolName = argv[0];
+ 
+@@ -1464,12 +1464,12 @@ int llvm_ar_main(int argc, char **argv) {
+            (I + Tool.size() == Stem.size() || !isAlnum(Stem[I + Tool.size()]));
+   };
+ 
+-  if (Is("dlltool"))
+-    return dlltoolDriverMain(makeArrayRef(argv, argc));
++  // if (Is("dlltool"))
++  //   return dlltoolDriverMain(makeArrayRef(argv, argc));
+   if (Is("ranlib"))
+     return ranlib_main(argc, argv);
+-  if (Is("lib"))
+-    return libDriverMain(makeArrayRef(argv, argc));
++  // if (Is("lib"))
++  //   return libDriverMain(makeArrayRef(argv, argc));
+   if (Is("ar"))
+     return ar_main(argc, argv);

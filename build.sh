@@ -232,27 +232,40 @@ export NINJA  # for watch mode
 # —————————————————————————————————————————————————————————————————————————————————
 # update clang driver code if needed
 
-SRC_VERSION_LINE="//!llvm-$LLVM_RELEASE"
+SRC_VERSION_LINE="//!co-llvm-$LLVM_RELEASE"
 
 if [ "$(tail -n1 "$SRC_DIR/llvm/driver.cc")" != "$SRC_VERSION_LINE" ]; then
   echo "src/llvm: LLVM version changed; updating driver code"
+  CLANGSRC="$DEPS_DIR/clang-$LLVM_RELEASE"
 
-  _download \
+  [ -d "$CLANGSRC" ] || _download_and_extract_tar \
     https://github.com/llvm/llvm-project/releases/download/llvmorg-$LLVM_RELEASE/clang-$LLVM_RELEASE.src.tar.xz \
-    "$DOWNLOAD_DIR/clang-$LLVM_RELEASE.src.tar.xz" \
+    "$CLANGSRC"
     a6b673ef15377fb46062d164e8ddc4d05c348ff8968f015f7f4af03f51000067
 
-  _extract_tar "$DOWNLOAD_DIR/clang-$LLVM_RELEASE.src.tar.xz" "$DEPS_DIR/clang"
-
-  _pushd "$SRC_DIR"
-  cp -v "$DEPS_DIR/clang/tools/driver/driver.cpp"     llvm/driver.cc
-  cp -v "$DEPS_DIR/clang/tools/driver/cc1_main.cpp"   llvm/driver_cc1_main.cc
-  cp -v "$DEPS_DIR/clang/tools/driver/cc1as_main.cpp" llvm/driver_cc1as_main.cc
-  patch -p1 < "$PROJECT/etc/co-llvm-$LLVM_RELEASE-driver.patch"
-  echo "$SRC_VERSION_LINE" >> llvm/driver.cc
+  _pushd "$PROJECT"
+  _copy "$CLANGSRC/tools/driver/driver.cpp"     src/llvm/driver.cc
+  _copy "$CLANGSRC/tools/driver/cc1_main.cpp"   src/llvm/driver_cc1_main.cc
+  _copy "$CLANGSRC/tools/driver/cc1as_main.cpp" src/llvm/driver_cc1as_main.cc
+  patch -p1 < etc/co-clang-$LLVM_RELEASE-driver.patch
+  echo "$SRC_VERSION_LINE" >> src/llvm/driver.cc
   _popd
+fi
 
-  rm -rf "$DEPS_DIR/clang" "$DOWNLOAD_DIR/clang-$LLVM_RELEASE.src.tar.xz"
+if [ "$(tail -n1 "$SRC_DIR/llvm/llvm-ar.cc")" != "$SRC_VERSION_LINE" ]; then
+  echo "src/llvm: LLVM version changed; updating ar code"
+  LLVMSRC="$DEPS_DIR/llvm-$LLVM_RELEASE"
+
+  [ -d "$LLVMSRC" ] || _download_and_extract_tar \
+    https://github.com/llvm/llvm-project/releases/download/llvmorg-$LLVM_RELEASE/llvm-$LLVM_RELEASE.src.tar.xz \
+    "$LLVMSRC" \
+    4ad8b2cc8003c86d0078d15d987d84e3a739f24aae9033865c027abae93ee7a4
+
+  _pushd "$PROJECT"
+  _copy "$LLVMSRC/tools/llvm-ar/llvm-ar.cpp" src/llvm/llvm-ar.cc
+  patch -p1 < etc/co-llvm-$LLVM_RELEASE-ar.patch
+  echo "$SRC_VERSION_LINE" >> src/llvm/llvm-ar.cc
+  _popd
 fi
 
 # —————————————————————————————————————————————————————————————————————————————————

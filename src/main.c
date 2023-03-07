@@ -23,46 +23,52 @@ const char* cocachedir;
 bool coverbose = false;
 u32 comaxproc = 1;
 
-extern int main_build(int argc, char*const* argv); // build.c
+// externally-implemented tools
+int main_build(int argc, char*const* argv); // build.c
+int cc_main(int argc, char* argv[]); // cc.c
+int llvm_ar_main(int argc, char **argv); // llvm/llvm-ar.cc
 
 static linkerfn_t nullable ld_impl(sys_t);
 static const char* ld_impl_name(linkerfn_t nullable f);
 
 
-static void usage(FILE* f) {
+static int usage(FILE* f) {
   // ld usage text
   linkerfn_t ldf = ld_impl(target_default()->sys);
   char host_ld[128];
   if (ldf) {
     snprintf(host_ld, sizeof(host_ld),
-      "  ld [args ...]        Linker for host system (%s)\n", ld_impl_name(ldf));
+      "  ld        %s linker (host)\n", ld_impl_name(ldf));
   } else {
     host_ld[0] = 0;
   }
 
   fprintf(f,
-    "Compis " CO_VERSION_STR ", your friendly neighborhood programming language\n"
     "Usage: %s <command> [args ...]\n"
     "Commands:\n"
-    "  build [args ...]     Compis compiler\n"
-    "  help, --help         Print help on stdout and exit\n"
-    "  version, --version   Print version on stdout and exit\n"
-    "Extra commands:\n"
-    "  targets              List supported targets\n"
-    "  cc [args ...]        C compiler (Clang)\n"
-    "  as [args ...]        LLVM assembler (same as cc -cc1as)\n"
-    "  ar [args ...]        Object archiver\n"
+    "  build     Build a project\n"
+    "\n"
+    "  ar        Archiver\n"
+    "  cc        C compiler (clang)\n"
+    "  ranlib    Archive index generator\n"
+    "\n"
     "%s" // ld for host, if any
-    "  ld.lld [args ...]    Linker for ELF\n"
-    "  ld64.lld [args ...]  Linker for Mach-O\n"
-    "  lld-link [args ...]  Linker for COFF\n"
-    "  wasm-ld [args ...]   Linker for WebAssembly\n"
+    "  ld.lld    ELF linker\n"
+    "  ld64.lld  Mach-O linker\n"
+    "  lld-link  COFF linker\n"
+    "  wasm-ld   WebAssembly linker\n"
+    "\n"
+    "  help      Print help on stdout and exit\n"
+    "  targets   List supported targets\n"
+    "  version   Print version on stdout and exit\n"
+    "\n"
     "For help with a specific command:\n"
     "  %s <command> --help\n"
     "",
     coprogname,
     host_ld,
     coprogname);
+  return 0;
 }
 
 
@@ -78,22 +84,6 @@ void print_co_version() {
     ", musl " MUSL_VERSION_STR
     "\n",
     arch_name(host->arch), sys_name(host->sys));
-}
-
-
-static int ar_main(int argc, char*const* argv) {
-  // TODO: accept --target triple (where we really only parse the os)
-  const char* outfile = argv[1];
-  char*const* filesv = &argv[2];
-  u32 filesc = argc-2;
-  char* errmsg = "?";
-  CoLLVMArchiveKind arkind = llvm_sys_archive_kind(target_default()->sys);
-  err_t err = llvm_write_archive(arkind, outfile, filesv, filesc, &errmsg);
-  if (!err)
-    return 0;
-  warnx("%s", errmsg);
-  LLVMDisposeMessage(errmsg);
-  return 1;
 }
 
 
@@ -128,10 +118,6 @@ static int ld_main(int argc, char* argv[]) {
   linkerfn_t impl = safechecknotnull( ld_impl(target_default()->sys) );
   return !impl(argc, argv, true);
 }
-
-
-// cc.c
-int cc_main(int argc, char* argv[]);
 
 
 static void coroot_init(memalloc_t ma) {
@@ -181,24 +167,32 @@ int main(int argc, char* argv[]) {
   const char* cmd = is_multicall ? coprogname : argv[1] ? argv[1] : "";
 
   if (*cmd == 0) {
+    usage(stdout);
     log("%s: missing command; try `%s help`", coprogname, coprogname);
     return 1;
   }
 
-  // clang "cc" may spawn itself in a new process
-  if (streq(cmd, "-cc1") || streq(cmd, "-cc1as"))
-    return clang_main(argc, argv);
+  #define IS(...)  __VARG_DISP(IS,__VA_ARGS__)
+  #define IS1(name)  (streq(cmd, (name)))
+  #define IS2(a,b)   (streq(cmd, (a)) || streq(cmd, (b)))
+  #define IS3(a,b,c) (streq(cmd, (a)) || streq(cmd, (b)) || streq(cmd, (c)))
 
-  if (streq(cmd, "as")) {
-    argv[1] = "-cc1as";
+  // clang "cc" may spawn itself in a new process
+  if IS("-cc1", "-cc1as")
     return clang_main(argc, argv);
-  }
 
   // shave away "prog" from argv when not a multicall
   if (!is_multicall) {
     argc--;
     argv++;
   }
+
+  // commands that do not touch any compis code (no need for compis init)
+  if IS("ld.lld")       return LLDLinkELF(argc, argv, true) ? 0 : 1;
+  if IS("ld64.lld")     return LLDLinkMachO(argc, argv, true) ? 0 : 1;
+  if IS("lld-link")     return LLDLinkCOFF(argc, argv, true) ? 0 : 1;
+  if IS("wasm-ld")      return LLDLinkWasm(argc, argv, true) ? 0 : 1;
+  if IS("ar", "ranlib") return llvm_ar_main(argc, argv);
 
   // initialize global state
   memalloc_t ma = memalloc_ctx();
@@ -208,31 +202,16 @@ int main(int argc, char* argv[]) {
   sym_init(ma);
   coroot_init(ma);
   cocachedir_init(ma);
-
-  // llvm
   err_t err = llvm_init();
   if (err) errx(1, "llvm_init: %s", err_str(err));
 
   // command dispatch
-  if (streq(cmd, "build"))    return main_build(argc, argv);
-  if (streq(cmd, "targets"))  return print_supported_targets(), 0;
-  if (streq(cmd, "cc"))       return cc_main(argc, argv);
-  if (streq(cmd, "ar"))       return ar_main(argc, argv);
-  if (streq(cmd, "ld"))       return ld_main(argc, argv);
-  if (streq(cmd, "ld.lld"))   return LLDLinkELF(argc, argv, true) ? 0 : 1;
-  if (streq(cmd, "ld64.lld")) return LLDLinkMachO(argc, argv, true) ? 0 : 1;
-  if (streq(cmd, "lld-link")) return LLDLinkCOFF(argc, argv, true) ? 0 : 1;
-  if (streq(cmd, "wasm-ld"))  return LLDLinkWasm(argc, argv, true) ? 0 : 1;
-
-  if (streq(cmd, "help") || streq(cmd, "--help") || streq(cmd, "-h")) {
-    usage(stdout);
-    return 0;
-  }
-
-  if (streq(cmd, "version") || streq(cmd, "--version")) {
-    print_co_version();
-    return 0;
-  }
+  if IS("build")                return main_build(argc, argv);
+  if IS("cc")                   return cc_main(argc, argv);
+  if IS("ld")                   return ld_main(argc, argv);
+  if IS("targets")              return print_supported_targets(), 0;
+  if IS("version", "--version") return print_co_version(), 0;
+  if IS("help", "--help", "-h") return usage(stdout);
 
   log("%s: unknown command \"%s\"", coprogname, cmd);
   return 1;

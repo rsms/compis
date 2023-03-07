@@ -139,6 +139,15 @@ _create_tar_xz_from_dir() { # <srcdir> <dstfile>
   fi
 }
 
+_download_and_extract_tar() { # <url> <outdir> [<sha256> | <sha512> [<tarfile>]]
+  local url=$1
+  local outdir=$2
+  local checksum=${3:-}
+  local tarfile="${4:-$DOWNLOAD_DIR/$(basename "$url")}"
+  _download "$url" "$tarfile" "$checksum"
+  _extract_tar "$tarfile" "$outdir"
+}
+
 _co_targets() { # -> "arch,sys,sysver,intsize,ptrsize,llvm_triple" ...
   awk '$1 ~ /^TARGET\(/' "$PROJECT/src/targets.h" |
   sed -E 's/[ "]//g' |

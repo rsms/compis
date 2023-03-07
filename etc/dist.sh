@@ -34,6 +34,9 @@ done
 # create symlinks
 for name in \
   cc \
+  ar \
+  as \
+  ranlib \
   ld.lld \
   ld64.lld \
   wasm-ld \

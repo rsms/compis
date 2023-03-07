@@ -1,5 +1,5 @@
---- a/llvm/driver.cc	 2023-01-13 09:46:16.000000000 -0800
-+++ b/llvm/driver.cc	 2023-01-13 09:58:03.000000000 -0800
+--- a/src/llvm/driver.cc 2023-01-13 09:46:16.000000000 -0800
++++ b/src/llvm/driver.cc 2023-01-13 09:58:03.000000000 -0800
 @@ -207,8 +207,6 @@
                      void *MainAddr);
  extern int cc1as_main(ArrayRef<const char *> Argv, const char *Argv0,
