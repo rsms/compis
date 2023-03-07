@@ -635,6 +635,9 @@ enum err_ {
   ErrNoMem        = -12, // cannot allocate memory
   ErrMFault       = -13, // bad memory address
   ErrOverflow     = -14, // value too large
+  ErrReadOnly     = -15, // read-only
+  ErrIO           = -16, // I/O error
+  ErrNotDir       = -17, // not a directory
 };
 
 EXTERN_C err_t err_errno(); // current errno value
@@ -1009,6 +1012,7 @@ u64 microsleep(u64 microseconds);
 //—————————————————————————————————————————————————————————————————————————————————————
 // system info
 u32 sys_ncpu(); // number of available logical CPUs, logs error on failure and returns 1
+const char* sys_homedir();
 
 //—————————————————————————————————————————————————————————————————————————————————————
 // files
@@ -1054,6 +1058,13 @@ extern const char* coexefile;
 // coroot: directory of compis installation (== dirname(exefile))
 // Can be overridden with env var COROOT
 extern const char* coroot;
+
+// cocachedir: directory of compis cache (~/.cache/compis)
+// Can be overridden with env var COCACHE
+extern const char* cocachedir;
+
+// coverbose: set to true if -v was passed on the command line
+extern bool coverbose;
 
 // comaxproc: max thread concurrency (defaults to sys_ncpu, can be set with -j)
 extern u32 comaxproc;

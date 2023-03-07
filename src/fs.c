@@ -67,8 +67,66 @@ err_t writefile(const char* filename, u32 mode, slice_t data) {
 
 
 err_t fs_mkdirs(const char* path, int perms) {
-  dlog("mkdirs %s", relpath(path));
-  return err_errnox(LLVMCreateDirectories(path, strlen(path), perms));
+  // copy path into mutable storage
+  usize len = strlen(path);
+  if (len == 0) return ErrInvalid;
+  char* buf = alloca(len + 1);
+  memcpy(buf, path, len + 1);
+
+  char* s = buf + len;
+  char* end;
+  struct stat st;
+
+  // trim away trailing separators, e.g. "/a/b//" => "/a/b"
+  while (*--s == PATH_SEPARATOR) {
+    if (s == buf)
+      return 0; // path is "/"
+  }
+  if (s == buf && *buf == '.')
+    return 0; // path is "."
+  s[1] = 0;
+  end = s;
+
+  // stat from leaf to root, e.g "/a/b/c", "/a/b", "/a"
+  for (;;) {
+    if (stat(buf, &st) == 0) {
+      if (!S_ISDIR(st.st_mode))
+        return ErrNotDir;
+      break;
+    }
+    if (errno != ENOENT)
+      goto err;
+
+    // skip past the last component
+    while (--s > buf) {
+      if (*s == PATH_SEPARATOR) {
+        // skip past any trailing separators
+        while (*--s == PATH_SEPARATOR) {};
+        break;
+      }
+    }
+    if (s == buf)
+      break;
+    // replace path separator with null terminator
+    s[1] = 0;
+  }
+
+  if (s < end && coverbose)
+    log("creating directory '%s'", relpath(path));
+
+  // mkdir starting with the first non-existant dir, e.g "/a", "/a/b", "/a/b/c"
+  while (s < end) {
+    if (mkdir(buf, perms) < 0 && errno != EEXIST) {
+      dlog("mkdir %s: %s", buf, err_str(err_errno()));
+      goto err;
+    }
+    while (++s < end && *s) {}
+    *s = PATH_SEPARATOR;
+  }
+
+  return 0;
+err:
+  return err_errno();
 }
 
 

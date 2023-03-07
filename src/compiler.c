@@ -8,10 +8,13 @@
 #include "llvm/llvm.h"
 #include "clang/Basic/Version.inc" // CLANG_VERSION_STRING
 
+#include <err.h>
+#include <errno.h>
+#include <stdlib.h>
 #include <sys/stat.h>
 #include <unistd.h>
-#include <stdlib.h>
-#include <err.h>
+
+#include <string.h> // XXX
 
 
 static void set_cstr(memalloc_t ma, char*nullable* dst, slice_t src) {
@@ -94,6 +97,15 @@ static void configure_target(compiler_t* c) {
       c->inttype  = type_i64;
   }
   set_secondary_pointer_types(c);
+
+  // set ldname
+  switch ((enum target_sys)c->target.sys) {
+    case SYS_linux: c->ldname = "ld.lld"; break;
+    case SYS_macos: c->ldname = "ld64.lld"; break;
+    // case SYS_wasm: case SYS_wasi: c->ldname = "wasm-ld"; break;
+    // case SYS_win32: c->ldname = "lld-link"; break;
+    case SYS_COUNT: case SYS_none: safefail("sys"); break;
+  }
 }
 
 
@@ -106,10 +118,38 @@ static const char* buildmode_name(buildmode_t m) {
 }
 
 
-static err_t configure_buildroot(compiler_t* c, const char* buildroot) {
+static err_t configure_sysroot(compiler_t* c) {
+  // sysroot = {cocachedir}/{target}[-debug]
+
+  char target[80];
+  usize targetlen = target_fmt(&c->target, target, sizeof(target));
+  if (c->buildmode == BUILDMODE_DEBUG) {
+    usize n = strlen("-debug");
+    memcpy(&target[targetlen], "-debug", n + 1);
+    targetlen += n;
+  }
+
+  err_t err;
+  char sysroot[PATH_MAX];
+  int n = snprintf(sysroot, sizeof(sysroot),
+    "%s%c%s", cocachedir, PATH_SEPARATOR, target);
+  safecheck(n > 0 && (usize)n < sizeof(sysroot));
+  if (( err = fs_mkdirs(sysroot, 0755) ))
+    return err;
+
+  if (c->opt_verbose)
+    log("using sysroot '%s'", sysroot);
+
+  mem_freecstr(c->ma, c->sysroot);
+  if (( c->sysroot = mem_strdup(c->ma, slice_cstr(sysroot), 0) ) == NULL)
+    return ErrNoMem;
+  return 0;
+}
+
+
+static err_t configure_builddir(compiler_t* c, const char* buildroot) {
   // builddir    = {buildroot}/{mode}-{target}
   // pkgbuilddir = {builddir}/{pkgname}.pkg
-  // sysroot     = {builddir}/sysroot
 
   if (!( c->buildroot = path_abs(c->ma, buildroot) ))
     return ErrNoMem;
@@ -157,12 +197,6 @@ static err_t configure_buildroot(compiler_t* c, const char* buildroot) {
   APPEND(pkgname);
   APPEND(suffix);
   *p = 0;
-
-  // sysroot
-  mem_freecstr(c->ma, c->sysroot);
-  c->sysroot = path_join_m(c->ma, c->builddir, "sysroot");
-  if (!c->sysroot)
-    return ErrNoMem;
 
   return 0;
 
@@ -247,9 +281,9 @@ static err_t configure_cflags(compiler_t* c) {
 err_t compiler_configure(compiler_t* c, const target_t* target, const char* buildroot) {
   c->target = *target;
   configure_target(c);
-  err_t err = configure_buildroot(c, buildroot);
-  if (!err)
-    err = configure_cflags(c);
+  err_t err = configure_builddir(c, buildroot);
+  if (!err) err = configure_sysroot(c);
+  if (!err) err = configure_cflags(c);
   return err;
 }
 

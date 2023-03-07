@@ -314,33 +314,78 @@ end:
 }
 
 
+static err_t create_exe_symlinks(compiler_t* c) {
+  usize dstpathcap = strlen(coexefile) + 16;
+  char* dstpath = alloca(dstpathcap);
+  usize dstpathlen = path_dir(dstpath, dstpathcap, coexefile);
+  const char* coexename = path_base(coexefile);
+  int r;
+
+  #define CREATE_EXE_SYMLINK(name) { \
+    memcpy(&dstpath[dstpathlen], \
+      PATH_SEPARATOR_STR name, strlen(PATH_SEPARATOR_STR name) + 1); \
+    r = symlink(coexename, dstpath); \
+    if (r != 0 && errno != EEXIST) \
+      return err_errno(); \
+    if (r == 0) dlog("symlink %s -> %s", dstpath, coexename); \
+  }
+
+  CREATE_EXE_SYMLINK("cc");
+  CREATE_EXE_SYMLINK("ld.lld");
+  CREATE_EXE_SYMLINK("ld64.lld");
+  CREATE_EXE_SYMLINK("wasm-ld");
+  CREATE_EXE_SYMLINK("lld-link");
+
+  #undef CREATE_EXE_SYMLINK
+  return 0;
+}
+
+
 err_t build_syslibs_if_needed(compiler_t* c) {
+  err_t err = 0;
+
+  if (must_build_libc(c) || must_build_librt(c)) {
+    lockfile_t lockfile;
+    char* lockfile_path = path_join_alloca(c->sysroot, "syslibs-build.lock");
+    long lockee_pid;
+    if (( err = lockfile_trylock(&lockfile, lockfile_path, &lockee_pid) )) {
+      if (err != ErrExists)
+        return err;
+      log("waiting for compis (pid %ld) to finish...", lockee_pid);
+      if (( err = lockfile_lock(&lockfile, lockfile_path) ))
+        return err;
+    }
+    // note: must check again in case another process won and build the libs
+    if (!err && must_build_libc(c)) err = build_libc(c);
+    if (!err && must_build_librt(c)) err = build_librt(c);
+    lockfile_unlock(&lockfile);
+  }
+
+  if (!err)
+    err = create_exe_symlinks(c);
+
+  return err;
+}
+
+
+/*err_t build_syslibs_if_needed(compiler_t* c) {
   if (!must_build_libc(c) && !must_build_librt(c))
     return 0;
 
-  err_t err;
+  err_t err = 0;
   lockfile_t lockfile;
   char* lockfile_path = path_join_alloca(c->sysroot, "syslibs-build.lock");
-
   long lockee_pid;
-  err = lockfile_trylock(&lockfile, lockfile_path, &lockee_pid);
-  if (err) {
+  if (( err = lockfile_trylock(&lockfile, lockfile_path, &lockee_pid) )) {
     if (err != ErrExists)
       return err;
     log("waiting for compis (pid %ld) to finish...", lockee_pid);
-    err = lockfile_lock(&lockfile, lockfile_path);
-    if (err)
+    if (( err = lockfile_lock(&lockfile, lockfile_path) ))
       return err;
   }
-
   // note: must check again in case another process won and build the libs
-
-  if (must_build_libc(c) && (err = build_libc(c)))
-    goto end;
-  if (must_build_librt(c) && (err = build_librt(c)))
-    goto end;
-
-end:
+  if (!err && must_build_libc(c)) err = build_libc(c);
+  if (!err && must_build_librt(c)) err = build_librt(c);
   lockfile_unlock(&lockfile);
   return err;
-}
+}*/

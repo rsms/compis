@@ -19,3 +19,4 @@ a.out
 /build
 /etc/bitset
 /lib/sysinc
+/lib/*.sysroot

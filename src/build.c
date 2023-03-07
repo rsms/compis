@@ -107,6 +107,7 @@ int main_build(int argc, char* argv[]) {
   if (optind < 0)
     return 1;
 
+  coverbose |= opt_verbose;
   #if DEBUG
     // --co-trace turns on all trace flags
     opt_trace_parse |= opt_trace_all;

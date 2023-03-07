@@ -329,9 +329,6 @@ EXTERN_C err_t llvm_module_emit(
 
 EXTERN_C char* LLVMGetMainExecutable(const char* argv0);
 
-// returns errno
-EXTERN_C int LLVMCreateDirectories(const char* path, size_t pathlen, int perms);
-
 // DEPRECATED
 EXTERN_C CoLLVMOS LLVMGetHostOS();
 

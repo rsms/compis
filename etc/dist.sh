@@ -31,6 +31,17 @@ for f in lib/*; do
   _copy $f $DESTDIR/$(basename $f)
 done
 
+# create symlinks
+for name in \
+  cc \
+  ld.lld \
+  ld64.lld \
+  wasm-ld \
+  lld-link \
+;do
+  _symlink "$DESTDIR/$name" compis
+done
+
 echo "creating $DESTDIR.tar.xz"
 _create_tar_xz_from_dir $DESTDIR $DESTDIR.tar.xz
 

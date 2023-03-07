@@ -483,13 +483,3 @@ char* LLVMGetMainExecutable(const char* argv0) {
   void* P = (void*)(intptr_t)LLVMGetMainExecutable;
   return strdup(sys::fs::getMainExecutable(argv0, P).c_str());
 }
-
-
-int LLVMCreateDirectories(const char* path, size_t pathlen, int perms) {
-  bool IgnoreExisting = true;
-  sys::fs::perms perms2 = sys::fs::perms(perms);
-  std::string path2(path, pathlen);
-  std::error_code err = sys::fs::create_directories(path2, IgnoreExisting, perms2);
-  return err.value();
-}
-

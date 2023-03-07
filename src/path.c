@@ -76,7 +76,7 @@ usize path_dir(char* buf, usize bufcap, const char* path) {
       goto singlechar;
     }
   }
-  usize len = MIN(bufcap, i + 1);
+  usize len = MIN(bufcap - 1, i + 1);
   if (len > 0) {
     memcpy(buf, path, len);
     buf[len] = 0;
@@ -86,6 +86,15 @@ singlechar:
   if (bufcap > 1 && singlec) *buf++ = singlec;
   if (bufcap > 0) *buf = 0;
   return (usize)(singlec != 0);
+}
+
+
+char* nullable path_dir_m(memalloc_t ma, const char* path) {
+  usize cap = path_dirlen(path, strlen(path)) + 1;
+  char* buf = mem_alloc(ma, cap).p;
+  if (buf)
+    path_dir(buf, cap, path);
+  return buf;
 }
 
 
@@ -189,7 +198,7 @@ char* nullable path_abs(memalloc_t ma, const char* path) {
     usize pathlen = strlen(path);
     mem_t m = mem_alloc(ma, pathlen + 1);
     if (m.p)
-      path_cleanx(m.p, m.size, m.p, pathlen);
+      path_cleanx(m.p, m.size, path, pathlen);
     return m.p;
   } else {
     char cwd[PATH_MAX];

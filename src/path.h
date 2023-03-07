@@ -26,6 +26,7 @@ usize path_dirlen(const char* path, usize len);
 // Returns bytes written to buf as if bufcap was infinite.
 // E.g. "foo/bar/baz.x" => "foo/bar", "/lol" => "/"
 usize path_dir(char* buf, usize bufcap, const char* path);
+char* nullable path_dir_m(memalloc_t ma, const char* path);
 
 // path_base returns a pointer to the last path element. E.g. "foo/bar/baz.x" => "baz.x"
 // If the path is empty, returns "".
@@ -70,9 +71,16 @@ void relpath_init();
 })
 
 // path_join_alloca allocates space on stack and joins two or more paths together.
-// char* path_join_alloca(const char* path1, const char* path2)
-// char* path_join_alloca(const char* path1, const char* path2, const char* path3)
+// char* path_join_alloca(const char* path1 ...)
 #define path_join_alloca(args...) __VARG_DISP(_path_join_alloca, args)
+#define _path_join_alloca1(p1) ({ \
+  const char* p1__ = (p1); usize z1__ = strlen(p1__); \
+  char* s__ = safechecknotnull(alloca(z1__ + 1)); \
+  memcpy(s__, p1__, z1__); \
+  s__[z1__] = 0; \
+  path_cleanx(s__, z1__ + 1, s__, z1__); \
+  s__; \
+})
 #define _path_join_alloca2(p1, p2) ({ \
   const char* p1__ = (p1); usize z1__ = strlen(p1__); \
   const char* p2__ = (p2); usize z2__ = strlen(p2__); \

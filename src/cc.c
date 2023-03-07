@@ -7,8 +7,6 @@
 #include "llvm/llvm.h"
 #include "clang/Basic/Version.inc" // CLANG_VERSION_STRING
 
-#include <unistd.h> // symlink
-
 
 static void diaghandler(const diag_t* d, void* nullable userdata) {
   // unused
@@ -35,15 +33,22 @@ int cc_main(int user_argc, char* user_argv[]) {
     const char* arg = user_argv[i];
     if (streq(arg, "-nostdlib") || streq(arg, "-nolibc")) {
       nostdlib = true;
-    } if (streq(arg, "-nostdinc") ||
+    } else if (streq(arg, "-nostdinc") ||
           streq(arg, "--no-standard-includes") ||
           streq(arg, "-nostdlibinc"))
     {
       nostdinc = true;
-    } if (streq(arg, "-ffreestanding")) {
+    } else if (streq(arg, "-ffreestanding")) {
       freestanding = true;
-    } if (streq(arg, "-c") || streq(arg, "-S") || streq(arg, "-E")) {
+    } else if (streq(arg, "-c") || streq(arg, "-S") || streq(arg, "-E")) {
       nolink = true;
+    } else if (streq(arg, "-v") || streq(arg, "--verbose")) {
+      c.opt_verbose = true;
+      coverbose = true;
+    } else if (streq(arg, "-O0")) {
+      c.buildmode = BUILDMODE_DEBUG;
+    } else if (str_startswith(arg, "-O")) {
+      c.buildmode = BUILDMODE_OPT;
     } else if (streq(arg, "-target")) {
       panic("TODO -target");
     } else if (str_startswith(arg, "--target=")) {
@@ -90,20 +95,8 @@ int cc_main(int user_argc, char* user_argv[]) {
 
   // linker flags
   if (!nolink) {
-    // create lld symlink
-    // TODO: move to build_syslibs
-    const char* ldexefile;
-    switch ((enum target_sys)target->sys) {
-      case SYS_linux: ldexefile = "ld.lld"; break;
-      case SYS_macos: ldexefile = "ld64.lld"; break;
-      // case SYS_wasm: case SYS_wasi: ldexefile = "wasm-ld"; break;
-      // case SYS_win32: ldexefile = "lld-link"; break;
-      case SYS_COUNT: case SYS_none: safefail("bad sys"); break;
-    }
-    ldexefile = path_join_alloca(c.sysroot, ldexefile);
-    symlink(coexefile, ldexefile);
-    strlist_addf(&args, "-fuse-ld=%s", ldexefile);
-
+    char* bindir = path_dir_alloca(coexefile);
+    strlist_addf(&args, "-fuse-ld=%s/%s", bindir, c.ldname);
     if (target->sys == SYS_macos && !nolink) {
       char macosver[16];
       if (streq(target->sysver, "10")) {

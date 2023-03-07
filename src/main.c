@@ -18,8 +18,9 @@ typedef bool(*linkerfn_t)(int argc, char*const* argv, bool can_exit_early);
 
 const char* coprogname;
 const char* coexefile;
-static char _coroot[PATH_MAX];
-const char* coroot = _coroot;
+const char* coroot;
+const char* cocachedir;
+bool coverbose = false;
 u32 comaxproc = 1;
 
 extern int main_build(int argc, char*const* argv); // build.c
@@ -137,18 +138,6 @@ int main(int argc, char* argv[]) {
   coprogname = strrchr(argv[0], PATH_SEPARATOR);
   coprogname = coprogname ? coprogname + 1 : argv[0];
   coexefile = safechecknotnull(LLVMGetMainExecutable(argv[0]));
-  safecheckx(path_dir(_coroot, sizeof(_coroot), coexefile) < sizeof(_coroot));
-  relpath_init();
-
-  // allow overriding coroot with env var
-  const char* coroot_env = getenv("COROOT");
-  if (coroot_env && *coroot_env)
-    coroot = coroot_env;
-
-  #if DEBUG
-  if (str_endswith(coroot, "/out/debug"))
-    coroot = path_join_m(memalloc_ctx(), coroot, "../../lib");
-  #endif
 
   const char* exe_basename = strrchr(coexefile, PATH_SEPARATOR);
   exe_basename = exe_basename ? exe_basename + 1 : coexefile;
@@ -182,14 +171,36 @@ int main(int argc, char* argv[]) {
     argv++;
   }
 
-  // initialize global state
+  const char* envvar;
   memalloc_t ma = memalloc_ctx();
+
+  // initialize global state
   comaxproc = sys_ncpu();
+  relpath_init();
   tmpbuf_init(ma);
   sym_init(ma);
+
+  // coroot
+  if ((envvar = getenv("COROOT")) && *envvar) {
+    coroot = safechecknotnull(path_abs(ma, envvar));
+  } else {
+    coroot = path_dir_m(ma, coexefile);
+    #if DEBUG
+    if (str_endswith(coroot, "/out/debug"))
+      coroot = path_join_m(memalloc_ctx(), coroot, "../../lib");
+    #endif
+  }
+
+  // cocachedir
+  if ((envvar = getenv("COCACHE")) && *envvar) {
+    cocachedir = safechecknotnull(path_abs(ma, envvar));
+  } else {
+    cocachedir = path_join_m(ma, sys_homedir(), ".cache/compis/" CO_VERSION_STR);
+  }
+
+  // llvm
   err_t err = llvm_init();
-  if (err)
-    errx(1, "llvm_init: %s", err_str(err));
+  if (err) errx(1, "llvm_init: %s", err_str(err));
 
   // primary commands
   if ISCMD("build") return main_build(argc, argv);

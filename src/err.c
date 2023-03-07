@@ -20,6 +20,9 @@ const char* err_str(err_t e) {
   case ErrNoMem:        return "cannot allocate memory";
   case ErrMFault:       return "bad memory address";
   case ErrOverflow:     return "value too large";
+  case ErrReadOnly:     return "read-only";
+  case ErrIO:           return "I/O error";
+  case ErrNotDir:       return "not a directory";
   }
   return "(unknown error)";
 }
@@ -28,10 +31,13 @@ const char* err_str(err_t e) {
 err_t err_errnox(int e) {
   switch (e) {
     case 0: return 0;
-    case EACCES: return ErrAccess;
-    case EEXIST: return ErrExists;
-    case ENOENT: return ErrNotFound;
-    case EBADF:  return ErrBadfd;
+    case EACCES:  return ErrAccess;
+    case EEXIST:  return ErrExists;
+    case ENOENT:  return ErrNotFound;
+    case EBADF:   return ErrBadfd;
+    case EROFS:   return ErrReadOnly;
+    case EIO:     return ErrIO;
+    case ENOTDIR: return ErrNotDir;
     case ENOTSUP:
     case ENOSYS:
       return ErrNotSupported;
