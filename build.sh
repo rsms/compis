@@ -227,6 +227,7 @@ export CC="$LLVMBOX_DESTDIR/bin/clang"
 export CXX="$LLVMBOX_DESTDIR/bin/clang++"
 export PATH="$LLVMBOX_DESTDIR/bin:$PATH"
 [ -n "$NINJA" ] || NINJA=$LLVMBOX_DESTDIR/bin/ninja
+export NINJA  # for watch mode
 
 # —————————————————————————————————————————————————————————————————————————————————
 # update clang driver code if needed
