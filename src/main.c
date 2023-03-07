@@ -161,9 +161,9 @@ int main(int argc, char* argv[]) {
   exe_basename = exe_basename ? exe_basename + 1 : coexefile;
 
   bool is_multicall = (
-    strcmp(coprogname, exe_basename) != 0 &&
-    strcmp(coprogname, "compis") != 0 &&
-    strcmp(coprogname, "co") != 0 );
+    !streq(coprogname, exe_basename) &&
+    !str_startswith(coprogname, "compis") &&
+    !str_startswith(coprogname, "co") );
   const char* cmd = is_multicall ? coprogname : argv[1] ? argv[1] : "";
 
   if (*cmd == 0) {
