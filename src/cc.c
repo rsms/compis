@@ -13,11 +13,6 @@ static void diaghandler(const diag_t* d, void* nullable userdata) {
 }
 
 
-static bool streq(const char* a, const char* b) {
-  return strcmp(a, b) == 0;
-}
-
-
 int cc_main(int user_argc, char* user_argv[]) {
   compiler_t c;
   compiler_init(&c, memalloc_default(), &diaghandler, "main"); // FIXME pkgname

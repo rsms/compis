@@ -971,6 +971,8 @@ usize sfmtu64(char* buf, u64 v, u32 base);
 // integer log10, e.g. u64log10(1234) => 4
 int u64log10(u64 u);
 
+inline static bool streq(const char* a, const char* b) { return strcmp(a, b) == 0; }
+
 // strcat_alloca joins strings into memory allocated on stack with alloca
 // char* strcat_alloca(const char* cstr ...)
 #define strcat_alloca(args...) __VARG_DISP(_strcat_alloca, args)

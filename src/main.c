@@ -134,6 +134,38 @@ static int ld_main(int argc, char* argv[]) {
 int cc_main(int argc, char* argv[]);
 
 
+static void coroot_init(memalloc_t ma) {
+  const char* envvar = getenv("COROOT");
+  if (envvar && *envvar) {
+    coroot = path_abs(ma, envvar);
+  } else {
+    coroot = path_dir_m(ma, coexefile);
+    #if DEBUG
+      if (str_endswith(coroot, "/out/debug"))
+        coroot = path_join_m(ma, coroot, "../../lib");
+    #elif !defined(CO_DISTRIBUTION)
+      if (str_endswith(coroot, "/out/opt") || str_endswith(coroot, "/out/debug"))
+        coroot = path_join_m(ma, coroot, "../../lib");
+    #endif
+  }
+  safecheck(coroot != NULL);
+  char* probe = path_join_alloca(coroot, "co/coprelude.h");
+  if (!fs_isfile(probe))
+    warnx("warning: invalid COROOT '%s' (compiling may not work)", coroot);
+}
+
+
+static void cocachedir_init(memalloc_t ma) {
+  const char* envvar = getenv("COCACHE");
+  if (envvar && *envvar) {
+    cocachedir = path_abs(ma, envvar);
+  } else {
+    cocachedir = path_join_m(ma, sys_homedir(), ".cache/compis/" CO_VERSION_STR);
+  }
+  safecheck(cocachedir != NULL);
+}
+
+
 int main(int argc, char* argv[]) {
   coprogname = strrchr(argv[0], PATH_SEPARATOR);
   coprogname = coprogname ? coprogname + 1 : argv[0];
@@ -147,20 +179,17 @@ int main(int argc, char* argv[]) {
     strcmp(coprogname, "compis") != 0 &&
     strcmp(coprogname, "co") != 0 );
   const char* cmd = is_multicall ? coprogname : argv[1] ? argv[1] : "";
-  usize cmdlen = strlen(cmd);
 
-  if (cmdlen == 0) {
+  if (*cmd == 0) {
     log("%s: missing command; try `%s help`", coprogname, coprogname);
     return 1;
   }
 
-  #define ISCMD(s) (cmdlen == strlen(s) && memcmp(cmd, (s), cmdlen) == 0)
-
   // clang "cc" may spawn itself in a new process
-  if (ISCMD("-cc1") || ISCMD("-cc1as"))
+  if (streq(cmd, "-cc1") || streq(cmd, "-cc1as"))
     return clang_main(argc, argv);
 
-  if ISCMD("as") {
+  if (streq(cmd, "as")) {
     argv[1] = "-cc1as";
     return clang_main(argc, argv);
   }
@@ -179,50 +208,30 @@ int main(int argc, char* argv[]) {
   relpath_init();
   tmpbuf_init(ma);
   sym_init(ma);
-
-  // coroot
-  if ((envvar = getenv("COROOT")) && *envvar) {
-    coroot = safechecknotnull(path_abs(ma, envvar));
-  } else {
-    coroot = path_dir_m(ma, coexefile);
-    #if DEBUG
-    if (str_endswith(coroot, "/out/debug"))
-      coroot = path_join_m(memalloc_ctx(), coroot, "../../lib");
-    #endif
-  }
-
-  // cocachedir
-  if ((envvar = getenv("COCACHE")) && *envvar) {
-    cocachedir = safechecknotnull(path_abs(ma, envvar));
-  } else {
-    cocachedir = path_join_m(ma, sys_homedir(), ".cache/compis/" CO_VERSION_STR);
-  }
+  coroot_init(ma);
+  cocachedir_init(ma);
 
   // llvm
   err_t err = llvm_init();
   if (err) errx(1, "llvm_init: %s", err_str(err));
 
-  // primary commands
-  if ISCMD("build") return main_build(argc, argv);
+  // command dispatch
+  if (streq(cmd, "build"))    return main_build(argc, argv);
+  if (streq(cmd, "targets"))  return print_supported_targets(), 0;
+  if (streq(cmd, "cc"))       return cc_main(argc, argv);
+  if (streq(cmd, "ar"))       return ar_main(argc, argv);
+  if (streq(cmd, "ld"))       return ld_main(argc, argv);
+  if (streq(cmd, "ld.lld"))   return LLDLinkELF(argc, argv, true) ? 0 : 1;
+  if (streq(cmd, "ld64.lld")) return LLDLinkMachO(argc, argv, true) ? 0 : 1;
+  if (streq(cmd, "lld-link")) return LLDLinkCOFF(argc, argv, true) ? 0 : 1;
+  if (streq(cmd, "wasm-ld"))  return LLDLinkWasm(argc, argv, true) ? 0 : 1;
 
-  // secondary commands
-  if ISCMD("targets") return print_supported_targets(), 0;
-
-  // llvm-based commands
-  if ISCMD("cc")       return cc_main(argc, argv);
-  if ISCMD("ar")       return ar_main(argc, argv);
-  if ISCMD("ld")       return ld_main(argc, argv);
-  if ISCMD("ld.lld")   return LLDLinkELF(argc, argv, true) ? 0 : 1;
-  if ISCMD("ld64.lld") return LLDLinkMachO(argc, argv, true) ? 0 : 1;
-  if ISCMD("lld-link") return LLDLinkCOFF(argc, argv, true) ? 0 : 1;
-  if ISCMD("wasm-ld")  return LLDLinkWasm(argc, argv, true) ? 0 : 1;
-
-  if (ISCMD("help") || ISCMD("--help") || ISCMD("-h")) {
+  if (streq(cmd, "help") || streq(cmd, "--help") || streq(cmd, "-h")) {
     usage(stdout);
     return 0;
   }
 
-  if (ISCMD("version") || ISCMD("--version")) {
+  if (streq(cmd, "version") || streq(cmd, "--version")) {
     print_co_version();
     return 0;
   }

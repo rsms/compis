@@ -16,7 +16,7 @@ ARCHIVE_SHA256SUM=$DESTDIR.sha256.txt
 
 echo "building from scratch in $BUILDDIR"
 rm -rf $BUILDDIR
-./build.sh -opt -out=$BUILDDIR
+./build.sh -DCO_DISTRIBUTION=1 -opt -out=$BUILDDIR
 
 echo "creating $DESTDIR"
 rm -rf $DESTDIR
