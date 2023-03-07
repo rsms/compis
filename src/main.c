@@ -200,10 +200,8 @@ int main(int argc, char* argv[]) {
     argv++;
   }
 
-  const char* envvar;
-  memalloc_t ma = memalloc_ctx();
-
   // initialize global state
+  memalloc_t ma = memalloc_ctx();
   comaxproc = sys_ncpu();
   relpath_init();
   tmpbuf_init(ma);
