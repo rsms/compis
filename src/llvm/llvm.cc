@@ -401,6 +401,7 @@ err_t llvm_write_archive(
     case CoLLVMArchive_DARWIN64: llvmkind = object::Archive::K_DARWIN64; break;
     case CoLLVMArchive_COFF:     llvmkind = object::Archive::K_COFF; break;
     case CoLLVMArchive_AIXBIG:   llvmkind = object::Archive::K_AIXBIG; break;
+    case CoLLVMArchive_none:     return ErrInvalid;
   }
 
   bool deterministic = true;
