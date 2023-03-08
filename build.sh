@@ -230,11 +230,11 @@ export PATH="$LLVMBOX_DESTDIR/bin:$PATH"
 export NINJA  # for watch mode
 
 # —————————————————————————————————————————————————————————————————————————————————
-# update clang driver code if needed
+# update llvm-derived code, if needed
 
 SRC_VERSION_LINE="//!co-llvm-$LLVM_RELEASE"
 
-if [ "$(tail -n1 "$SRC_DIR/llvm/driver.cc")" != "$SRC_VERSION_LINE" ]; then
+if [ "$(tail -n1 "$SRC_DIR/llvm/clang.cc")" != "$SRC_VERSION_LINE" ]; then
   echo "src/llvm: LLVM version changed; updating driver code"
   CLANGSRC="$DEPS_DIR/clang-$LLVM_RELEASE"
 
@@ -244,11 +244,11 @@ if [ "$(tail -n1 "$SRC_DIR/llvm/driver.cc")" != "$SRC_VERSION_LINE" ]; then
     a6b673ef15377fb46062d164e8ddc4d05c348ff8968f015f7f4af03f51000067
 
   _pushd "$PROJECT"
-  _copy "$CLANGSRC/tools/driver/driver.cpp"     src/llvm/driver.cc
-  _copy "$CLANGSRC/tools/driver/cc1_main.cpp"   src/llvm/driver_cc1_main.cc
-  _copy "$CLANGSRC/tools/driver/cc1as_main.cpp" src/llvm/driver_cc1as_main.cc
+  _copy "$CLANGSRC/tools/driver/driver.cpp"     src/llvm/clang.cc
+  _copy "$CLANGSRC/tools/driver/cc1_main.cpp"   src/llvm/clang_cc1_main.cc
+  _copy "$CLANGSRC/tools/driver/cc1as_main.cpp" src/llvm/clang_cc1as_main.cc
   patch -p1 < etc/co-clang-$LLVM_RELEASE-driver.patch
-  echo "$SRC_VERSION_LINE" >> src/llvm/driver.cc
+  echo "$SRC_VERSION_LINE" >> src/llvm/clang.cc
   _popd
 fi
 
