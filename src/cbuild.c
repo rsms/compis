@@ -258,7 +258,13 @@ static err_t cbuild_create_archive(
   if (( err = fs_mkdirs(dir, 0755) ))
     return err;
 
-  CoLLVMArchiveKind arkind = llvm_sys_archive_kind(b->c->target.sys);
+  CoLLVMArchiveKind arkind;
+  if (b->c->target.sys == SYS_none) {
+    arkind = llvm_sys_archive_kind(target_default()->sys);
+  } else {
+    arkind = llvm_sys_archive_kind(b->c->target.sys);
+  }
+
   char* errmsg = "?";
   err = llvm_write_archive(arkind, outfile, objv, objc, &errmsg);
   if (!err)

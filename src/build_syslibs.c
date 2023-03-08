@@ -30,12 +30,13 @@ static char* lib_path(compiler_t* c, char buf[PATH_MAX], const char* filename) {
 
 static bool must_build_libc(compiler_t* c) {
   char buf[PATH_MAX];
-  const char* filename;
+  const char* filename = NULL;
   switch ((enum target_sys)c->target.sys) {
     case SYS_macos: filename = "libSystem.tbd"; break;
     case SYS_linux: filename = "libc.a"; break;
-    case SYS_none: case SYS_COUNT: safefail("invalid target"); break;
+    case SYS_none:  return false;
   };
+  safecheckf(filename, "invalid target");
   dlog("check %s", relpath(lib_path(c, buf, filename)));
   return !fs_isfile(lib_path(c, buf, filename));
 }
@@ -194,7 +195,6 @@ static err_t build_libc(compiler_t* c) {
       return target_visit_dirs(&c->target, "darwin", copy_sysroot_lib_dir, c);
     case SYS_linux:
       return build_libc_musl(c);
-    case SYS_COUNT:
     case SYS_none:
       break;
   }
@@ -274,25 +274,32 @@ static err_t build_librt(compiler_t* c) {
   err_t err = 0;
 
   // find source list for target
-  const librt_srclist_t* srclist = FIND_SRCLIST(&c->target, librt_srclist);
-
-  // find sources
-  if (!cobjarray_reserve(&build.objs, c->ma, countof(librt_sources))) {
-    err = ErrNoMem;
-    goto end;
-  }
-  for (u32 i = 0; i < countof(srclist->sources)*8; i++) {
-    if (!(srclist->sources[i / 8] & ((u8)1u << (i % 8))))
-      continue;
-    const char* srcfile = librt_sources[i];
-    if (c->target.arch == ARCH_aarch64 && strcmp(srcfile, "aarch64/lse.S") == 0) {
-      // This file is special -- it is compiled many times with different ppc defs
-      // to produce different objects for different function signatures.
-      // See compiler-rt/lib/builtins/CMakeLists.txt
-      if (( err = librt_add_aarch64_lse_sources(&build) ))
-        goto end;
-    } else {
-      cbuild_add_source(&build, srcfile);
+  if (c->target.sys == SYS_none) {
+    // add generic sources only
+    for (u32 i = 0; i < countof(librt_sources); i++) {
+      if (strchr(librt_sources[i], '/'))
+        break;
+      cbuild_add_source(&build, librt_sources[i]);
+    }
+  } else {
+    const librt_srclist_t* srclist = FIND_SRCLIST(&c->target, librt_srclist);
+    if (!cobjarray_reserve(&build.objs, c->ma, countof(librt_sources))) {
+      err = ErrNoMem;
+      goto end;
+    }
+    for (u32 i = 0; i < countof(srclist->sources)*8; i++) {
+      if (!(srclist->sources[i / 8] & ((u8)1u << (i % 8))))
+        continue;
+      const char* srcfile = librt_sources[i];
+      if (c->target.arch == ARCH_aarch64 && strcmp(srcfile, "aarch64/lse.S") == 0) {
+        // This file is special -- it is compiled many times with different ppc defs
+        // to produce different objects for different function signatures.
+        // See compiler-rt/lib/builtins/CMakeLists.txt
+        if (( err = librt_add_aarch64_lse_sources(&build) ))
+          goto end;
+      } else {
+        cbuild_add_source(&build, srcfile);
+      }
     }
   }
 

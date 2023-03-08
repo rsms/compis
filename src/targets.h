@@ -16,6 +16,7 @@
 #endif
 
 // ARCH(name)
+ARCH(unknown)
 ARCH(aarch64)
 ARCH(arm)
 ARCH(i386)
@@ -25,6 +26,7 @@ ARCH(wasm64)
 ARCH(x86_64)
 
 // SYS(name)
+SYS(none)
 SYS(macos)
 SYS(linux)
 
@@ -44,3 +46,6 @@ TARGET(x86_64,  macos, "10", 8, 8, "x86_64-apple-macosx10.15.0")
 TARGET(x86_64,  macos, "11", 8, 8, "x86_64-apple-macosx11.0.0")
 TARGET(x86_64,  macos, "12", 8, 8, "x86_64-apple-macosx12.0.0")
 TARGET(x86_64,  macos, "13", 8, 8, "x86_64-apple-macosx13.0.0")
+
+TARGET(wasm32,  none, "", 4, 4, "wasm32-unknown-unknown")
+TARGET(wasm64,  none, "", 4, 4, "wasm64-unknown-unknown")

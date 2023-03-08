@@ -108,7 +108,6 @@ static linkerfn_t nullable ld_impl(sys_t sys) {
     // case SYS_wasm:
     //   return LLDLinkWasm;
     case SYS_none:
-    case SYS_COUNT:
       return NULL;
   }
 }

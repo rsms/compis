@@ -15,7 +15,6 @@ const target_t supported_targets[] = {
 };
 
 static const char* arch_strtab[] = {
-  "unknown", // ARCH_unknown
   #undef ARCH
   #define ARCH(name, ...) #name,
   #include "targets.h"
@@ -23,7 +22,6 @@ static const char* arch_strtab[] = {
 };
 
 static const char* sys_strtab[] = {
-  "none", // SYS_none
   #undef SYS
   #define SYS(name, ...) #name,
   #include "targets.h"

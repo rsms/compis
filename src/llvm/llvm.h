@@ -184,6 +184,8 @@ typedef enum CoLLVMArchiveKind {
   CoLLVMArchive_DARWIN64,
   CoLLVMArchive_COFF,
   CoLLVMArchive_AIXBIG,
+  // non-llvm values
+  CoLLVMArchive_none,
 } CoLLVMArchiveKind;
 
 typedef struct {

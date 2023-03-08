@@ -104,7 +104,11 @@ static void configure_target(compiler_t* c) {
     case SYS_macos: c->ldname = "ld64.lld"; break;
     // case SYS_wasm: case SYS_wasi: c->ldname = "wasm-ld"; break;
     // case SYS_win32: c->ldname = "lld-link"; break;
-    case SYS_COUNT: case SYS_none: safefail("sys"); break;
+    case SYS_none:
+      c->ldname = "";
+      if (c->target.arch == ARCH_wasm32 || c->target.arch == ARCH_wasm64)
+        c->ldname = "wasm-ld";
+      break;
   }
 }
 

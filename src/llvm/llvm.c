@@ -72,7 +72,6 @@ CoLLVMArchiveKind llvm_sys_archive_kind(sys_t sys) {
     case SYS_linux: return CoLLVMArchive_GNU;
     // case SYS_openbsd: case SYS_freebsd: return CoLLVMArchive_BSD;
     case SYS_none:
-    case SYS_COUNT:
       break;
   }
   safefail("invalid sys_t %u", sys);

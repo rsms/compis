@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html>
+<head></head>
+<body style="font-family:monospace;white-space:pre">
+<script type="module">
+(async() => {
+
+// cc --target=wasm32-none hello-wasm.c -o hello.wasm
+let memory = new WebAssembly.Memory({ initial: 16 }) // 1MB (64kB pages)
+let mem_u8 = new Uint8Array(memory.buffer)
+document.body.innerText = ""
+
+function decode_cstr(ptr) {
+  let len = mem_u8.indexOf(0, ptr) - ptr
+  return (new TextDecoder("utf-8")).decode(new DataView(memory.buffer, ptr, len))
+}
+
+function print(ptr) {
+  let str = decode_cstr(ptr)
+  console.log(str)
+  document.body.appendChild(document.createTextNode(str + "\n"))
+}
+
+let wasm_instantiate = WebAssembly.instantiateStreaming ||
+  ((res, import_obj) => res.then(r => r.arrayBuffer())
+                           .then(buf => WebAssembly.instantiate(buf, import_obj)))
+console.info("loading hello.wasm")
+let { instance } = await wasm_instantiate(fetch("hello.wasm?"+Date.now()), {
+  // imports
+  env: {
+    memory,
+    print,
+  }
+})
+
+if (instance.exports.__wasm_call_ctors) {
+  console.info("calling constructors")
+  instance.exports.__wasm_call_ctors()
+}
+
+console.info("calling main()")
+let exit_status = instance.exports.main(0, 0)
+console.info("main() exited with status: " + exit_status)
+
+})();
+</script>
+</body>
+</html>

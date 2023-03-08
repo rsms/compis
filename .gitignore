@@ -2,6 +2,7 @@
 *.o
 *.d
 *.pch
+*.wasm
 
 .DS_Store
 .clang_complete

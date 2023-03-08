@@ -103,7 +103,9 @@ int cc_main(int user_argc, char* user_argv[]) {
     // add linker flags
     if (!nolink && !nostdlib && !freestanding) {
       strlist_addf(&args, "-L%s/lib", c.sysroot);
-      strlist_add(&args, "-lc", "-lrt");
+      strlist_add(&args, "-lrt");
+      if (c.target.sys != SYS_none)
+        strlist_add(&args, "-lc");
     }
   }
 
@@ -111,25 +113,41 @@ int cc_main(int user_argc, char* user_argv[]) {
   if (!nolink) {
     char* bindir = path_dir_alloca(coexefile);
     strlist_addf(&args, "-fuse-ld=%s/%s", bindir, c.ldname);
-    if (target->sys == SYS_macos && !nolink) {
-      char macosver[16];
-      if (streq(target->sysver, "10")) {
-        memcpy(macosver, "10.15.0", strlen("10.15.0") + 1);
-      } else {
-        usize i = strlen(target->sysver);
-        memcpy(macosver, target->sysver, i);
-        snprintf(&macosver[i], sizeof(macosver)-i, ".0.0");
+    switch ((enum target_sys)target->sys) {
+      case SYS_macos: {
+        char macosver[16];
+        if (streq(target->sysver, "10")) {
+          memcpy(macosver, "10.15.0", strlen("10.15.0") + 1);
+        } else {
+          usize i = strlen(target->sysver);
+          memcpy(macosver, target->sysver, i);
+          snprintf(&macosver[i], sizeof(macosver)-i, ".0.0");
+        }
+        strlist_addf(&args, "-Wl,-platform_version,macos,%s,%s", macosver, macosver);
+        const char* arch = (target->arch == ARCH_aarch64) ? "arm64"
+                                                          : arch_name(target->arch);
+        strlist_addf(&args, "-Wl,-arch,%s", arch);
+        break;
       }
-      strlist_addf(&args, "-Wl,-platform_version,macos,%s,%s", macosver, macosver);
-      const char* arch = (target->arch == ARCH_aarch64) ? "arm64"
-                                                        : arch_name(target->arch);
-      strlist_addf(&args, "-Wl,-arch,%s", arch);
-    } else if (target->sys == SYS_linux && !nolink) {
-      // strlist_add(&args, "-fuse-ld=lld");
-      strlist_addf(&args, "%s/lib/crt1.o", c.sysroot);
-      // strlist_add(&args, "-nostdinc","-nostdlib","-ffreestanding");
-      strlist_add(&args, "-nostartfiles", "-static", "-L-user-start");
-      // strlist_add(&args, "-l-user-start"); // FIXME: if there are input files
+      case SYS_linux: {
+        // strlist_add(&args, "-fuse-ld=lld");
+        strlist_addf(&args, "%s/lib/crt1.o", c.sysroot);
+        // strlist_add(&args, "-nostdinc","-nostdlib","-ffreestanding");
+        strlist_add(&args, "-nostartfiles", "-static", "-L-user-start");
+        // strlist_add(&args, "-l-user-start"); // FIXME: if there are input files
+        break;
+      }
+      case SYS_none:
+        strlist_add(&args, "-Wl,--no-entry");
+        if (target->arch == ARCH_wasm32 || target->arch == ARCH_wasm64) {
+          strlist_add(&args,
+            "-Wl,--export-all", "-Wl,--no-gc-sections",
+            "-Wl,--import-memory",
+            "-Wl,-allow-undefined"
+            // -Wl,-allow-undefined-file wasm.syms // TODO: generate this?
+          );
+        }
+        break;
     }
   }
 

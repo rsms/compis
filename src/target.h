@@ -26,27 +26,37 @@ typedef struct {
 } targetdesc_t;
 
 ASSUME_NONNULL_END
+
 #define TARGET CO_PLUS_ONE
 enum { SUPPORTED_TARGETS_COUNT = (0lu
   #include "targets.h"
 ) };
 #undef TARGET
+
 #undef ARCH
 #define ARCH(name, ...) ARCH_##name,
 enum target_arch {
-  ARCH_unknown,
   #include "targets.h"
-  ARCH_COUNT
 };
 #undef ARCH
+#define ARCH CO_PLUS_ONE
+enum { ARCH_COUNT = (0lu
+  #include "targets.h"
+) };
+#undef ARCH
+
 #undef SYS
 #define SYS(name, ...) SYS_##name,
 enum target_sys {
-  SYS_none,
   #include "targets.h"
-  SYS_COUNT
 };
 #undef SYS
+#define SYS CO_PLUS_ONE
+enum { SYS_COUNT = (0lu
+  #include "targets.h"
+) };
+#undef SYS
+
 #undef ARCH
 #undef TARGET
 ASSUME_NONNULL_BEGIN
