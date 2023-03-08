@@ -143,6 +143,7 @@ int cc_main(int user_argc, char* user_argv[]) {
           strlist_add(&args,
             "-Wl,--export-all", "-Wl,--no-gc-sections",
             "-Wl,--import-memory",
+            "-Wl,--stack-first", // stack at start of linear memory to catch S.O.
             "-Wl,-allow-undefined"
             // -Wl,-allow-undefined-file wasm.syms // TODO: generate this?
           );
