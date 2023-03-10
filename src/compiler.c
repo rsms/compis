@@ -102,7 +102,7 @@ static void configure_target(compiler_t* c) {
   switch ((enum target_sys)c->target.sys) {
     case SYS_linux: c->ldname = "ld.lld"; break;
     case SYS_macos: c->ldname = "ld64.lld"; break;
-    // case SYS_wasm: case SYS_wasi: c->ldname = "wasm-ld"; break;
+    case SYS_wasi:  c->ldname = "wasm-ld"; break;
     // case SYS_win32: c->ldname = "lld-link"; break;
     case SYS_none:
       c->ldname = "";
@@ -210,8 +210,13 @@ static err_t configure_builddir(compiler_t* c, const char* buildroot) {
 
 static err_t add_target_sysdir_if_exists(const char* path, void* cp) {
   compiler_t* c = cp;
-  if (fs_isdir(path))
-    strlist_addf(&c->cflags, "-isystem%s", path);
+  if (fs_isdir(path)) {
+    dlog("using sysdir: %s", path);
+    strlist_add(&c->cflags, "-isystem");
+    strlist_add(&c->cflags, path);
+  } else {
+    dlog("ignoring non-existent sysdir: %s", path);
+  }
   return 0;
 }
 
@@ -220,36 +225,48 @@ static err_t configure_cflags(compiler_t* c) {
   strlist_dispose(&c->cflags);
 
   // flags used for all C and assembly compilation
-  c->cflags = strlist_make(c->ma,
-    "-nostdlib");
+  c->cflags = strlist_make(c->ma);
   strlist_addf(&c->cflags, "--target=%s", c->target.triple);
-  strlist_addf(&c->cflags, "--sysroot=%s", c->sysroot);
+  strlist_addf(&c->cflags, "--sysroot=%s/", c->sysroot);
   strlist_addf(&c->cflags, "-resource-dir=%s/clangres", coroot);
-  if (c->target.sys == SYS_macos) strlist_add(&c->cflags,
-    "-Wno-nullability-completeness");
+  strlist_add(&c->cflags, "-nostdlib");
+  if (c->target.sys == SYS_macos)
+    strlist_add(&c->cflags, "-Wno-nullability-completeness");
 
   // end of common flags
   u32 flags_common_end = c->cflags.len;
   // start of common cflags
 
-  strlist_add(&c->cflags,
-    "-nostdinc",
-    "-ffreestanding");
+  if (c->target.sys == SYS_none) {
+    strlist_add(&c->cflags,
+      "-nostdinc",
+      "-ffreestanding");
+  }
+
+  if (c->buildmode == BUILDMODE_OPT)
+    strlist_add(&c->cflags, "-flto=thin");
 
   // note: must add <resdir>/include explicitly when -nostdinc is set
-  strlist_addf(&c->cflags, "-isystem%s/clangres/include", coroot);
+  if (!c->opt_nostdlib) {
+    strlist_add(&c->cflags, "-isystem");
+    strlist_addf(&c->cflags, "%s/clangres/include", coroot);
+  }
 
   // end of common cflags
   u32 cflags_common_end = c->cflags.len;
 
   // system-header dirs
-  target_visit_dirs(&c->target, "sysinc", add_target_sysdir_if_exists, c);
-  if (c->target.sys == SYS_linux) {
-    strlist_addf(&c->cflags, "-I%s/musl/include/%s", coroot, arch_name(c->target.arch));
-    strlist_addf(&c->cflags, "-I%s/musl/include", coroot);
-  }
-  if (c->target.sys == SYS_macos) {
-    strlist_add(&c->cflags, "-include", "TargetConditionals.h");
+  if (!c->opt_nostdlib) {
+    target_visit_dirs(&c->target, "sysinc", add_target_sysdir_if_exists, c);
+    if (c->target.sys == SYS_linux) {
+      strlist_add(&c->cflags, "-isystem", coroot);
+      strlist_addf(&c->cflags, "%s/musl/include/%s", coroot, arch_name(c->target.arch));
+      strlist_add(&c->cflags, "-isystem", coroot);
+      strlist_addf(&c->cflags, "%s/musl/include", coroot);
+    }
+    if (c->target.sys == SYS_macos) {
+      strlist_add(&c->cflags, "-include", "TargetConditionals.h");
+    }
   }
   u32 cflags_sysinc_end = c->cflags.len;
 
@@ -264,7 +281,7 @@ static err_t configure_cflags(compiler_t* c) {
       strlist_add(&c->cflags, "-O0");
       break;
     case BUILDMODE_OPT:
-      strlist_add(&c->cflags, "-O2", "-flto=thin", "-fomit-frame-pointer");
+      strlist_add(&c->cflags, "-O2", "-fomit-frame-pointer");
       break;
   }
   // strlist_add(&c->cflags, "-fPIC");

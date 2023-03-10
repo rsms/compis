@@ -20,6 +20,7 @@ typedef struct {
   strlist_t* nullable cflags;
   cobj_srctype_t      srctype;
   cobj_flags_t        flags;
+  bool                cflags_external; // don't free cflags when cobj is freed
 } cobj_t;
 
 typedef array_type(cobj_t) cobjarray_t;

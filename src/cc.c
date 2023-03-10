@@ -17,7 +17,7 @@ int cc_main(int user_argc, char* user_argv[]) {
   compiler_t c;
   compiler_init(&c, memalloc_default(), &diaghandler, "main"); // FIXME pkgname
 
-  const target_t* target = target_default();
+  const target_t* target = NULL;
   bool nostdlib = false;
   bool nostdinc = false;
   bool freestanding = false;
@@ -31,6 +31,7 @@ int cc_main(int user_argc, char* user_argv[]) {
     if (*arg == '-' && !ispastflags) {
       if (streq(arg, "-nostdlib") || streq(arg, "-nolibc")) {
         nostdlib = true;
+        c.opt_nostdlib = true;
       } else if (streq(arg, "-nostdinc") ||
             streq(arg, "--no-standard-includes") ||
             streq(arg, "-nostdlibinc"))
@@ -47,6 +48,8 @@ int cc_main(int user_argc, char* user_argv[]) {
         c.buildmode = BUILDMODE_DEBUG;
       } else if (str_startswith(arg, "-O")) {
         c.buildmode = BUILDMODE_OPT;
+      } else if (streq(arg, "-fsyntax-only")) {
+        nolink = true;
       } else if (streq(arg, "-target")) {
         panic("TODO -target");
       } else if (str_startswith(arg, "--target=")) {
@@ -72,6 +75,9 @@ int cc_main(int user_argc, char* user_argv[]) {
       }
     }
   }
+
+  if (!target)
+    target = target_default();
 
   err_t err = 0;
   if (err || ( err = compiler_configure(&c, target, "build") )) {
@@ -137,8 +143,16 @@ int cc_main(int user_argc, char* user_argv[]) {
         // strlist_add(&args, "-l-user-start"); // FIXME: if there are input files
         break;
       }
+      case SYS_wasi:
+        strlist_add(&args,
+          "-Wl,--stack-first", // stack at start of linear memory to catch S.O.
+          "-Wl,--export-dynamic" );
+        strlist_addf(&args, "%s/lib/crt1.o", c.sysroot);
+        break;
       case SYS_none:
-        strlist_add(&args, "-Wl,--no-entry");
+        strlist_add(&args,
+          "-ffreestanding",
+          "-Wl,--no-entry");
         if (target->arch == ARCH_wasm32 || target->arch == ARCH_wasm64) {
           strlist_add(&args,
             "-Wl,--export-all", "-Wl,--no-gc-sections",

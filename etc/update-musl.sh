@@ -144,6 +144,7 @@ rmdir include
 mv include2 include
 
 # ————————————————————————————————————————————————————————————————————————————————————
-# re-generate src/musl_info.h
+# re-generate src/musl_info.h and update sysinc
 
+_regenerate_sysinc_dir_if_needed
 exec $BASH "$PROJECT/etc/gen-musl_info.h.sh"

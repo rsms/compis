@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html>
+<head></head>
+<body style="font-family:monospace;white-space:pre">
+<script type="module">
+import { init as wasi_init, WASI } from "./wasi.js"
+(async() => {
+
+console.info("loading hello.wasm & initializing wasi")
+let modreq = fetch("hello.wasm?"+Date.now())
+await wasi_init()
+let mod = await WebAssembly.compileStreaming(modreq)
+let wasi = new WASI({
+  env: {},
+  args: [],
+})
+let instance = await wasi.instantiate(mod, {})
+console.info(instance)
+
+// call "main" function
+console.info("calling wasi.start")
+let exit_code = wasi.start()
+// the JS wasi library buffers stdio
+let stdout = wasi.getStdoutString()
+document.body.innerText = stdout
+console.log(stdout)
+console.info("exit status: " + exit_code)
+
+// call exported "add" function
+console.info("calling instance.exports.add(2,3) =>", instance.exports.add(2,3))
+
+})();
+</script>
+</body>
+</html>

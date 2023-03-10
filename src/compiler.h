@@ -565,6 +565,7 @@ typedef struct compiler {
   bool opt_genirdot;
   bool opt_genasm;  // write machine assembly .S source file to build dir
   bool opt_verbose;
+  bool opt_nostdlib;
 
   // data created during parsing & analysis
   map_t           typeidmap;

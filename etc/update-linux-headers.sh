@@ -57,12 +57,4 @@ _popd
 # rm -rf "$LINUX_SRCDIR"
 
 # regenerate lib/sysinc to avoid weird bugs from building with old versions
-if [ -d "$PROJECT/lib/sysinc" ]; then
-  printf "$BASH $(_relpath "$PROJECT/etc/gen-sysinc.sh") ..."
-  LOGFILE="$OUT_DIR/gen-sysinc.log"
-  if ! $BASH "$PROJECT/etc/gen-sysinc.sh" > "$LOGFILE" 2>&1; then
-    echo " failed. See $(_relpath "$LOGFILE")" >&2
-    exit 1
-  fi
-  echo
-fi
+_regenerate_sysinc_dir_if_needed

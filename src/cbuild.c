@@ -45,7 +45,7 @@ void cbuild_dispose(cbuild_t* b) {
   for (u32 i = 0; i < b->objs.len; i++) {
     cobj_t* obj = &b->objs.v[i];
     mem_freecstr(ma, obj->objfile);
-    if (obj->cflags)
+    if (obj->cflags && !obj->cflags_external)
       strlist_dispose(obj->cflags);
   }
   cobjarray_dispose(&b->objs, ma);

@@ -28,13 +28,13 @@ int main_build(int argc, char*const* argv); // build.c
 int cc_main(int argc, char* argv[]); // cc.c
 int llvm_ar_main(int argc, char **argv); // llvm/llvm-ar.cc
 
-static linkerfn_t nullable ld_impl(sys_t);
+static linkerfn_t nullable ld_impl(const target_t* t);
 static const char* ld_impl_name(linkerfn_t nullable f);
 
 
 static int usage(FILE* f) {
   // ld usage text
-  linkerfn_t ldf = ld_impl(target_default()->sys);
+  linkerfn_t ldf = ld_impl(target_default());
   char host_ld[128];
   if (ldf) {
     snprintf(host_ld, sizeof(host_ld),
@@ -96,25 +96,27 @@ static const char* ld_impl_name(linkerfn_t nullable f) {
 }
 
 
-static linkerfn_t nullable ld_impl(sys_t sys) {
-  switch ((enum target_sys)sys) {
+static linkerfn_t nullable ld_impl(const target_t* t) {
+  switch ((enum target_sys)t->sys) {
     case SYS_macos:
       return LLDLinkMachO;
     case SYS_linux:
       return LLDLinkELF;
     // case SYS_windows:
     //   return LLDLinkCOFF;
-    // case SYS_wasi:
-    // case SYS_wasm:
-    //   return LLDLinkWasm;
+    case SYS_wasi:
+      return LLDLinkWasm;
     case SYS_none:
-      return NULL;
+      if (t->arch == ARCH_wasm32 || t->arch == ARCH_wasm64)
+        return LLDLinkWasm;
+      break;
   }
+  return NULL;
 }
 
 
 static int ld_main(int argc, char* argv[]) {
-  linkerfn_t impl = safechecknotnull( ld_impl(target_default()->sys) );
+  linkerfn_t impl = safechecknotnull( ld_impl(target_default()) );
   return !impl(argc, argv, true);
 }
 

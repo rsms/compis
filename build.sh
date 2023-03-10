@@ -271,15 +271,7 @@ fi
 # —————————————————————————————————————————————————————————————————————————————————
 # generate lib/sysinc if missing
 
-if [ ! -d lib/sysinc ]; then
-  printf "Generating lib/sysinc from lib/sysinc-src ..."
-  LOGFILE="$OUT_DIR/gen-sysinc.log"
-  if ! $BASH "$PROJECT/etc/gen-sysinc.sh" > "$LOGFILE" 2>&1; then
-    echo " failed. See $(_relpath "$LOGFILE")" >&2
-    exit 1
-  fi
-  echo
-fi
+_regenerate_sysinc_dir_if_needed
 
 # —————————————————————————————————————————————————————————————————————————————————
 # file system watcher
