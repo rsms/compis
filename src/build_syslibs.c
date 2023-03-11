@@ -197,15 +197,16 @@ end:
 }
 
 
-// libc-printscan-long-double.a
-// libc-printscan-no-floating-point.a
-// libwasi-emulated-getpid.a
-// libwasi-emulated-mman.a
-// libwasi-emulated-process-clocks.a
-// libwasi-emulated-signal.a
+// TODO: build extra WASI libraries, on demand (ie when user does -lwasi-emulated-getpid)
+//   libc-printscan-long-double.a
+//   libc-printscan-no-floating-point.a
+//   libwasi-emulated-getpid.a
+//   libwasi-emulated-mman.a
+//   libwasi-emulated-process-clocks.a
+//   libwasi-emulated-signal.a
 //
 // static err_t build_wasi_libgetpid(compiler_t* c) {
-//   // TODO: libwasi-emulated-getpid.a
+//   ...
 //   return 0;
 // }
 
@@ -276,7 +277,7 @@ static err_t build_libc_wasi(compiler_t* c) {
   char tmpbuf[PATH_MAX];
   const char* outfile = lib_path(c, tmpbuf, "libc.a");
   err = cbuild_build(&build, outfile);
-end:
+
   cbuild_dispose(&build);
   return err;
 }
