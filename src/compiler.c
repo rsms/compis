@@ -98,6 +98,9 @@ static void configure_target(compiler_t* c) {
   }
   set_secondary_pointer_types(c);
 
+  if (c->target.sys == SYS_none)
+    c->opt_nostdlib = true;
+
   // set ldname
   switch ((enum target_sys)c->target.sys) {
     case SYS_linux: c->ldname = "ld.lld"; break;
@@ -212,8 +215,7 @@ static err_t add_target_sysdir_if_exists(const char* path, void* cp) {
   compiler_t* c = cp;
   if (fs_isdir(path)) {
     dlog("using sysdir: %s", path);
-    strlist_add(&c->cflags, "-isystem");
-    strlist_add(&c->cflags, path);
+    strlist_addf(&c->cflags, "-isystem%s", path);
   } else {
     dlog("ignoring non-existent sysdir: %s", path);
   }
@@ -228,7 +230,7 @@ static err_t configure_cflags(compiler_t* c) {
   c->cflags = strlist_make(c->ma);
   strlist_addf(&c->cflags, "--target=%s", c->target.triple);
   strlist_addf(&c->cflags, "--sysroot=%s/", c->sysroot);
-  strlist_addf(&c->cflags, "-resource-dir=%s/clangres", coroot);
+  strlist_addf(&c->cflags, "-resource-dir=%s/clangres/", coroot);
   strlist_add(&c->cflags, "-nostdlib");
   if (c->target.sys == SYS_macos)
     strlist_add(&c->cflags, "-Wno-nullability-completeness");
@@ -238,19 +240,16 @@ static err_t configure_cflags(compiler_t* c) {
   // start of common cflags
 
   if (c->target.sys == SYS_none) {
+    // invariant: c->opt_nostdlib=true (when c->target.sys == SYS_none)
     strlist_add(&c->cflags,
       "-nostdinc",
       "-ffreestanding");
+    // note: must add <resdir>/include explicitly when -nostdinc is set
+    strlist_addf(&c->cflags, "-isystem%s/clangres/include", coroot);
   }
 
   if (c->buildmode == BUILDMODE_OPT)
     strlist_add(&c->cflags, "-flto=thin");
-
-  // note: must add <resdir>/include explicitly when -nostdinc is set
-  if (!c->opt_nostdlib) {
-    strlist_add(&c->cflags, "-isystem");
-    strlist_addf(&c->cflags, "%s/clangres/include", coroot);
-  }
 
   // end of common cflags
   u32 cflags_common_end = c->cflags.len;
@@ -259,10 +258,8 @@ static err_t configure_cflags(compiler_t* c) {
   if (!c->opt_nostdlib) {
     target_visit_dirs(&c->target, "sysinc", add_target_sysdir_if_exists, c);
     if (c->target.sys == SYS_linux) {
-      strlist_add(&c->cflags, "-isystem", coroot);
-      strlist_addf(&c->cflags, "%s/musl/include/%s", coroot, arch_name(c->target.arch));
-      strlist_add(&c->cflags, "-isystem", coroot);
-      strlist_addf(&c->cflags, "%s/musl/include", coroot);
+      strlist_addf(&c->cflags, "-isystem%s/musl/include/%s", coroot, arch_name(c->target.arch));
+      strlist_addf(&c->cflags, "-isystem%s/musl/include", coroot);
     }
     if (c->target.sys == SYS_macos) {
       strlist_add(&c->cflags, "-include", "TargetConditionals.h");

@@ -286,6 +286,7 @@ static err_t build_libc_wasi(compiler_t* c) {
 static err_t build_libc(compiler_t* c) {
   switch ((enum target_sys)c->target.sys) {
     case SYS_macos:
+      // TODO: use a bgtask for status feedback
       return target_visit_dirs(&c->target, "darwin", copy_sysroot_lib_dir, c);
     case SYS_linux:
       return build_libc_musl(c);
