@@ -12,7 +12,7 @@ esac
 CO_VERSION=$(cat "$PROJECT/version.txt")
 BUILDDIR=out/dist
 DESTDIR=out/dist/compis-$CO_VERSION-$ARCH-$SYS
-ARCHIVE_SHA256SUM=$DESTDIR.sha256.txt
+ARCHIVE=out/compis-$CO_VERSION-$ARCH-$SYS.tar.xz
 
 _regenerate_sysinc_dir
 
@@ -47,10 +47,5 @@ for name in \
   _symlink "$DESTDIR/$name" compis
 done
 
-echo "creating $DESTDIR.tar.xz"
-_create_tar_xz_from_dir $DESTDIR $DESTDIR.tar.xz
-
-echo "creating $DESTDIR.sha256.txt"
-( cd $(dirname $DESTDIR) &&
-  sha256sum $(basename $DESTDIR.tar.xz) > $(basename $DESTDIR.sha256.txt)
-)
+echo "creating $ARCHIVE"
+_create_tar_xz_from_dir $DESTDIR $ARCHIVE
