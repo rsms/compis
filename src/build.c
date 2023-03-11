@@ -78,9 +78,10 @@ static const char* opt_builddir = "build";
 static void help(const char* prog) {
   printf(
     "Compis " CO_VERSION_STR ", your friendly neighborhood compiler\n"
-    "Usage: co %s [options] [--] <source> ...\n"
+    "Usage: %s %s [options] [--] <source> ...\n"
     "Options:\n"
     "",
+    coprogname,
     prog);
   print_options();
   exit(0);
