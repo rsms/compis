@@ -174,14 +174,12 @@ _version_gte() { # <v> <minv>
   if [ "$v3" -gt "$min_v3" ]; then return 0; fi
 }
 
-_regenerate_sysinc_dir_if_needed() {
-  if [ ! -d lib/sysinc ]; then
-    printf "Generating lib/sysinc from lib/sysinc-src ..."
-    local LOGFILE="$OUT_DIR/gen-sysinc.log"
-    if ! $BASH "$PROJECT/etc/gen-sysinc.sh" > "$LOGFILE" 2>&1; then
-      echo " failed. See $(_relpath "$LOGFILE")" >&2
-      exit 1
-    fi
-    echo
+_regenerate_sysinc_dir() {
+  printf "Generating lib/sysinc from lib/sysinc-src ..."
+  local LOGFILE="$OUT_DIR/gen-sysinc.log"
+  if ! $BASH "$PROJECT/etc/gen-sysinc.sh" > "$LOGFILE" 2>&1; then
+    echo " failed. See $(_relpath "$LOGFILE")" >&2
+    exit 1
   fi
+  echo
 }

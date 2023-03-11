@@ -14,6 +14,8 @@ BUILDDIR=out/dist
 DESTDIR=out/dist/compis-$CO_VERSION-$ARCH-$SYS
 ARCHIVE_SHA256SUM=$DESTDIR.sha256.txt
 
+_regenerate_sysinc_dir
+
 echo "building from scratch in $BUILDDIR"
 rm -rf $BUILDDIR
 ./build.sh -DCO_DISTRIBUTION=1 -opt -out=$BUILDDIR

@@ -547,4 +547,4 @@ END
 
 # ————————————————————————————————————————————————————————————————————————————————————
 
-_regenerate_sysinc_dir_if_needed
+_regenerate_sysinc_dir

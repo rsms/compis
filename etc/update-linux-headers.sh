@@ -57,4 +57,4 @@ _popd
 # rm -rf "$LINUX_SRCDIR"
 
 # regenerate lib/sysinc to avoid weird bugs from building with old versions
-_regenerate_sysinc_dir_if_needed
+_regenerate_sysinc_dir

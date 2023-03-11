@@ -146,5 +146,5 @@ mv include2 include
 # ————————————————————————————————————————————————————————————————————————————————————
 # re-generate src/musl_info.h and update sysinc
 
-_regenerate_sysinc_dir_if_needed
+_regenerate_sysinc_dir
 exec $BASH "$PROJECT/etc/gen-musl_info.h.sh"
