@@ -1,4 +1,4 @@
-Example of WebAssembly program for the WASI platform
+Example of WebAssembly program for the [WASI platform](https://wasi.dev)
 
     compis cc --target=wasm32-wasi hello.c -o hello.wasm
 
