@@ -49,7 +49,7 @@ static bool must_build_libc(compiler_t* c) {
 }
 
 
-static err_t copy_files(const char* srcdir, const char* dstdir) {
+static err_t copy_files(const char* srcdir, const char* dstdir, bgtask_t* task) {
   dlog("copy_files %s/ -> %s/", relpath(srcdir), relpath(dstdir));
 
   DIR* dp = opendir(srcdir);
@@ -84,6 +84,10 @@ static err_t copy_files(const char* srcdir, const char* dstdir) {
     memcpy(&dstfile[dstfilelen], d->d_name, dstnamelen);
     dstfile[dstfilelen + dstnamelen] = 0;
 
+    task->n++;
+    task->ntotal = MAX(task->ntotal, task->n);
+    bgtask_setstatusf(task, "copy %s", path_base(dstfile));
+
     dlog("cp %s -> %s", relpath(srcfile), relpath(dstfile));
     if (( err = fs_copyfile(srcfile, dstfile, 0) ))
       break;
@@ -109,15 +113,6 @@ static const void* _find_srclist(
   assert(listc > 0);
   safefail("no impl");
   return listp;
-}
-
-
-static err_t copy_sysroot_lib_dir(const char* path, void* cp) {
-  compiler_t* c = cp;
-  if (!fs_isdir(path))
-    return 0;
-  char* dstdir = path_join_alloca(c->sysroot, "lib");
-  return copy_files(path, dstdir);
 }
 
 
@@ -283,11 +278,33 @@ static err_t build_libc_wasi(compiler_t* c) {
 }
 
 
+typedef struct {
+  compiler_t* c;
+  bgtask_t*   task;
+} filecopytask_t;
+
+
+static err_t copy_sysroot_lib_dir(const char* path, void* tp) {
+  filecopytask_t* t = tp;
+  if (!fs_isdir(path))
+    return 0;
+  char* dstdir = path_join_alloca(t->c->sysroot, "lib");
+  return copy_files(path, dstdir, t->task);
+}
+
+
+static err_t build_libc_darwin(compiler_t* c) {
+  filecopytask_t t = { .c = c, .task = bgtask_start(c->ma, "libc", 0, 0) };
+  err_t err = target_visit_dirs(&c->target, "darwin", copy_sysroot_lib_dir, &t);
+  bgtask_end(t.task, "");
+  return err;
+}
+
+
 static err_t build_libc(compiler_t* c) {
   switch ((enum target_sys)c->target.sys) {
     case SYS_macos:
-      // TODO: use a bgtask for status feedback
-      return target_visit_dirs(&c->target, "darwin", copy_sysroot_lib_dir, c);
+      return build_libc_darwin(c);
     case SYS_linux:
       return build_libc_musl(c);
     case SYS_wasi:
