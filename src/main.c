@@ -28,6 +28,7 @@ int main_build(int argc, char*const* argv); // build.c
 int cc_main(int argc, char* argv[]); // cc.c
 int llvm_ar_main(int argc, char **argv); // llvm/llvm-ar.cc
 int llvm_nm_main(int argc, char **argv); // llvm/llvm-nm.cc
+int llvm_link_main(int argc, char **argv); // llvm/llvm-link.cc
 
 static linkerfn_t nullable ld_impl(const target_t* t);
 static const char* ld_impl_name(linkerfn_t nullable f);
@@ -52,6 +53,8 @@ static int usage(FILE* f) {
     "  ar        Archiver\n"
     "  cc        C compiler (clang)\n"
     "  ranlib    Archive index generator\n"
+    "  nm        Symbol table dumper\n"
+    "  llvm-link LLVM bitcode linker\n"
     "\n"
     "%s" // ld for host, if any
     "  ld.lld    ELF linker\n"
@@ -194,8 +197,9 @@ int main(int argc, char* argv[]) {
   if IS("ld64.lld")     return LLDLinkMachO(argc, argv, true) ? 0 : 1;
   if IS("lld-link")     return LLDLinkCOFF(argc, argv, true) ? 0 : 1;
   if IS("wasm-ld")      return LLDLinkWasm(argc, argv, true) ? 0 : 1;
-  if IS("ar", "ranlib") return llvm_ar_main(argc, argv);
-  if IS("nm")           return llvm_nm_main(argc, argv);
+  if IS("ar", "ranlib") return llvm_ar_main(argc, argv);   // adds ~70kB to LTO build
+  if IS("nm")           return llvm_nm_main(argc, argv);   // adds ~250kB to LTO build
+  if IS("llvm-link")    return llvm_link_main(argc, argv); // adds ~75kB to LTO build
 
   // initialize global state
   memalloc_t ma = memalloc_ctx();

@@ -244,7 +244,7 @@ _require_llvm_src() {
 }
 
 if [ "$(tail -n1 "$SRC_DIR/llvm/clang.cc")" != "$SRC_VERSION_LINE" ]; then
-  echo "src/llvm: LLVM version changed; updating driver code"
+  echo "updating src/llvm/clang.cc et al"
 
   [ -d "$CLANGSRC" ] || _download_and_extract_tar \
     https://github.com/llvm/llvm-project/releases/download/llvmorg-$LLVM_RELEASE/clang-$LLVM_RELEASE.src.tar.xz \
@@ -260,21 +260,23 @@ if [ "$(tail -n1 "$SRC_DIR/llvm/clang.cc")" != "$SRC_VERSION_LINE" ]; then
   _popd
 fi
 
-if [ "$(tail -n1 "$SRC_DIR/llvm/llvm-ar.cc")" != "$SRC_VERSION_LINE" ]; then
-  echo "src/llvm: LLVM version changed; updating ar code"
+DSTFILE="$SRC_DIR/llvm/llvm-ar.cc"
+if [ "$(tail -n1 "$DSTFILE")" != "$SRC_VERSION_LINE" ]; then
+  echo "updating $(_relpath "$DSTFILE")"
   _require_llvm_src
   _pushd "$PROJECT"
-  _copy "$LLVMSRC/tools/llvm-ar/llvm-ar.cpp" src/llvm/llvm-ar.cc
+  _copy "$LLVMSRC/tools/llvm-ar/llvm-ar.cpp" "$DSTFILE"
   patch -p1 < etc/co-llvm-$LLVM_RELEASE-ar.patch
-  echo "$SRC_VERSION_LINE" >> src/llvm/llvm-ar.cc
+  echo "$SRC_VERSION_LINE" >> "$DSTFILE"
   _popd
 fi
 
-if [ "$(tail -n1 "$SRC_DIR/llvm/llvm-nm.cc")" != "$SRC_VERSION_LINE" ]; then
-  echo "src/llvm: LLVM version changed; updating nm code"
+DSTFILE="$SRC_DIR/llvm/llvm-nm.cc"
+if [ "$(tail -n1 "$DSTFILE")" != "$SRC_VERSION_LINE" ]; then
+  echo "updating $(_relpath "$DSTFILE")"
   _require_llvm_src
   _pushd "$PROJECT"
-  _copy "$LLVMSRC/tools/llvm-nm/llvm-nm.cpp" src/llvm/llvm-nm.cc
+  _copy "$LLVMSRC/tools/llvm-nm/llvm-nm.cpp" "$DSTFILE"
   patch -p1 < etc/co-llvm-$LLVM_RELEASE-nm.patch
 
   # see llvm/tools/llvm-cvtres/CMakeLists.txt
@@ -285,7 +287,18 @@ if [ "$(tail -n1 "$SRC_DIR/llvm/llvm-nm.cc")" != "$SRC_VERSION_LINE" ]; then
     -I "$LLVMSRC/tools/llvm-nm" -I "$LLVMSRC/include" \
     "$TD_SRC" -o src/llvm/llvm-nm-opts.inc
 
-  echo "$SRC_VERSION_LINE" >> src/llvm/llvm-nm.cc
+  echo "$SRC_VERSION_LINE" >> "$DSTFILE"
+  _popd
+fi
+
+DSTFILE="$SRC_DIR/llvm/llvm-link.cc"
+if [ "$(tail -n1 "$DSTFILE")" != "$SRC_VERSION_LINE" ]; then
+  echo "updating $(_relpath "$DSTFILE")"
+  _require_llvm_src
+  _pushd "$PROJECT"
+  _copy "$LLVMSRC/tools/llvm-link/llvm-link.cpp" "$DSTFILE"
+  patch -p1 < etc/co-llvm-$LLVM_RELEASE-llvm-link.patch
+  echo "$SRC_VERSION_LINE" >> "$DSTFILE"
   _popd
 fi
 
@@ -775,7 +788,10 @@ LDFLAGS_HOST ${LDFLAGS_HOST[@]:-}
 LDFLAGS_WASM ${LDFLAGS_WASM[@]:-}
 END
 if ! diff -q config config.tmp >/dev/null 2>&1; then
-  [ -e config ] && echo "build configuration changed"
+  if [ -e config ]; then
+    echo "build configuration changed"
+    diff config config.tmp
+  fi
   mv config.tmp config
   rm -rf "$OUT_DIR/obj" "$OUT_DIR/lto-cache"
 elif ! diff -q lconfig lconfig.tmp >/dev/null 2>&1; then

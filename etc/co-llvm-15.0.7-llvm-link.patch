@@ -1,0 +1,10 @@
+--- a/src/llvm/llvm-link.cc
++++ b/src/llvm/llvm-link.cc
+@@ -452,7 +452,7 @@
+   return true;
+ }
+
+-int main(int argc, char **argv) {
++extern "C" int llvm_link_main(int argc, char **argv) {
+   InitLLVM X(argc, argv);
+   ExitOnErr.setBanner(std::string(argv[0]) + ": ");
