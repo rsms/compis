@@ -759,7 +759,7 @@ $ONLY_CONFIGURE && exit
 cat << END > config.tmp
 TARGET $HOST_ARCH-$HOST_SYS
 LLVM $LLVMBOX_RELEASE
-XFLAGS ${XFLAGS[@]:-}
+XFLAGS $(sed -E -e 's/-DCO_VERSION[_A-Za-z0-9]*=[^ ]+ ?//g' <<< "${XFLAGS[@]:-}")
 XFLAGS_HOST ${XFLAGS_HOST[@]:-}
 XFLAGS_WASM ${XFLAGS_WASM[@]:-}
 CFLAGS ${CFLAGS[@]:-}
@@ -778,8 +778,10 @@ LDFLAGS_WASM ${LDFLAGS_WASM[@]:-}
 END
 if ! diff -q config config.tmp >/dev/null 2>&1; then
   if [ -e config ]; then
-    echo "build configuration changed"
-    diff config config.tmp
+    echo "———————————————————————————————————————————————————"
+    echo "build configuration changed:"
+    diff -uw config config.tmp || true
+    echo "———————————————————————————————————————————————————"
   fi
   mv config.tmp config
   rm -rf "$OUT_DIR/obj" "$OUT_DIR/lto-cache"
