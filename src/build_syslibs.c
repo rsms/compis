@@ -33,7 +33,7 @@ static bool must_build_libc(compiler_t* c) {
   char buf[PATH_MAX];
   const char* filename = NULL;
 
-  if (c->opt_nostdlib)
+  if (c->opt_nostdlib || c->opt_nolibc)
     return false;
 
   // test if library exists
