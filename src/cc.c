@@ -24,6 +24,7 @@ int cc_main(int user_argc, char* user_argv[]) {
   bool nolink = false;
   bool iscompiling = false;
   bool ispastflags = false;
+  bool custom_sysroot = false;
 
   // process input command-line args
   for (int i = 1; i < user_argc; i++) {
@@ -52,6 +53,9 @@ int cc_main(int user_argc, char* user_argv[]) {
         nolink = true;
       } else if (streq(arg, "-target")) {
         panic("TODO -target");
+      } else if (streq(arg, "-sysroot") || str_startswith(arg, "--sysroot=")) {
+        custom_sysroot = true;
+        c.opt_nolibc = true; // don't build coroot/libc
       } else if (str_startswith(arg, "--target=")) {
         arg += strlen("--target=");
         if (!( target = target_find(arg) )) {
@@ -97,20 +101,26 @@ int cc_main(int user_argc, char* user_argv[]) {
     // no builtins, no libc, no librt
     strlist_add(&args, "-nostdinc", "-nostdlib");
   } else {
+    // add fundamental "target" compilation flags
     if (iscompiling) {
-      // add fundamental "target" compilation flags
-      strlist_add_array(&args, c.cflags_common.strings, c.cflags_common.len);
+      if (!custom_sysroot) {
+        strlist_add_array(&args, c.cflags_common.strings, c.cflags_common.len);
+      } else {
+        strlist_addf(&args, "-resource-dir=%s/clangres/", coroot);
+        if (c.buildmode == BUILDMODE_OPT)
+          strlist_add(&args, "-flto=thin");
+      }
     }
 
     // add include flags for system headers and libc
-    if (!nostdinc && !freestanding)
+    if (!nostdinc && !freestanding && !custom_sysroot)
       strlist_add_array(&args, c.cflags_sysinc.strings, c.cflags_sysinc.len);
 
     // add linker flags
-    if (!nolink && !nostdlib && !freestanding) {
+    if (!nolink && !nostdlib && !freestanding && !custom_sysroot) {
       strlist_addf(&args, "-L%s/lib", c.sysroot);
       strlist_add(&args, "-lrt");
-      if (c.target.sys != SYS_none)
+      if (c.target.sys != SYS_none && !c.opt_nolibc)
         strlist_add(&args, "-lc");
     }
   }
@@ -119,6 +129,7 @@ int cc_main(int user_argc, char* user_argv[]) {
   if (!nolink) {
     char* bindir = path_dir_alloca(coexefile);
     strlist_addf(&args, "-fuse-ld=%s/%s", bindir, c.ldname);
+
     switch ((enum target_sys)target->sys) {
       case SYS_macos: {
         char macosver[16];
