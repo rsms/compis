@@ -25,7 +25,10 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-	extern int mig_strncpy_zerofill(char *dest, const char *src, int len) __attribute__((weak_import));
+#ifndef __MIG_STRNCPY_ZEROFILL_FORWARD_TYPE_DECLS_CSTRING_ATTR
+#define __MIG_STRNCPY_ZEROFILL_FORWARD_TYPE_DECLS_CSTRING_COUNTEDBY_ATTR(C) __unsafe_indexable
+#endif
+	extern int mig_strncpy_zerofill(char * dest, const char * src, int len) __attribute__((weak_import));
 #ifdef __cplusplus
 }
 #endif
@@ -41,7 +44,7 @@ extern "C" {
 #define FUNCTION_PTR_T
 typedef void (*function_ptr_t)(mach_port_t, char *, mach_msg_type_number_t);
 typedef struct {
-        char            *name;
+        char            * name;
         function_ptr_t  function;
 } function_table_entry;
 typedef function_table_entry   *function_table_t;
@@ -49,9 +52,10 @@ typedef function_table_entry   *function_table_t;
 #endif /* AUTOTEST */
 
 #ifndef	thread_act_MSG_COUNT
-#define	thread_act_MSG_COUNT	28
+#define	thread_act_MSG_COUNT	31
 #endif	/* thread_act_MSG_COUNT */
 
+#include <Availability.h>
 #include <mach/std_types.h>
 #include <mach/mig.h>
 #include <mach/mig.h>
@@ -71,8 +75,7 @@ mig_external
 #else
 extern
 #endif	/* mig_external */
-__WATCHOS_PROHIBITED
-__TVOS_PROHIBITED
+__TVOS_PROHIBITED __WATCHOS_PROHIBITED
 kern_return_t thread_terminate
 (
 	thread_act_t target_act
@@ -84,11 +87,10 @@ mig_external
 #else
 extern
 #endif	/* mig_external */
-__WATCHOS_PROHIBITED
-__TVOS_PROHIBITED
+__TVOS_PROHIBITED __WATCHOS_PROHIBITED
 kern_return_t act_get_state
 (
-	thread_act_t target_act,
+	thread_read_t target_act,
 	int flavor,
 	thread_state_t old_state,
 	mach_msg_type_number_t *old_stateCnt
@@ -100,8 +102,7 @@ mig_external
 #else
 extern
 #endif	/* mig_external */
-__WATCHOS_PROHIBITED
-__TVOS_PROHIBITED
+__TVOS_PROHIBITED __WATCHOS_PROHIBITED
 kern_return_t act_set_state
 (
 	thread_act_t target_act,
@@ -119,7 +120,7 @@ extern
 __WATCHOS_PROHIBITED
 kern_return_t thread_get_state
 (
-	thread_act_t target_act,
+	thread_read_t target_act,
 	thread_state_flavor_t flavor,
 	thread_state_t old_state,
 	mach_msg_type_number_t *old_stateCnt
@@ -149,7 +150,7 @@ extern
 __WATCHOS_PROHIBITED
 kern_return_t thread_suspend
 (
-	thread_act_t target_act
+	thread_read_t target_act
 );
 
 /* Routine thread_resume */
@@ -161,7 +162,7 @@ extern
 __WATCHOS_PROHIBITED
 kern_return_t thread_resume
 (
-	thread_act_t target_act
+	thread_read_t target_act
 );
 
 /* Routine thread_abort */
@@ -194,8 +195,7 @@ mig_external
 #else
 extern
 #endif	/* mig_external */
-__WATCHOS_PROHIBITED
-__TVOS_PROHIBITED
+__TVOS_PROHIBITED __WATCHOS_PROHIBITED
 kern_return_t thread_depress_abort
 (
 	thread_act_t thread
@@ -207,11 +207,10 @@ mig_external
 #else
 extern
 #endif	/* mig_external */
-__WATCHOS_PROHIBITED
-__TVOS_PROHIBITED
+__TVOS_PROHIBITED __WATCHOS_PROHIBITED
 kern_return_t thread_get_special_port
 (
-	thread_act_t thr_act,
+	thread_inspect_t thr_act,
 	int which_port,
 	mach_port_t *special_port
 );
@@ -222,8 +221,7 @@ mig_external
 #else
 extern
 #endif	/* mig_external */
-__WATCHOS_PROHIBITED
-__TVOS_PROHIBITED
+__TVOS_PROHIBITED __WATCHOS_PROHIBITED
 kern_return_t thread_set_special_port
 (
 	thread_act_t thr_act,
@@ -251,8 +249,7 @@ mig_external
 #else
 extern
 #endif	/* mig_external */
-__WATCHOS_PROHIBITED
-__TVOS_PROHIBITED
+__TVOS_PROHIBITED __WATCHOS_PROHIBITED
 kern_return_t thread_set_exception_ports
 (
 	thread_act_t thread,
@@ -268,11 +265,10 @@ mig_external
 #else
 extern
 #endif	/* mig_external */
-__WATCHOS_PROHIBITED
-__TVOS_PROHIBITED
+__TVOS_PROHIBITED __WATCHOS_PROHIBITED
 kern_return_t thread_get_exception_ports
 (
-	thread_inspect_t thread,
+	thread_act_t thread,
 	exception_mask_t exception_mask,
 	exception_mask_array_t masks,
 	mach_msg_type_number_t *masksCnt,
@@ -287,8 +283,7 @@ mig_external
 #else
 extern
 #endif	/* mig_external */
-__WATCHOS_PROHIBITED
-__TVOS_PROHIBITED
+__TVOS_PROHIBITED __WATCHOS_PROHIBITED
 kern_return_t thread_swap_exception_ports
 (
 	thread_act_t thread,
@@ -402,7 +397,7 @@ extern
 #endif	/* mig_external */
 kern_return_t thread_get_assignment
 (
-	thread_act_t thread,
+	thread_inspect_t thread,
 	processor_set_name_t *assigned_set
 );
 
@@ -429,11 +424,10 @@ mig_external
 #else
 extern
 #endif	/* mig_external */
-__WATCHOS_PROHIBITED
-__TVOS_PROHIBITED
+__TVOS_PROHIBITED __WATCHOS_PROHIBITED
 kern_return_t thread_get_mach_voucher
 (
-	thread_act_t thr_act,
+	thread_read_t thr_act,
 	mach_voucher_selector_t which,
 	ipc_voucher_t *voucher
 );
@@ -444,8 +438,7 @@ mig_external
 #else
 extern
 #endif	/* mig_external */
-__WATCHOS_PROHIBITED
-__TVOS_PROHIBITED
+__TVOS_PROHIBITED __WATCHOS_PROHIBITED
 kern_return_t thread_set_mach_voucher
 (
 	thread_act_t thr_act,
@@ -458,13 +451,46 @@ mig_external
 #else
 extern
 #endif	/* mig_external */
-__WATCHOS_PROHIBITED
-__TVOS_PROHIBITED
+__TVOS_PROHIBITED __WATCHOS_PROHIBITED
 kern_return_t thread_swap_mach_voucher
 (
 	thread_act_t thr_act,
 	ipc_voucher_t new_voucher,
 	ipc_voucher_t *old_voucher
+);
+
+/* Routine thread_convert_thread_state */
+#ifdef	mig_external
+mig_external
+#else
+extern
+#endif	/* mig_external */
+kern_return_t thread_convert_thread_state
+(
+	thread_act_t thread,
+	int direction,
+	thread_state_flavor_t flavor,
+	thread_state_t in_state,
+	mach_msg_type_number_t in_stateCnt,
+	thread_state_t out_state,
+	mach_msg_type_number_t *out_stateCnt
+);
+
+/* Routine thread_get_exception_ports_info */
+#ifdef	mig_external
+mig_external
+#else
+extern
+#endif	/* mig_external */
+kern_return_t thread_get_exception_ports_info
+(
+	mach_port_t port,
+	exception_mask_t exception_mask,
+	exception_mask_array_t masks,
+	mach_msg_type_number_t *masksCnt,
+	exception_handler_info_array_t old_handlers_info,
+	exception_behavior_array_t old_behaviors,
+	exception_flavor_array_t old_flavors
 );
 
 __END_DECLS
@@ -516,7 +542,7 @@ __END_DECLS
 		NDR_record_t NDR;
 		int flavor;
 		mach_msg_type_number_t new_stateCnt;
-		natural_t new_state[614];
+		natural_t new_state[1296];
 	} __Request__act_set_state_t __attribute__((unused));
 #ifdef  __MigPackStructs
 #pragma pack(pop)
@@ -543,7 +569,7 @@ __END_DECLS
 		NDR_record_t NDR;
 		thread_state_flavor_t flavor;
 		mach_msg_type_number_t new_stateCnt;
-		natural_t new_state[614];
+		natural_t new_state[1296];
 	} __Request__thread_set_state_t __attribute__((unused));
 #ifdef  __MigPackStructs
 #pragma pack(pop)
@@ -851,6 +877,34 @@ __END_DECLS
 #ifdef  __MigPackStructs
 #pragma pack(pop)
 #endif
+
+#ifdef  __MigPackStructs
+#pragma pack(push, 4)
+#endif
+	typedef struct {
+		mach_msg_header_t Head;
+		NDR_record_t NDR;
+		int direction;
+		thread_state_flavor_t flavor;
+		mach_msg_type_number_t in_stateCnt;
+		natural_t in_state[1296];
+		mach_msg_type_number_t out_stateCnt;
+	} __Request__thread_convert_thread_state_t __attribute__((unused));
+#ifdef  __MigPackStructs
+#pragma pack(pop)
+#endif
+
+#ifdef  __MigPackStructs
+#pragma pack(push, 4)
+#endif
+	typedef struct {
+		mach_msg_header_t Head;
+		NDR_record_t NDR;
+		exception_mask_t exception_mask;
+	} __Request__thread_get_exception_ports_info_t __attribute__((unused));
+#ifdef  __MigPackStructs
+#pragma pack(pop)
+#endif
 #endif /* !__Request__thread_act_subsystem__defined */
 
 /* union of all requests */
@@ -886,6 +940,8 @@ union __RequestUnion__thread_act_subsystem {
 	__Request__thread_get_mach_voucher_t Request_thread_get_mach_voucher;
 	__Request__thread_set_mach_voucher_t Request_thread_set_mach_voucher;
 	__Request__thread_swap_mach_voucher_t Request_thread_swap_mach_voucher;
+	__Request__thread_convert_thread_state_t Request_thread_convert_thread_state;
+	__Request__thread_get_exception_ports_info_t Request_thread_get_exception_ports_info;
 };
 #endif /* !__RequestUnion__thread_act_subsystem__defined */
 /* typedefs for all replies */
@@ -913,7 +969,7 @@ union __RequestUnion__thread_act_subsystem {
 		NDR_record_t NDR;
 		kern_return_t RetCode;
 		mach_msg_type_number_t old_stateCnt;
-		natural_t old_state[614];
+		natural_t old_state[1296];
 	} __Reply__act_get_state_t __attribute__((unused));
 #ifdef  __MigPackStructs
 #pragma pack(pop)
@@ -939,7 +995,7 @@ union __RequestUnion__thread_act_subsystem {
 		NDR_record_t NDR;
 		kern_return_t RetCode;
 		mach_msg_type_number_t old_stateCnt;
-		natural_t old_state[614];
+		natural_t old_state[1296];
 	} __Reply__thread_get_state_t __attribute__((unused));
 #ifdef  __MigPackStructs
 #pragma pack(pop)
@@ -1259,6 +1315,37 @@ union __RequestUnion__thread_act_subsystem {
 #ifdef  __MigPackStructs
 #pragma pack(pop)
 #endif
+
+#ifdef  __MigPackStructs
+#pragma pack(push, 4)
+#endif
+	typedef struct {
+		mach_msg_header_t Head;
+		NDR_record_t NDR;
+		kern_return_t RetCode;
+		mach_msg_type_number_t out_stateCnt;
+		natural_t out_state[1296];
+	} __Reply__thread_convert_thread_state_t __attribute__((unused));
+#ifdef  __MigPackStructs
+#pragma pack(pop)
+#endif
+
+#ifdef  __MigPackStructs
+#pragma pack(push, 4)
+#endif
+	typedef struct {
+		mach_msg_header_t Head;
+		NDR_record_t NDR;
+		kern_return_t RetCode;
+		mach_msg_type_number_t masksCnt;
+		exception_mask_t masks[32];
+		exception_handler_info_t old_handlers_info[32];
+		exception_behavior_t old_behaviors[32];
+		thread_state_flavor_t old_flavors[32];
+	} __Reply__thread_get_exception_ports_info_t __attribute__((unused));
+#ifdef  __MigPackStructs
+#pragma pack(pop)
+#endif
 #endif /* !__Reply__thread_act_subsystem__defined */
 
 /* union of all replies */
@@ -1294,6 +1381,8 @@ union __ReplyUnion__thread_act_subsystem {
 	__Reply__thread_get_mach_voucher_t Reply_thread_get_mach_voucher;
 	__Reply__thread_set_mach_voucher_t Reply_thread_set_mach_voucher;
 	__Reply__thread_swap_mach_voucher_t Reply_thread_swap_mach_voucher;
+	__Reply__thread_convert_thread_state_t Reply_thread_convert_thread_state;
+	__Reply__thread_get_exception_ports_info_t Reply_thread_get_exception_ports_info;
 };
 #endif /* !__RequestUnion__thread_act_subsystem__defined */
 
@@ -1326,7 +1415,9 @@ union __ReplyUnion__thread_act_subsystem {
     { "thread_set_policy", 3624 },\
     { "thread_get_mach_voucher", 3625 },\
     { "thread_set_mach_voucher", 3626 },\
-    { "thread_swap_mach_voucher", 3627 }
+    { "thread_swap_mach_voucher", 3627 },\
+    { "thread_convert_thread_state", 3628 },\
+    { "thread_get_exception_ports_info", 3630 }
 #endif
 
 #ifdef __AfterMigUserHeader

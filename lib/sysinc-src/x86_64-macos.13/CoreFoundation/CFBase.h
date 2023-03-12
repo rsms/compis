@@ -10,11 +10,12 @@
 #if !defined(__COREFOUNDATION_CFBASE__)
 #define __COREFOUNDATION_CFBASE__ 1
 
-#if DEPLOYMENT_RUNTIME_SWIFT
+#if __has_include(<CoreFoundation/TargetConditionals.h>)
 #include <CoreFoundation/TargetConditionals.h>
 #else
 #include <TargetConditionals.h>
 #endif
+
 #include <CoreFoundation/CFAvailability.h>
 
 #if (defined(__CYGWIN32__) || defined(_WIN32)) && !defined(__WIN32__)
@@ -63,7 +64,7 @@
 #define __has_extension(x) 0
 #endif
 
-#if defined(__GNUC__) || 0
+#if defined(__GNUC__) || TARGET_OS_WIN32
 #include <stdint.h>
 #include <stdbool.h>
 #endif
@@ -132,9 +133,25 @@
 #endif
 #endif
 
+#if TARGET_OS_WIN32
+    #if defined(__cplusplus)
+        #define _CF_EXTERN extern "C"
+    #else
+        #define _CF_EXTERN extern
+    #endif
 
+    #if defined(_WINDLL)
+        #if defined(CoreFoundation_EXPORTS) || defined(CF_BUILDING_CF)
+            #define CF_EXPORT _CF_EXTERN __declspec(dllexport)
+        #else
+            #define CF_EXPORT _CF_EXTERN __declspec(dllimport)
+        #endif
+    #else
+        #define CF_EXPORT _CF_EXTERN
+    #endif
+#else
 #define CF_EXPORT extern
-
+#endif
 
 CF_EXTERN_C_BEGIN
 
@@ -165,6 +182,8 @@ CF_EXTERN_C_BEGIN
 	#define CF_INLINE static inline
     #elif defined(_MSC_VER)
         #define CF_INLINE static __inline
+    #elif TARGET_OS_WIN32
+	#define CF_INLINE static __inline__
     #endif
 #endif
 
@@ -293,6 +312,12 @@ CF_EXTERN_C_BEGIN
 # define CF_SWIFT_NAME(_name)
 #endif
 
+#if __has_attribute(__swift_attr__)
+#  define CF_SWIFT_UNAVAILABLE_FROM_ASYNC(msg) __attribute__((__swift_attr__("@_unavailableFromAsync(message: \"" msg "\")")))
+#else
+#  define CF_SWIFT_UNAVAILABLE_FROM_ASYNC(msg)
+#endif
+
 #if __has_attribute(noescape)
 #define CF_NOESCAPE __attribute__((noescape))
 #else
@@ -309,6 +334,12 @@ CF_EXTERN_C_BEGIN
 #define CF_WARN_UNUSED_RESULT __attribute__((warn_unused_result))
 #else
 #define CF_WARN_UNUSED_RESULT
+#endif
+
+#if __has_attribute(fallthrough)
+#define CF_FALLTHROUGH __attribute__((fallthrough))
+#else
+#define CF_FALLTHROUGH
 #endif
 
 #if !__has_feature(objc_generics_variance)
@@ -680,6 +711,23 @@ CFTypeRef CFMakeCollectable(CFTypeRef cf) CF_AUTOMATED_REFCOUNT_UNAVAILABLE;
 
 #define _CF_SWIFT_RC_PINNED_FLAG (0x1)
 #define _CF_CONSTANT_OBJECT_STRONG_RC ((uintptr_t)_CF_SWIFT_RC_PINNED_FLAG)
+#endif
+
+#if __has_include(<ptrauth.h>)
+#include <ptrauth.h>
+#endif
+
+#ifndef __ptrauth_objc_isa_pointer
+#define __ptrauth_objc_isa_pointer
+#endif
+
+#define ISA_PTRAUTH_DISCRIMINATOR 0x6AE1
+#if defined(__ptrauth_objc_isa_uintptr)
+#define __ptrauth_cf_objc_isa_pointer __ptrauth_objc_isa_uintptr
+#elif defined(__arm64e__) && defined(__PTRAUTH_INTRINSICS__) && __has_feature(ptrauth_objc_isa)
+#define __ptrauth_cf_objc_isa_pointer __ptrauth_restricted_intptr(ptrauth_key_objc_isa_pointer, 1, ISA_PTRAUTH_DISCRIMINATOR)
+#else
+#define __ptrauth_cf_objc_isa_pointer
 #endif
 
 CF_EXTERN_C_END

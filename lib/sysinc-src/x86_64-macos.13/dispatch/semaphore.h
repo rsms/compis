@@ -27,6 +27,7 @@
 #endif
 
 DISPATCH_ASSUME_NONNULL_BEGIN
+DISPATCH_ASSUME_ABI_SINGLE_BEGIN
 
 /*!
  * @typedef dispatch_semaphore_t
@@ -61,7 +62,7 @@ API_AVAILABLE(macos(10.6), ios(4.0))
 DISPATCH_EXPORT DISPATCH_MALLOC DISPATCH_RETURNS_RETAINED DISPATCH_WARN_RESULT
 DISPATCH_NOTHROW
 dispatch_semaphore_t
-dispatch_semaphore_create(long value);
+dispatch_semaphore_create(intptr_t value);
 
 /*!
  * @function dispatch_semaphore_wait
@@ -71,7 +72,9 @@ dispatch_semaphore_create(long value);
  *
  * @discussion
  * Decrement the counting semaphore. If the resulting value is less than zero,
- * this function waits for a signal to occur before returning.
+ * this function waits for a signal to occur before returning. If the timeout is
+ * reached without a signal being received, the semaphore is re-incremented
+ * before the function returns.
  *
  * @param dsema
  * The semaphore. The result of passing NULL in this parameter is undefined.
@@ -85,7 +88,7 @@ dispatch_semaphore_create(long value);
  */
 API_AVAILABLE(macos(10.6), ios(4.0))
 DISPATCH_EXPORT DISPATCH_NONNULL_ALL DISPATCH_NOTHROW
-long
+intptr_t
 dispatch_semaphore_wait(dispatch_semaphore_t dsema, dispatch_time_t timeout);
 
 /*!
@@ -107,11 +110,12 @@ dispatch_semaphore_wait(dispatch_semaphore_t dsema, dispatch_time_t timeout);
  */
 API_AVAILABLE(macos(10.6), ios(4.0))
 DISPATCH_EXPORT DISPATCH_NONNULL_ALL DISPATCH_NOTHROW
-long
+intptr_t
 dispatch_semaphore_signal(dispatch_semaphore_t dsema);
 
 __END_DECLS
 
+DISPATCH_ASSUME_ABI_SINGLE_END
 DISPATCH_ASSUME_NONNULL_END
 
 #endif /* __DISPATCH_SEMAPHORE__ */

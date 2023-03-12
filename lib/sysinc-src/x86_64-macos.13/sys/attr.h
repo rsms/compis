@@ -51,6 +51,8 @@
 
 
 #define FSOPT_ATTR_CMN_EXTENDED 0x00000020
+#define FSOPT_RETURN_REALDEV     0x00000200
+#define FSOPT_NOFOLLOW_ANY       0x00000800
 
 /* we currently aren't anywhere near this amount for a valid
  * fssearchblock.sizeofsearchparams1 or fssearchblock.sizeofsearchparams2
@@ -82,6 +84,7 @@ struct attrlist {
 	attrgroup_t fileattr;                   /* file attribute group */
 	attrgroup_t forkattr;                   /* fork attribute group */
 };
+
 #define ATTR_BIT_MAP_COUNT 5
 
 typedef struct attribute_set {
@@ -91,6 +94,9 @@ typedef struct attribute_set {
 	attrgroup_t fileattr;                   /* file attribute group */
 	attrgroup_t forkattr;                   /* fork attribute group */
 } attribute_set_t;
+
+#define ATTRIBUTE_SET_INIT(a)               do {(a)->commonattr = (a)->volattr = (a)->dirattr = (a)->fileattr = (a)->forkattr = 0; } while(0)
+
 
 typedef struct attrreference {
 	int32_t     attr_dataoffset;
@@ -239,6 +245,10 @@ typedef struct vol_capabilities_attr {
  * that implies multiple volumes must be mounted in order to boot and root the
  * operating system. Typically, this means a read-only system volume and a
  * writable data volume.
+ *
+ * VOL_CAP_FMT_SEALED: When set, this volume is cryptographically sealed.
+ * Any modifications to volume data or metadata will be detected and may
+ * render the volume unusable.
  */
 #define VOL_CAP_FMT_PERSISTENTOBJECTIDS         0x00000001
 #define VOL_CAP_FMT_SYMBOLICLINKS               0x00000002
@@ -265,6 +275,7 @@ typedef struct vol_capabilities_attr {
 #define VOL_CAP_FMT_NO_PERMISSIONS              0x00400000
 #define VOL_CAP_FMT_SHARED_SPACE                0x00800000
 #define VOL_CAP_FMT_VOL_GROUPS                  0x01000000
+#define VOL_CAP_FMT_SEALED                      0x02000000
 
 /*
  * VOL_CAP_INT_SEARCHFS: When set, the volume implements the
@@ -457,12 +468,13 @@ typedef struct vol_attributes_attr {
 #define ATTR_VOL_ENCODINGSUSED                  0x00010000
 #define ATTR_VOL_CAPABILITIES                   0x00020000
 #define ATTR_VOL_UUID                           0x00040000
+#define ATTR_VOL_SPACEUSED                      0x00800000
 #define ATTR_VOL_QUOTA_SIZE                     0x10000000
 #define ATTR_VOL_RESERVED_SIZE          0x20000000
 #define ATTR_VOL_ATTRIBUTES                     0x40000000
 #define ATTR_VOL_INFO                           0x80000000
 
-#define ATTR_VOL_VALIDMASK                      0xF007FFFF
+#define ATTR_VOL_VALIDMASK                      0xF087FFFF
 
 /*
  * The list of settable ATTR_VOL_* attributes include the following:
@@ -515,8 +527,9 @@ typedef struct vol_attributes_attr {
 #define ATTR_CMNEXT_REALFSID    0x00000080
 #define ATTR_CMNEXT_CLONEID     0x00000100
 #define ATTR_CMNEXT_EXT_FLAGS   0x00000200
+#define ATTR_CMNEXT_RECURSIVE_GENCOUNT 0x00000400
 
-#define ATTR_CMNEXT_VALIDMASK   0x000003fc
+#define ATTR_CMNEXT_VALIDMASK   0x000007fc
 #define ATTR_CMNEXT_SETMASK             0x00000000
 
 /* Deprecated fork attributes */

@@ -36,6 +36,7 @@
 #endif
 
 DISPATCH_ASSUME_NONNULL_BEGIN
+DISPATCH_ASSUME_ABI_SINGLE_BEGIN
 
 /*!
  * @header
@@ -389,7 +390,7 @@ DISPATCH_NOTHROW
 dispatch_source_t
 dispatch_source_create(dispatch_source_type_t type,
 	uintptr_t handle,
-	unsigned long mask,
+	uintptr_t mask,
 	dispatch_queue_t _Nullable queue);
 
 /*!
@@ -537,7 +538,7 @@ dispatch_source_cancel(dispatch_source_t source);
 API_AVAILABLE(macos(10.6), ios(4.0))
 DISPATCH_EXPORT DISPATCH_NONNULL_ALL DISPATCH_WARN_RESULT DISPATCH_PURE
 DISPATCH_NOTHROW
-long
+intptr_t
 dispatch_source_testcancel(dispatch_source_t source);
 
 /*!
@@ -601,7 +602,7 @@ dispatch_source_get_handle(dispatch_source_t source);
 API_AVAILABLE(macos(10.6), ios(4.0))
 DISPATCH_EXPORT DISPATCH_NONNULL_ALL DISPATCH_WARN_RESULT DISPATCH_PURE
 DISPATCH_NOTHROW
-unsigned long
+uintptr_t
 dispatch_source_get_mask(dispatch_source_t source);
 
 /*!
@@ -640,7 +641,7 @@ dispatch_source_get_mask(dispatch_source_t source);
 API_AVAILABLE(macos(10.6), ios(4.0))
 DISPATCH_EXPORT DISPATCH_NONNULL_ALL DISPATCH_WARN_RESULT DISPATCH_PURE
 DISPATCH_NOTHROW
-unsigned long
+uintptr_t
 dispatch_source_get_data(dispatch_source_t source);
 
 /*!
@@ -662,7 +663,7 @@ dispatch_source_get_data(dispatch_source_t source);
 API_AVAILABLE(macos(10.6), ios(4.0))
 DISPATCH_EXPORT DISPATCH_NONNULL_ALL DISPATCH_NOTHROW
 void
-dispatch_source_merge_data(dispatch_source_t source, unsigned long value);
+dispatch_source_merge_data(dispatch_source_t source, uintptr_t value);
 
 /*!
  * @function dispatch_source_set_timer
@@ -775,6 +776,7 @@ dispatch_source_set_registration_handler_f(dispatch_source_t source,
 
 __END_DECLS
 
+DISPATCH_ASSUME_ABI_SINGLE_END
 DISPATCH_ASSUME_NONNULL_END
 
 #endif

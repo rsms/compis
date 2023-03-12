@@ -110,8 +110,7 @@ typedef integer_t       *task_policy_t;
 #define TASK_BASE_LATENCY_QOS_POLICY    10
 #define TASK_BASE_THROUGHPUT_QOS_POLICY 11
 
-
-enum task_role {
+typedef enum task_role {
 	TASK_RENICED                    = -1,
 	TASK_UNSPECIFIED                = 0,
 	TASK_FOREGROUND_APPLICATION     = 1,
@@ -122,9 +121,7 @@ enum task_role {
 	TASK_NONUI_APPLICATION          = 6,
 	TASK_DEFAULT_APPLICATION        = 7,
 	TASK_DARWINBG_APPLICATION       = 8,
-};
-
-typedef integer_t       task_role_t;
+} task_role_t;
 
 struct task_category_policy {
 	task_role_t             role;
@@ -182,8 +179,6 @@ typedef struct task_qos_policy *task_qos_policy_t;
 #define PROC_FLAG_SUPPRESSED         0x800000  /* Process is suppressed */
 #define PROC_FLAG_APPLICATION        0x1000000 /* Process is an application */
 #define PROC_FLAG_IOS_APPLICATION PROC_FLAG_APPLICATION /* Process is an application */
-
-
 
 
 #endif  /* _MACH_TASK_POLICY_H_ */

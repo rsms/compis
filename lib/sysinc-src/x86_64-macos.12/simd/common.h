@@ -20,7 +20,7 @@
  *                              NaN, and +1 if x is greater than zero.
  *
  *      simd_mix(x,y,t)         If t is not in the range [0,1], the result is
- *                              undefined.  Otherwise the result is x+(y-x)*t,
+ *      simd_lerp(x,y,t)        undefined.  Otherwise the result is x+(y-x)*t,
  *                              which linearly interpolates between x and y.
  *
  *      simd_recip(x)           An approximation to 1/x.  If x is very near the
@@ -98,6 +98,7 @@
  *      simd::clamp(x,min,max)          simd_clamp(x,min,max)
  *      simd::sign(x)                   simd_sign(x)
  *      simd::mix(x,y,t)                simd_mix(x,y,t)
+ *      simd::lerp(x,y,t)               simd_lerp(x,y,t)
  *      simd::recip(x)                  simd_recip(x)
  *      simd::rsqrt(x)                  simd_rsqrt(x)
  *      simd::fract(x)                  simd_fract(x)
@@ -712,6 +713,7 @@ static inline SIMD_CFUNC simd_double8 simd_mix(simd_double8 x, simd_double8 y, s
  *  t=0 and y when t=1
  *  @discussion Deprecated. Use simd_mix(x, y, t) instead.                    */
 #define vector_mix simd_mix
+#define simd_lerp simd_mix
 
 /*! @abstract A good approximation to 1/x.
  *  @discussion If x is very close to the limits of representation, the
@@ -1907,6 +1909,7 @@ namespace simd {
   template <typename fptypeN> static SIMD_CPPFUNC fptypeN sign(const fptypeN x) { return ::simd_sign(x); }
   /*! @abstract Linearly interpolates between x and y, taking the value x when t=0 and y when t=1 */
   template <typename fptypeN> static SIMD_CPPFUNC fptypeN mix(const fptypeN x, const fptypeN y, const fptypeN t) { return ::simd_mix(x,y,t); }
+  template <typename fptypeN> static SIMD_CPPFUNC fptypeN lerp(const fptypeN x, const fptypeN y, const fptypeN t) { return ::simd_mix(x,y,t); }
   /*! @abstract An approximation to 1/x.                                      */
   template <typename fptypeN> static SIMD_CPPFUNC fptypeN recip(const fptypeN x) { return simd_recip(x); }
   /*! @abstract An approximation to 1/sqrt(x).                                */
@@ -1977,7 +1980,7 @@ static inline SIMD_CFUNC simd_char16 simd_abs(simd_char16 x) {
 #if defined __arm__ || defined __arm64__
   return vabsq_s8(x);
 #elif defined __SSE4_1__
-  return _mm_abs_epi8(x);
+  return (simd_char16) _mm_abs_epi8((__m128i)x);
 #else
   simd_char16 mask = x >> 7; return (x ^ mask) - mask;
 #endif
@@ -2019,7 +2022,7 @@ static inline SIMD_CFUNC simd_short8 simd_abs(simd_short8 x) {
 #if defined __arm__ || defined __arm64__
   return vabsq_s16(x);
 #elif defined __SSE4_1__
-  return _mm_abs_epi16(x);
+  return (simd_short8) _mm_abs_epi16((__m128i)x);
 #else
   simd_short8 mask = x >> 15; return (x ^ mask) - mask;
 #endif
@@ -2057,7 +2060,7 @@ static inline SIMD_CFUNC simd_int4 simd_abs(simd_int4 x) {
 #if defined __arm__ || defined __arm64__
   return vabsq_s32(x);
 #elif defined __SSE4_1__
-  return _mm_abs_epi32(x);
+  return (simd_int4) _mm_abs_epi32((__m128i)x);
 #else
   simd_int4 mask = x >> 31; return (x ^ mask) - mask;
 #endif
@@ -2102,8 +2105,8 @@ static inline SIMD_CFUNC simd_float16 simd_abs(simd_float16 x) {
 static inline SIMD_CFUNC simd_long2 simd_abs(simd_long2 x) {
 #if defined __arm64__
   return vabsq_s64(x);
-#elif defined __SSE4_1__
-  return _mm_abs_epi64(x);
+#elif defined __AVX512VL__
+  return (simd_long2) _mm_abs_epi64((__m128i)x);
 #else
   simd_long2 mask = x >> 63; return (x ^ mask) - mask;
 #endif
@@ -2114,7 +2117,7 @@ static inline SIMD_CFUNC simd_long3 simd_abs(simd_long3 x) {
 }
 
 static inline SIMD_CFUNC simd_long4 simd_abs(simd_long4 x) {
-#if defined __AVX2__
+#if defined __AVX512VL__
   return _mm256_abs_epi64(x);
 #else
   return simd_make_long4(simd_abs(x.lo), simd_abs(x.hi));
@@ -2170,7 +2173,7 @@ static inline SIMD_CFUNC simd_char16 simd_min(simd_char16 x, simd_char16 y) {
 #if defined __arm__ || defined __arm64__
   return vminq_s8(x, y);
 #elif defined __SSE4_1__
-  return _mm_min_epi8(x, y);
+  return (simd_char16) _mm_min_epi8((__m128i)x, (__m128i)y);
 #else
   return simd_bitselect(x, y, y < x);
 #endif
@@ -2217,7 +2220,7 @@ static inline SIMD_CFUNC simd_uchar16 simd_min(simd_uchar16 x, simd_uchar16 y) {
 #if defined __arm__ || defined __arm64__
   return vminq_u8(x, y);
 #elif defined __SSE4_1__
-  return _mm_min_epu8(x, y);
+  return (simd_uchar16) _mm_min_epu8((__m128i)x, (__m128i)y);
 #else
   return simd_bitselect(x, y, y < x);
 #endif
@@ -2260,7 +2263,7 @@ static inline SIMD_CFUNC simd_short8 simd_min(simd_short8 x, simd_short8 y) {
 #if defined __arm__ || defined __arm64__
   return vminq_s16(x, y);
 #elif defined __SSE4_1__
-  return _mm_min_epi16(x, y);
+  return (simd_short8) _mm_min_epi16((__m128i)x, (__m128i)y);
 #else
   return simd_bitselect(x, y, y < x);
 #endif
@@ -2303,7 +2306,7 @@ static inline SIMD_CFUNC simd_ushort8 simd_min(simd_ushort8 x, simd_ushort8 y) {
 #if defined __arm__ || defined __arm64__
   return vminq_u16(x, y);
 #elif defined __SSE4_1__
-  return _mm_min_epu16(x, y);
+  return (simd_ushort8) _mm_min_epu16((__m128i)x, (__m128i)y);
 #else
   return simd_bitselect(x, y, y < x);
 #endif
@@ -2342,7 +2345,7 @@ static inline SIMD_CFUNC simd_int4 simd_min(simd_int4 x, simd_int4 y) {
 #if defined __arm__ || defined __arm64__
   return vminq_s32(x, y);
 #elif defined __SSE4_1__
-  return _mm_min_epi32(x, y);
+  return (simd_int4) _mm_min_epi32((__m128i)x, (__m128i)y);
 #else
   return simd_bitselect(x, y, y < x);
 #endif
@@ -2381,7 +2384,7 @@ static inline SIMD_CFUNC simd_uint4 simd_min(simd_uint4 x, simd_uint4 y) {
 #if defined __arm__ || defined __arm64__
   return vminq_u32(x, y);
 #elif defined __SSE4_1__
-  return _mm_min_epu32(x, y);
+  return (simd_uint4) _mm_min_epu32((__m128i)x, (__m128i)y);
 #else
   return simd_bitselect(x, y, y < x);
 #endif
@@ -2528,7 +2531,7 @@ static inline SIMD_CFUNC simd_char16 simd_max(simd_char16 x, simd_char16 y) {
 #if defined __arm__ || defined __arm64__
   return vmaxq_s8(x, y);
 #elif defined __SSE4_1__
-  return _mm_max_epi8(x, y);
+  return (simd_char16) _mm_max_epi8((__m128i)x, (__m128i)y);
 #else
   return simd_bitselect(x, y, x < y);
 #endif
@@ -2575,7 +2578,7 @@ static inline SIMD_CFUNC simd_uchar16 simd_max(simd_uchar16 x, simd_uchar16 y) {
 #if defined __arm__ || defined __arm64__
   return vmaxq_u8(x, y);
 #elif defined __SSE4_1__
-  return _mm_max_epu8(x, y);
+  return (simd_uchar16) _mm_max_epu8((__m128i)x, (__m128i)y);
 #else
   return simd_bitselect(x, y, x < y);
 #endif
@@ -2618,7 +2621,7 @@ static inline SIMD_CFUNC simd_short8 simd_max(simd_short8 x, simd_short8 y) {
 #if defined __arm__ || defined __arm64__
   return vmaxq_s16(x, y);
 #elif defined __SSE4_1__
-  return _mm_max_epi16(x, y);
+  return (simd_short8) _mm_max_epi16((__m128i)x, (__m128i)y);
 #else
   return simd_bitselect(x, y, x < y);
 #endif
@@ -2661,7 +2664,7 @@ static inline SIMD_CFUNC simd_ushort8 simd_max(simd_ushort8 x, simd_ushort8 y) {
 #if defined __arm__ || defined __arm64__
   return vmaxq_u16(x, y);
 #elif defined __SSE4_1__
-  return _mm_max_epu16(x, y);
+  return (simd_ushort8) _mm_max_epu16((__m128i)x, (__m128i)y);
 #else
   return simd_bitselect(x, y, x < y);
 #endif
@@ -2700,7 +2703,7 @@ static inline SIMD_CFUNC simd_int4 simd_max(simd_int4 x, simd_int4 y) {
 #if defined __arm__ || defined __arm64__
   return vmaxq_s32(x, y);
 #elif defined __SSE4_1__
-  return _mm_max_epi32(x, y);
+  return (simd_int4) _mm_max_epi32((__m128i)x, (__m128i)y);
 #else
   return simd_bitselect(x, y, x < y);
 #endif
@@ -2739,7 +2742,7 @@ static inline SIMD_CFUNC simd_uint4 simd_max(simd_uint4 x, simd_uint4 y) {
 #if defined __arm__ || defined __arm64__
   return vmaxq_u32(x, y);
 #elif defined __SSE4_1__
-  return _mm_max_epu32(x, y);
+  return (simd_uint4) _mm_max_epu32((__m128i)x, (__m128i)y);
 #else
   return simd_bitselect(x, y, x < y);
 #endif
@@ -3083,7 +3086,7 @@ static inline SIMD_CFUNC simd_double8 simd_clamp(simd_double8 x, simd_double8 mi
 
   
 static inline SIMD_CFUNC float simd_sign(float x) {
-  return x == 0 | x != x ? 0 : copysign(1,x);
+  return (x == 0 | x != x) ? 0 : copysign(1,x);
 }
 
 static inline SIMD_CFUNC simd_float2 simd_sign(simd_float2 x) {
@@ -3107,7 +3110,7 @@ static inline SIMD_CFUNC simd_float16 simd_sign(simd_float16 x) {
 }
 
 static inline SIMD_CFUNC double simd_sign(double x) {
-  return x == 0 | x != x ? 0 : copysign(1,x);
+  return (x == 0 | x != x) ? 0 : copysign(1,x);
 }
 
 static inline SIMD_CFUNC simd_double2 simd_sign(simd_double2 x) {

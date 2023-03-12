@@ -128,6 +128,50 @@ __attribute__((__nonnull__, __warn_unused_result__))
 extern pthread_introspection_hook_t
 pthread_introspection_hook_install(pthread_introspection_hook_t hook);
 
+/*!
+ * @function pthread_introspection_setspecific_np
+ *
+ * @abstract
+ * Performs the moral equivalent of pthread_setspecific() on a target thread
+ * during the @c PTHREAD_INTROSPECTION_START callback.
+ *
+ * @description
+ * This function is only valid to call during the delivery
+ * of an @c PTHREAD_INTROSPECTION_THREAD_CREATE introspection hook.
+ *
+ * Using this function outside of this context is undefined.
+ *
+ * If the created thread is started, then the destructor for this key
+ * will be called when the thread is terminated. However if the thread
+ * is not started, it will not be called, and
+ * pthread_introspection_getspecific_np() must be called manually during
+ * the @c PTHREAD_INTROSPECTION_THREAD_DESTROY callback to perform manual
+ * cleanup.
+ */
+__API_AVAILABLE(macos(11.0), ios(14.0), tvos(14.0), watchos(7.0))
+int
+pthread_introspection_setspecific_np(pthread_t thread,
+		pthread_key_t key, const void * _Nullable value);
+
+/*!
+ * @function pthread_introspection_getspecific_np
+ *
+ * @abstract
+ * Performs the moral equivalent of pthread_getspecific() on a target thread
+ * during the @c PTHREAD_INTROSPECTION_THREAD_DESTROY callback.
+ *
+ * @description
+ * This function is only valid to call during the delivery
+ * of an @c PTHREAD_INTROSPECTION_THREAD_DESTROY introspection hook.
+ *
+ * If the thread was started then this will always return NULL even
+ * when pthread_introspection_setspecific_np() was used.
+ */
+__API_AVAILABLE(macos(11.0), ios(14.0), tvos(14.0), watchos(7.0))
+void * _Nullable
+pthread_introspection_getspecific_np(pthread_t _Nonnull thread,
+		pthread_key_t key);
+
 __END_DECLS
 
 #endif

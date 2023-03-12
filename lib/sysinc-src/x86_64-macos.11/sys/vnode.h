@@ -105,8 +105,8 @@ enum vtagtype   {
 	VT_HFS, VT_ZFS, VT_DEVFS, VT_WEBDAV, VT_UDF,
 	/* 21 - 25 */
 	VT_AFP, VT_CDDA, VT_CIFS, VT_OTHER, VT_APFS,
-	/* 26 */
-	VT_LOCKERFS,
+	/* 26 - 27*/
+	VT_LOCKERFS, VT_BINDFS,
 };
 
 #define HAVE_VT_LOCKERFS 1

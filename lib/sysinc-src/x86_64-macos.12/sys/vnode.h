@@ -64,8 +64,10 @@
 #ifndef _VNODE_H_
 #define _VNODE_H_
 
+#include <stdint.h>
 #include <sys/appleapiopts.h>
 #include <sys/cdefs.h>
+#include <stdint.h>
 
 /*
  * The vnode is the focus of all file activity in UNIX.  There is a
@@ -105,8 +107,8 @@ enum vtagtype   {
 	VT_HFS, VT_ZFS, VT_DEVFS, VT_WEBDAV, VT_UDF,
 	/* 21 - 25 */
 	VT_AFP, VT_CDDA, VT_CIFS, VT_OTHER, VT_APFS,
-	/* 26 */
-	VT_LOCKERFS,
+	/* 26 - 27*/
+	VT_LOCKERFS, VT_BINDFS,
 };
 
 #define HAVE_VT_LOCKERFS 1
@@ -117,6 +119,7 @@ enum vtagtype   {
 #define VNODE_READ      0x01
 #define VNODE_WRITE     0x02
 #define VNODE_BLOCKMAP_NO_TRACK 0x04 // APFS Fusion: Do not track this request
+#define VNODE_CLUSTER_VERIFY 0x08 // Verification will be performed in the cluster layer
 
 
 /* flags for VNOP_ALLOCATE */
@@ -135,5 +138,35 @@ enum vtagtype   {
 #define VNOVAL  (-1)
 
 
+
+/*
+ * Structure for vnode level IO compression stats
+ */
+
+#define IOCS_BUFFER_NUM_SIZE_BUCKETS         10
+#define IOCS_BUFFER_MAX_BUCKET               9
+#define IOCS_BUFFER_NUM_COMPRESSION_BUCKETS  7
+#define IOCS_BLOCK_NUM_SIZE_BUCKETS          16
+
+struct io_compression_stats {
+	uint64_t uncompressed_size;
+	uint64_t compressed_size;
+	uint32_t buffer_size_compression_dist[IOCS_BUFFER_NUM_SIZE_BUCKETS][IOCS_BUFFER_NUM_COMPRESSION_BUCKETS];
+	uint32_t block_compressed_size_dist[IOCS_BLOCK_NUM_SIZE_BUCKETS];
+};
+typedef struct io_compression_stats *io_compression_stats_t;
+
+#define IOCS_SBE_PATH_LEN             128
+#define IOCS_PATH_START_BYTES_TO_COPY 108
+#define IOCS_PATH_END_BYTES_TO_COPY   20 /* Includes null termination */
+
+#define IOCS_SYSCTL_LIVE                  0x00000001
+#define IOCS_SYSCTL_STORE_BUFFER_RD_ONLY  0x00000002
+#define IOCS_SYSCTL_STORE_BUFFER_MARK     0x00000004
+
+struct iocs_store_buffer_entry {
+	char     path_name[IOCS_SBE_PATH_LEN];
+	struct io_compression_stats iocs;
+};
 
 #endif /* !_VNODE_H_ */
