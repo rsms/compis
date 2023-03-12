@@ -1,5 +1,6 @@
 *.co linguist-language=compis
 # note: examples/* is considered "linguist-documentation" by default
+etc/pbzx.c linguist-vendored
 lib/clangres/* linguist-vendored
 lib/darwin/* linguist-vendored
 lib/librt/* linguist-vendored

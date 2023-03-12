@@ -91,7 +91,7 @@ fi
 # —————————————————————————————————————————————————————————————————————————————————
 # target
 
-HOST_ARCH=$(uname -m) ; [ "$HOST_ARCH" != "arm64" ] || HOST_ARCH=aarch64
+HOST_ARCH=$(uname -m); HOST_ARCH=${HOST_ARCH/arm64/aarch64}
 HOST_SYS=$(uname -s) # e.g. linux, macos
 case "$HOST_SYS" in
   Darwin) HOST_SYS=macos ;;
@@ -736,6 +736,9 @@ $ONLY_CONFIGURE && exit
 # —————————————————————————————————————————————————————————————————————————————————
 # wipe build cache if config or tools changed
 
+cat << END > config-xflags.tmp
+XFLAGS ${XFLAGS[@]:-}
+END
 cat << END > config.tmp
 TARGET $HOST_ARCH-$HOST_SYS
 LLVM $LLVMBOX_RELEASE
@@ -765,13 +768,19 @@ if ! diff -q config config.tmp >/dev/null 2>&1; then
   fi
   mv config.tmp config
   rm -rf "$OUT_DIR/obj" "$OUT_DIR/lto-cache"
-elif ! diff -q lconfig lconfig.tmp >/dev/null 2>&1; then
-  [ -e config ] && echo "linker configuration changed"
-  mv lconfig.tmp lconfig
-  rm -f "$OUT_DIR/$MAIN_EXE"
 else
-  rm config.tmp
+  if ! diff -q config-xflags config-xflags.tmp >/dev/null 2>&1; then
+    [ -e config ] && echo "xflags changed; wiping PCHs"
+    find "$OUT_DIR" -type f -name '*.pch' -delete
+    mv config-xflags.tmp config-xflags
+  fi
+  if ! diff -q lconfig lconfig.tmp >/dev/null 2>&1; then
+    [ -e config ] && echo "linker configuration changed"
+    mv lconfig.tmp lconfig
+    rm -f "$OUT_DIR/$MAIN_EXE"
+  fi
 fi
+rm -f config-xflags.tmp config.tmp lconfig.tmp
 
 # —————————————————————————————————————————————————————————————————————————————————
 # run ninja
