@@ -3,8 +3,7 @@ set -euo pipefail
 source "$(dirname "$0")/lib.sh"
 cd "$PROJECT"
 
-[ -d "$LLVMBOX" ] ||
-  _err "missing $(_relpath "$LLVMBOX"); try running ./build.sh -config"
+[ -d "$LLVMBOX" ] || "$BASH" build.sh
 
 rm -rf lib/clangres
 mkdir -p lib/clangres
