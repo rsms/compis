@@ -177,13 +177,13 @@ static err_t build_libc_musl(compiler_t* c) {
     obj->flags |= COBJ_EXCLUDE_FROM_LIB; \
     cobj_setobjfilef(&build, obj, "%s/lib/" CO_STRX(NAME) ".o", c->sysroot); \
     strlist_t* cflags = safechecknotnull(cobj_cflags(&build, obj)); \
-    strlist_add(cflags, ##CFLAGS); \
+    strlist_add(cflags, str_endswith(srcfile, ".c") ? "-DCRT" : "", ##CFLAGS); \
   }
-  ADD_CRT_SOURCE(crt1, "-DCRT")
-  ADD_CRT_SOURCE(rcrt1, "-DCRT", "-fPIC")
-  ADD_CRT_SOURCE(Scrt1, "-DCRT", "-fPIC")
-  ADD_CRT_SOURCE(crti, "-DCRT")
-  ADD_CRT_SOURCE(crtn, "-DCRT")
+  ADD_CRT_SOURCE(crt1)
+  ADD_CRT_SOURCE(rcrt1, "-fPIC")
+  ADD_CRT_SOURCE(Scrt1, "-fPIC")
+  ADD_CRT_SOURCE(crti)
+  ADD_CRT_SOURCE(crtn)
   #undef ADD_CRT_SOURCE
 
   // build
