@@ -291,17 +291,6 @@ if [ "$(tail -n1 "$DSTFILE")" != "$SRC_VERSION_LINE" ]; then
   _popd
 fi
 
-DSTFILE="$SRC_DIR/llvm/llvm-link.cc"
-if [ "$(tail -n1 "$DSTFILE")" != "$SRC_VERSION_LINE" ]; then
-  echo "updating $(_relpath "$DSTFILE")"
-  _require_llvm_src
-  _pushd "$PROJECT"
-  _copy "$LLVMSRC/tools/llvm-link/llvm-link.cpp" "$DSTFILE"
-  patch -p1 < etc/co-llvm-$LLVM_RELEASE-llvm-link.patch
-  echo "$SRC_VERSION_LINE" >> "$DSTFILE"
-  _popd
-fi
-
 # —————————————————————————————————————————————————————————————————————————————————
 # generate lib/sysinc if missing
 
