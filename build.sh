@@ -271,26 +271,6 @@ if [ "$(tail -n1 "$DSTFILE")" != "$SRC_VERSION_LINE" ]; then
   _popd
 fi
 
-DSTFILE="$SRC_DIR/llvm/llvm-nm.cc"
-if [ "$(tail -n1 "$DSTFILE")" != "$SRC_VERSION_LINE" ]; then
-  echo "updating $(_relpath "$DSTFILE")"
-  _require_llvm_src
-  _pushd "$PROJECT"
-  _copy "$LLVMSRC/tools/llvm-nm/llvm-nm.cpp" "$DSTFILE"
-  patch -p1 < etc/co-llvm-$LLVM_RELEASE-nm.patch
-
-  # see llvm/tools/llvm-cvtres/CMakeLists.txt
-  TD_SRC="$LLVMSRC/tools/llvm-nm/Opts.td"
-  echo "llvm-tblgen $(_relpath "$TD_SRC") -> src/llvm/llvm-nm-opts.inc"
-  "$LLVMBOX"/bin/llvm-tblgen \
-    -no-warn-on-unused-template-args --write-if-changed --gen-opt-parser-defs \
-    -I "$LLVMSRC/tools/llvm-nm" -I "$LLVMSRC/include" \
-    "$TD_SRC" -o src/llvm/llvm-nm-opts.inc
-
-  echo "$SRC_VERSION_LINE" >> "$DSTFILE"
-  _popd
-fi
-
 # —————————————————————————————————————————————————————————————————————————————————
 # generate lib/sysinc if missing
 
