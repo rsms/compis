@@ -55,7 +55,6 @@ static int usage(FILE* f) {
     "  cc        C compiler (clang)\n"
     "  ranlib    Archive index generator\n"
     "  nm        Symbol table dumper\n"
-    "  llvm-link LLVM bitcode linker\n"
     "\n"
     "%s" // ld for host, if any
     "  ld.lld    ELF linker\n"
