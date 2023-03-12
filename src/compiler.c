@@ -282,7 +282,7 @@ static err_t configure_cflags(compiler_t* c) {
       break;
   }
   // strlist_add(&c->cflags, "-fPIC");
-  strlist_addf(&c->cflags, "-I%s/co", coroot);
+  strlist_addf(&c->cflags, "-isystem%s/co", coroot);
 
   const char*const* argv = (const char*const*)strlist_array(&c->cflags);
   c->sflags_common = (slice_t){ .strings = argv, .len = (usize)flags_common_end };
