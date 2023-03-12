@@ -1,0 +1,13 @@
+*.co linguist-language=compis
+# note: examples/* is considered "linguist-documentation" by default
+lib/clangres/* linguist-vendored
+lib/darwin/* linguist-vendored
+lib/librt/* linguist-vendored
+lib/musl/* linguist-vendored
+lib/sysinc-src/* linguist-vendored
+lib/wasi/* linguist-vendored
+src/llvm/clang*.cc linguist-vendored
+src/llvm/llvm-ar.cc linguist-vendored
+src/librt_info.h linguist-generated
+src/musl_info.h linguist-generated
+src/wasi_info.h linguist-generated
