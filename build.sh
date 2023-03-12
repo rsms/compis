@@ -233,10 +233,18 @@ export NINJA  # for watch mode
 # update llvm-derived code, if needed
 
 SRC_VERSION_LINE="//!co-llvm-$LLVM_RELEASE"
+LLVMSRC="$DEPS_DIR/llvm-$LLVM_RELEASE"
+CLANGSRC="$DEPS_DIR/clang-$LLVM_RELEASE"
+
+_require_llvm_src() {
+  [ -d "$LLVMSRC" ] || _download_and_extract_tar \
+    https://github.com/llvm/llvm-project/releases/download/llvmorg-$LLVM_RELEASE/llvm-$LLVM_RELEASE.src.tar.xz \
+    "$LLVMSRC" \
+    4ad8b2cc8003c86d0078d15d987d84e3a739f24aae9033865c027abae93ee7a4
+}
 
 if [ "$(tail -n1 "$SRC_DIR/llvm/clang.cc")" != "$SRC_VERSION_LINE" ]; then
   echo "src/llvm: LLVM version changed; updating driver code"
-  CLANGSRC="$DEPS_DIR/clang-$LLVM_RELEASE"
 
   [ -d "$CLANGSRC" ] || _download_and_extract_tar \
     https://github.com/llvm/llvm-project/releases/download/llvmorg-$LLVM_RELEASE/clang-$LLVM_RELEASE.src.tar.xz \
@@ -254,17 +262,30 @@ fi
 
 if [ "$(tail -n1 "$SRC_DIR/llvm/llvm-ar.cc")" != "$SRC_VERSION_LINE" ]; then
   echo "src/llvm: LLVM version changed; updating ar code"
-  LLVMSRC="$DEPS_DIR/llvm-$LLVM_RELEASE"
-
-  [ -d "$LLVMSRC" ] || _download_and_extract_tar \
-    https://github.com/llvm/llvm-project/releases/download/llvmorg-$LLVM_RELEASE/llvm-$LLVM_RELEASE.src.tar.xz \
-    "$LLVMSRC" \
-    4ad8b2cc8003c86d0078d15d987d84e3a739f24aae9033865c027abae93ee7a4
-
+  _require_llvm_src
   _pushd "$PROJECT"
   _copy "$LLVMSRC/tools/llvm-ar/llvm-ar.cpp" src/llvm/llvm-ar.cc
   patch -p1 < etc/co-llvm-$LLVM_RELEASE-ar.patch
   echo "$SRC_VERSION_LINE" >> src/llvm/llvm-ar.cc
+  _popd
+fi
+
+if [ "$(tail -n1 "$SRC_DIR/llvm/llvm-nm.cc")" != "$SRC_VERSION_LINE" ]; then
+  echo "src/llvm: LLVM version changed; updating nm code"
+  _require_llvm_src
+  _pushd "$PROJECT"
+  _copy "$LLVMSRC/tools/llvm-nm/llvm-nm.cpp" src/llvm/llvm-nm.cc
+  patch -p1 < etc/co-llvm-$LLVM_RELEASE-nm.patch
+
+  # see llvm/tools/llvm-cvtres/CMakeLists.txt
+  TD_SRC="$LLVMSRC/tools/llvm-nm/Opts.td"
+  echo "llvm-tblgen $(_relpath "$TD_SRC") -> src/llvm/llvm-nm-opts.inc"
+  "$LLVMBOX"/bin/llvm-tblgen \
+    -no-warn-on-unused-template-args --write-if-changed --gen-opt-parser-defs \
+    -I "$LLVMSRC/tools/llvm-nm" -I "$LLVMSRC/include" \
+    "$TD_SRC" -o src/llvm/llvm-nm-opts.inc
+
+  echo "$SRC_VERSION_LINE" >> src/llvm/llvm-nm.cc
   _popd
 fi
 

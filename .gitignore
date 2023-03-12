@@ -15,9 +15,10 @@ a.out
 /*.c
 /*.co
 /_*
-/deps
-/out
 /build
+/deps
+/hello
+/out
 /etc/bitset
 /lib/sysinc
 /lib/*.sysroot

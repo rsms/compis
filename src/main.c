@@ -27,6 +27,7 @@ u32 comaxproc = 1;
 int main_build(int argc, char*const* argv); // build.c
 int cc_main(int argc, char* argv[]); // cc.c
 int llvm_ar_main(int argc, char **argv); // llvm/llvm-ar.cc
+int llvm_nm_main(int argc, char **argv); // llvm/llvm-nm.cc
 
 static linkerfn_t nullable ld_impl(const target_t* t);
 static const char* ld_impl_name(linkerfn_t nullable f);
@@ -194,6 +195,7 @@ int main(int argc, char* argv[]) {
   if IS("lld-link")     return LLDLinkCOFF(argc, argv, true) ? 0 : 1;
   if IS("wasm-ld")      return LLDLinkWasm(argc, argv, true) ? 0 : 1;
   if IS("ar", "ranlib") return llvm_ar_main(argc, argv);
+  if IS("nm")           return llvm_nm_main(argc, argv);
 
   // initialize global state
   memalloc_t ma = memalloc_ctx();
