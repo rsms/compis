@@ -9,6 +9,7 @@
 #include <string.h>
 #include <unistd.h> // sleep
 #include <err.h>
+#include <errno.h>
 #include <libgen.h>
 
 #include "../lib/musl/src/internal/version.h"
@@ -157,6 +158,23 @@ static void cocachedir_init(memalloc_t ma) {
 }
 
 
+static void comaxproc_init() {
+  const char* envvar = getenv("COMAXPROC");
+  if (envvar && *envvar) {
+    char* end;
+    unsigned long n = strtoul(envvar, &end, 10);
+    if (n == ULONG_MAX || n > U32_MAX || *end || (n == 0 && errno))
+      errx(1, "invalid value: COMAXPROC=%s", envvar);
+    if (n != 0) {
+      dlog("set comaxproc=%u", (u32)n);
+      comaxproc = (u32)n;
+      return;
+    }
+  }
+  comaxproc = sys_ncpu();
+}
+
+
 int main(int argc, char* argv[]) {
   coprogname = strrchr(argv[0], PATH_SEPARATOR);
   coprogname = coprogname ? coprogname + 1 : argv[0];
@@ -202,7 +220,7 @@ int main(int argc, char* argv[]) {
 
   // initialize global state
   memalloc_t ma = memalloc_ctx();
-  comaxproc = sys_ncpu();
+  comaxproc_init();
   relpath_init();
   tmpbuf_init(ma);
   sym_init(ma);
