@@ -54,6 +54,7 @@ static int usage(FILE* f) {
     "  ar        Archiver\n"
     "  cc        C compiler (clang)\n"
     "  ranlib    Archive index generator\n"
+    "  nm        Symbol table dumper\n"
     "\n"
     "%s" // ld for host, if any
     "  ld.lld    ELF linker\n"
@@ -196,7 +197,8 @@ int main(int argc, char* argv[]) {
   if IS("ld64.lld")     return LLDLinkMachO(argc, argv, true) ? 0 : 1;
   if IS("lld-link")     return LLDLinkCOFF(argc, argv, true) ? 0 : 1;
   if IS("wasm-ld")      return LLDLinkWasm(argc, argv, true) ? 0 : 1;
-  if IS("ar", "ranlib") return llvm_ar_main(argc, argv); // adds ~70kB to LTO build
+  if IS("ar", "ranlib") return llvm_ar_main(argc, argv); // adds  ~70kB to LTO build
+  if IS("nm")           return llvm_nm_main(argc, argv); // adds ~250kB to LTO build
 
   // initialize global state
   memalloc_t ma = memalloc_ctx();
