@@ -26,11 +26,6 @@ Note: libc and librt are not used if `-nostdlib` is provided to `cc`.
     etc/update-clangres.sh
 
 
-## Updating `darwin`
-
-    etc/update-lib-darwin.sh
-
-
 ## Updating `librt`
 
     etc/update-librt.sh
@@ -40,16 +35,11 @@ Note: libc and librt are not used if `-nostdlib` is provided to `cc`.
 
     etc/update-musl.sh
 
+Note: public musl headers reside at `musl/include` rather than in `sysinc`.
+It's separated like this since it's possible to compile for linux without libc.
 
-## Updating `sysinc-src`
 
-### Linux
-
-Needs to run on a Linux host (any distro, any arch)
-
-    etc/update-linux-headers.sh
-
-### macOS
+## Updating `darwin` and `sysinc-src/*macos*`
 
 You need to run this script on both an x86_64 mac and an arm one
 since headers are resolved by clang.
@@ -69,7 +59,13 @@ etc/update-macos-libs-and-headers.sh
 ```
 
 
-## Updating `wasi`
+## Updating `sysinc-src/*linux`
+
+Needs to run on a Linux host (any distro, any arch)
+
+    etc/update-linux-headers.sh
+
+
+## Updating `wasi` and `sysinc-src/*wasi`
 
     etc/update-wasi.sh
-
