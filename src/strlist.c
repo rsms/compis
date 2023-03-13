@@ -122,8 +122,11 @@ void strlist_add_array(strlist_t* a, const char*const* src, usize len) {
     a->ok = false;
     return;
   }
-  for (usize i = 0; i < len; i++)
-    a->ok &= buf_append(&a->buf, src[i], strlen(src[i]) + 1);
+  for (usize i = 0; i < len; i++) {
+    usize len = strlen(src[i]);
+    if (len > 0)
+      a->ok &= buf_append(&a->buf, src[i], len + 1);
+  }
 }
 
 
