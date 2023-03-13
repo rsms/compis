@@ -11,6 +11,9 @@
 #include "librt_info.h"
 #include "musl_info.h"
 #include "wasi_info.h"
+#include "syslib_libcxx.h"
+#include "syslib_libcxxabi.h"
+#include "syslib_libunwind.h"
 
 #include <dirent.h>
 #include <err.h>
@@ -22,30 +25,46 @@
 #include <unistd.h>
 
 
-static char* lib_path(compiler_t* c, char buf[PATH_MAX], const char* filename) {
+const char* syslib_filename(const target_t* target, syslib_t lib) {
+  switch (lib) {
+    case SYSLIB_RT:     return "librt.a";
+    case SYSLIB_CXX:    return "libc++.a";
+    case SYSLIB_CXXABI: return "libc++abi.a";
+    case SYSLIB_UNWIND: return "libunwind.a";
+    case SYSLIB_C:
+      switch ((enum target_sys)target->sys) {
+        case SYS_macos: return "libSystem.tbd";
+        case SYS_linux: return "libc.a";
+        case SYS_wasi:  return "libc.a";
+        case SYS_none:  goto bad;
+      }
+      break;
+  }
+bad:
+  safefail("bad syslib_t");
+  return "bad";
+}
+
+
+void syslib_path(compiler_t* c, char buf[PATH_MAX], syslib_t lib) {
+  const char* filename = syslib_filename(&c->target, lib);
   UNUSED int n = snprintf(buf, PATH_MAX, "%s/lib/%s", c->sysroot, filename);
   safecheck(n < PATH_MAX);
-  return buf;
+}
+
+
+static bool is_libfile_missing(compiler_t* c, syslib_t lib) {
+  char libfile[PATH_MAX];
+  syslib_path(c, libfile, lib);
+  dlog("check %s", relpath(libfile));
+  return !fs_isfile(libfile);
 }
 
 
 static bool must_build_libc(compiler_t* c) {
-  char buf[PATH_MAX];
-  const char* filename = NULL;
-
-  if (c->opt_nostdlib || c->opt_nolibc)
+  if (c->opt_nostdlib || c->opt_nolibc || c->target.sys == SYS_none)
     return false;
-
-  // test if library exists
-  switch ((enum target_sys)c->target.sys) {
-    case SYS_macos: filename = "libSystem.tbd"; break;
-    case SYS_linux: filename = "libc.a"; break;
-    case SYS_wasi:  filename = "libc.a"; break;
-    case SYS_none:  return false;
-  };
-  safecheckf(filename, "invalid target");
-  dlog("check %s", relpath(lib_path(c, buf, filename)));
-  return !fs_isfile(lib_path(c, buf, filename));
+  return is_libfile_missing(c, SYSLIB_C);
 }
 
 
@@ -182,8 +201,8 @@ static err_t build_libc_musl(compiler_t* c) {
   #undef ADD_CRT_SOURCE
 
   // build
-  char tmpbuf[PATH_MAX];
-  const char* outfile = lib_path(c, tmpbuf, "libc.a");
+  char outfile[PATH_MAX];
+  syslib_path(c, outfile, SYSLIB_C);
   err = cbuild_build(&build, outfile);
 
 end:
@@ -269,8 +288,8 @@ static err_t build_libc_wasi(compiler_t* c) {
   #undef ADD_CRT_SOURCE
 
   // build
-  char tmpbuf[PATH_MAX];
-  const char* outfile = lib_path(c, tmpbuf, "libc.a");
+  char outfile[PATH_MAX];
+  syslib_path(c, outfile, SYSLIB_C);
   err = cbuild_build(&build, outfile);
 
   cbuild_dispose(&build);
@@ -314,13 +333,6 @@ static err_t build_libc(compiler_t* c) {
   }
   safefail("target.sys #%u", c->target.sys);
   return ErrInvalid;
-}
-
-
-static bool must_build_librt(compiler_t* c) {
-  char buf[PATH_MAX];
-  dlog("check %s", relpath(lib_path(c, buf, "librt.a")));
-  return !fs_isfile(lib_path(c, buf, "librt.a"));
 }
 
 
@@ -425,11 +437,281 @@ static err_t build_librt(compiler_t* c) {
   //   strlist_add(&srclist, "truncsfbf2.c");
   // }
 
-  char tmpbuf[PATH_MAX];
-  const char* outfile = lib_path(c, tmpbuf, "librt.a");
+  char outfile[PATH_MAX];
+  syslib_path(c, outfile, SYSLIB_RT);
   err = cbuild_build(&build, outfile);
 
 end:
+  cbuild_dispose(&build);
+  return err;
+}
+
+
+static err_t build_libcxx(compiler_t* c) {
+  cbuild_t build;
+  cbuild_init(&build, c, "libc++");
+  build.srcdir = path_join_alloca(coroot, "libcxx");
+
+  const char* common_flags[] = {
+    "-fPIC",
+    "-fvisibility=hidden",
+    "-fvisibility-inlines-hidden",
+    "-funwind-tables",
+    "-Wno-user-defined-literals",
+    "-faligned-allocation",
+    strcat_alloca("-I", build.srcdir, "/include"),
+
+    "-D_LIBCPP_BUILDING_LIBRARY",
+    "-D_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER",
+    "-DLIBCXX_BUILDING_LIBCXXABI",
+    "-D_LIBCXXABI_DISABLE_VISIBILITY_ANNOTATIONS",
+    "-D_LIBCPP_DISABLE_VISIBILITY_ANNOTATIONS",
+    "-D_LIBCPP_DISABLE_NEW_DELETE_DEFINITIONS",
+    "-D_LIBCPP_HAS_NO_VENDOR_AVAILABILITY_ANNOTATIONS",
+    "-D_LIBCPP_ABI_VERSION=" CO_STRX(CO_LIBCXX_ABI_VERSION),
+    "-D_LIBCPP_ABI_NAMESPACE=__" CO_STRX(CO_LIBCXX_ABI_VERSION),
+
+    ( c->target.sys == SYS_linux || c->target.sys == SYS_wasi ?
+        "-D_LIBCPP_HAS_MUSL_LIBC" : "" ),
+
+    c->target.sys == SYS_wasi ? "-D_LIBCPP_HAS_NO_THREADS" : "",
+  };
+  const char* common_flags_opt[] = {
+    "-Os",
+    "-flto=thin",
+    "-DNDEBUG",
+  };
+  const char* common_flags_debug[] = {
+    "-g",
+    "-O1",
+    // "-D_LIBCPP_ENABLE_DEBUG_MODE=1",
+  };
+
+  strlist_add_array(&build.as, common_flags, countof(common_flags));
+  strlist_add_array(&build.cc, common_flags, countof(common_flags));
+  strlist_add_array(&build.cxx, common_flags, countof(common_flags));
+  if (c->buildmode == BUILDMODE_OPT) {
+    strlist_add_array(&build.as, common_flags_opt, countof(common_flags_opt));
+    strlist_add_array(&build.cc, common_flags_opt, countof(common_flags_opt));
+    strlist_add_array(&build.cxx, common_flags_opt, countof(common_flags_opt));
+  } else {
+    strlist_add_array(&build.as, common_flags_debug, countof(common_flags_debug));
+    strlist_add_array(&build.cc, common_flags_debug, countof(common_flags_debug));
+    strlist_add_array(&build.cxx, common_flags_debug, countof(common_flags_debug));
+  }
+
+  strlist_add(&build.cc,
+    "-std=c11"
+  );
+  strlist_add(&build.cxx,
+    "-std=c++20",
+    "-nostdinc++"
+  );
+
+  if (c->target.sys == SYS_wasi)
+    strlist_add(&build.cxx, "-fno-exceptions");
+
+  strlist_addf(&build.cxx, "-I%s/libcxx/include", coroot);
+  strlist_addf(&build.cxx, "-I%s/libcxxabi/include", coroot);
+  strlist_addf(&build.cxx, "-I%s/libcxx/src", coroot);
+
+  strlist_add_array(&build.cc, c->cflags_sysinc.strings, c->cflags_sysinc.len);
+  strlist_add_array(&build.cxx, c->cflags_sysinc.strings, c->cflags_sysinc.len);
+
+  // temporary memory for storing source filenames
+  mem_t tmpbuf = mem_alloc(c->ma, countof(libcxx_sources) * (PATH_MAX+1));
+  safechecknotnull(tmpbuf.p);
+  memalloc_t ma = memalloc_bump(tmpbuf.p, tmpbuf.size, /*flags*/0);
+  for (u32 i = 0; i < countof(libcxx_sources); i++) {
+    if (c->target.sys == SYS_wasi && str_startswith(libcxx_sources[i], "filesystem/"))
+      continue; // skip
+    char* srcfile = safechecknotnull(path_join_m(ma, "src", libcxx_sources[i]));
+    cbuild_add_source(&build, srcfile);
+  }
+
+  // build
+  char path[PATH_MAX];
+  syslib_path(c, path, SYSLIB_CXX);
+  err_t err = cbuild_build(&build, path);
+
+  mem_free(c->ma, &tmpbuf);
+  cbuild_dispose(&build);
+  return err;
+}
+
+
+static err_t build_libcxxabi(compiler_t* c) {
+  cbuild_t build;
+  cbuild_init(&build, c, "libc++abi");
+  build.srcdir = path_join_alloca(coroot, "libcxxabi");
+
+  const char* common_flags[] = {
+    "-fPIC",
+    "-fvisibility=hidden",
+    "-fvisibility-inlines-hidden",
+    "-funwind-tables",
+    "-Wno-user-defined-literals",
+    "-faligned-allocation",
+    "-fstrict-aliasing",
+    strcat_alloca("-I", build.srcdir, "/include"),
+
+    "-D_LIBCPP_DISABLE_EXTERN_TEMPLATE",
+    "-D_LIBCPP_ENABLE_CXX17_REMOVED_UNEXPECTED_FUNCTIONS",
+    "-D_LIBCXXABI_BUILDING_LIBRARY",
+    "-D_LIBCXXABI_DISABLE_VISIBILITY_ANNOTATIONS",
+    "-D_LIBCPP_DISABLE_VISIBILITY_ANNOTATIONS",
+    "-D_LIBCPP_ABI_VERSION=" CO_STRX(CO_LIBCXX_ABI_VERSION),
+    "-D_LIBCPP_ABI_NAMESPACE=__" CO_STRX(CO_LIBCXX_ABI_VERSION),
+
+    ( c->target.sys == SYS_linux || c->target.sys == SYS_wasi ?
+        "-D_LIBCPP_HAS_MUSL_LIBC" : "" ),
+
+    c->target.sys == SYS_wasi ? "-D_LIBCXXABI_HAS_NO_THREADS" : "",
+    c->target.sys == SYS_wasi ? "-D_LIBCPP_HAS_NO_THREADS" : "",
+  };
+  const char* common_flags_opt[] = {
+    "-Os",
+    "-flto=thin",
+    "-DNDEBUG",
+  };
+  const char* common_flags_debug[] = {
+    "-g",
+    "-O1",
+    // "-D_LIBCPP_ENABLE_DEBUG_MODE=1",
+  };
+
+  strlist_add_array(&build.as, common_flags, countof(common_flags));
+  strlist_add_array(&build.cc, common_flags, countof(common_flags));
+  strlist_add_array(&build.cxx, common_flags, countof(common_flags));
+  if (c->buildmode == BUILDMODE_OPT) {
+    strlist_add_array(&build.as, common_flags_opt, countof(common_flags_opt));
+    strlist_add_array(&build.cc, common_flags_opt, countof(common_flags_opt));
+    strlist_add_array(&build.cxx, common_flags_opt, countof(common_flags_opt));
+  } else {
+    strlist_add_array(&build.as, common_flags_debug, countof(common_flags_debug));
+    strlist_add_array(&build.cc, common_flags_debug, countof(common_flags_debug));
+    strlist_add_array(&build.cxx, common_flags_debug, countof(common_flags_debug));
+  }
+
+  strlist_add(&build.cc,
+    "-std=c11"
+  );
+  strlist_add(&build.cxx,
+    "-std=c++20",
+    "-nostdinc++"
+  );
+
+  if (c->target.sys == SYS_wasi)
+    strlist_add(&build.cxx, "-fno-exceptions");
+
+  strlist_addf(&build.cxx, "-I%s/libcxxabi/include", coroot);
+  strlist_addf(&build.cxx, "-I%s/libcxx/include", coroot);
+  strlist_addf(&build.cxx, "-I%s/libcxx/src", coroot);// XXX
+
+  strlist_add_array(&build.cc, c->cflags_sysinc.strings, c->cflags_sysinc.len);
+  strlist_add_array(&build.cxx, c->cflags_sysinc.strings, c->cflags_sysinc.len);
+
+  // temporary memory for storing source filenames
+  mem_t tmpbuf = mem_alloc(c->ma, countof(libcxxabi_sources) * (PATH_MAX+1));
+  safechecknotnull(tmpbuf.p);
+  memalloc_t ma = memalloc_bump(tmpbuf.p, tmpbuf.size, /*flags*/0);
+  for (u32 i = 0; i < countof(libcxxabi_sources); i++) {
+    if (c->target.sys == SYS_wasi &&
+        ( streq(libcxxabi_sources[i], "cxa_exception.cpp") ||
+          streq(libcxxabi_sources[i], "cxa_personality.cpp") ||
+          streq(libcxxabi_sources[i], "cxa_thread_atexit.cpp") ))
+    {
+      // WASM/WASI doesn't support exceptions and is single-threaded.
+      // TODO: also exclude "cxa_exception_storage.cpp"?
+      continue;
+    }
+    char* srcfile = safechecknotnull(path_join_m(ma, "src", libcxxabi_sources[i]));
+    cbuild_add_source(&build, srcfile);
+  }
+
+  // build
+  char path[PATH_MAX];
+  syslib_path(c, path, SYSLIB_CXXABI);
+  err_t err = cbuild_build(&build, path);
+
+  mem_free(c->ma, &tmpbuf);
+  cbuild_dispose(&build);
+  return err;
+}
+
+
+static err_t build_libunwind(compiler_t* c) {
+  cbuild_t build;
+  cbuild_init(&build, c, "libunwind");
+  build.srcdir = path_join_alloca(coroot, "libunwind");
+
+  const char* common_flags[] = {
+    "-fPIC",
+    "-Wa,--noexecstack",
+    "-fvisibility=hidden",
+    "-fvisibility-inlines-hidden",
+    "-funwind-tables",
+    "-fstrict-aliasing",
+    strcat_alloca("-I", build.srcdir, "/include"),
+    "-D_LIBUNWIND_IS_NATIVE_ONLY", // only build for current --target
+    c->target.sys == SYS_wasi ? "-D_LIBUNWIND_HAS_NO_THREADS" : "",
+    // TODO: if c->target.arch == ARCH_arm && c->target.float_abi == FPABI_HARD
+    //         "-DCOMPILER_RT_ARMHF_TARGET"
+  };
+  const char* common_flags_opt[] = {
+    "-Os",
+    "-flto=thin",
+    "-DNDEBUG",
+  };
+  const char* common_flags_debug[] = {
+    "-g",
+    "-O1",
+    "-D_DEBUG",
+  };
+
+  strlist_add_array(&build.as, common_flags, countof(common_flags));
+  strlist_add_array(&build.cc, common_flags, countof(common_flags));
+  strlist_add_array(&build.cxx, common_flags, countof(common_flags));
+  if (c->buildmode == BUILDMODE_OPT) {
+    strlist_add_array(&build.as, common_flags_opt, countof(common_flags_opt));
+    strlist_add_array(&build.cc, common_flags_opt, countof(common_flags_opt));
+    strlist_add_array(&build.cxx, common_flags_opt, countof(common_flags_opt));
+  } else {
+    strlist_add_array(&build.as, common_flags_debug, countof(common_flags_debug));
+    strlist_add_array(&build.cc, common_flags_debug, countof(common_flags_debug));
+    strlist_add_array(&build.cxx, common_flags_debug, countof(common_flags_debug));
+  }
+
+  strlist_add(&build.cc,
+    "-std=c11"
+  );
+  strlist_add(&build.cxx,
+    "-std=c++20",
+    "-fno-exceptions",
+    "-fno-rtti",
+    "-nostdlib++",
+    "-nostdinc++"
+  );
+  strlist_addf(&build.cxx, "-I%s/lib/libcxx/include", coroot);
+
+  strlist_add_array(&build.cc, c->cflags_sysinc.strings, c->cflags_sysinc.len);
+  strlist_add_array(&build.cxx, c->cflags_sysinc.strings, c->cflags_sysinc.len);
+
+  // temporary memory for storing source filenames
+  mem_t tmpbuf = mem_alloc(c->ma, countof(libunwind_sources) * (PATH_MAX+1));
+  safechecknotnull(tmpbuf.p);
+  memalloc_t ma = memalloc_bump(tmpbuf.p, tmpbuf.size, /*flags*/0);
+  for (u32 i = 0; i < countof(libunwind_sources); i++) {
+    char* srcfile = safechecknotnull(path_join_m(ma, "src", libunwind_sources[i]));
+    cbuild_add_source(&build, srcfile);
+  }
+
+  // build
+  char path[PATH_MAX];
+  syslib_path(c, path, SYSLIB_UNWIND);
+  err_t err = cbuild_build(&build, path);
+
+  mem_free(c->ma, &tmpbuf);
   cbuild_dispose(&build);
   return err;
 }
@@ -461,28 +743,54 @@ static err_t create_ld_symlinks(compiler_t* c) {
 }
 
 
-err_t build_syslibs_if_needed(compiler_t* c) {
+static err_t build_syslibs(compiler_t* c, int flags) {
   err_t err = 0;
+  lockfile_t lockfile;
+  char* lockfile_path = path_join_alloca(c->sysroot, "syslibs-build.lock");
+  long lockee_pid;
 
-  if (must_build_libc(c) || must_build_librt(c)) {
-    lockfile_t lockfile;
-    char* lockfile_path = path_join_alloca(c->sysroot, "syslibs-build.lock");
-    long lockee_pid;
-    if (( err = lockfile_trylock(&lockfile, lockfile_path, &lockee_pid) )) {
-      if (err != ErrExists)
-        return err;
-      log("waiting for compis (pid %ld) to finish...", lockee_pid);
-      if (( err = lockfile_lock(&lockfile, lockfile_path) ))
-        return err;
-    }
-    // note: must check again in case another process won and build the libs
-    if (!err && must_build_libc(c)) err = build_libc(c);
-    if (!err && must_build_librt(c)) err = build_librt(c);
-    lockfile_unlock(&lockfile);
+  if (( err = lockfile_trylock(&lockfile, lockfile_path, &lockee_pid) )) {
+    if (err != ErrExists)
+      return err;
+    log("waiting for compis (pid %ld) to finish...", lockee_pid);
+    if (( err = lockfile_lock(&lockfile, lockfile_path) ))
+      return err;
   }
 
+  // note: must check again in case another process won and built the libs
+
+  if (!err && must_build_libc(c))
+    err = build_libc(c);
+  if (!err && is_libfile_missing(c, SYSLIB_RT))
+    err = build_librt(c);
+
+  if ((flags & SYSLIB_BUILD_LIBCXX) && !c->opt_nostdlib) {
+    if (!err && is_libfile_missing(c, SYSLIB_CXX))
+      err = build_libcxx(c);
+    if (!err && is_libfile_missing(c, SYSLIB_CXXABI))
+      err = build_libcxxabi(c);
+    if (!err && is_libfile_missing(c, SYSLIB_UNWIND))
+      err = build_libunwind(c);
+  }
+
+  lockfile_unlock(&lockfile);
+
+  return err;
+}
+
+
+err_t build_syslibs_if_needed(compiler_t* c, int flags) {
+  if (must_build_libc(c)) goto build;
+  if (is_libfile_missing(c, SYSLIB_RT)) goto build;
+  if ((flags & SYSLIB_BUILD_LIBCXX) && !c->opt_nostdlib) {
+    if (is_libfile_missing(c, SYSLIB_CXX)) goto build;
+    if (is_libfile_missing(c, SYSLIB_CXXABI)) goto build;
+    if (is_libfile_missing(c, SYSLIB_UNWIND)) goto build;
+  }
+  return 0;
+build:
+  err_t err = build_syslibs(c, flags);
   if (!err)
     err = create_ld_symlinks(c);
-
   return err;
 }

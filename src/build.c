@@ -246,7 +246,8 @@ static err_t build_exe(char*const* srcfilev, usize filecount) {
   }
 
   // build system libraries, if needed
-  if (!opt_nolink && (err = build_syslibs_if_needed(&c)))
+  int build_syslibs_flags = 0;
+  if (!opt_nolink && (err = build_syslibs_if_needed(&c, build_syslibs_flags)))
     return err;
 
   // create output dir

@@ -567,6 +567,7 @@ typedef struct compiler {
   bool opt_verbose;
   bool opt_nostdlib;
   bool opt_nolibc;
+  bool opt_nolibcxx;
 
   // data created during parsing & analysis
   map_t           typeidmap;
@@ -580,6 +581,10 @@ extern node_t* last_resort_node;
 // name prefix reserved for implementation
 // note: if you change this, also update coprelude.h
 #define CO_INTERNAL_PREFIX "__co_"
+
+// c++ ABI version
+// TODO: condsider making this configurable in compiler_t
+#define CO_LIBCXX_ABI_VERSION 1
 
 // universe constants (universe.c)
 extern type_t* type_void;
@@ -829,7 +834,17 @@ void tmpbuf_init(memalloc_t);
 buf_t* tmpbuf_get(u32 bufindex /* [0-2) */);
 
 // syslibs
-err_t build_syslibs_if_needed(compiler_t* c);
+#define SYSLIB_BUILD_LIBCXX (1<<0) // build libc++, libc++abi and libunwind
+err_t build_syslibs_if_needed(compiler_t* c, int flags);
+typedef enum {
+  SYSLIB_RT,     // librt
+  SYSLIB_C,      // libc
+  SYSLIB_CXX,    // libc++
+  SYSLIB_CXXABI, // libc++abi
+  SYSLIB_UNWIND, // libunwind
+} syslib_t;
+const char* syslib_filename(const target_t* target, syslib_t lib);
+void syslib_path(compiler_t* c, char buf[PATH_MAX], syslib_t); // safecheck'd
 
 // pos
 static void locmap_dispose(locmap_t* lm, memalloc_t ma);

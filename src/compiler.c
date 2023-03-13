@@ -257,12 +257,15 @@ static err_t configure_cflags(compiler_t* c) {
   // system-header dirs
   if (!c->opt_nostdlib) {
     target_visit_dirs(&c->target, "sysinc", add_target_sysdir_if_exists, c);
-    if (c->target.sys == SYS_linux) {
-      strlist_addf(&c->cflags, "-isystem%s/musl/include/%s", coroot, arch_name(c->target.arch));
-      strlist_addf(&c->cflags, "-isystem%s/musl/include", coroot);
-    }
-    if (c->target.sys == SYS_macos) {
-      strlist_add(&c->cflags, "-include", "TargetConditionals.h");
+    switch (c->target.sys) {
+      case SYS_linux:
+        strlist_addf(&c->cflags, "-isystem%s/musl/include/%s",
+          coroot, arch_name(c->target.arch));
+        strlist_addf(&c->cflags, "-isystem%s/musl/include", coroot);
+        break;
+      case SYS_macos:
+        strlist_add(&c->cflags, "-include", "TargetConditionals.h");
+        break;
     }
   }
   u32 cflags_sysinc_end = c->cflags.len;
@@ -373,10 +376,19 @@ err_t spawn_tool(
   subproc_t* p, char*const* restrict argv, const char* nullable cwd, int flags)
 {
   assert(argv[0] != NULL);
+
+  #if DEBUG
+  dlog("spawn_tool:");
+  printf(" ");
+  for (char*const* p = argv; *p; p++) printf(" '%s'", *p);
+  printf("\n");
+  #endif
+
   if (SPAWN_TOOL_USE_FORK && (flags & SPAWN_TOOL_NOFORK) == 0) {
     const char* cmd = argv[0];
     if (strcmp(cmd, "cc") == 0 || strcmp(cmd, "c++") == 0 ||
-        strcmp(cmd, "clang") == 0 || strcmp(cmd, "as") == 0)
+        strcmp(cmd, "clang") == 0 || strcmp(cmd, "clang++") == 0 ||
+        strcmp(cmd, "as") == 0)
     {
       return subproc_fork(p, clang_fork, cwd, argv);
     }

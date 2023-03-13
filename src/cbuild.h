@@ -7,8 +7,9 @@ ASSUME_NONNULL_BEGIN
 
 typedef u8 cobj_srctype_t;
 enum cobj_srctype {
-  COBJ_TYPE_C,        // .c, .C
-  COBJ_TYPE_ASSEMBLY, // .s, .S
+  COBJ_TYPE_C,        // .c .C
+  COBJ_TYPE_CXX,      // .cc .cpp
+  COBJ_TYPE_ASSEMBLY, // .s .S
 };
 
 typedef u8 cobj_flags_t;
@@ -34,6 +35,8 @@ typedef struct {
   compiler_t*    c;
   strlist_t      cc;
   strlist_t      cc_snapshot;
+  strlist_t      cxx;
+  strlist_t      cxx_snapshot;
   strlist_t      as;
   strlist_t      as_snapshot;
   cbuild_kind_t  kind;
@@ -57,6 +60,6 @@ inline static bool cbuild_config_ended(cbuild_t* b) { return b->cc_snapshot.len 
 
 err_t cbuild_build(cbuild_t* b, const char* outfile);
 
-inline static bool cbuild_ok(cbuild_t* b) { return b->cc.ok & b->as.ok; }
+inline static bool cbuild_ok(cbuild_t* b) {return b->cc.ok & b->cxx.ok & b->as.ok; }
 
 ASSUME_NONNULL_END

@@ -10,46 +10,6 @@ SCRIPTNAME=${SCRIPTNAME:$#PROJECT}
 DESTDIR="$PROJECT/lib/librt"
 HEADER_FILE="$PROJECT/src/librt_info.h"
 
-_err() { echo "$0:" "$@" >&2; exit 1; }
-
-_relpath() { # <path>
-  case "$1" in
-    "$PWD0/"*) echo "${1##$PWD0/}" ;;
-    "$PWD0")   echo "." ;;
-    "$HOME/"*) echo "~${1:${#HOME}}" ;;
-    *)         echo "$1" ;;
-  esac
-}
-
-_pushd() {
-  pushd "$1" >/dev/null
-  [ "$PWD" = "$PWD0" ] || echo "cd $(_relpath "$PWD")"
-}
-
-_popd() {
-  popd >/dev/null
-  [ "$PWD" = "$PWD0" ] || echo "cd $(_relpath "$PWD")"
-}
-
-_copy() {
-  printf "copy"
-  local past=
-  for arg in "$@"; do case "$arg" in
-    -*) [ -z "$past" ] || printf " %s" "$(_relpath "$arg")";;
-    --) past=1 ;;
-    *)  printf " %s" "$(_relpath "$arg")" ;;
-  esac; done
-  printf "\n"
-  cp -R "$@"
-}
-
-_cpd() {
-  echo "copy $(($#-1)) files to $(_relpath "${@: -1}")/"
-  mkdir -p "${@: -1}"
-  cp -r "$@"
-}
-
-
 # ————————————————————————————————————————————————————————————————————————————————————
 # get source
 

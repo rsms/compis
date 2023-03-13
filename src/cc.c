@@ -18,6 +18,7 @@ int cc_main(int user_argc, char* user_argv[]) {
   compiler_init(&c, memalloc_default(), &diaghandler, "main"); // FIXME pkgname
 
   const target_t* target = NULL;
+  bool iscxx = streq(user_argv[0], "c++");
   bool nostdlib = false;
   bool nostdinc = false;
   bool freestanding = false;
@@ -89,13 +90,16 @@ int cc_main(int user_argc, char* user_argv[]) {
     return 1;
   }
 
-  if (( err = build_syslibs_if_needed(&c) )) {
+  // build system libraries, if needed
+  int syslib_build_flags = 0;
+  if (iscxx) syslib_build_flags |= SYSLIB_BUILD_LIBCXX;
+  if (( err = build_syslibs_if_needed(&c, syslib_build_flags) )) {
     dlog("build_syslibs_if_needed: %s", err_str(err));
     return 1;
   }
 
   // build actual args passed to clang
-  strlist_t args = strlist_make(c.ma, "clang");
+  strlist_t args = strlist_make(c.ma, iscxx ? "clang++" : "clang");
 
   if (freestanding) {
     // no builtins, no libc, no librt
@@ -113,15 +117,23 @@ int cc_main(int user_argc, char* user_argv[]) {
     }
 
     // add include flags for system headers and libc
-    if (!nostdinc && !freestanding && !custom_sysroot)
+    if (!nostdinc && !freestanding && !custom_sysroot) {
+      if (iscxx && !c.opt_nolibcxx) {
+        strlist_addf(&args, "-isystem%s/libcxx/include", coroot);
+        strlist_addf(&args, "-isystem%s/libcxxabi/include", coroot);
+        // strlist_addf(&args, "-isystem%s/libunwind/include", coroot);
+        strlist_add(&args,
+          "-D_LIBCPP_ABI_VERSION=" CO_STRX(CO_LIBCXX_ABI_VERSION),
+          "-D_LIBCPP_ABI_NAMESPACE=__" CO_STRX(CO_LIBCXX_ABI_VERSION),
+          "-D_LIBCPP_DISABLE_VISIBILITY_ANNOTATIONS",
+          "-D_LIBCXXABI_DISABLE_VISIBILITY_ANNOTATIONS",
+          "-D_LIBCPP_HAS_NO_VENDOR_AVAILABILITY_ANNOTATIONS",
+          target->sys == SYS_wasi ? "-D_LIBCPP_HAS_NO_THREADS" : "",
+          ( target->sys == SYS_linux || target->sys == SYS_wasi ?
+            "-D_LIBCPP_HAS_MUSL_LIBC" : "")
+        );
+      }
       strlist_add_array(&args, c.cflags_sysinc.strings, c.cflags_sysinc.len);
-
-    // add linker flags
-    if (!nolink && !nostdlib && !freestanding && !custom_sysroot) {
-      strlist_addf(&args, "-L%s/lib", c.sysroot);
-      strlist_add(&args, "-lrt");
-      if (c.target.sys != SYS_none && !c.opt_nolibc)
-        strlist_add(&args, "-lc");
     }
   }
 
@@ -129,6 +141,15 @@ int cc_main(int user_argc, char* user_argv[]) {
   if (!nolink) {
     char* bindir = path_dir_alloca(coexefile);
     strlist_addf(&args, "-fuse-ld=%s/%s", bindir, c.ldname);
+
+    if (!nostdlib && !freestanding && !custom_sysroot) {
+      strlist_addf(&args, "-L%s/lib", c.sysroot);
+      strlist_add(&args, "-lrt");
+      if (c.target.sys != SYS_none && !c.opt_nolibc)
+        strlist_add(&args, "-lc");
+      if (iscxx && c.target.sys != SYS_none && !c.opt_nolibcxx)
+        strlist_add(&args, "-lc++", "-lc++abi", "-lunwind");
+    }
 
     switch ((enum target_sys)target->sys) {
       case SYS_macos: {

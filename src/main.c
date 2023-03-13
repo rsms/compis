@@ -54,6 +54,7 @@ static int usage(FILE* f) {
     "\n"
     "  ar        Archiver\n"
     "  cc        C compiler (clang)\n"
+    "  c++       C++ compiler (clang++)\n"
     "  ranlib    Archive index generator\n"
     "  nm        Symbol table dumper\n"
     "\n"
@@ -231,7 +232,7 @@ int main(int argc, char* argv[]) {
 
   // command dispatch
   if IS("build")                return main_build(argc, argv);
-  if IS("cc")                   return cc_main(argc, argv);
+  if IS("cc", "c++")            return cc_main(argc, argv);
   if IS("ld")                   return ld_main(argc, argv);
   if IS("targets")              return print_supported_targets(), 0;
   if IS("version", "--version") return print_co_version(), 0;

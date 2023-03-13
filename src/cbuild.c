@@ -18,8 +18,10 @@
 void cbuild_init(cbuild_t* b, compiler_t* c, const char* name) {
   b->c = c;
   b->cc = strlist_make(c->ma, "cc");
+  b->cxx = strlist_make(c->ma, "c++");
   b->as = strlist_make(c->ma, "cc");
   strlist_add_array(&b->cc, c->cflags_common.strings, c->cflags_common.len);
+  strlist_add_array(&b->cxx, c->cflags_common.strings, c->cflags_common.len);
   strlist_add_array(&b->as, c->sflags_common.strings, c->sflags_common.len);
 
   usize namelen = strlen(name);
@@ -35,7 +37,8 @@ void cbuild_init(cbuild_t* b, compiler_t* c, const char* name) {
 
   b->srcdir = ".";
   memset(&b->cc_snapshot, 0, sizeof(b->cc_snapshot));
-  memset(&b->as_snapshot, 0, sizeof(b->cc_snapshot));
+  memset(&b->cxx_snapshot, 0, sizeof(b->cxx_snapshot));
+  memset(&b->as_snapshot, 0, sizeof(b->as_snapshot));
   memset(&b->objs, 0, sizeof(b->objs));
 }
 
@@ -51,7 +54,18 @@ void cbuild_dispose(cbuild_t* b) {
   cobjarray_dispose(&b->objs, ma);
   mem_freecstr(ma, b->objdir);
   strlist_dispose(&b->cc);
+  strlist_dispose(&b->cxx);
   strlist_dispose(&b->as);
+}
+
+
+static cobj_srctype_t detect_srctype(const char* filename) {
+  const char* ext = path_ext(filename);
+  if (strieq(ext, ".c"))                         return COBJ_TYPE_C;
+  if (strieq(ext, ".cc") || strieq(ext, ".cpp")) return COBJ_TYPE_CXX;
+  if (strieq(ext, ".s"))                         return COBJ_TYPE_ASSEMBLY;
+  panic("unknown file extension: \"%s\" (%s)", ext, filename);
+  return 0;
 }
 
 
@@ -64,8 +78,7 @@ cobj_t* nullable cbuild_add_source(cbuild_t* b, const char* srcfile) {
   cobj_t* obj = &b->objs.v[b->objs.len++];
   memset(obj, 0, sizeof(*obj));
   obj->srcfile = srcfile;
-  if (strcasecmp(path_ext(srcfile), ".s") == 0)
-    obj->srctype = COBJ_TYPE_ASSEMBLY;
+  obj->srctype = detect_srctype(srcfile);
   return obj;
 }
 
@@ -124,8 +137,10 @@ void cobj_setobjfilef(cbuild_t* b, cobj_t* obj, const char* fmt, ...) {
 void cbuild_end_config(cbuild_t* b) {
   assertf(!cbuild_config_ended(b), "%s called twice", __FUNCTION__);
   strlist_add(&b->cc, "-c", "-o");
+  strlist_add(&b->cxx, "-c", "-o");
   strlist_add(&b->as, "-c", "-o");
   b->cc_snapshot = strlist_save(&b->cc);
+  b->cxx_snapshot = strlist_save(&b->cxx);
   b->as_snapshot = strlist_save(&b->as);
 }
 
@@ -214,7 +229,13 @@ static err_t cbuild_build_compile(cbuild_t* b, bgtask_t* task, strlist_t* objfil
   for (u32 i = 0; i < b->objs.len; i++) {
     cobj_t* obj = &b->objs.v[i];
     const char* objfile = cbuild_objfile(b, obj);
-    strlist_t* args = obj->srctype == COBJ_TYPE_C ? &b->cc : &b->as;
+    strlist_t* args = NULL;
+    strlist_t snapshot = {0};
+    switch ((enum cobj_srctype)obj->srctype) {
+      case COBJ_TYPE_C:        snapshot = b->cc_snapshot;  args = &b->cc; break;
+      case COBJ_TYPE_CXX:      snapshot = b->cxx_snapshot; args = &b->cxx; break;
+      case COBJ_TYPE_ASSEMBLY: snapshot = b->as_snapshot;  args = &b->as; break;
+    }
 
     strlist_add(args, objfile, obj->srcfile);
     if (obj->cflags)
@@ -230,7 +251,7 @@ static err_t cbuild_build_compile(cbuild_t* b, bgtask_t* task, strlist_t* objfil
     }
 
     err = compiler_spawn_tool(b->c, subprocs, args, b->srcdir);
-    strlist_restore(args, obj->srctype == COBJ_TYPE_C ? b->cc_snapshot : b->as_snapshot);
+    strlist_restore(args, snapshot);
     if (err)
       break;
 
