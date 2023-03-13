@@ -421,7 +421,7 @@ for f in \
 done
 
 # remove any .DS_Store files (and other hidden files)
-find "$SOURCE_DESTDIR" -name '.*'
+find "$SOURCE_DESTDIR" -name '.*' -delete
 
 # delete any remaining empty directories
 find "$SOURCE_DESTDIR" -empty -type d -delete
