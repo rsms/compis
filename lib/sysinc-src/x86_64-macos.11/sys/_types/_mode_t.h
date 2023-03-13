@@ -1,29 +1,32 @@
-/*===---- stdnoreturn.h - Standard header for noreturn macro ---------------===
+/*
+ * Copyright (c) 2003-2012 Apple Inc. All rights reserved.
  *
- * Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
- * See https://llvm.org/LICENSE.txt for license information.
- * SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+ * @APPLE_OSREFERENCE_LICENSE_HEADER_START@
  *
- *===-----------------------------------------------------------------------===
+ * This file contains Original Code and/or Modifications of Original Code
+ * as defined in and that are subject to the Apple Public Source License
+ * Version 2.0 (the 'License'). You may not use this file except in
+ * compliance with the License. The rights granted to you under the License
+ * may not be used to create, or enable the creation or redistribution of,
+ * unlawful or unlicensed copies of an Apple operating system, or to
+ * circumvent, violate, or enable the circumvention or violation of, any
+ * terms of an Apple operating system software license agreement.
+ *
+ * Please obtain a copy of the License at
+ * http://www.opensource.apple.com/apsl/ and read it before using this file.
+ *
+ * The Original Code and all software distributed under the License are
+ * distributed on an 'AS IS' basis, WITHOUT WARRANTY OF ANY KIND, EITHER
+ * EXPRESS OR IMPLIED, AND APPLE HEREBY DISCLAIMS ALL SUCH WARRANTIES,
+ * INCLUDING WITHOUT LIMITATION, ANY WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE, QUIET ENJOYMENT OR NON-INFRINGEMENT.
+ * Please see the License for the specific language governing rights and
+ * limitations under the License.
+ *
+ * @APPLE_OSREFERENCE_LICENSE_HEADER_END@
  */
-
-#ifndef __STDNORETURN_H
-#define __STDNORETURN_H
-
-#define noreturn _Noreturn
-#define __noreturn_is_defined 1
-
-#if __STDC_VERSION__ > 201710L &&                                              \
-    !defined(_CLANG_DISABLE_CRT_DEPRECATION_WARNINGS)
-/* The noreturn macro is deprecated in C2x. We do not mark it as such because
-   including the header file in C2x is also deprecated and we do not want to
-   issue a confusing diagnostic for code which includes <stdnoreturn.h>
-   followed by code that writes [[noreturn]]. The issue with such code is not
-   with the attribute, or the use of 'noreturn', but the inclusion of the
-   header. */
-/* FIXME: We should be issuing a deprecation warning here, but cannot yet due
- * to system headers which include this header file unconditionally.
- */
-#endif
-
-#endif /* __STDNORETURN_H */
+#ifndef _MODE_T
+#define _MODE_T
+#include <sys/_types.h> /* __darwin_mode_t */
+typedef __darwin_mode_t         mode_t;
+#endif  /* _MODE_T */

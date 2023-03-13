@@ -121,7 +121,7 @@ _import_headers() { # <sdk-dir> <sysversion>
   local sysver=$2
   local sysroot_name="$HOST_ARCH-macos.$sysver"
   local dst_incdir="$PROJECT/lib/sysinc-src/$sysroot_name"
-  local name framework
+  local name framework dstpath
   rm -rf "$dst_incdir"
   mkdir -p "$dst_incdir"
 
@@ -138,8 +138,9 @@ _import_headers() { # <sdk-dir> <sysversion>
   while read -r line; do
     [[ "$line" != *":"* ]] || continue # ignore first line
     [[ "$line" != *"/etc/macos-headers.c"* ]] || continue
-    [[ "$line" != *"/clang/"* ]] || continue # ignore clang builtins like immintrin.h
-    path=${line/ \\/}                        # "foo \" => "foo"
+    [[ "$line" != *"/clang/"* ]] || continue
+    [[ "$line" != *"/clangres/"* ]] || continue
+    path=${line/ \\/} # "foo \" => "foo"
 
     if [[ "$path" == *"/usr/include/"* ]]; then
       name="${path/*\/usr\/include\//}" # /a/b/usr/include/foo/bar.h => foo/bar.h
@@ -147,10 +148,15 @@ _import_headers() { # <sdk-dir> <sysversion>
       name="${path/*.framework\/Headers\//}"
       framework=$(echo "$path" | sed -E 's/\/.+\/([^\/]+)\.framework\/Headers.+$/\1/')
       name="$framework/$name" # e.g. CoreFoundation/CFBase.h
+    else
+      _err "unexpected path: $path"
     fi
     [[ "$name" != "/"* ]] || _err "unexpected path: $line"
-    ( mkdir -p "$(dirname "$dst_incdir/$name")" &&
-      install -m 0644 "$path" "$dst_incdir/$name" ) &
+
+    dstpath="$dst_incdir/$name"
+    [ ! -f "$dstpath" ] || _err "duplicate file: $dstpath (2nd src: $path)"
+    $BASH -c "mkdir -p '$(dirname "$dstpath")' &&
+      install -m 0644 '$path' '$dstpath'" &
   done < "$HEADERS_OUTFILE.d"
   wait
 }

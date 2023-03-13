@@ -1,34 +1,32 @@
-/*===---- stdbool.h - Standard header for booleans -------------------------===
+/*
+ * Copyright (c) 2003-2012 Apple Inc. All rights reserved.
  *
- * Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
- * See https://llvm.org/LICENSE.txt for license information.
- * SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+ * @APPLE_OSREFERENCE_LICENSE_HEADER_START@
  *
- *===-----------------------------------------------------------------------===
+ * This file contains Original Code and/or Modifications of Original Code
+ * as defined in and that are subject to the Apple Public Source License
+ * Version 2.0 (the 'License'). You may not use this file except in
+ * compliance with the License. The rights granted to you under the License
+ * may not be used to create, or enable the creation or redistribution of,
+ * unlawful or unlicensed copies of an Apple operating system, or to
+ * circumvent, violate, or enable the circumvention or violation of, any
+ * terms of an Apple operating system software license agreement.
+ *
+ * Please obtain a copy of the License at
+ * http://www.opensource.apple.com/apsl/ and read it before using this file.
+ *
+ * The Original Code and all software distributed under the License are
+ * distributed on an 'AS IS' basis, WITHOUT WARRANTY OF ANY KIND, EITHER
+ * EXPRESS OR IMPLIED, AND APPLE HEREBY DISCLAIMS ALL SUCH WARRANTIES,
+ * INCLUDING WITHOUT LIMITATION, ANY WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE, QUIET ENJOYMENT OR NON-INFRINGEMENT.
+ * Please see the License for the specific language governing rights and
+ * limitations under the License.
+ *
+ * @APPLE_OSREFERENCE_LICENSE_HEADER_END@
  */
-
-#ifndef __STDBOOL_H
-#define __STDBOOL_H
-
-#define __bool_true_false_are_defined 1
-
-#if __STDC_VERSION__ > 201710L
-/* FIXME: We should be issuing a deprecation warning here, but cannot yet due
- * to system headers which include this header file unconditionally.
- */
-#elif !defined(__cplusplus)
-#define bool _Bool
-#define true 1
-#define false 0
-#elif defined(__GNUC__) && !defined(__STRICT_ANSI__)
-/* Define _Bool as a GNU extension. */
-#define _Bool bool
-#if __cplusplus < 201103L
-/* For C++98, define bool, false, true as a GNU extension. */
-#define bool bool
-#define false false
-#define true true
-#endif
-#endif
-
-#endif /* __STDBOOL_H */
+#ifndef _RSIZE_T
+#define _RSIZE_T
+#include <machine/types.h> /* __darwin_size_t */
+typedef __darwin_size_t        rsize_t;
+#endif  /* _RSIZE_T */
