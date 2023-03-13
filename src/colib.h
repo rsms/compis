@@ -802,7 +802,7 @@ char* nullable mem_strdup(memalloc_t, slice_t src, usize extracap);
 char* nullable mem_strcat(memalloc_t, slice_t src1, slice_t src2);
 
 // allocators
-#define MEMALLOC_STORAGE_ZEROED 1 // flag to memalloc_bump: storage is zeroed
+#define MEMALLOC_STORAGE_ZEROED (1<<0) // flag to memalloc_bump: storage is zeroed
 static memalloc_t memalloc_ctx(); // current contextual allocator
 static memalloc_t memalloc_ctx_set(memalloc_t); // returns previous allocator
 static memalloc_t memalloc_default(); // the default allocator
