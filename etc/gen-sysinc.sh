@@ -14,3 +14,7 @@ _copy lib/sysinc-src lib/sysinc
 
 echo "Removing any dotfiles and empty directories"
 find lib/sysinc \( -type f -name '.*' -o -type d -empty \) -delete -print
+
+# note: if the filename changes, also update _need_regenerate_sysinc_dir in lib.sh.
+# note: dist.sh excludes ".*" files from the package, which we rely on here.
+_sysinc_src_githash > lib/sysinc/.srcver

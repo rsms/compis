@@ -174,6 +174,23 @@ _version_gte() { # <v> <minv>
   if [ "$v3" -gt "$min_v3" ]; then return 0; fi
 }
 
+_sysinc_src_githash() {
+  if [ -d "$PROJECT/.git" ]; then
+    git log -n1 --format=%H -- "$PROJECT/lib/sysinc-src"
+  fi
+}
+
+_need_regenerate_sysinc_dir() {
+  if [ ! -d "$PROJECT/lib/sysinc" ]; then
+    return 0
+  fi
+  # note: if the filename changes, also update gen-sysinc.sh
+  if [ "$(cat "$PROJECT/lib/sysinc/.srcver")" != "$(_sysinc_src_githash)" ]; then
+    return 0
+  fi
+  return 1
+}
+
 _regenerate_sysinc_dir() {
   printf "Generating lib/sysinc from lib/sysinc-src ..."
   local LOGFILE="$OUT_DIR/gen-sysinc.log"

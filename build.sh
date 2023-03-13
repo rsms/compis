@@ -274,7 +274,9 @@ fi
 # —————————————————————————————————————————————————————————————————————————————————
 # generate lib/sysinc if missing
 
-[ -d lib/sysinc ] || _regenerate_sysinc_dir
+if _need_regenerate_sysinc_dir; then
+  _regenerate_sysinc_dir
+fi
 
 # —————————————————————————————————————————————————————————————————————————————————
 # file system watcher
