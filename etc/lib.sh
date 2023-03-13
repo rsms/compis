@@ -1,6 +1,7 @@
 PWD0=${PWD0:-$PWD}
-SCRIPT_FILE=${BASH_SOURCE[0]}
-PROJECT=$(dirname $(dirname $(realpath "$SCRIPT_FILE")))
+LIBSH_FILE=${BASH_SOURCE[0]}
+SCRIPT_FILE=${BASH_SOURCE[$(( ${#BASH_SOURCE[@]} - 1 ))]}
+PROJECT=$(dirname $(dirname $(realpath "$LIBSH_FILE")))
 DEPS_DIR="$PROJECT/deps"
 OUT_DIR="$PROJECT/out"
 DOWNLOAD_DIR="$DEPS_DIR/download"
@@ -20,13 +21,13 @@ _relpath() { # <path>
 _pushd() {
   local wd="$PWD"
   pushd "$1" >/dev/null
-  [ "$PWD" = "$wd" ] || echo "cd $(_relpath "$PWD")"
+  [ "$PWD" = "$wd" -o "$PWD" = "$PWD0" ] || echo "cd $(_relpath "$PWD")"
 }
 
 _popd() {
   local wd="$PWD"
   popd >/dev/null
-  [ "$PWD" = "$wd" ] || echo "cd $(_relpath "$PWD")"
+  [ "$PWD" = "$wd" -o "$PWD" = "$PWD0" ] || echo "cd $(_relpath "$PWD")"
 }
 
 _copy() { # <arg to cp> ...
