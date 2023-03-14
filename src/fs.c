@@ -255,7 +255,9 @@ static err_t fs_copyfile_link(const char* srcpath, const char* dstpath) {
   int nretries = 0;
 
   isize len = readlink(srcpath, target, sizeof(target));
-  if (len >= PATH_MAX)
+  if (len < 0)
+    return err_errno();
+  if (len >= (isize)sizeof(target))
     return ErrOverflow;
   target[len] = '\0';
 
