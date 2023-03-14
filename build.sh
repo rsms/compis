@@ -426,9 +426,12 @@ XFLAGS+=(
   -DCO_VERSION_STR="\\\"$CO_VERSION\\\"" \
   -DCO_VERSION="$(printf "0x%02x%02x%02x00" $CO_VER_MAJ $CO_VER_MIN $CO_VER_BUILD)" \
 )
-if [ -d "$PROJECT/.git" ]; then
-  XFLAGS+=( -DCO_VERSION_GIT_STR="\\\"$(git -C "$PROJECT" rev-parse HEAD)\\\"" )
-fi
+# note: CO_VERSION_GIT is not added to XFLAGS since it would invalidate PCHs,
+# and thus the build, whenever git commits are made.
+# Instead this is set only for src/main.c
+CO_VERSION_GIT=
+[ -d "$PROJECT/.git" ] &&
+  CO_VERSION_GIT=$(git -C "$PROJECT" rev-parse HEAD)
 
 # arch-and-system-specific flags
 case "$HOST_ARCH-$HOST_SYS" in
@@ -699,6 +702,9 @@ _gen_obj_build_rules() { # <target> <srcfile> ...
         ;;
       *.c)
         echo "build $objfile: $cc_rule $srcfile" >> $NF
+        if [ -n "${CO_VERSION_GIT:-}" ] && [ "$srcfile" = src/main.c ]; then
+          echo "  FLAGS = -DCO_VERSION_GIT=\"$CO_VERSION_GIT\"" >> $NF
+        fi
         ;;
       *.cc)
         echo "build $objfile: $cxx_rule $srcfile" >> $NF
@@ -785,20 +791,21 @@ if ! diff -q config config.tmp >/dev/null 2>&1; then
   if [ -e config ]; then
     echo "———————————————————————————————————————————————————"
     echo "build configuration changed:"
-    diff -uw config config.tmp || true
+    diff -wu -U 0 -L cached config -L current config.tmp || true
     echo "———————————————————————————————————————————————————"
   fi
   mv config.tmp config
   rm -rf "$OUT_DIR/obj" "$OUT_DIR/lto-cache"
 else
   if ! diff -q config-xflags config-xflags.tmp >/dev/null 2>&1; then
-    # [ -e config-xflags ] && echo "xflags changed; wiping PCHs"
-    if [ -e config-xflags ]; then
-      echo "———————————————————————————————————————————————————"
-      echo "xflags changed; wiping PCHs:"
-      diff -wu0 config-xflags config-xflags.tmp || true
-      echo "———————————————————————————————————————————————————"
-    fi
+    # Note: this usually happens when CO_VERSION changes
+    [ -e config-xflags ] && echo "xflags changed; wiping PCHs"
+    # if [ -e config-xflags ]; then
+    #   echo "———————————————————————————————————————————————————"
+    #   echo "xflags changed; wiping PCHs:"
+    #   diff -wu -U 0 -L cached config-xflags -L current config-xflags.tmp || true
+    #   echo "———————————————————————————————————————————————————"
+    # fi
     find "$OUT_DIR" -type f -name '*.pch' -delete
     mv config-xflags.tmp config-xflags
   fi

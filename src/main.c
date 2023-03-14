@@ -15,6 +15,8 @@
 #include "../lib/musl/src/internal/version.h"
 #define MUSL_VERSION_STR VERSION
 
+#define COCACHE_DEFAULT ".cache/compis"
+
 typedef bool(*linkerfn_t)(int argc, char*const* argv, bool can_exit_early);
 
 const char* coprogname;
@@ -70,26 +72,29 @@ static int usage(FILE* f) {
     "\n"
     "For help with a specific command:\n"
     "  %s <command> --help\n"
-    "",
+    "\n"
+    "Environment variables:\n"
+    "  COROOT    Bundled resources. Defaults to executable directory\n"
+    "  COCACHE   Build cache. Defaults to ~/" COCACHE_DEFAULT "\n"
+    "  COMAXPROC Parallelism limit. Defaults to number of CPUs (%u)\n"
+    "\n",
     coprogname,
     host_ld,
-    coprogname);
+    coprogname,
+    sys_ncpu());
   return 0;
 }
 
 
 void print_co_version() {
-  printf("compis " CO_VERSION_STR);
-  #ifdef CO_VERSION_GIT_STR
-    printf(" (" CO_VERSION_GIT_STR ")");
-  #endif
-  const target_t* host = target_default();
   printf(
-    " %s-%s"
-    ", llvm " CLANG_VERSION_STRING
-    ", musl " MUSL_VERSION_STR
-    "\n",
-    arch_name(host->arch), sys_name(host->sys));
+    "compis " CO_VERSION_STR " ("
+    #if defined(CO_VERSION_GIT) && !defined(CO_DISTRIBUTION)
+      "src=" CO_STRX(CO_VERSION_GIT) " "
+    #endif
+    "llvm=" CLANG_VERSION_STRING " "
+    "musl=" MUSL_VERSION_STR
+    ")\n");
 }
 
 
@@ -153,7 +158,7 @@ static void cocachedir_init(memalloc_t ma) {
   if (envvar && *envvar) {
     cocachedir = path_abs(ma, envvar);
   } else {
-    cocachedir = path_join_m(ma, sys_homedir(), ".cache/compis/" CO_VERSION_STR);
+    cocachedir = path_join_m(ma, sys_homedir(), COCACHE_DEFAULT "/" CO_VERSION_STR);
   }
   safecheck(cocachedir != NULL);
 }
