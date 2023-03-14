@@ -15,20 +15,23 @@ DEBUG=false
 VERBOSE=false
 PARALLELISM=
 PATTERNS=()
+COEXE=
 
 while [[ $# -gt 0 ]]; do case "$1" in
-  --debug) DEBUG=true; shift ;;
-  -j*)     PARALLELISM=${1:2}; shift ;;
-  -1)      PARALLELISM=1; shift ;;
-  -v)      VERBOSE=true; shift ;;
+  --debug)   DEBUG=true; shift ;;
+  -j*)       PARALLELISM=${1:2}; shift ;;
+  -1)        PARALLELISM=1; shift ;;
+  --coexe=*) COEXE=${1:8}; shift ;;
+  -v)        VERBOSE=true; shift ;;
   -h|-help|--help) cat << _END
 Usage: $0 [options] [--] [<testname> ...]
 Options:
-  --debug     Test with a debug build of compis instead of an opt one
-  -jN         Run at most N tests in parallel (defaults to $(nproc))
-  -1, -j1     Run one test at a time
-  -v          Verbose output (implies -j1)
-  -h, --help  Show help on stdout and exit
+  --debug         Test with a debug build of compis instead of an opt one
+  -jN             Run at most N tests in parallel (defaults to $(nproc))
+  -1, -j1         Run one test at a time
+  --coexe=<file>  Test specific, existing compis executable
+  -v              Verbose output (implies -j1)
+  -h, --help      Show help on stdout and exit
 <testname>
   Only run tests which name matches this glob-style pattern.
   "name" is the name of the test file or directory, without extesion.
@@ -45,7 +48,14 @@ $VERBOSE && PARALLELISM=1
 #———————————————————————————————————————————————————————————————————————————————————————
 # setup
 
-if $DEBUG; then
+if [ -n "$COEXE" ]; then
+  f=$COEXE
+  [[ "$COEXE" == "/"* ]] || f="$PWD0/$f"
+  [ -e "$f" ] || _err "$COEXE: not found"
+  [ -f "$f" ] || _err "$COEXE: not a file"
+  [ -x "$f" ] || _err "$COEXE: not executable"
+  COEXE="$(realpath "$f")"
+elif $DEBUG; then
   COEXE="$OUT_DIR/debug/co"
   echo  $(_relpath "$PROJECT/build.sh") -debug
   $BASH "$PROJECT/build.sh" -debug
