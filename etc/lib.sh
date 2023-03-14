@@ -49,6 +49,9 @@ _cpd() {
 }
 
 _symlink() { # <linkfile-to-create> <target>
+  if [ -L "$1" -a "$(readlink "$1")" = "$2" ]; then
+    return 0
+  fi
   echo "symlink $(_relpath "$1") -> $(_relpath "$2")"
   [ ! -e "$1" ] || [ -L "$1" ] || _err "$(_relpath "$1") exists (not a link)"
   rm -f "$1"
@@ -200,4 +203,43 @@ _regenerate_sysinc_dir() {
     exit 1
   fi
   echo
+}
+
+_abspath() { # <path>
+  local path="${1%/}" # "%/" = shave off any trailing "/"
+  case "$path" in
+    "")  echo "/" ;;
+    /*)  echo "$path" ;;
+    ./*) echo "$PWD/${path:2}" ;;
+    *)   echo "$PWD/$path" ;;
+  esac
+}
+
+_relative_path() { # <basedir> <subject>
+  local basedir="$(_abspath "$1")"
+  local subject="$(_abspath "$2")"
+  case "$subject" in
+    "$basedir")   echo "."; return 0 ;;
+    "$basedir/"*) echo "${subject:$(( ${#basedir} + 1 ))}"; return 0 ;;
+  esac
+  # TODO: calculate "../" path
+  echo "$subject"
+}
+
+_create_tool_symlinks() { # <coexe> [<dir>]
+  local coexe="$(realpath "$1")"
+  local dir="$(realpath "${2:-"$(dirname "$coexe")"}")"
+  local target="$(_relative_path "$dir" "$coexe")"
+  for name in \
+    cc \
+    ar \
+    as \
+    ranlib \
+    ld.lld \
+    ld64.lld \
+    wasm-ld \
+    lld-link \
+  ;do
+    _symlink "$dir/$name" "$target"
+  done
 }

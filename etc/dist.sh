@@ -13,14 +13,41 @@ CO_VERSION=$(cat "$PROJECT/version.txt")
 BUILDDIR=out/dist
 DESTDIR=out/dist/compis-$CO_VERSION-$ARCH-$SYS
 ARCHIVE=out/compis-$CO_VERSION-$ARCH-$SYS.tar.xz
+FORCE=false
+CODESIGN=true
+CLEAN=true
+CREATE_TAR=true
 
-if [ -d .git ] && [ -n "$(git status -s | grep -v '?')" ]; then
+while [[ $# -gt 0 ]]; do case "$1" in
+  --force)       FORCE=true; shift ;;
+  --no-codesign) CODESIGN=false; shift ;;
+  --no-clean)    CLEAN=false; shift ;;
+  --no-tar)      CREATE_TAR=false; shift ;;
+  -h|-help|--help) cat << _END
+Usage: $0 [options]
+Options:
+  --force        Create distribution even if some preconditions are not met
+  --no-codesign  Don't codesign (macos only)
+  --no-clean     Don't rebuild from scratch (only use this for debugging!)
+  --no-tar       Don't create tar archive of the result
+  -h, --help     Show help on stdout and exit
+_END
+    exit ;;
+  -*) _err "Unknown option: $1" ;;
+  *) break ;;
+esac; done
+
+if $CODESIGN && [ "$SYS" != macos ]; then
+  CODESIGN=false
+fi
+
+if ! $FORCE && [ -d .git ] && [ -n "$(git status -s | grep -v '?')" ]; then
   echo "uncommitted git changes:" >&2
   git status -s | grep -v '?' >&2
   exit 1
 fi
 
-if [ "$SYS" = macos -a -z "${CODESIGN_ID:-}" ]; then
+if $CODESIGN && [ -z "${CODESIGN_ID:-}" ]; then
   if command -v security >/dev/null; then
     echo "CODESIGN_ID: looking up with 'security find-identity -p codesigning'"
     CODESIGN_ID=$(security find-identity -p codesigning |
@@ -28,19 +55,27 @@ if [ "$SYS" = macos -a -z "${CODESIGN_ID:-}" ]; then
   fi
   if [ -z "${CODESIGN_ID:-}" ]; then
     echo "warning: macos code signing disabled (no signing identity found)" >&2
+    CODESIGN=false
   fi
 fi
 
-_regenerate_sysinc_dir
+# generate sysdir
+if $CLEAN || _need_regenerate_sysinc_dir; then
+  _regenerate_sysinc_dir
+fi
 
-echo "building from scratch in $BUILDDIR"
-rm -rf $BUILDDIR
+# build compis
+if $CLEAN; then
+  echo "building from scratch in $BUILDDIR"
+  rm -rf $BUILDDIR
+fi
 ./build.sh -DCO_DISTRIBUTION=1 -opt -out=$BUILDDIR
 
+# create & copy files to DESTDIR
 echo "creating $DESTDIR"
 rm -rf $DESTDIR
-mkdir -p $DESTDIR/lib $DESTDIR
-mv $BUILDDIR/co $DESTDIR/compis
+mkdir -vp $DESTDIR/lib $DESTDIR
+install -vm755 $BUILDDIR/co $DESTDIR/compis
 for f in lib/*; do
   case $f in
     lib/|.*|*-src|README*) continue ;;
@@ -52,25 +87,15 @@ done
 find $DESTDIR -type f -iname 'README*' -delete
 find $DESTDIR -empty -type d -delete
 
-# create symlinks
-for name in \
-  cc \
-  ar \
-  as \
-  ranlib \
-  ld.lld \
-  ld64.lld \
-  wasm-ld \
-  lld-link \
-;do
-  _symlink "$DESTDIR/$name" compis
-done
+# create tool symlinks, e.g. cc -> compis
+_create_tool_symlinks $DESTDIR/compis
 
-# codesign macos exe
-if [ "$SYS" = macos -a -n "${CODESIGN_ID:-}" ]; then
+if $CODESIGN; then
   echo "codesign using identity $CODESIGN_ID"
   codesign -s "$CODESIGN_ID" -f -i me.rsms.compis $DESTDIR/compis
 fi
 
-echo "creating $ARCHIVE"
-_create_tar_xz_from_dir $DESTDIR $ARCHIVE
+if $CREATE_TAR; then
+  echo "creating $ARCHIVE"
+  _create_tar_xz_from_dir $DESTDIR $ARCHIVE
+fi
