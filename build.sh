@@ -792,7 +792,13 @@ if ! diff -q config config.tmp >/dev/null 2>&1; then
   rm -rf "$OUT_DIR/obj" "$OUT_DIR/lto-cache"
 else
   if ! diff -q config-xflags config-xflags.tmp >/dev/null 2>&1; then
-    [ -e config-xflags ] && echo "xflags changed; wiping PCHs:"
+    # [ -e config-xflags ] && echo "xflags changed; wiping PCHs"
+    if [ -e config-xflags ]; then
+      echo "———————————————————————————————————————————————————"
+      echo "xflags changed; wiping PCHs:"
+      diff -wu0 config-xflags config-xflags.tmp || true
+      echo "———————————————————————————————————————————————————"
+    fi
     find "$OUT_DIR" -type f -name '*.pch' -delete
     mv config-xflags.tmp config-xflags
   fi
