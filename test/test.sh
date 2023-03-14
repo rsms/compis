@@ -14,6 +14,7 @@ source libtest.sh
 DEBUG=false
 VERBOSE=false
 PARALLELISM=
+PATTERNS=()
 
 while [[ $# -gt 0 ]]; do case "$1" in
   --debug) DEBUG=true; shift ;;
@@ -21,22 +22,25 @@ while [[ $# -gt 0 ]]; do case "$1" in
   -1)      PARALLELISM=1; shift ;;
   -v)      VERBOSE=true; shift ;;
   -h|-help|--help) cat << _END
-Usage: $0 [options]
+Usage: $0 [options] [--] [<testname> ...]
 Options:
   --debug     Test with a debug build of compis instead of an opt one
   -jN         Run at most N tests in parallel (defaults to $(nproc))
   -1, -j1     Run one test at a time
   -v          Verbose output (implies -j1)
   -h, --help  Show help on stdout and exit
+<testname>
+  Only run tests which name matches this glob-style pattern.
+  "name" is the name of the test file or directory, without extesion.
 _END
     exit ;;
+  --) shift; PATTERNS+=( "$@" ); break ;;
   -*) _err "Unknown option: $1" ;;
-  *)  _err "Unexpected argument: $1" ;;
+  *)  PATTERNS+=( "$1" ); shift ;;
 esac; done
 
 $VERBOSE && PARALLELISM=1
 [ -n "$PARALLELISM" -a "$PARALLELISM" != 0 ] || PARALLELISM=$(nproc)
-PARALLEL=false; [ "$PARALLELISM" = 1 ] || PARALLEL=true
 
 #———————————————————————————————————————————————————————————————————————————————————————
 # setup
@@ -95,9 +99,8 @@ source "\$PROJECT/test/libtest.sh"
 END
   cat "$script_src" >> "$script"
 
-  if $VERBOSE && ! $PARALLEL; then
-    echo "[$n/$ntotal] $name"
-    echo "cd '$(_relpath "$rundir")' && exec '$BASH' '$scriptname'"
+  if $VERBOSE && [ $PARALLELISM -eq 1 ]; then
+    echo "[$n/$ntotal] $name in $(_relpath "$rundir")/"
     if ! (cd "$rundir" && exec "$BASH" "$scriptname"); then
       echo "$name: FAILED"
       return 1
@@ -108,7 +111,7 @@ END
   local out="$rundir/stdout.log"
   local err="$rundir/stderr.log"
 
-  if $PARALLEL; then
+  if [ $PARALLELISM -gt 1 ]; then
     $VERBOSE && echo "[$n/$ntotal] $name: starting"
   else
     printf "[$n/$ntotal] $name ..."
@@ -123,7 +126,7 @@ END
     exit $status
   ); then
     status=$(cat "$rundir/exit-status")
-    if $PARALLEL; then
+    if [ $PARALLELISM -gt 1 ]; then
       echo "$name: FAILED (exit status: $status)" > "$rundir/fail.log"
       if [ -s "$out" ]; then
         echo "---------- $name stdout: ----------" >> "$rundir/fail.log"
@@ -146,23 +149,41 @@ END
     kill -2 -$$
     return 1
   fi
-  if $PARALLEL; then
+  if [ $PARALLELISM -gt 1 ]; then
     printf "." >> "$FINISHED_FILE"
     nfinished=$(stat $STAT_SIZE_ARGS "$FINISHED_FILE")
     local nrem=$(( $ntotal - $nfinished ))
     echo "[$nfinished/$ntotal] $name: ok"
+    [ -s "$err" ] && cat "$err" >&2
   else
     echo " ok"
   fi
+  return 0
 }
 
 TESTS_DIR=tests
 TEST_SCRIPTS=( $(find $TESTS_DIR -type f -name \*.sh | sort -n) )
+
+if [ ${#PATTERNS[@]} -gt 0 ]; then
+  shopt -s extglob
+  TEST_SCRIPTS2=( "${TEST_SCRIPTS[@]}" )
+  TEST_SCRIPTS=()
+  for f in "${TEST_SCRIPTS2[@]}"; do
+    name="${f:$(( ${#TESTS_DIR} + 1 ))}"
+    name="${name%.sh}"
+    for pat in "${PATTERNS[@]}"; do
+      [[ $name == @($pat) ]] && TEST_SCRIPTS+=( "$f" )
+    done
+  done
+fi
+
 ntotal=${#TEST_SCRIPTS[@]}
 nstarted=0
+[ $ntotal = 0 ] && _err "no tests matches glob pattern(s): ${PATTERNS[@]}"
+[ $ntotal = 1 ] && PARALLELISM=1
 $VERBOSE && echo "running $ntotal test(s)"
 
-if ! $PARALLEL; then
+if [ $PARALLELISM -eq 1 ]; then
   for f in "${TEST_SCRIPTS[@]}"; do
     (( nstarted = nstarted + 1 ))
     _run_test "$f" $nstarted $ntotal
