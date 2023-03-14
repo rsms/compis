@@ -641,6 +641,8 @@ static err_t build_libcxxabi(compiler_t* c) {
 
 
 static err_t build_libunwind(compiler_t* c) {
+  assertf(c->target.sys != SYS_wasi, "no wasi support (yet)");
+
   cbuild_t build;
   cbuild_init(&build, c, "libunwind");
   build.srcdir = path_join_alloca(coroot, "libunwind");
@@ -654,9 +656,10 @@ static err_t build_libunwind(compiler_t* c) {
     "-fstrict-aliasing",
     strcat_alloca("-I", build.srcdir, "/include"),
     "-D_LIBUNWIND_IS_NATIVE_ONLY", // only build for current --target
-    c->target.sys == SYS_wasi ? "-D_LIBUNWIND_HAS_NO_THREADS" : "",
+    // TODO: c->singlethreaded ? "-D_LIBUNWIND_HAS_NO_THREADS" : "",
+    // TODO: c->singlethreaded ? "-D_LIBCPP_HAS_NO_THREADS" : "",
     // TODO: if c->target.arch == ARCH_arm && c->target.float_abi == FPABI_HARD
-    //         "-DCOMPILER_RT_ARMHF_TARGET"
+    //   "-DCOMPILER_RT_ARMHF_TARGET"
   };
   const char* common_flags_opt[] = {
     "-Os",
@@ -717,6 +720,13 @@ static err_t build_libunwind(compiler_t* c) {
 }
 
 
+static bool must_build_libunwind(compiler_t* c) {
+  if (c->target.sys == SYS_wasi)
+    return false;
+  return is_libfile_missing(c, SYSLIB_UNWIND);
+}
+
+
 static err_t create_ld_symlinks(compiler_t* c) {
   usize dstpathcap = strlen(coexefile) + 16;
   char* dstpath = alloca(dstpathcap);
@@ -769,7 +779,7 @@ static err_t build_syslibs(compiler_t* c, int flags) {
       err = build_libcxx(c);
     if (!err && is_libfile_missing(c, SYSLIB_CXXABI))
       err = build_libcxxabi(c);
-    if (!err && is_libfile_missing(c, SYSLIB_UNWIND))
+    if (!err && must_build_libunwind(c))
       err = build_libunwind(c);
   }
 
@@ -785,7 +795,7 @@ err_t build_syslibs_if_needed(compiler_t* c, int flags) {
   if ((flags & SYSLIB_BUILD_LIBCXX) && !c->opt_nostdlib) {
     if (is_libfile_missing(c, SYSLIB_CXX)) goto build;
     if (is_libfile_missing(c, SYSLIB_CXXABI)) goto build;
-    if (is_libfile_missing(c, SYSLIB_UNWIND)) goto build;
+    if (must_build_libunwind(c)) goto build;
   }
   return 0;
 build:

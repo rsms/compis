@@ -147,8 +147,11 @@ int cc_main(int user_argc, char* user_argv[]) {
       strlist_add(&args, "-lrt");
       if (c.target.sys != SYS_none && !c.opt_nolibc)
         strlist_add(&args, "-lc");
-      if (iscxx && c.target.sys != SYS_none && !c.opt_nolibcxx)
-        strlist_add(&args, "-lc++", "-lc++abi", "-lunwind");
+      if (iscxx && c.target.sys != SYS_none && !c.opt_nolibcxx) {
+        strlist_add(&args, "-lc++", "-lc++abi");
+        if (c.target.sys != SYS_wasi) // no exception support on WASI
+          strlist_add(&args, "-lunwind");
+      }
     }
 
     switch ((enum target_sys)target->sys) {
@@ -206,8 +209,6 @@ int cc_main(int user_argc, char* user_argv[]) {
         streq(arg, "-nostdinc") ||
         streq(arg, "--no-standard-includes") ||
         streq(arg, "-nostdlibinc") ||
-        streq(arg, "-lc") ||
-        streq(arg, "-lrt") ||
         str_startswith(arg, "--target=") )
     {
       // skip single-arg flag
