@@ -387,6 +387,7 @@ fi
 XFLAGS+=(
   -feliminate-unused-debug-types \
   -fvisibility=hidden \
+  -fcolor-diagnostics \
   -Wall -Wextra -Wvla \
   -Wimplicit-fallthrough \
   -Wno-missing-field-initializers \
@@ -400,7 +401,6 @@ XFLAGS+=(
   -Werror=bitfield-constant-conversion \
   -Wno-pragma-once-outside-header \
 )
-[ -t 1 ] && XFLAGS+=( -fcolor-diagnostics )
 $TESTING_ENABLED && XFLAGS+=( -D${PP_PREFIX}TESTING_ENABLED )
 XFLAGS_HOST=()
 XFLAGS_WASM=( --target=wasm32 -fvisibility=hidden )
@@ -758,14 +758,13 @@ $ONLY_CONFIGURE && exit
 # —————————————————————————————————————————————————————————————————————————————————
 # wipe build cache if config or tools changed
 
-XFLAGS_CHECK=$(sed -E -e 's/-fcolor-diagnostics ?//g' <<< "${XFLAGS[@]:-}")
 cat << END > config-xflags.tmp
-XFLAGS ${XFLAGS_CHECK[@]:-}
+XFLAGS ${XFLAGS[@]:-}
 END
 cat << END > config.tmp
 TARGET $HOST_ARCH-$HOST_SYS
 LLVM $LLVMBOX_RELEASE
-XFLAGS $(sed -E -e 's/-DCO_VERSION[_A-Za-z0-9]*=[^ ]+ ?//g' <<< "${XFLAGS_CHECK[@]:-}")
+XFLAGS $(sed -E -e 's/-DCO_VERSION[_A-Za-z0-9]*=[^ ]+ ?//g' <<< "${XFLAGS[@]:-}")
 XFLAGS_HOST ${XFLAGS_HOST[@]:-}
 XFLAGS_WASM ${XFLAGS_WASM[@]:-}
 CFLAGS ${CFLAGS[@]:-}
