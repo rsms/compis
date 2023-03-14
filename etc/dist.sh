@@ -14,12 +14,14 @@ BUILDDIR=out/dist
 DESTDIR=out/dist/compis-$CO_VERSION-$ARCH-$SYS
 ARCHIVE=out/compis-$CO_VERSION-$ARCH-$SYS.tar.xz
 FORCE=false
+TEST=true
 CODESIGN=true
 CLEAN=true
 CREATE_TAR=true
 
 while [[ $# -gt 0 ]]; do case "$1" in
   --force)       FORCE=true; shift ;;
+  --no-test)     TEST=false; shift ;;
   --no-codesign) CODESIGN=false; shift ;;
   --no-clean)    CLEAN=false; shift ;;
   --no-tar)      CREATE_TAR=false; shift ;;
@@ -27,8 +29,9 @@ while [[ $# -gt 0 ]]; do case "$1" in
 Usage: $0 [options]
 Options:
   --force        Create distribution even if some preconditions are not met
+  --no-test      Skip tests
   --no-codesign  Don't codesign (macos only)
-  --no-clean     Don't rebuild from scratch (only use this for debugging!)
+  --no-clean     Don't build from scratch (only use this for debugging!)
   --no-tar       Don't create tar archive of the result
   -h, --help     Show help on stdout and exit
 _END
@@ -49,7 +52,7 @@ fi
 
 if $CODESIGN && [ -z "${CODESIGN_ID:-}" ]; then
   if command -v security >/dev/null; then
-    echo "CODESIGN_ID: looking up with 'security find-identity -p codesigning'"
+    #echo "CODESIGN_ID: looking up with 'security find-identity -p codesigning'"
     CODESIGN_ID=$(security find-identity -p codesigning |
                   grep 'Developer ID Application:' | head -n1 | awk '{print $2}')
   fi
@@ -89,6 +92,11 @@ find $DESTDIR -empty -type d -delete
 
 # create tool symlinks, e.g. cc -> compis
 _create_tool_symlinks $DESTDIR/compis
+
+if $TEST; then
+  echo "running tests"
+  ./test/test.sh --coexe=$DESTDIR/compis
+fi
 
 if $CODESIGN; then
   echo "codesign using identity $CODESIGN_ID"
