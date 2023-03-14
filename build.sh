@@ -758,13 +758,14 @@ $ONLY_CONFIGURE && exit
 # —————————————————————————————————————————————————————————————————————————————————
 # wipe build cache if config or tools changed
 
+XFLAGS_CHECK=$(sed -E -e 's/-fcolor-diagnostics ?//g' <<< "${XFLAGS[@]:-}")
 cat << END > config-xflags.tmp
-XFLAGS ${XFLAGS[@]:-}
+XFLAGS ${XFLAGS_CHECK[@]:-}
 END
 cat << END > config.tmp
 TARGET $HOST_ARCH-$HOST_SYS
 LLVM $LLVMBOX_RELEASE
-XFLAGS $(sed -E -e 's/-DCO_VERSION[_A-Za-z0-9]*=[^ ]+ ?//g' <<< "${XFLAGS[@]:-}")
+XFLAGS $(sed -E -e 's/-DCO_VERSION[_A-Za-z0-9]*=[^ ]+ ?//g' <<< "${XFLAGS_CHECK[@]:-}")
 XFLAGS_HOST ${XFLAGS_HOST[@]:-}
 XFLAGS_WASM ${XFLAGS_WASM[@]:-}
 CFLAGS ${CFLAGS[@]:-}
@@ -792,12 +793,12 @@ if ! diff -q config config.tmp >/dev/null 2>&1; then
   rm -rf "$OUT_DIR/obj" "$OUT_DIR/lto-cache"
 else
   if ! diff -q config-xflags config-xflags.tmp >/dev/null 2>&1; then
-    [ -e config ] && echo "xflags changed; wiping PCHs"
+    [ -e config-xflags ] && echo "xflags changed; wiping PCHs:"
     find "$OUT_DIR" -type f -name '*.pch' -delete
     mv config-xflags.tmp config-xflags
   fi
   if ! diff -q lconfig lconfig.tmp >/dev/null 2>&1; then
-    [ -e config ] && echo "linker configuration changed"
+    [ -e lconfig ] && echo "linker configuration changed"
     mv lconfig.tmp lconfig
     rm -f "$OUT_DIR/$MAIN_EXE"
   fi
