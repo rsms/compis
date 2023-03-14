@@ -7,7 +7,8 @@ OUT_DIR="$PROJECT/out"
 DOWNLOAD_DIR="$DEPS_DIR/download"
 LLVMBOX="$DEPS_DIR/llvmbox"
 
-_err() { echo "$0:" "$@" >&2; exit 1; }
+_err()  { echo "$0:" "$@" >&2; exit 1; }
+_warn() { echo "$0: warning:" "$@" >&2; }
 
 _relpath() { # <path>
   case "$1" in
