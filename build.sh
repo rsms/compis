@@ -51,6 +51,7 @@ while [[ $# -gt 0 ]]; do
   -target=*) TARGET=${1:8}; shift; continue ;;
   -g)        DEBUGGABLE=true; STRIP=false; shift ;;
   -v)        VERBOSE=true; NINJA_ARGS+=(-v); shift ;;
+  -n)        NINJA_ARGS+=(-n); shift ;;
   -D*)       [ ${#1} -gt 2 ] || _err "Missing NAME after -D";XFLAGS+=( "$1" );shift;;
   -h|-help|--help) cat << _END
 usage: $0 [options] [--] [<target> ...]
