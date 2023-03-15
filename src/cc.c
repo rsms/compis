@@ -7,6 +7,8 @@
 #include "llvm/llvm.h"
 #include "clang/Basic/Version.inc" // CLANG_VERSION_STRING
 
+#include <err.h>
+
 
 static void diaghandler(const diag_t* d, void* nullable userdata) {
   // unused
@@ -26,6 +28,9 @@ int cc_main(int user_argc, char* user_argv[]) {
   bool iscompiling = false;
   bool ispastflags = false;
   bool custom_sysroot = false;
+  bool no_cxx_exceptions = false;
+  bool explicit_exceptions = false;
+  bool explicit_cxx_exceptions = false;
 
   // process input command-line args
   for (int i = 1; i < user_argc; i++) {
@@ -52,6 +57,13 @@ int cc_main(int user_argc, char* user_argv[]) {
         c.buildmode = BUILDMODE_OPT;
       } else if (streq(arg, "-fsyntax-only")) {
         nolink = true;
+      } else if (streq(arg, "-fno-exceptions") || streq(arg, "-fno-cxx-exceptions")) {
+        no_cxx_exceptions = true;
+      } else if (streq(arg, "-fcxx-exceptions")) {
+        explicit_cxx_exceptions = true;
+        explicit_exceptions = true;
+      } else if (streq(arg, "-fexceptions")) {
+        explicit_exceptions = true;
       } else if (streq(arg, "-target")) {
         panic("TODO -target");
       } else if (streq(arg, "-sysroot") || str_startswith(arg, "--sysroot=")) {
@@ -101,6 +113,17 @@ int cc_main(int user_argc, char* user_argv[]) {
   // build actual args passed to clang
   strlist_t args = strlist_make(c.ma, iscxx ? "clang++" : "clang");
 
+  // no exception support for WASI
+  if (iscompiling && iscxx && c.target.sys == SYS_wasi && !no_cxx_exceptions) {
+    if (explicit_exceptions) {
+      // user explicitly requested exceptions; error
+      errx(1, "error: wasi target does not support exceptions [%s]",
+        explicit_cxx_exceptions ? "-fcxx-exceptions" : "-fexceptions");
+    }
+    no_cxx_exceptions = true;
+    strlist_add(&args, "-fno-exceptions");
+  }
+
   if (freestanding) {
     // no builtins, no libc, no librt
     strlist_add(&args, "-nostdinc", "-nostdlib");
@@ -149,7 +172,7 @@ int cc_main(int user_argc, char* user_argv[]) {
         strlist_add(&args, "-lc");
       if (iscxx && c.target.sys != SYS_none && !c.opt_nolibcxx) {
         strlist_add(&args, "-lc++", "-lc++abi");
-        if (c.target.sys != SYS_wasi) // no exception support on WASI
+        if (!no_cxx_exceptions)
           strlist_add(&args, "-lunwind");
       }
     }
