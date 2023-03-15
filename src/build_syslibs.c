@@ -8,9 +8,9 @@
 #include "lockfile.h"
 #include "llvm/llvm.h"
 
-#include "librt_info.h"
-#include "musl_info.h"
-#include "wasi_info.h"
+#include "syslib_librt.h"
+#include "syslib_musl.h"
+#include "syslib_wasi.h"
 #include "syslib_libcxx.h"
 #include "syslib_libcxxabi.h"
 #include "syslib_libunwind.h"

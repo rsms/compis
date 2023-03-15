@@ -2,7 +2,7 @@
 set -euo pipefail
 source "$(dirname "$0")/lib.sh"
 
-HEADER_FILE="$PROJECT/src/musl_info.h"
+HEADER_FILE="$PROJECT/src/syslib_musl.h"
 SOURCE_DESTDIR="$PROJECT/lib/musl"
 
 _pushd "$SOURCE_DESTDIR"

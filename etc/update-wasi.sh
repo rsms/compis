@@ -6,7 +6,7 @@ cd "$PROJECT"
 WASI_SRCDIR="$DEPS_DIR/wasi"
 HEADER_DESTDIR="$PROJECT/lib/sysinc-src/wasm32-wasi"
 SOURCE_DESTDIR="$PROJECT/lib/wasi"
-INFO_H_FILE="$PROJECT/src/wasi_info.h"
+INFO_H_FILE="$PROJECT/src/syslib_wasi.h"
 THREAD_MODEL=single  # "single" or "posix"(WIP)
 
 if [ -d "$WASI_SRCDIR" ]; then

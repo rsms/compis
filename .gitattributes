@@ -10,11 +10,11 @@ lib/libunwind/* linguist-vendored
 lib/musl/* linguist-vendored
 lib/sysinc-src/* linguist-vendored
 lib/wasi/* linguist-vendored
-src/librt_info.h linguist-generated
 src/llvm/clang*.cc linguist-vendored
 src/llvm/llvm-ar.cc linguist-vendored
-src/musl_info.h linguist-generated
 src/syslib_libcxx.h linguist-generated
 src/syslib_libcxxabi.h linguist-generated
+src/syslib_librt.h linguist-generated
 src/syslib_libunwind.h linguist-generated
-src/wasi_info.h linguist-generated
+src/syslib_musl.h linguist-generated
+src/syslib_wasi.h linguist-generated

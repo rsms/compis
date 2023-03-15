@@ -8,7 +8,7 @@ PROJECT=$PWD
 SCRIPTNAME=${SCRIPTNAME:$#PROJECT}
 
 DESTDIR="$PROJECT/lib/librt"
-HEADER_FILE="$PROJECT/src/librt_info.h"
+HEADER_FILE="$PROJECT/src/syslib_librt.h"
 
 # ————————————————————————————————————————————————————————————————————————————————————
 # get source
