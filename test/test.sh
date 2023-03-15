@@ -48,6 +48,7 @@ $VERBOSE && PARALLELISM=1
 #———————————————————————————————————————————————————————————————————————————————————————
 # setup
 
+BUILD_ARGS=
 if [ -n "$COEXE" ]; then
   f=$COEXE
   [[ "$COEXE" == "/"* ]] || f="$PWD0/$f"
@@ -57,12 +58,19 @@ if [ -n "$COEXE" ]; then
   COEXE="$(realpath "$f")"
 elif $DEBUG; then
   COEXE="$OUT_DIR/debug/co"
-  echo  $(_relpath "$PROJECT/build.sh") -debug
-  $BASH "$PROJECT/build.sh" -debug
+  BUILD_ARGS=-debug
 else
   COEXE="$OUT_DIR/opt/co"
-  echo  $(_relpath "$PROJECT/build.sh") -no-lto
-  $BASH "$PROJECT/build.sh" -no-lto
+  BUILD_ARGS=-no-lto
+fi
+
+# build co, if needed
+if [ -n "$BUILD_ARGS" ] &&
+   [[ "$($BASH "$PROJECT/build.sh" $BUILD_ARGS -n)" == "["* ]]
+then
+  # note: -n means "dry run"
+  echo  $(_relpath "$PROJECT/build.sh") $BUILD_ARGS
+  $BASH "$PROJECT/build.sh" $BUILD_ARGS
 fi
 
 # create directory to run tests inside, copying template data into it
