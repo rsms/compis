@@ -95,6 +95,17 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
   if (!target)
     target = target_default();
 
+  if (coverbose) {
+    char targetstr[64];
+    target_fmt(target, targetstr, sizeof(targetstr));
+    printf("compis invoked as: %s\n", coprogname);
+    printf("compis executable: %s\n", coexefile);
+    printf("target: %s\n", targetstr);
+    printf("COROOT=%s\n", coroot);
+    printf("COCACHE=%s\n", cocachedir);
+    printf("COMAXPROC=%u\n", comaxproc);
+  }
+
   err_t err = 0;
   if (err || ( err = compiler_configure(&c, target, "build") )) {
     dlog("compiler_configure: %s", err_str(err));
