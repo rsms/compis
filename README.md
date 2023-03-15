@@ -14,16 +14,21 @@ $ compis build -o foo main.co
 $ ./foo
 ```
 
-Since Compis bundles clang & lld, you can use it as a C compiler with cross-compilation capabilities:
+Since Compis bundles clang & lld, you can use it as a C and C++ compiler
+with cross-compilation capabilities:
 
 ```shell
-$ compis cc -o hello hello.c
+$ compis cc hello.c -o hello
 $ ./hello
 Hello world
-$ compis cc --target=aarch64-macos -o hello2 hello.c
-$ file hello2
-hello2: Mach-O 64-bit executable arm64
+$ compis cc --target=aarch64-macos hello.c -o hello-mac
+$ file hello-mac
+hello-mac: Mach-O 64-bit executable arm64
+$ compis c++ --target=wasm32-wasi hello.cc -o hello.wasm
+$ wasmtime hello.wasm
+Hello world
 ```
+
 
 ## Features
 
@@ -32,7 +37,6 @@ hello2: Mach-O 64-bit executable arm64
 - Convention over configuration: Sensible defaults. One way to do something.
 - Compiler is a statically-linked, single executable.
 - Hackable pragmatic compiler (parse → type-check → static analysis → codegen → link)
-
 
 
 
