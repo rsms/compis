@@ -83,9 +83,9 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
       if (*ext++ == '.' && *ext) {
         if (ext[1] == 0) {
           char c = *ext;
-          if (c == 'c' || c == 'C' || c == 's' || c == 'S')
+          if (c == 'c' || c == 'C' || c == 's' || c == 'S' || c == 'm' || c == 'M')
             iscompiling = true;
-        } else if (strieq(ext, "cc") || strieq(ext, "cpp")) {
+        } else if (strieq(ext, "cc") || strieq(ext, "cpp") || strieq(ext, "mm")) {
           iscompiling = true;
         }
       }
