@@ -1,4 +1,3 @@
-*.co linguist-language=compis
 # note: examples/* is considered "linguist-documentation" by default
 etc/libxar/** linguist-vendored
 etc/pbzx.c linguist-vendored
