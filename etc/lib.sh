@@ -232,7 +232,7 @@ _relative_path() { # <basedir> <subject>
 }
 
 _create_tool_symlinks() { # <coexe> [<dir>]
-  local coexe="$(realpath "$1")"
+  local coexe="$(realpath "$1" 2>/dev/null || _abspath "$1")"
   local dir="$(realpath "${2:-"$(dirname "$coexe")"}")"
   local target="$(_relative_path "$dir" "$coexe")"
   for name in \
