@@ -1071,6 +1071,7 @@ extern const char* cocachedir;
 extern bool coverbose;
 
 // comaxproc: max thread concurrency (defaults to sys_ncpu, can be set with -j)
+// Can be overridden with env var COMAXPROC
 extern u32 comaxproc;
 
 void print_co_version();
