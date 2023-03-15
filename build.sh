@@ -29,6 +29,7 @@ STRIP=false
 DEBUGGABLE=true
 VERBOSE=false
 ENABLE_LTO=
+CREATE_TOOL_SYMLINKS=false
 NINJA_ARGS=()
 XFLAGS=()
 
@@ -49,6 +50,7 @@ while [[ $# -gt 0 ]]; do
   -no-lto)   ENABLE_LTO=false; shift ;;
   -out=*)    OUT_DIR=${1:5}; shift; continue ;;
   -target=*) TARGET=${1:8}; shift; continue ;;
+  -mklinks)  CREATE_TOOL_SYMLINKS=true; shift ;;
   -g)        DEBUGGABLE=true; STRIP=false; shift ;;
   -v)        VERBOSE=true; NINJA_ARGS+=(-v); shift ;;
   -n)        NINJA_ARGS+=(-n); shift ;;
@@ -66,6 +68,7 @@ Output options:
   -strip         Do not include debug data (negates -g)
   -lto           Enable LTO (default for -opt)
   -no-lto        Disable LTO (default for -debug)
+  -mklinks       Create symlinks for tools (cc, ar etc)
   -out=<dir>     Build in <dir> instead of "$(_relpath "$OUT_DIR_BASE/<mode>")".
   -DNAME[=value] Define CPP variable NAME with value
 Misc options:
@@ -820,6 +823,8 @@ rm -f config-xflags.tmp config.tmp lconfig.tmp
 
 # —————————————————————————————————————————————————————————————————————————————————
 # run ninja
+
+$CREATE_TOOL_SYMLINKS && _create_tool_symlinks "$OUT_DIR/co"
 
 cd "$PROJECT"
 if [ -n "$RUN" ]; then
