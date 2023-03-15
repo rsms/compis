@@ -15,12 +15,11 @@ static void diaghandler(const diag_t* d, void* nullable userdata) {
 }
 
 
-int cc_main(int user_argc, char* user_argv[]) {
+int cc_main(int user_argc, char* user_argv[], bool iscxx) {
   compiler_t c;
   compiler_init(&c, memalloc_default(), &diaghandler, "main"); // FIXME pkgname
 
   const target_t* target = NULL;
-  bool iscxx = streq(user_argv[0], "c++");
   bool nostdlib = false;
   bool nostdinc = false;
   bool freestanding = false;

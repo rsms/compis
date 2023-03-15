@@ -28,7 +28,7 @@ u32 comaxproc = 1;
 
 // externally-implemented tools
 int main_build(int argc, char*const* argv); // build.c
-int cc_main(int argc, char* argv[]); // cc.c
+int cc_main(int argc, char* argv[], bool iscxx); // cc.c
 int llvm_ar_main(int argc, char **argv); // llvm/llvm-ar.cc
 int llvm_nm_main(int argc, char **argv); // llvm/llvm-nm.cc
 int llvm_link_main(int argc, char **argv); // llvm/llvm-link.cc
@@ -237,7 +237,8 @@ int main(int argc, char* argv[]) {
 
   // command dispatch
   if IS("build")                return main_build(argc, argv);
-  if IS("cc", "c++")            return cc_main(argc, argv);
+  if IS("cc", "clang")          return cc_main(argc, argv, /*iscxx*/false);
+  if IS("c++", "clang++")       return cc_main(argc, argv, /*iscxx*/true);
   if IS("ld")                   return ld_main(argc, argv);
   if IS("targets")              return print_supported_targets(), 0;
   if IS("version", "--version") return print_co_version(), 0;

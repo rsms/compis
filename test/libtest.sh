@@ -2,9 +2,10 @@
 source "$PROJECT/etc/lib.sh"
 TEST_DIR="$PROJECT/test"
 COEXE="${COEXE:-"$OUT_DIR/opt/co"}"
+COPATH="$(dirname "$COEXE")"
 VERBOSE=${VERBOSE:-false}
 
 command -v co >/dev/null ||
-  export PATH="$(dirname "$COEXE"):$PATH"
+  export PATH="$COPATH:$PATH"
 
 # note: tool commands are available in PATH as cc, ar etc
