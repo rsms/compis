@@ -87,10 +87,14 @@ export COEXE
 export VERBOSE
 export PATH="$(dirname "$COEXE"):$PATH"
 
+TESTS_DIR=tests
+
 _run_test() { # <src-script> <n> <ntotal>
   local script_src="$1"
+  local script_path="$TEST_DIR/$script_src"
   local name="${script_src:$(( ${#TESTS_DIR} + 1 ))}"
-  local rundir="$WORK_DIR/${name%.sh}"
+  local logname="${name%.sh}"
+  local rundir="$WORK_DIR/$logname"
   local scriptname="$(basename "$name")"
   local script="$rundir/$scriptname"
   local n=$2
@@ -98,10 +102,7 @@ _run_test() { # <src-script> <n> <ntotal>
   local status
 
   mkdir -p "$rundir"
-
-  $VERBOSE && echo "cp $(_relpath "$TEST_DIR/data")/* -> $(_relpath "$rundir")/"
   cp -R "$TEST_DIR"/data/* "$rundir/"
-
   cat << END > "$script"
 #!/usr/bin/env bash
 set -euo pipefail
@@ -110,9 +111,9 @@ END
   cat "$script_src" >> "$script"
 
   if $VERBOSE && [ $PARALLELISM -eq 1 ]; then
-    echo "[$n/$ntotal] $name in $(_relpath "$rundir")/"
+    echo "[$n/$ntotal] $logname in $(_relpath "$rundir")/"
     if ! (cd "$rundir" && exec "$BASH" "$scriptname"); then
-      echo "$name: FAILED"
+      echo "$(_relpath "$script_path"): FAILED"
       return 1
     fi
     return 0
@@ -122,57 +123,62 @@ END
   local err="$rundir/stderr.log"
 
   if [ $PARALLELISM -gt 1 ]; then
-    $VERBOSE && echo "[$n/$ntotal] $name: starting"
+    $VERBOSE && echo "[$n/$ntotal] $logname: starting"
   else
-    printf "[$n/$ntotal] $name ..."
+    printf "[$n/$ntotal] $logname ..."
   fi
 
-  if ! (
-    set +e
-    cd "$rundir"
-    "$BASH" "$scriptname" > "$out" 2> "$err"
-    status=$?
-    echo $status > exit-status
-    exit $status
-  ); then
-    status=$(cat "$rundir/exit-status")
+  set +e
+  ( cd "$rundir" && exec "$BASH" "$scriptname" > "$out" 2> "$err" )
+  status=$?
+  set -e
+
+  if [ $status -eq 0 ]; then
     if [ $PARALLELISM -gt 1 ]; then
-      echo "$name: FAILED (exit status: $status)" > "$rundir/fail.log"
-      if [ -s "$out" ]; then
-        echo "---------- $name stdout: ----------" >> "$rundir/fail.log"
-        cat "$out" >> "$rundir/fail.log"
-      fi
-      echo "---------- $name stderr: ----------" >> "$rundir/fail.log"
-      if [ -s "$err" ]; then
-        cat "$err" >> "$rundir/fail.log"
-      else
-        echo "(empty)" >> "$rundir/fail.log"
-      fi
-      echo "---------- $name end ----------" >> "$rundir/fail.log"
-      cat "$rundir/fail.log" >&2
+      printf "." >> "$FINISHED_FILE"
+      nfinished=$(stat $STAT_SIZE_ARGS "$FINISHED_FILE")
+      local nrem=$(( $ntotal - $nfinished ))
+      echo "[$nfinished/$ntotal] $logname: ok"
+      [ -s "$err" ] && cat "$err" >&2
     else
-      echo " FAILED (exit status: $status)"
-      [ ! -s "$out" ] || cat "$out"
-      [ ! -s "$err" ] || cat "$err" >&2
+      echo " ok"
     fi
-    # interrupt all jobs ("-$$" = process group, $$ = leader pid)
-    kill -2 -$$
-    return 1
+    return 0
   fi
+
+  # FAILED
   if [ $PARALLELISM -gt 1 ]; then
-    printf "." >> "$FINISHED_FILE"
-    nfinished=$(stat $STAT_SIZE_ARGS "$FINISHED_FILE")
-    local nrem=$(( $ntotal - $nfinished ))
-    echo "[$nfinished/$ntotal] $name: ok"
-    [ -s "$err" ] && cat "$err" >&2
+    echo "$logname: FAILED" > "$rundir/fail.log"
+    echo "$(_relpath "$script_path") exited with status $status" > "$rundir/fail.log"
+    if [ -s "$out" ]; then
+      echo "---------- $logname stdout: ----------" >> "$rundir/fail.log"
+      cat "$out" >> "$rundir/fail.log"
+    fi
+    echo "---------- $logname stderr: ----------" >> "$rundir/fail.log"
+    if [ -s "$err" ]; then
+      cat "$err" >> "$rundir/fail.log"
+    else
+      echo "(empty)" >> "$rundir/fail.log"
+    fi
+    echo "---------- $logname end ----------" >> "$rundir/fail.log"
+    cat "$rundir/fail.log" >&2
   else
-    echo " ok"
+    echo " FAILED"
+    echo "$(_relpath "$script_path") exited with status $status"
+    [ ! -s "$out" ] || cat "$out"
+    [ ! -s "$err" ] || cat "$err" >&2
+    exit $status
   fi
-  return 0
+  # interrupt all jobs ("-$$" = process group, $$ = leader pid)
+  kill -2 -$$
+  return 1
 }
 
-TESTS_DIR=tests
-TEST_SCRIPTS=( $(find $TESTS_DIR -type f -name \*.sh | sort -n) )
+# find test scripts
+# sort without filename extension so that e.g. a.sh is ordered before a-b.sh
+TEST_SCRIPTS=( $(find $TESTS_DIR -type f -name \*.sh) )
+IFS=$'\n' TEST_SCRIPTS=( $(sort -n <<< "${TEST_SCRIPTS[*]/%.sh/}") ); unset IFS
+TEST_SCRIPTS=( "${TEST_SCRIPTS[@]/%/.sh}" )
 
 if [ ${#PATTERNS[@]} -gt 0 ]; then
   shopt -s extglob
@@ -191,7 +197,6 @@ ntotal=${#TEST_SCRIPTS[@]}
 nstarted=0
 [ $ntotal = 0 ] && _err "no tests matches glob pattern(s): ${PATTERNS[@]}"
 [ $ntotal = 1 ] && PARALLELISM=1
-$VERBOSE && echo "running $ntotal test(s)"
 
 if [ $PARALLELISM -eq 1 ]; then
   for f in "${TEST_SCRIPTS[@]}"; do
