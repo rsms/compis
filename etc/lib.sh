@@ -70,6 +70,10 @@ _needcmd() {
   done
 }
 
+_sha256() { # [<file>]
+  sha256sum "$@" | cut -d' ' -f1
+}
+
 _sha_verify() { # <file> [<sha256> | <sha512>]
   local file=$1
   local expect=$2
@@ -233,6 +237,7 @@ _create_tool_symlinks() { # <coexe> [<dir>]
   local target="$(_relative_path "$dir" "$coexe")"
   for name in \
     cc \
+    c++ \
     ar \
     as \
     ranlib \
