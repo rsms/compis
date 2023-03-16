@@ -18,3 +18,23 @@ find lib/sysinc \( -type f -name '.*' -o -type d -empty \) -delete -print
 # note: if the filename changes, also update _need_regenerate_sysinc_dir in lib.sh.
 # note: dist.sh excludes ".*" files from the package, which we rely on here.
 _sysinc_src_githash > lib/sysinc/.srcver
+
+# deduplicate files using hardlinks
+fdupes="$DEPS_DIR/fdupes/fdupes"
+if [ ! -x "$fdupes" ]; then
+  git clone https://github.com/tobiasschulz/fdupes.git "$DEPS_DIR/fdupes"
+  CO="$PROJECT/out/opt/co"
+  [ ! -x "$CO" ] && "$PROJECT/build.sh" -no-lto
+  CC="$CO cc" \
+  make -C "$DEPS_DIR/fdupes" -j$(nproc)
+fi
+
+# create tar files
+_pushd lib/sysinc
+for f in *; do
+  [ -d "$f" ] || continue
+  echo "creating $(basename $f).tar"
+  "$fdupes" --recurse --linkhard "$f"
+  tar -f "$(basename $f).tar" -c -b 8 -C "$f" . &
+done
+wait
