@@ -251,7 +251,7 @@ static err_t build_exe(char*const* srcfilev, usize filecount) {
     return err;
 
   // create output dir
-  if (( err = fs_mkdirs(c.pkgbuilddir, 0770) ))
+  if (( err = fs_mkdirs_verbose(c.pkgbuilddir, 0770) ))
     goto end;
 
   // fv is an array of files we are building

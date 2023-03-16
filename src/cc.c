@@ -68,6 +68,7 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
       } else if (streq(arg, "-sysroot") || str_startswith(arg, "--sysroot=")) {
         custom_sysroot = true;
         c.opt_nolibc = true; // don't build coroot/libc
+        c.opt_nolibcxx = true; // don't build coroot/libc++ et al
       } else if (str_startswith(arg, "--target=")) {
         arg += strlen("--target=");
         if (!( target = target_find(arg) )) {
@@ -117,6 +118,8 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
   if (iscxx) syslib_build_flags |= SYSLIB_BUILD_LIBCXX;
   if (( err = build_syslibs_if_needed(&c, syslib_build_flags) )) {
     dlog("build_syslibs_if_needed: %s", err_str(err));
+    log("failed to configure sysroot %s",
+      coverbose ? "" : ". Run with -v for more details.");
     return 1;
   }
 
@@ -189,18 +192,20 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
 
     switch ((enum target_sys)target->sys) {
       case SYS_macos: {
-        char macosver[16];
-        if (streq(target->sysver, "10")) {
-          memcpy(macosver, "10.15.0", strlen("10.15.0") + 1);
-        } else {
-          usize i = strlen(target->sysver);
-          memcpy(macosver, target->sysver, i);
-          snprintf(&macosver[i], sizeof(macosver)-i, ".0.0");
+        if (!custom_sysroot) {
+          char macosver[16];
+          if (streq(target->sysver, "10")) {
+            memcpy(macosver, "10.15.0", strlen("10.15.0") + 1);
+          } else {
+            usize i = strlen(target->sysver);
+            memcpy(macosver, target->sysver, i);
+            snprintf(&macosver[i], sizeof(macosver)-i, ".0.0");
+          }
+          strlist_addf(&args, "-Wl,-platform_version,macos,%s,%s", macosver, macosver);
+          const char* arch = (target->arch == ARCH_aarch64) ? "arm64"
+                                                            : arch_name(target->arch);
+          strlist_addf(&args, "-Wl,-arch,%s", arch);
         }
-        strlist_addf(&args, "-Wl,-platform_version,macos,%s,%s", macosver, macosver);
-        const char* arch = (target->arch == ARCH_aarch64) ? "arm64"
-                                                          : arch_name(target->arch);
-        strlist_addf(&args, "-Wl,-arch,%s", arch);
         break;
       }
       case SYS_linux: {

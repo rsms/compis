@@ -141,7 +141,7 @@ static err_t configure_sysroot(compiler_t* c) {
   int n = snprintf(sysroot, sizeof(sysroot),
     "%s%c%s", cocachedir, PATH_SEPARATOR, target);
   safecheck(n > 0 && (usize)n < sizeof(sysroot));
-  if (( err = fs_mkdirs(sysroot, 0755) ))
+  if (( err = fs_mkdirs_verbose(sysroot, 0755) ))
     return err;
 
   if (c->opt_verbose)

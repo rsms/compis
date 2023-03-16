@@ -789,7 +789,32 @@ static err_t build_syslibs(compiler_t* c, int flags) {
 }
 
 
+err_t tar_extract(memalloc_t ma, const char* tarfile, const char* dstdir); // tar.c
+
+
+static err_t copy_sysinc_headers(compiler_t* c) {
+  err_t err;
+  char* tarfile;
+  char* dstdir = path_join_alloca(c->sysroot, "include");
+
+  tarfile = path_join_alloca(coroot, "sysinc", "any-macos.tar"); // XXX
+  if (( err = tar_extract(c->ma, tarfile, dstdir) ))
+    return err;
+
+  tarfile = path_join_alloca(coroot, "sysinc", "x86_64-macos.tar"); // XXX
+  if (( err = tar_extract(c->ma, tarfile, dstdir) ))
+    return err;
+
+  tarfile = path_join_alloca(coroot, "sysinc", "x86_64-macos.10.tar"); // XXX
+  if (( err = tar_extract(c->ma, tarfile, dstdir) ))
+    return err;
+
+  return 0;
+}
+
+
 err_t build_syslibs_if_needed(compiler_t* c, int flags) {
+  err_t err = 0;
   if (must_build_libc(c)) goto build;
   if (is_libfile_missing(c, SYSLIB_RT)) goto build;
   if ((flags & SYSLIB_BUILD_LIBCXX) && !c->opt_nostdlib) {
@@ -797,9 +822,12 @@ err_t build_syslibs_if_needed(compiler_t* c, int flags) {
     if (is_libfile_missing(c, SYSLIB_CXXABI)) goto build;
     if (must_build_libunwind(c)) goto build;
   }
-  return 0;
+  goto finish;
 build:
-  err_t err = build_syslibs(c, flags);
+  err = build_syslibs(c, flags);
+finish:
+  if (!err)
+    err = copy_sysinc_headers(c);
   if (!err)
     err = create_ld_symlinks(c);
   return err;

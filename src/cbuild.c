@@ -200,7 +200,7 @@ static err_t cbuild_mkdirs(cbuild_t* b) {
 
   if (!err) for (u32 i = 0; i < dirs.len; i++) {
     const char* dir = (const char*)dirs.v[i];
-    if (( err = fs_mkdirs(dir, 0755) ))
+    if (( err = fs_mkdirs_verbose(dir, 0755) ))
       break;
   }
 
@@ -276,7 +276,7 @@ static err_t cbuild_create_archive(
   err_t err;
 
   char* dir = path_dir_alloca(outfile);
-  if (( err = fs_mkdirs(dir, 0755) ))
+  if (( err = fs_mkdirs_verbose(dir, 0755) ))
     return err;
 
   CoLLVMArchiveKind arkind;

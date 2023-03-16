@@ -66,7 +66,7 @@ err_t writefile(const char* filename, u32 mode, slice_t data) {
 }
 
 
-err_t fs_mkdirs(const char* path, int perms) {
+static err_t _fs_mkdirs(const char* path, int perms, bool verbose) {
   // copy path into mutable storage
   usize len = strlen(path);
   if (len == 0) return ErrInvalid;
@@ -111,7 +111,7 @@ err_t fs_mkdirs(const char* path, int perms) {
     s[1] = 0;
   }
 
-  if (s < end && coverbose)
+  if (s < end && verbose)
     log("creating directory '%s'", relpath(path));
 
   // mkdir starting with the first non-existant dir, e.g "/a", "/a/b", "/a/b/c"
@@ -127,6 +127,16 @@ err_t fs_mkdirs(const char* path, int perms) {
   return 0;
 err:
   return err_errno();
+}
+
+
+err_t fs_mkdirs(const char* path, int perms) {
+  return _fs_mkdirs(path, perms, /*verbose*/false);
+}
+
+
+err_t fs_mkdirs_verbose(const char* path, int perms) {
+  return _fs_mkdirs(path, perms, coverbose);
 }
 
 
