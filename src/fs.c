@@ -10,9 +10,6 @@
 #include <unistd.h> // close
 #include <sys/stat.h>
 #include <sys/mman.h> // mmap
-#ifdef __APPLE__
-  #include <sys/clonefile.h>
-#endif
 
 
 err_t mmap_file(const char* filename, mem_t* data_out) {
@@ -205,125 +202,6 @@ err_t fs_remove(const char* path) {
     return err_errno();
   }
   return 0;
-}
-
-
-static isize copy_fd_fd(int src_fd, int dst_fd, char* buf, usize bufsize) {
-  isize wresid, wcount = 0;
-  char *bufp;
-  isize rcount = read(src_fd, buf, bufsize);
-  if (rcount <= 0)
-    return rcount;
-  for (bufp = buf, wresid = rcount; ; bufp += wcount, wresid -= wcount) {
-    wcount = write(dst_fd, bufp, wresid);
-    if (wcount <= 0)
-      break;
-    if (wcount >= (isize)wresid)
-      break;
-  }
-  return wcount < 0 ? wcount : rcount;
-}
-
-
-static err_t fs_copyfile_reg(const char* srcpath, const char* dstpath) {
-  int src_fd = -1, dst_fd = -1;
-  char* dstdir = NULL;
-  int nretries = 0;
-
-retry:
-  errno = 0;
-
-  #if defined(__APPLE__)
-    if (clonefile(srcpath, dstpath, /*flags*/0) == 0)
-      goto end;
-  #endif
-
-  // TODO: look into using ioctl_ficlone or copy_file_range on linux
-
-  if (errno != EEXIST) {
-    // fall back to byte copying
-    if ((src_fd = open(srcpath, O_RDONLY, 0)) == -1)
-      goto end;
-    struct stat src_st;
-    if (fstat(src_fd, &src_st) != 0)
-      goto end;
-    mode_t dst_mode = src_st.st_mode & ~(S_ISUID | S_ISGID);
-    if ((dst_fd = open(dstpath, O_WRONLY|O_TRUNC|O_CREAT, dst_mode)) == -1)
-      goto end;
-
-    char buf[4096];
-    isize rcount;
-    for (;;) {
-      rcount = copy_fd_fd(src_fd, dst_fd, buf, sizeof(buf));
-      if (rcount == 0)
-        goto end;
-      if (rcount < 0)
-        break;
-    }
-    close(src_fd); src_fd = -1;
-    close(dst_fd); dst_fd = -1;
-  }
-
-  if (++nretries == 2) {
-    // end
-  } else if (errno == ENOENT && dstdir == NULL) {
-    dstdir = path_dir_alloca(dstpath);
-    fs_mkdirs(dstdir, 0755);
-    goto retry;
-  } else if (errno == EEXIST) {
-    unlink(dstpath);
-    goto retry;
-  }
-
-end:
-  if (src_fd != -1) close(src_fd);
-  if (dst_fd != -1) close(dst_fd);
-  return err_errno();
-}
-
-
-static err_t fs_copyfile_link(const char* srcpath, const char* dstpath) {
-  char target[PATH_MAX];
-  char* dstdir = NULL;
-  int nretries = 0;
-
-  isize len = readlink(srcpath, target, sizeof(target));
-  if (len < 0)
-    return err_errno();
-  if (len >= (isize)sizeof(target))
-    return ErrOverflow;
-  target[len] = '\0';
-
-retry:
-  if (symlink(target, dstpath) == 0)
-    return 0;
-
-  if (++nretries == 2) {
-    // end
-  } else if (errno == ENOENT && dstdir == NULL) {
-    dstdir = path_dir_alloca(dstpath);
-    fs_mkdirs(dstdir, 0755);
-    goto retry;
-  } else if (errno == EEXIST) {
-    unlink(dstpath);
-    goto retry;
-  } else {
-    warn("symlink: %s", dstpath);
-  }
-
-  return err_errno();
-}
-
-
-err_t fs_copyfile(const char* srcpath, const char* dstpath, int flags) {
-  struct stat st;
-  if (lstat(srcpath, &st) != 0)
-    return err_errno();
-  if (S_ISLNK(st.st_mode))
-    return fs_copyfile_link(srcpath, dstpath);
-  if (S_ISREG(st.st_mode))
-    return fs_copyfile_reg(srcpath, dstpath);
-  return ErrInvalid;
 }
 
 
