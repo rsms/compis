@@ -101,18 +101,7 @@ static void configure_target(compiler_t* c) {
   if (c->target.sys == SYS_none)
     c->opt_nostdlib = true;
 
-  // set ldname
-  switch ((enum target_sys)c->target.sys) {
-    case SYS_linux: c->ldname = "ld.lld"; break;
-    case SYS_macos: c->ldname = "ld64.lld"; break;
-    case SYS_wasi:  c->ldname = "wasm-ld"; break;
-    // case SYS_win32: c->ldname = "lld-link"; break;
-    case SYS_none:
-      c->ldname = "";
-      if (c->target.arch == ARCH_wasm32 || c->target.arch == ARCH_wasm64)
-        c->ldname = "wasm-ld";
-      break;
-  }
+  c->ldname = target_linker_name(&c->target);
 }
 
 

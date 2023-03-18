@@ -540,7 +540,7 @@ typedef struct compiler {
   slice_t     sflags_common; // flags used for all assembly objects (slice of cflags)
   slice_t     cflags_common; // cflags used for all objects (slice of cflags)
   slice_t     cflags_sysinc; // cflags with -isystemPATH for current target
-  const char* ldname;        // name of linker for target, relative to sysroot
+  const char* ldname;        // name of linker for target ("" if none)
 
   // diagnostics
   diaghandler_t  diaghandler; // called when errors are encountered
