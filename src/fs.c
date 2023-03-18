@@ -66,6 +66,29 @@ err_t writefile(const char* filename, u32 mode, slice_t data) {
 }
 
 
+err_t fs_touch(const char* filename, u32 mode) {
+  dlog("%s '%s' 0%o", __FUNCTION__, filename, mode);
+  int fd = open(filename, O_WRONLY|O_TRUNC|O_CREAT, (mode_t)mode);
+  if (fd > -1) {
+    close(fd);
+    return 0;
+  }
+
+  if (errno == EEXIST) {
+    // note: intentionally don't chmod(filename, mode) here.
+    struct timespec timebuf[2]; // atime, mtime
+    timebuf[0].tv_nsec = UTIME_NOW;
+    timebuf[1].tv_nsec = UTIME_NOW;
+    if (utimensat(AT_FDCWD, filename, timebuf, 0) == 0)
+      return 0;
+  }
+
+  err_t err = err_errno();
+  vlog("failed to create file '%s': %s", filename, err_str(err));
+  return err;
+}
+
+
 static err_t _fs_mkdirs(const char* path, int perms, bool verbose) {
   // copy path into mutable storage
   usize len = strlen(path);
