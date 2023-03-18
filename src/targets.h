@@ -16,7 +16,7 @@
 #endif
 
 // ARCH(name)
-ARCH(unknown)
+ARCH(any)
 ARCH(aarch64)
 ARCH(arm)
 ARCH(i386)
