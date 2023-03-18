@@ -728,27 +728,25 @@ static bool must_build_libunwind(compiler_t* c) {
 
 
 static err_t create_ld_symlinks(compiler_t* c) {
-  usize dstpathcap = strlen(coexefile) + 16;
+  if (*c->ldname == 0)
+    return 0;
+
+  const char* target = path_base(coexefile); // e.g. "compis"
+
+  usize ldnamelen = strlen(c->ldname);
+  usize dstpathcap = strlen(coexefile) + ldnamelen;
   char* dstpath = alloca(dstpathcap);
   usize dstpathlen = path_dir(dstpath, dstpathcap, coexefile);
-  const char* coexename = path_base(coexefile);
-  int r;
+  dstpath[dstpathlen++] = PATH_SEPARATOR;
+  memcpy(&dstpath[dstpathlen], c->ldname, ldnamelen + 1);
 
-  #define CREATE_EXE_SYMLINK(name) { \
-    memcpy(&dstpath[dstpathlen], \
-      PATH_SEPARATOR_STR name, strlen(PATH_SEPARATOR_STR name) + 1); \
-    r = symlink(coexename, dstpath); \
-    if (r != 0 && errno != EEXIST) \
-      return err_errno(); \
-    if (r == 0) dlog("symlink %s -> %s", dstpath, coexename); \
+  if (symlink(target, dstpath) != 0) {
+    if (errno != EEXIST)
+      return err_errno();
+  } else {
+    vlog("symlink %s -> %s", relpath(dstpath), target);
   }
 
-  CREATE_EXE_SYMLINK("ld.lld");
-  CREATE_EXE_SYMLINK("ld64.lld");
-  CREATE_EXE_SYMLINK("wasm-ld");
-  CREATE_EXE_SYMLINK("lld-link");
-
-  #undef CREATE_EXE_SYMLINK
   return 0;
 }
 
@@ -789,27 +787,38 @@ static err_t build_syslibs(compiler_t* c, int flags) {
 }
 
 
-err_t tar_extract(memalloc_t ma, const char* tarfile, const char* dstdir); // tar.c
+#define OK_MARKER_FILE ".co-ok"
 
 
 static err_t copy_sysinc_headers(compiler_t* c) {
-  err_t err;
-  char* tarfile;
-  char* dstdir = path_join_alloca(c->sysroot, "include");
+  err_t err = 0;
+  char* dstpath = path_join_alloca(c->sysroot, "include", OK_MARKER_FILE);
+  if (fs_isfile(dstpath))
+    return 0;
 
-  tarfile = path_join_alloca(coroot, "sysinc", "any-macos.tar"); // XXX
-  if (( err = tar_extract(c->ma, tarfile, dstdir) ))
-    return err;
+  usize marker_slashpos = strlen(dstpath) - strlen(PATH_SEPARATOR_STR OK_MARKER_FILE);
+  dstpath[marker_slashpos] = 0;
 
-  tarfile = path_join_alloca(coroot, "sysinc", "x86_64-macos.tar"); // XXX
-  if (( err = tar_extract(c->ma, tarfile, dstdir) ))
-    return err;
+  u32 nlayers;
+  char** layers = target_layers(&c->target, c->ma, &nlayers, "sysinc");
+  if (!layers)
+    return ErrNoMem;
 
-  tarfile = path_join_alloca(coroot, "sysinc", "x86_64-macos.10.tar"); // XXX
-  if (( err = tar_extract(c->ma, tarfile, dstdir) ))
-    return err;
+  for (u32 i = nlayers; i--;) {
+    if (fs_isdir(layers[i])) {
+      if (( err = fs_copyfile(layers[i], dstpath, 0) ))
+        break;
+    }
+  }
 
-  return 0;
+  // create "OK" marker file
+  if (err == 0) {
+    dstpath[marker_slashpos] = PATH_SEPARATOR;
+    err = fs_touch(dstpath, 0644);
+  }
+
+  target_layers_free(c->ma, layers, nlayers);
+  return err;
 }
 
 

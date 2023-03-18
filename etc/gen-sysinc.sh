@@ -16,7 +16,7 @@ echo "Removing any dotfiles and empty directories"
 find lib/sysinc \( -type f -name '.*' -o -type d -empty \) -delete -print
 
 # note: if the filename changes, also update _need_regenerate_sysinc_dir in lib.sh.
-# note: dist.sh excludes ".*" files from the package, which we rely on here.
+# note: we assume dist.sh excludes ".*" files from the package.
 _sysinc_src_githash > lib/sysinc/.srcver
 
 # deduplicate files using hardlinks
@@ -29,12 +29,12 @@ if [ ! -x "$fdupes" ]; then
   make -C "$DEPS_DIR/fdupes" -j$(nproc)
 fi
 
-# create tar files
-_pushd lib/sysinc
-for f in *; do
-  [ -d "$f" ] || continue
-  echo "creating $(basename $f).tar"
-  "$fdupes" --recurse --linkhard "$f"
-  tar -f "$(basename $f).tar" -c -b 8 -C "$f" . &
-done
-wait
+# # create tar files
+# _pushd lib/sysinc
+# for f in *; do
+#   [ -d "$f" ] || continue
+#   echo "creating $(basename $f).tar"
+#   "$fdupes" --recurse --linkhard "$f"
+#   tar -f "$(basename $f).tar" -c -b 8 -C "$f" . &
+# done
+# wait
