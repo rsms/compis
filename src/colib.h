@@ -521,7 +521,9 @@ typedef double             f64;
 
 // void log(const char* fmt, ...)
 #undef log // math.h
-#define log(fmt, args...) fprintf(stderr, fmt "\n", ##args)
+#define log(fmt, args...) printf(fmt "\n", ##args)
+#define elog(fmt, args...) fprintf(stderr, fmt "\n", ##args)
+#define vlog(fmt, args...) (coverbose && printf(fmt "\n", ##args))
 
 // debug-build only CLI options (build.c)
 #if DEBUG
@@ -1060,7 +1062,7 @@ extern const char* coprogname;
 // coexefile: absolute path to executable (realpath, no symlinks)
 extern const char* coexefile;
 
-// coroot: directory of compis installation (== dirname(exefile))
+// coroot: directory of compis resources, like sysinc
 // Can be overridden with env var COROOT
 extern const char* coroot;
 

@@ -212,7 +212,7 @@ static err_t cbuild_mkdirs(cbuild_t* b) {
 static err_t cbuild_clean_objdir(cbuild_t* b) {
   err_t err = fs_remove(b->objdir);
   if (err && err != ErrNotFound)
-    log("cbuild_clean_objdir \"%s\": %s", b->objdir, err_str(err));
+    elog("cbuild_clean_objdir \"%s\": %s", b->objdir, err_str(err));
   return err;
 }
 
@@ -290,11 +290,11 @@ static err_t cbuild_create_archive(
   err = llvm_write_archive(arkind, outfile, objv, objc, &errmsg);
   if (!err)
     return 0;
-  log("llvm_write_archive: (err=%s) %s", err_str(err), errmsg);
+  elog("llvm_write_archive: (err=%s) %s", err_str(err), errmsg);
   if (err == ErrNotFound) {
     for (u32 i = 0; i < objc; i++) {
       if (!fs_isfile(objv[i]))
-        log("%s: file not found", objv[i]);
+        elog("%s: file not found", objv[i]);
     }
   }
   LLVMDisposeMessage(errmsg);

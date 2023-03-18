@@ -408,7 +408,7 @@ err_t llvm_link(const CoLLVMLink* optionsptr) {
   err_t err = build_args(options, triple, &linkfn, args, tmpstrings);
   if UNLIKELY(err) {
     if (err == ErrNotSupported)
-      log("linking %s not yet implemented", triple.str().c_str());
+      elog("linking %s not yet implemented", triple.str().c_str());
     return err;
   }
 

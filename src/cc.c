@@ -118,7 +118,7 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
   if (iscxx) syslib_build_flags |= SYSLIB_BUILD_LIBCXX;
   if (( err = build_syslibs_if_needed(&c, syslib_build_flags) )) {
     dlog("build_syslibs_if_needed: %s", err_str(err));
-    log("failed to configure sysroot %s",
+    log("failed to configure sysroot%s",
       coverbose ? "" : ". Run with -v for more details.");
     return 1;
   }

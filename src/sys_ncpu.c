@@ -35,6 +35,6 @@ u32 sys_ncpu() {
   #endif
 
 err:
-  log("sys_ncpu failure, errno=%d", errno);
+  elog("sys_ncpu failure, errno=%d", errno);
   return 1;
 }

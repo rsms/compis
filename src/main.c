@@ -197,7 +197,7 @@ int main(int argc, char* argv[]) {
 
   if (*cmd == 0) {
     usage(stdout);
-    log("%s: missing command; try `%s help`", coprogname, coprogname);
+    elog("%s: missing command; try `%s help`", coprogname, coprogname);
     return 1;
   }
 
@@ -244,6 +244,6 @@ int main(int argc, char* argv[]) {
   if IS("version", "--version") return print_co_version(), 0;
   if IS("help", "--help", "-h") return usage(stdout);
 
-  log("%s: unknown command \"%s\"", coprogname, cmd);
+  elog("%s: unknown command \"%s\"", coprogname, cmd);
   return 1;
 }

@@ -135,8 +135,8 @@ int main_build(int argc, char* argv[]) {
   argc -= optind;
 
   if (!( opt_target = target_find(opt_targetstr) )) {
-    log("Invalid target \"%s\"", opt_targetstr);
-    log("See `%s targets` for a list of supported targets", relpath(coexefile));
+    elog("Invalid target \"%s\"", opt_targetstr);
+    elog("See `%s targets` for a list of supported targets", relpath(coexefile));
     return 1;
   }
   #if DEBUG
@@ -145,8 +145,10 @@ int main_build(int argc, char* argv[]) {
     dlog("targeting %s (%s)", tmpbuf, opt_target->triple);
   #endif
 
-  if (opt_nolink && *opt_out)
-    errx(1, "cannot specify both --no-link and -o (nothing to output when not linking)");
+  if (opt_nolink && *opt_out) {
+    elog("cannot specify both --no-link and -o (nothing to output when not linking)");
+    return 1;
+  }
 
   err_t err = build_exe(argv, (usize)argc);
   if (err && err != ErrCanceled)
@@ -157,9 +159,9 @@ int main_build(int argc, char* argv[]) {
 
 
 static void diaghandler(const diag_t* d, void* nullable userdata) {
-  log("%s", d->msg);
+  elog("%s", d->msg);
   if (d->srclines && *d->srclines)
-    log("%s", d->srclines);
+    elog("%s", d->srclines);
 }
 
 
