@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "colib.h"
 #include "compiler.h"
+#include "path.h"
 #include <string.h>
 
 
@@ -199,3 +200,145 @@ err_t target_visit_dirs(
 end:
   return err;
 }
+
+
+char** nullable target_layers(
+  const target_t* target, memalloc_t ma, u32* len_out, const char* basedir)
+{
+  // ENABLE_ANY_NONE: define to enable the universal "any-none" layer.
+  // Currently this is unused, but it could be useful in the future.
+  //#define ENABLE_ANY_NONE
+
+  // Layers with ENABLE_ANY_NONE enabled:
+  //   arch and sysver: [arch-sys.sysver, arch-sys, any-sys.sysver, any-sys, any-none]
+  //   arch:            [arch-sys, any-sys, any-none]
+  //   sysver:          [any-sys.sysver, any-sys, any-none]
+  //   only sys:        [any-sys, any-none]
+  //   no arch or sys:  [any-none]
+  //
+  // Layers with ENABLE_ANY_NONE disabled:
+  //   arch and sysver: [arch-sys.sysver, arch-sys, any-sys.sysver, any-sys]
+  //   arch:            [arch-sys, any-sys]
+  //   sysver:          [any-sys.sysver, any-sys]
+  //   only sys:        [any-sys]
+  //   no arch or sys:  []
+
+  target_t t = *target; // local copy which we can edit
+  usize cap = (
+    (   ( 1 + ((*t.sysver != 0) * 1) ) // sysver/no-sysver dimension
+      * (1 + (t.arch != ARCH_any)) )   // arch/no-arch dimension
+    #ifdef ENABLE_ANY_NONE
+    + (t.sys != SYS_none)              // has extra "any-none" at end
+    #else
+    - (t.sys == SYS_none)              // for e.g. "wasm32-none"
+    #endif
+  );
+  #if !defined(ENABLE_ANY_NONE)
+    if (cap == 0) {
+      *len_out = 0;
+      static const char dummy;
+      return (void*)&dummy;
+    }
+  #endif
+  char** layers = mem_alloc(ma, sizeof(char*)*cap + PATH_MAX*cap).p;
+  if (!layers)
+    return NULL;
+
+  // string storage follows the array of pointers
+  layers[0] = (void*)layers + sizeof(char*)*cap;
+  for (usize i = 1; i < cap; i++)
+    layers[i] = layers[i - 1] + PATH_MAX;
+
+  // write "coroot/basedir/" or "coroot/" to layers
+  usize diroffs = (usize)snprintf(layers[0], PATH_MAX,
+    "%s" PATH_SEPARATOR_STR "%s", coroot, basedir);
+  safecheck(diroffs < PATH_MAX - 1);
+  if (diroffs >= PATH_MAX - 1)
+    diroffs = PATH_MAX - 2;
+  usize strcap = PATH_MAX - diroffs; // remaining string storage capacity
+  if (*basedir) {
+    strcap--;
+    layers[0][diroffs++] = PATH_SEPARATOR;
+  }
+  for (usize i = 1; i < cap; i++)
+    memcpy(layers[i], layers[0], diroffs);
+
+  // format layers, starting with the most specific one, which is one of:
+  //   "arch-sys.sysver" or "arch-sys" where "arch" is "any" if arch==ARCH_any.
+  if (target_fmt(&t, layers[0]+diroffs, strcap) >= strcap)
+    goto overflow;
+  usize len = 1;
+
+  if (*t.sysver) {
+    // "arch-sys"
+    t.sysver = "";
+    assert(cap > len);
+    assertf(t.sys != SYS_none, "none-system target with sysver makes no sense");
+    if (target_fmt(&t, layers[len++]+diroffs, strcap) >= strcap)
+      goto overflow;
+  }
+
+  if (
+    t.arch != ARCH_any
+    #if !defined(ENABLE_ANY_NONE)
+      && t.sys != SYS_none
+    #endif
+  ) {
+    // "any-sys.sysver" or "any-sys"
+    t.arch = ARCH_any;
+    t.sysver = target->sysver;
+    assert(cap > len);
+    if (target_fmt(&t, layers[len++]+diroffs, strcap) >= strcap)
+      goto overflow;
+
+    if (*t.sysver) {
+      // "any-sys"
+      t.sysver = "";
+      assert(cap > len);
+      if (target_fmt(&t, layers[len++]+diroffs, strcap) >= strcap)
+        goto overflow;
+    }
+  }
+
+  #ifdef ENABLE_ANY_NONE
+    if (t.sys != SYS_none) {
+      t.sys = SYS_none;
+      assert(cap > len);
+      if (target_fmt(&t, layers[len++]+diroffs, strcap) >= strcap)
+        goto overflow;
+    }
+  #endif
+
+  assertf(len == cap, "len(%zu) == cap(%zu)", len, cap);
+  *len_out = (u32)len;
+  return layers;
+
+overflow:
+  vlog("%s: path too long: %.*s", __FUNCTION__, (int)diroffs, layers[0]);
+  target_layers_free(ma, layers, cap);
+  return NULL;
+
+  #undef ENABLE_ANY_NONE
+}
+
+
+void target_layers_free(memalloc_t ma, char** layers, u32 len) {
+  mem_freex(ma, MEM(layers, sizeof(char*)*len + PATH_MAX*len));
+}
+
+
+const char* target_linker_name(const target_t* t) {
+  switch ((enum target_sys)t->sys) {
+    case SYS_linux: return "ld.lld";
+    case SYS_macos: return "ld64.lld";
+    case SYS_wasi:  return "wasm-ld";
+    // case SYS_win32: return "lld-link";
+    case SYS_none:
+      if (t->arch == ARCH_wasm32 || t->arch == ARCH_wasm64)
+        return "wasm-ld";
+      return "";
+  }
+  safefail("sys %u", t->sys);
+  return "";
+}
+
