@@ -3,7 +3,7 @@
 //
 // Example
 //   array_t a;
-//   array_init(&a, ma);
+//   array_init(&a);
 //   for (u32 i = 0; i < 1024; i++)
 //     assert( array_push(u32, &a, i) );
 //   for (u32 i = 0; i < 1024; i++)
@@ -147,7 +147,7 @@ E.g.
   DEF_ARRAY_TYPE(u32, u32array)
   void example(memalloc_t ma) {
     u32array_t a;
-    u32array_init(&a, ma);
+    u32array_init(&a);
 
     // no type argument needed
     for (u32 i = 0; i < 1024; i++)
