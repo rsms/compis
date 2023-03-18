@@ -99,13 +99,15 @@ char* nullable path_dir_m(memalloc_t ma, const char* path) {
 
 
 const char* path_base(const char* path) {
-  if (path[0] == 0)
+  if (*path == 0)
     return path;
-  usize len = strlen(path);
-  const char* p = &path[len];
-  for (; p != path && *(p-1) != PATH_SEPARATOR; )
+  const char* p = path + strlen(path) - 1;
+  // don't count trailing separators, e.g. "/foo/bar/" => "bar/" (not "")
+  while (*p == PATH_SEPARATOR && p != path)
     p--;
-  return p;
+  while (*p != PATH_SEPARATOR && p != path)
+    p--;
+  return p == path ? p : p + 1;
 }
 
 
