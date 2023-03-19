@@ -93,6 +93,20 @@ find $DESTDIR -empty -type d -delete
 # create tool symlinks, e.g. cc -> compis
 _create_tool_symlinks $DESTDIR/compis
 
+# deduplicate files using hardlinks.
+# This allows the tar to encode hardlinks, which doesn't affect compressed tar
+# file size much, but does allow creation of hardlinks when the tar is unarchived.
+# Comparison:
+#   tar creation without fdupes:  23.4 MiB / 176.5 MiB = 0.133 (3.6 MiB/s)
+#   tar creation with fdupes:     23.2 MiB / 167.8 MiB = 0.138 (3.5 MiB/s)
+fdupes="$DEPS_DIR/fdupes/fdupes"
+if [ ! -x "$fdupes" ]; then
+  git clone https://github.com/tobiasschulz/fdupes.git "$DEPS_DIR/fdupes"
+  make -C "$DEPS_DIR/fdupes" CC="$DESTDIR/cc" -j$(nproc)
+fi
+echo "deduplicating identical files using hardlinks"
+"$fdupes" --recurse --linkhard --noempty $DESTDIR >/dev/null
+
 if $TEST; then
   echo "running tests"
   ./test/test.sh --coexe=$DESTDIR/compis

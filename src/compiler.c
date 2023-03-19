@@ -130,7 +130,7 @@ static err_t configure_sysroot(compiler_t* c) {
   int n = snprintf(sysroot, sizeof(sysroot),
     "%s%c%s", cocachedir, PATH_SEPARATOR, target);
   safecheck(n > 0 && (usize)n < sizeof(sysroot));
-  if (( err = fs_mkdirs_verbose(sysroot, 0755) ))
+  if (( err = fs_mkdirs(sysroot, 0755, FS_VERBOSE) ))
     return err;
 
   if (c->opt_verbose)
@@ -200,18 +200,6 @@ static err_t configure_builddir(compiler_t* c, const char* buildroot) {
 }
 
 
-static err_t add_target_sysdir_if_exists(const char* path, void* cp) {
-  compiler_t* c = cp;
-  if (fs_isdir(path)) {
-    dlog("using sysdir: %s", path);
-    strlist_addf(&c->cflags, "-isystem%s", path);
-  } else {
-    dlog("ignoring non-existent sysdir: %s", path);
-  }
-  return 0;
-}
-
-
 static err_t configure_cflags(compiler_t* c) {
   strlist_dispose(&c->cflags);
 
@@ -245,12 +233,11 @@ static err_t configure_cflags(compiler_t* c) {
 
   // system-header dirs
   if (!c->opt_nostdlib) {
-    target_visit_dirs(&c->target, "sysinc", add_target_sysdir_if_exists, c);
     switch (c->target.sys) {
       case SYS_linux:
-        strlist_addf(&c->cflags, "-isystem%s/musl/include/%s",
-          coroot, arch_name(c->target.arch));
-        strlist_addf(&c->cflags, "-isystem%s/musl/include", coroot);
+        // strlist_addf(&c->cflags, "-isystem%s/musl/include/%s",
+        //   coroot, arch_name(c->target.arch));
+        // strlist_addf(&c->cflags, "-isystem%s/musl/include", coroot);
         break;
       case SYS_macos:
         strlist_add(&c->cflags, "-include", "TargetConditionals.h");
@@ -366,12 +353,12 @@ err_t spawn_tool(
 {
   assert(argv[0] != NULL);
 
-  #if DEBUG
-  dlog("spawn_tool:");
-  printf(" ");
-  for (char*const* p = argv; *p; p++) printf(" '%s'", *p);
-  printf("\n");
-  #endif
+  // #if DEBUG
+  // dlog("spawn_tool:");
+  // printf(" ");
+  // for (char*const* p = argv; *p; p++) printf(" '%s'", *p);
+  // printf("\n");
+  // #endif
 
   if (SPAWN_TOOL_USE_FORK && (flags & SPAWN_TOOL_NOFORK) == 0) {
     const char* cmd = argv[0];
@@ -594,7 +581,7 @@ static err_t compile_co_to_c(compiler_t* c, input_t* input, const char* cfile) {
         (int)g.outbuf.len, g.outbuf.chars);
     }
     dlog("cgen %s -> %s", input->name, cfile);
-    err = writefile(cfile, 0660, buf_slice(g.outbuf));
+    err = fs_writefile(cfile, 0660, buf_slice(g.outbuf));
   }
   cgen_dispose(&g);
 

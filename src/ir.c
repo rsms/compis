@@ -112,7 +112,7 @@ static void debug_graphviz(const compiler_t* c, const irunit_t* u) {
 
   // write .dot file
   log("irdot ir.dot");
-  err_t err = writefile("ir.dot", 0664, buf_slice(buf));
+  err_t err = fs_writefile("ir.dot", 0664, buf_slice(buf));
   if (err) {
     fprintf(stderr, "failed to write file ir.dot: %s", err_str(err));
     goto end;

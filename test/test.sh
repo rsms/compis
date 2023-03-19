@@ -75,8 +75,9 @@ fi
 
 # create directory to run tests inside, copying template data into it
 WORK_DIR="$OUT_DIR/test"
+COCACHE="${COCACHE:-"$OUT_DIR/test-cache"}"
 rm -rf "$WORK_DIR"
-mkdir -p "$WORK_DIR"
+mkdir -p "$WORK_DIR" "$COCACHE"
 FINISHED_FILE="$WORK_DIR/finished"
 touch "$FINISHED_FILE"
 
@@ -93,6 +94,7 @@ done
 export PROJECT
 export COEXE
 export VERBOSE
+export COCACHE
 export PATH="$(dirname "$COEXE"):$PATH"
 
 TESTS_DIR=tests

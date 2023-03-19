@@ -1025,14 +1025,16 @@ const char* sys_homedir();
 
 err_t mmap_file(const char* filename, mem_t* data_out);
 err_t mmap_unmap(mem_t);
-err_t writefile(const char* filename, u32 mode, slice_t data);
+err_t fs_writefile(const char* filename, u32 mode, slice_t data);
 err_t fs_touch(const char* filename, u32 mode); // update {a,m}time, create if needed
-err_t fs_mkdirs(const char* path, int perms); // creates parent directories, if needed
-err_t fs_mkdirs_verbose(const char* path, int perms); // log() if coverbose==true
-err_t fs_remove(const char* path); // recursively removes directories
+err_t fs_mkdirs(const char* path, int perms, int flags); // creates parent directories
+err_t fs_remove(const char* path); // delete file or recursively delete directory
 err_t fs_copyfile(const char* srcpath, const char* dstpath, int flags);
 bool fs_isfile(const char* path); // true if S_ISREG, after resolving any symlinks
 bool fs_isdir(const char* path); // true if S_ISDIR, after resolving any symlinks
+
+// flags
+#define FS_VERBOSE (1<<0) // vlog actions, e.g. "creating file /foo/bar"
 
 //—————————————————————————————————————————————————————————————————————————————————————
 // promise

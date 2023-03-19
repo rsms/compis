@@ -1,6 +1,7 @@
 // file paths
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
+#include "str.h"
 #include <alloca.h>
 #include <libgen.h>
 ASSUME_NONNULL_BEGIN
@@ -16,13 +17,17 @@ ASSUME_NONNULL_BEGIN
   #define PATH_DELIMITER     ':'
   #define PATH_DELIMITER_STR ":"
 #endif
+#define PATH_SEP       PATH_SEPARATOR
+#define PATH_SEP_STR   PATH_SEPARATOR_STR
+#define PATH_DELIM     PATH_DELIMITER
+#define PATH_DELIM_STR PATH_DELIMITER_STR
 
 // path_diroffs returns the position of the end of the directory part of path.
 // E.g. "foo/bar/baz" => 7, "foo/" => 3, "foo" => 0.
 // Returns 0 if path does not contain a directory part.
 usize path_dirlen(const char* path, usize len);
 
-// path_dir writes all but the last path component to bug.
+// path_dir writes all but the last path component to buf.
 // Returns bytes written to buf as if bufcap was infinite.
 // E.g. "foo/bar/baz.x" => "foo/bar", "/lol" => "/"
 usize path_dir(char* buf, usize bufcap, const char* path);
@@ -46,10 +51,25 @@ inline static char* path_clean(char* path) {
   return path_cleanx(path, len + 1, path, len), path;
 }
 
-// path_join joins two strings together. Calls path_clean on the result.
-usize path_join(char* dst, usize dstcap, const char* path1, const char* path2);
+// str_t path_join(const char* path ...)
+// joins two or more path components together and calls path_clean on the result.
+#define path_join(paths...) __VARG_DISP(_path_join, paths)
+#define _path_join1(paths...) _path_join(1,paths)
+#define _path_join2(paths...) _path_join(2,paths)
+#define _path_join3(paths...) _path_join(3,paths)
+#define _path_join4(paths...) _path_join(4,paths)
+#define _path_join5(paths...) _path_join(5,paths)
+#define _path_join6(paths...) _path_join(6,paths)
+#define _path_join7(paths...) _path_join(7,paths)
+#define _path_join8(paths...) _path_join(8,paths)
+#define _path_join9(paths...) _path_join(9,paths)
+str_t _path_join(usize count, ...);
+str_t path_joinv(usize count, va_list ap);
+
+// DEPRECATED: use path_join instead
 char* nullable path_join_m(memalloc_t, const char* path1, const char* path2);
 
+// path_isabs returns true if path is absolute
 inline static bool path_isabs(const char* path) { return *path == PATH_SEPARATOR; }
 
 // path_abs resolves path relative to cwd and calls path_clean on the result.

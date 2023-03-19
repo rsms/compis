@@ -2,7 +2,6 @@
 #include "cbuild.h"
 #include "subproc.h"
 #include "path.h"
-#include "bgtask.h"
 #include "llvm/llvm.h"
 
 #include <unistd.h>
@@ -200,7 +199,7 @@ static err_t cbuild_mkdirs(cbuild_t* b) {
 
   if (!err) for (u32 i = 0; i < dirs.len; i++) {
     const char* dir = (const char*)dirs.v[i];
-    if (( err = fs_mkdirs_verbose(dir, 0755) ))
+    if (( err = fs_mkdirs(dir, 0755, 0) ))
       break;
   }
 
@@ -276,7 +275,7 @@ static err_t cbuild_create_archive(
   err_t err;
 
   char* dir = path_dir_alloca(outfile);
-  if (( err = fs_mkdirs_verbose(dir, 0755) ))
+  if (( err = fs_mkdirs(dir, 0755, FS_VERBOSE) ))
     return err;
 
   CoLLVMArchiveKind arkind;
@@ -302,7 +301,13 @@ static err_t cbuild_create_archive(
 }
 
 
-static err_t cbuild_build(cbuild_t* b, const char* outfile) {
+u32 cbuild_njobs(const cbuild_t* b) {
+  u32 npost_jobs = 1; // ar
+  return b->objs.len + npost_jobs;
+}
+
+
+err_t cbuild_build(cbuild_t* b, const char* outfile, bgtask_t* nullable usertask) {
   if (!cbuild_config_ended(b))
     cbuild_end_config(b);
 
@@ -334,9 +339,10 @@ static err_t cbuild_build(cbuild_t* b, const char* outfile) {
   // strlist_t ar = strlist_make(b->c->ma, "ar", "rcs", outfile);
   strlist_t objfiles = strlist_make(b->c->ma);
 
-  // create task
-  u32 npost_jobs = 1; // ar
-  bgtask_t* task = bgtask_start(b->c->ma, b->name, b->objs.len + npost_jobs, 0);
+  // create task, unless provided by caller
+  bgtask_t* task = usertask;
+  if (!usertask)
+    task = bgtask_start(b->c->ma, b->name, cbuild_njobs(b), 0);
 
   // compile objects
   err = cbuild_build_compile(b, task, &objfiles);
@@ -354,7 +360,8 @@ static err_t cbuild_build(cbuild_t* b, const char* outfile) {
 
 end:
   cbuild_clean_objdir(b);
-  bgtask_end(task, "");
+  if (!usertask)
+    bgtask_end(task, "");
   strlist_dispose(&objfiles);
   return err;
 }

@@ -76,7 +76,7 @@ open:
       goto lockfail;
     if (errno == ENOENT && !dstdir) {
       dstdir = path_dir_alloca(filename);
-      if ((err = fs_mkdirs(dstdir, 0755)) == 0)
+      if ((err = fs_mkdirs(dstdir, 0755, 0)) == 0)
         goto open;
     }
     warn("open(%s)", filename);

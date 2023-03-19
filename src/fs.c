@@ -42,7 +42,7 @@ err_t mmap_unmap(mem_t m) {
 }
 
 
-err_t writefile(const char* filename, u32 mode, slice_t data) {
+err_t fs_writefile(const char* filename, u32 mode, slice_t data) {
   if (data.len > (usize)ISIZE_MAX)
     return ErrOverflow;
   int fd = open(filename, O_WRONLY|O_CREAT|O_TRUNC, mode);
@@ -64,7 +64,7 @@ err_t writefile(const char* filename, u32 mode, slice_t data) {
 
 
 err_t fs_touch(const char* filename, u32 mode) {
-  dlog("%s '%s' 0%o", __FUNCTION__, filename, mode);
+  // dlog("%s '%s' 0%o", __FUNCTION__, filename, mode);
   int fd = open(filename, O_WRONLY|O_TRUNC|O_CREAT, (mode_t)mode);
   if (fd > -1) {
     close(fd);
@@ -81,12 +81,12 @@ err_t fs_touch(const char* filename, u32 mode) {
   }
 
   err_t err = err_errno();
-  vlog("failed to create file '%s': %s", filename, err_str(err));
+  vlog("touch '%s' failed: %s", filename, err_str(err));
   return err;
 }
 
 
-static err_t _fs_mkdirs(const char* path, int perms, bool verbose) {
+err_t fs_mkdirs(const char* path, int perms, int flags) {
   // copy path into mutable storage
   usize len = strlen(path);
   if (len == 0) return ErrInvalid;
@@ -131,7 +131,7 @@ static err_t _fs_mkdirs(const char* path, int perms, bool verbose) {
     s[1] = 0;
   }
 
-  if (s < end && verbose)
+  if (s < end && (flags & FS_VERBOSE) && coverbose)
     log("creating directory '%s'", relpath(path));
 
   // mkdir starting with the first non-existant dir, e.g "/a", "/a/b", "/a/b/c"
@@ -147,16 +147,6 @@ static err_t _fs_mkdirs(const char* path, int perms, bool verbose) {
   return 0;
 err:
   return err_errno();
-}
-
-
-err_t fs_mkdirs(const char* path, int perms) {
-  return _fs_mkdirs(path, perms, /*verbose*/false);
-}
-
-
-err_t fs_mkdirs_verbose(const char* path, int perms) {
-  return _fs_mkdirs(path, perms, coverbose);
 }
 
 

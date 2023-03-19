@@ -25,6 +25,51 @@
 #include <unistd.h>
 
 
+static err_t copy_target_layer_dirs(
+  compiler_t* c, bgtask_t* task, const char* src_basedir, const char* dst_basedir)
+{
+  err_t err = 0;
+  str_t dstpath = path_join(c->sysroot, dst_basedir);
+
+  u32 nlayers;
+  char** layers = target_layers(&c->target, c->ma, &nlayers, src_basedir);
+  if (!layers) {
+    str_free(dstpath);
+    return ErrNoMem;
+  }
+
+  if (task->ntotal == 0) {
+    for (u32 i = nlayers; i--;) {
+      if (fs_isdir(layers[i]))
+        task->ntotal++;
+    }
+  }
+
+  u32 nlayers_found = 0;
+  for (u32 i = nlayers; i--;) {
+    if (fs_isdir(layers[i])) {
+      nlayers_found++;
+      task->n++;
+      bgtask_setstatusf(task, "copy {compis}/%s/%s/ -> {sysroot}/%s/",
+        relpath(src_basedir), path_base(layers[i]), dst_basedir);
+      // dlog("copy %s -> %s", relpath(layers[i]), relpath(dstpath.p));
+      if (( err = fs_copyfile(layers[i], dstpath.p, 0) ))
+        break;
+    }
+  }
+
+  if UNLIKELY(nlayers_found == 0) {
+    elog("error: no layers found in %s/ for target %s",
+      path_dir_alloca(layers[0]), path_base(layers[0]));
+    err = ErrNotFound;
+  }
+
+  target_layers_free(c->ma, layers, nlayers);
+  str_free(dstpath);
+  return err;
+}
+
+
 const char* syslib_filename(const target_t* target, syslib_t lib) {
   switch (lib) {
     case SYSLIB_RT:     return "librt.a";
@@ -53,66 +98,19 @@ void syslib_path(compiler_t* c, char buf[PATH_MAX], syslib_t lib) {
 }
 
 
+void remove_syslib(compiler_t* c, syslib_t lib) {
+  char libfile[PATH_MAX];
+  syslib_path(c, libfile, lib);
+  dlog("rm -f %s", relpath(libfile));
+  fs_remove(libfile);
+}
+
+
 static bool is_libfile_missing(compiler_t* c, syslib_t lib) {
   char libfile[PATH_MAX];
   syslib_path(c, libfile, lib);
-  dlog("check %s", relpath(libfile));
+  // dlog("check %s", relpath(libfile));
   return !fs_isfile(libfile);
-}
-
-
-static bool must_build_libc(compiler_t* c) {
-  if (c->opt_nostdlib || c->opt_nolibc || c->target.sys == SYS_none)
-    return false;
-  return is_libfile_missing(c, SYSLIB_C);
-}
-
-
-static err_t copy_files(const char* srcdir, const char* dstdir, bgtask_t* task) {
-  dlog("copy_files %s/ -> %s/", relpath(srcdir), relpath(dstdir));
-
-  DIR* dp = opendir(srcdir);
-  if (dp == NULL) {
-    warn("opendir(%s)", srcdir);
-    return err_errno();
-  }
-
-  char srcfile[PATH_MAX];
-  char dstfile[PATH_MAX];
-
-  usize srcfilelen = MIN(strlen(srcdir), PATH_MAX - 2);
-  memcpy(srcfile, srcdir, srcfilelen);
-  srcfile[srcfilelen++] = '/';
-
-  usize dstfilelen = MIN(strlen(dstdir), PATH_MAX - 2);
-  memcpy(dstfile, dstdir, dstfilelen);
-  dstfile[dstfilelen++] = '/';
-
-  err_t err = 0;
-  struct dirent* d;
-
-  while ((d = readdir(dp)) != NULL) {
-    if (*d->d_name == '.')
-      continue;
-
-    usize srcnamelen = MIN(strlen(d->d_name), PATH_MAX - srcfilelen);
-    memcpy(&srcfile[srcfilelen], d->d_name, srcnamelen);
-    srcfile[srcfilelen + srcnamelen] = 0;
-
-    usize dstnamelen = MIN(strlen(d->d_name), PATH_MAX - dstfilelen);
-    memcpy(&dstfile[dstfilelen], d->d_name, dstnamelen);
-    dstfile[dstfilelen + dstnamelen] = 0;
-
-    task->n++;
-    task->ntotal = MAX(task->ntotal, task->n);
-    bgtask_setstatusf(task, "copy %s", path_base(dstfile));
-
-    dlog("cp %s -> %s", relpath(srcfile), relpath(dstfile));
-    if (( err = fs_copyfile(srcfile, dstfile, 0) ))
-      break;
-  }
-  closedir(dp);
-  return err;
 }
 
 
@@ -132,6 +130,13 @@ static const void* _find_srclist(
   assert(listc > 0);
   safefail("no impl");
   return listp;
+}
+
+
+static bool must_build_libc(compiler_t* c) {
+  if (c->opt_nostdlib || c->opt_nolibc || c->target.sys == SYS_none)
+    return false;
+  return is_libfile_missing(c, SYSLIB_C);
 }
 
 
@@ -167,10 +172,10 @@ static err_t build_libc_musl(compiler_t* c) {
   strlist_addf(&build.cc, "-Iarch/%s", arch_name(c->target.arch));
   strlist_add(&build.cc,  "-Iarch/generic",
                           "-Isrc/include",
-                          "-Isrc/internal" );
-  strlist_addf(&build.cc, "-Iinclude/%s", arch_name(c->target.arch));
-  strlist_add(&build.cc,  "-Iinclude" );
-  strlist_add_array(&build.cc, c->cflags_sysinc.strings, c->cflags_sysinc.len);
+                          "-Isrc/internal");
+  // strlist_addf(&build.cc, "-Iinclude-arch/%s", arch_name(c->target.arch));
+  // strlist_add(&build.cc,  "-Iinclude");
+  strlist_addf(&build.cc, "-isystem%s/include", c->sysroot);
 
   // add sources
   const musl_srclist_t* srclist = FIND_SRCLIST(&c->target, musl_srclist);
@@ -200,10 +205,35 @@ static err_t build_libc_musl(compiler_t* c) {
   ADD_CRT_SOURCE(crtn)
   #undef ADD_CRT_SOURCE
 
-  // build
-  char outfile[PATH_MAX];
-  syslib_path(c, outfile, SYSLIB_C);
-  err = cbuild_build(&build, outfile);
+  u32 njobs = cbuild_njobs(&build) + 1 + (u32)(c->target.arch != ARCH_any);
+  bgtask_t* task = bgtask_start(c->ma, "libc", njobs, 0);
+
+  // copy headers
+  str_t dstdir = path_join(c->sysroot, "include");
+  str_t srcdirs[] = {
+    path_join(build.srcdir, "include"),
+    path_join(build.srcdir, "include-arch", arch_name(c->target.arch)),
+  };
+  for (usize i = 0; i < countof(srcdirs) * (usize)(c->target.arch != ARCH_any); i++) {
+    task->n++;
+    bgtask_setstatusf(task, "copy {compis}%s/ -> {sysroot}%s/",
+      srcdirs[i].p + strlen(coroot), dstdir.p + strlen(c->sysroot));
+    if (( err = fs_copyfile(srcdirs[i].p, dstdir.p, 0) ))
+      break;
+    str_free(srcdirs[i]);
+  }
+  if (c->target.arch != ARCH_any)
+    str_free(srcdirs[1]);
+  str_free(dstdir);
+
+  // build library
+  if (!err) {
+    char outfile[PATH_MAX];
+    syslib_path(c, outfile, SYSLIB_C);
+    err = cbuild_build(&build, outfile, task);
+  }
+
+  bgtask_end(task, "");
 
 end:
   cbuild_dispose(&build);
@@ -240,7 +270,6 @@ static err_t build_libc_wasi(compiler_t* c) {
     "-mthread-model", "single",
     "-w", // silence warnings
     "-DBULK_MEMORY_THRESHOLD=32" );
-  strlist_add_array(&build.cc, c->cflags_sysinc.strings, c->cflags_sysinc.len);
 
   strlist_add(&build.as, "-Os");
   strlist_add(&build.cc, "-Os");
@@ -290,32 +319,18 @@ static err_t build_libc_wasi(compiler_t* c) {
   // build
   char outfile[PATH_MAX];
   syslib_path(c, outfile, SYSLIB_C);
-  err = cbuild_build(&build, outfile);
+  err = cbuild_build(&build, outfile, NULL);
 
   cbuild_dispose(&build);
   return err;
 }
 
 
-typedef struct {
-  compiler_t* c;
-  bgtask_t*   task;
-} filecopytask_t;
-
-
-static err_t copy_sysroot_lib_dir(const char* path, void* tp) {
-  filecopytask_t* t = tp;
-  if (!fs_isdir(path))
-    return 0;
-  char* dstdir = path_join_alloca(t->c->sysroot, "lib");
-  return copy_files(path, dstdir, t->task);
-}
-
-
 static err_t build_libc_darwin(compiler_t* c) {
-  filecopytask_t t = { .c = c, .task = bgtask_start(c->ma, "libc", 0, 0) };
-  err_t err = target_visit_dirs(&c->target, "darwin", copy_sysroot_lib_dir, &t);
-  bgtask_end(t.task, "");
+  // just copy .tbd files and symlinks
+  bgtask_t* task = bgtask_start(c->ma, "libc", 0, 0);
+  err_t err = copy_target_layer_dirs(c, task, "darwin", "lib");
+  bgtask_end(task, "");
   return err;
 }
 
@@ -439,7 +454,7 @@ static err_t build_librt(compiler_t* c) {
 
   char outfile[PATH_MAX];
   syslib_path(c, outfile, SYSLIB_RT);
-  err = cbuild_build(&build, outfile);
+  err = cbuild_build(&build, outfile, NULL);
 
 end:
   cbuild_dispose(&build);
@@ -447,196 +462,18 @@ end:
 }
 
 
-static err_t build_libcxx(compiler_t* c) {
-  cbuild_t build;
-  cbuild_init(&build, c, "libc++");
-  build.srcdir = path_join_alloca(coroot, "libcxx");
-
-  const char* common_flags[] = {
-    "-fPIC",
-    "-fvisibility=hidden",
-    "-fvisibility-inlines-hidden",
-    "-funwind-tables",
-    "-Wno-user-defined-literals",
-    "-faligned-allocation",
-    strcat_alloca("-I", build.srcdir, "/include"),
-
-    "-D_LIBCPP_BUILDING_LIBRARY",
-    "-D_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER",
-    "-DLIBCXX_BUILDING_LIBCXXABI",
-    "-D_LIBCXXABI_DISABLE_VISIBILITY_ANNOTATIONS",
-    "-D_LIBCPP_DISABLE_VISIBILITY_ANNOTATIONS",
-    "-D_LIBCPP_DISABLE_NEW_DELETE_DEFINITIONS",
-    "-D_LIBCPP_HAS_NO_VENDOR_AVAILABILITY_ANNOTATIONS",
-    "-D_LIBCPP_ABI_VERSION=" CO_STRX(CO_LIBCXX_ABI_VERSION),
-    "-D_LIBCPP_ABI_NAMESPACE=__" CO_STRX(CO_LIBCXX_ABI_VERSION),
-
-    ( c->target.sys == SYS_linux || c->target.sys == SYS_wasi ?
-        "-D_LIBCPP_HAS_MUSL_LIBC" : "" ),
-
-    c->target.sys == SYS_wasi ? "-D_LIBCPP_HAS_NO_THREADS" : "",
-  };
-  const char* common_flags_opt[] = {
-    "-Os",
-    "-flto=thin",
-    "-DNDEBUG",
-  };
-  const char* common_flags_debug[] = {
-    "-g",
-    "-O1",
-    // "-D_LIBCPP_ENABLE_DEBUG_MODE=1",
-  };
-
-  strlist_add_array(&build.as, common_flags, countof(common_flags));
-  strlist_add_array(&build.cc, common_flags, countof(common_flags));
-  strlist_add_array(&build.cxx, common_flags, countof(common_flags));
-  if (c->buildmode == BUILDMODE_OPT) {
-    strlist_add_array(&build.as, common_flags_opt, countof(common_flags_opt));
-    strlist_add_array(&build.cc, common_flags_opt, countof(common_flags_opt));
-    strlist_add_array(&build.cxx, common_flags_opt, countof(common_flags_opt));
-  } else {
-    strlist_add_array(&build.as, common_flags_debug, countof(common_flags_debug));
-    strlist_add_array(&build.cc, common_flags_debug, countof(common_flags_debug));
-    strlist_add_array(&build.cxx, common_flags_debug, countof(common_flags_debug));
-  }
-
-  strlist_add(&build.cc,
-    "-std=c11"
-  );
-  strlist_add(&build.cxx,
-    "-std=c++20",
-    "-nostdinc++"
-  );
-
-  if (c->target.sys == SYS_wasi)
-    strlist_add(&build.cxx, "-fno-exceptions");
-
-  strlist_addf(&build.cxx, "-I%s/libcxx/include", coroot);
-  strlist_addf(&build.cxx, "-I%s/libcxxabi/include", coroot);
-  strlist_addf(&build.cxx, "-I%s/libcxx/src", coroot);
-
-  strlist_add_array(&build.cc, c->cflags_sysinc.strings, c->cflags_sysinc.len);
-  strlist_add_array(&build.cxx, c->cflags_sysinc.strings, c->cflags_sysinc.len);
-
-  // temporary memory for storing source filenames
-  mem_t tmpbuf = mem_alloc(c->ma, countof(libcxx_sources) * (PATH_MAX+1));
-  safechecknotnull(tmpbuf.p);
-  memalloc_t ma = memalloc_bump(tmpbuf.p, tmpbuf.size, /*flags*/0);
-  for (u32 i = 0; i < countof(libcxx_sources); i++) {
-    if (c->target.sys == SYS_wasi && str_startswith(libcxx_sources[i], "filesystem/"))
-      continue; // skip
-    char* srcfile = safechecknotnull(path_join_m(ma, "src", libcxx_sources[i]));
-    cbuild_add_source(&build, srcfile);
-  }
-
-  // build
-  char path[PATH_MAX];
-  syslib_path(c, path, SYSLIB_CXX);
-  err_t err = cbuild_build(&build, path);
-
-  mem_free(c->ma, &tmpbuf);
-  cbuild_dispose(&build);
-  return err;
-}
+// CXX_HEADER_INSTALL_DIR: install directory for C++ headers, relative to sysroot
+#define CXX_HEADER_INSTALL_DIR  \
+  "include" PATH_SEP_STR "c++" PATH_SEP_STR "v" CO_STRX(CO_LIBCXX_ABI_VERSION)
 
 
-static err_t build_libcxxabi(compiler_t* c) {
-  cbuild_t build;
-  cbuild_init(&build, c, "libc++abi");
-  build.srcdir = path_join_alloca(coroot, "libcxxabi");
-
-  const char* common_flags[] = {
-    "-fPIC",
-    "-fvisibility=hidden",
-    "-fvisibility-inlines-hidden",
-    "-funwind-tables",
-    "-Wno-user-defined-literals",
-    "-faligned-allocation",
-    "-fstrict-aliasing",
-    strcat_alloca("-I", build.srcdir, "/include"),
-
-    "-D_LIBCPP_DISABLE_EXTERN_TEMPLATE",
-    "-D_LIBCPP_ENABLE_CXX17_REMOVED_UNEXPECTED_FUNCTIONS",
-    "-D_LIBCXXABI_BUILDING_LIBRARY",
-    "-D_LIBCXXABI_DISABLE_VISIBILITY_ANNOTATIONS",
-    "-D_LIBCPP_DISABLE_VISIBILITY_ANNOTATIONS",
-    "-D_LIBCPP_ABI_VERSION=" CO_STRX(CO_LIBCXX_ABI_VERSION),
-    "-D_LIBCPP_ABI_NAMESPACE=__" CO_STRX(CO_LIBCXX_ABI_VERSION),
-
-    ( c->target.sys == SYS_linux || c->target.sys == SYS_wasi ?
-        "-D_LIBCPP_HAS_MUSL_LIBC" : "" ),
-
-    c->target.sys == SYS_wasi ? "-D_LIBCXXABI_HAS_NO_THREADS" : "",
-    c->target.sys == SYS_wasi ? "-D_LIBCPP_HAS_NO_THREADS" : "",
-  };
-  const char* common_flags_opt[] = {
-    "-Os",
-    "-flto=thin",
-    "-DNDEBUG",
-  };
-  const char* common_flags_debug[] = {
-    "-g",
-    "-O1",
-    // "-D_LIBCPP_ENABLE_DEBUG_MODE=1",
-  };
-
-  strlist_add_array(&build.as, common_flags, countof(common_flags));
-  strlist_add_array(&build.cc, common_flags, countof(common_flags));
-  strlist_add_array(&build.cxx, common_flags, countof(common_flags));
-  if (c->buildmode == BUILDMODE_OPT) {
-    strlist_add_array(&build.as, common_flags_opt, countof(common_flags_opt));
-    strlist_add_array(&build.cc, common_flags_opt, countof(common_flags_opt));
-    strlist_add_array(&build.cxx, common_flags_opt, countof(common_flags_opt));
-  } else {
-    strlist_add_array(&build.as, common_flags_debug, countof(common_flags_debug));
-    strlist_add_array(&build.cc, common_flags_debug, countof(common_flags_debug));
-    strlist_add_array(&build.cxx, common_flags_debug, countof(common_flags_debug));
-  }
-
-  strlist_add(&build.cc,
-    "-std=c11"
-  );
-  strlist_add(&build.cxx,
-    "-std=c++20",
-    "-nostdinc++"
-  );
-
-  if (c->target.sys == SYS_wasi)
-    strlist_add(&build.cxx, "-fno-exceptions");
-
-  strlist_addf(&build.cxx, "-I%s/libcxxabi/include", coroot);
-  strlist_addf(&build.cxx, "-I%s/libcxx/include", coroot);
-  strlist_addf(&build.cxx, "-I%s/libcxx/src", coroot);// XXX
-
-  strlist_add_array(&build.cc, c->cflags_sysinc.strings, c->cflags_sysinc.len);
-  strlist_add_array(&build.cxx, c->cflags_sysinc.strings, c->cflags_sysinc.len);
-
-  // temporary memory for storing source filenames
-  mem_t tmpbuf = mem_alloc(c->ma, countof(libcxxabi_sources) * (PATH_MAX+1));
-  safechecknotnull(tmpbuf.p);
-  memalloc_t ma = memalloc_bump(tmpbuf.p, tmpbuf.size, /*flags*/0);
-  for (u32 i = 0; i < countof(libcxxabi_sources); i++) {
-    if (c->target.sys == SYS_wasi &&
-        ( streq(libcxxabi_sources[i], "cxa_exception.cpp") ||
-          streq(libcxxabi_sources[i], "cxa_personality.cpp") ||
-          streq(libcxxabi_sources[i], "cxa_thread_atexit.cpp") ))
-    {
-      // WASM/WASI doesn't support exceptions and is single-threaded.
-      // TODO: also exclude "cxa_exception_storage.cpp"?
-      continue;
-    }
-    char* srcfile = safechecknotnull(path_join_m(ma, "src", libcxxabi_sources[i]));
-    cbuild_add_source(&build, srcfile);
-  }
-
-  // build
-  char path[PATH_MAX];
-  syslib_path(c, path, SYSLIB_CXXABI);
-  err_t err = cbuild_build(&build, path);
-
-  mem_free(c->ma, &tmpbuf);
-  cbuild_dispose(&build);
-  return err;
+static err_t copy_cxx_headers_dir(compiler_t* c, const char* projdir, bgtask_t* task) {
+  char* srcdir = path_join_alloca(projdir, "include");
+  char* dstdir = path_join_alloca(c->sysroot, CXX_HEADER_INSTALL_DIR);
+  task->n++;
+  bgtask_setstatusf(task, "copy {compis}%s/ -> {sysroot}%s/",
+    srcdir + strlen(coroot), dstdir + strlen(c->sysroot));
+  return fs_copyfile(srcdir, dstdir, 0);
 }
 
 
@@ -695,7 +532,7 @@ static err_t build_libunwind(compiler_t* c) {
     "-nostdlib++",
     "-nostdinc++"
   );
-  strlist_addf(&build.cxx, "-I%s/lib/libcxx/include", coroot);
+  // strlist_addf(&build.cxx, "-I%s/lib/libcxx/include", coroot);
 
   strlist_add_array(&build.cc, c->cflags_sysinc.strings, c->cflags_sysinc.len);
   strlist_add_array(&build.cxx, c->cflags_sysinc.strings, c->cflags_sysinc.len);
@@ -709,11 +546,21 @@ static err_t build_libunwind(compiler_t* c) {
     cbuild_add_source(&build, srcfile);
   }
 
-  // build
-  char path[PATH_MAX];
-  syslib_path(c, path, SYSLIB_UNWIND);
-  err_t err = cbuild_build(&build, path);
+  u32 njobs = cbuild_njobs(&build) + 1;
+  bgtask_t* task = bgtask_start(c->ma, build.name, njobs, 0);
 
+  // copy headers
+  err_t err = 0;
+  // err_t err = copy_cxx_headers_dir(c, build.srcdir, task);
+
+  // build library
+  if (!err) {
+    char outfile[PATH_MAX];
+    syslib_path(c, outfile, SYSLIB_UNWIND);
+    err = cbuild_build(&build, outfile, task);
+  }
+
+  bgtask_end(task, "");
   mem_free(c->ma, &tmpbuf);
   cbuild_dispose(&build);
   return err;
@@ -724,6 +571,277 @@ static bool must_build_libunwind(compiler_t* c) {
   if (c->target.sys == SYS_wasi)
     return false;
   return is_libfile_missing(c, SYSLIB_UNWIND);
+}
+
+
+static err_t gen_libcxx_config(compiler_t* c) {
+  err_t err = 0;
+
+  // example of __config_site for x86_64-macos, generated by libcxx cmake:
+  //   #define _LIBCPP_ABI_VERSION 1
+  //   #define _LIBCPP_ABI_NAMESPACE __1
+  //   /* #undef _LIBCPP_ABI_FORCE_ITANIUM */
+  //   /* #undef _LIBCPP_ABI_FORCE_MICROSOFT */
+  //   /* #undef _LIBCPP_HAS_NO_THREADS */
+  //   /* #undef _LIBCPP_HAS_NO_MONOTONIC_CLOCK */
+  //   /* #undef _LIBCPP_HAS_MUSL_LIBC */
+  //   /* #undef _LIBCPP_HAS_THREAD_API_PTHREAD */
+  //   /* #undef _LIBCPP_HAS_THREAD_API_EXTERNAL */
+  //   /* #undef _LIBCPP_HAS_THREAD_API_WIN32 */
+  //   /* #undef _LIBCPP_HAS_THREAD_LIBRARY_EXTERNAL */
+  //   /* #undef _LIBCPP_DISABLE_VISIBILITY_ANNOTATIONS */
+  //   #define _LIBCPP_HAS_NO_VENDOR_AVAILABILITY_ANNOTATIONS
+  //   /* #undef _LIBCPP_NO_VCRUNTIME */
+  //   /* #undef _LIBCPP_TYPEINFO_COMPARISON_IMPLEMENTATION */
+  //   /* #undef _LIBCPP_HAS_NO_FILESYSTEM_LIBRARY */
+  //   /* #undef _LIBCPP_HAS_PARALLEL_ALGORITHMS */
+  //   /* #undef _LIBCPP_HAS_NO_RANDOM_DEVICE */
+  //   /* #undef _LIBCPP_HAS_NO_LOCALIZATION */
+  //   /* #undef _LIBCPP_HAS_NO_WIDE_CHARACTERS */
+  //   #define _LIBCPP_ENABLE_ASSERTIONS_DEFAULT 0
+  //   /* #undef _LIBCPP_ENABLE_DEBUG_MODE */
+  //
+
+  str_t contents = str_make(""
+    "#ifndef _LIBCPP___CONFIG_SITE\n"
+    "#define _LIBCPP___CONFIG_SITE\n"
+    "\n"
+    "#define _LIBCPP_ABI_VERSION " CO_STRX(CO_LIBCXX_ABI_VERSION) "\n"
+    "#define _LIBCPP_ABI_NAMESPACE __" CO_STRX(CO_LIBCXX_ABI_VERSION) "\n"
+    "#define _LIBCPP_DISABLE_EXTERN_TEMPLATE\n"
+    "#define _LIBCPP_DISABLE_NEW_DELETE_DEFINITIONS\n"
+    "#define _LIBCPP_DISABLE_VISIBILITY_ANNOTATIONS\n"
+    "#define _LIBCPP_ENABLE_CXX17_REMOVED_UNEXPECTED_FUNCTIONS\n"
+    "#define _LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER\n"
+    "#define _LIBCPP_HAS_NO_VENDOR_AVAILABILITY_ANNOTATIONS\n"
+    "\n");
+
+  bool ok = contents.len > 0;
+
+  if (c->target.sys == SYS_wasi) {
+    ok &= str_append(&contents,
+      "#define _LIBCPP_HAS_NO_THREADS\n"
+      "#define _LIBCPP_NO_EXCEPTIONS\n");
+  }
+
+  if (c->target.sys == SYS_linux || c->target.sys == SYS_wasi)
+    ok &= str_append(&contents, "#define _LIBCPP_HAS_MUSL_LIBC\n");
+
+  ok &= str_append(&contents, "#endif // _LIBCPP___CONFIG_SITE\n");
+
+  if (!ok) {
+    err = ErrNoMem;
+  } else {
+    char* path = path_join_alloca(c->sysroot, CXX_HEADER_INSTALL_DIR, "__config_site");
+    vlog("creating %s", relpath(path));
+    err = fs_writefile(path, 0644, str_slice(contents));
+    if (err == ErrNotFound) {
+      err = fs_mkdirs(path_dir_alloca(path), 0755, 0);
+      if (!err || err == ErrExists)
+        err = fs_writefile(path, 0644, str_slice(contents));
+    }
+  }
+
+  str_free(contents);
+  return err;
+}
+
+
+static err_t build_libcxxabi(compiler_t* c) {
+  err_t err = gen_libcxx_config(c);
+  if (err)
+    return err;
+
+  cbuild_t build;
+  cbuild_init(&build, c, "libc++abi");
+  build.srcdir = path_join_alloca(coroot, "libcxxabi");
+
+  const char* common_flags[] = {
+    "-fPIC",
+    "-fvisibility=hidden",
+    "-fvisibility-inlines-hidden",
+    "-funwind-tables",
+    "-Wno-user-defined-literals",
+    "-faligned-allocation",
+    "-fstrict-aliasing",
+    strcat_alloca("-I", build.srcdir, "/include"),
+
+    "-D_LIBCXXABI_BUILDING_LIBRARY",
+    c->target.sys == SYS_wasi ? "-D_LIBCXXABI_HAS_NO_THREADS" : "",
+    "-DLIBCXX_BUILDING_LIBCXXABI",
+    "-D_LIBCXXABI_DISABLE_VISIBILITY_ANNOTATIONS",
+  };
+  const char* common_flags_opt[] = {
+    "-Os",
+    "-flto=thin",
+    "-DNDEBUG",
+  };
+  const char* common_flags_debug[] = {
+    "-g",
+    "-O1",
+    // "-D_LIBCPP_ENABLE_DEBUG_MODE=1",
+  };
+
+  strlist_add_array(&build.as, common_flags, countof(common_flags));
+  strlist_add_array(&build.cc, common_flags, countof(common_flags));
+  strlist_add_array(&build.cxx, common_flags, countof(common_flags));
+  if (c->buildmode == BUILDMODE_OPT) {
+    strlist_add_array(&build.as, common_flags_opt, countof(common_flags_opt));
+    strlist_add_array(&build.cc, common_flags_opt, countof(common_flags_opt));
+    strlist_add_array(&build.cxx, common_flags_opt, countof(common_flags_opt));
+  } else {
+    strlist_add_array(&build.as, common_flags_debug, countof(common_flags_debug));
+    strlist_add_array(&build.cc, common_flags_debug, countof(common_flags_debug));
+    strlist_add_array(&build.cxx, common_flags_debug, countof(common_flags_debug));
+  }
+
+  strlist_add(&build.cc,
+    "-std=c11"
+  );
+  strlist_add(&build.cxx,
+    "-std=c++20",
+    "-nostdinc++"
+  );
+
+  if (c->target.sys == SYS_wasi)
+    strlist_add(&build.cxx, "-fno-exceptions");
+
+  strlist_addf(&build.cxx, "-I%s/libcxxabi/include", coroot);
+  strlist_addf(&build.cxx, "-I%s/libunwind/include", coroot);
+  strlist_addf(&build.cxx, "-I%s/libcxx/include", coroot);
+  strlist_addf(&build.cxx, "-I%s/libcxx/src", coroot);// XXX
+
+  strlist_add_array(&build.cc, c->cflags_sysinc.strings, c->cflags_sysinc.len);
+  strlist_add_array(&build.cxx, c->cflags_sysinc.strings, c->cflags_sysinc.len);
+
+  // temporary memory for storing source filenames
+  mem_t tmpbuf = mem_alloc(c->ma, countof(libcxxabi_sources) * (PATH_MAX+1));
+  safechecknotnull(tmpbuf.p);
+  memalloc_t ma = memalloc_bump(tmpbuf.p, tmpbuf.size, /*flags*/0);
+  for (u32 i = 0; i < countof(libcxxabi_sources); i++) {
+    if (c->target.sys == SYS_wasi &&
+        ( streq(libcxxabi_sources[i], "cxa_exception.cpp") ||
+          streq(libcxxabi_sources[i], "cxa_personality.cpp") ||
+          streq(libcxxabi_sources[i], "cxa_thread_atexit.cpp") ))
+    {
+      // WASM/WASI doesn't support exceptions and is single-threaded.
+      // TODO: also exclude "cxa_exception_storage.cpp"?
+      continue;
+    }
+    char* srcfile = safechecknotnull(path_join_m(ma, "src", libcxxabi_sources[i]));
+    cbuild_add_source(&build, srcfile);
+  }
+
+  u32 njobs = cbuild_njobs(&build) + 1;
+  bgtask_t* task = bgtask_start(c->ma, build.name, njobs, 0);
+
+  // copy headers
+  // err = copy_cxx_headers_dir(c, build.srcdir, task);
+
+  // build library
+  if (!err) {
+    char outfile[PATH_MAX];
+    syslib_path(c, outfile, SYSLIB_CXXABI);
+    err = cbuild_build(&build, outfile, task);
+  }
+
+  bgtask_end(task, "");
+  mem_free(c->ma, &tmpbuf);
+  cbuild_dispose(&build);
+  return err;
+}
+
+
+static err_t build_libcxx(compiler_t* c) {
+  cbuild_t build;
+  cbuild_init(&build, c, "libc++");
+  build.srcdir = path_join_alloca(coroot, "libcxx");
+
+  const char* common_flags[] = {
+    "-fPIC",
+    "-fvisibility=hidden",
+    "-fvisibility-inlines-hidden",
+    "-funwind-tables",
+    "-Wno-user-defined-literals",
+    "-faligned-allocation",
+    strcat_alloca("-I", build.srcdir, "/include"),
+
+    "-D_LIBCPP_BUILDING_LIBRARY",
+    "-DLIBCXX_BUILDING_LIBCXXABI",
+    "-D_LIBCXXABI_DISABLE_VISIBILITY_ANNOTATIONS",
+  };
+  const char* common_flags_opt[] = {
+    "-Os",
+    "-flto=thin",
+    "-DNDEBUG",
+  };
+  const char* common_flags_debug[] = {
+    "-g",
+    "-O1",
+    // "-D_LIBCPP_ENABLE_DEBUG_MODE=1",
+  };
+
+  strlist_add_array(&build.as, common_flags, countof(common_flags));
+  strlist_add_array(&build.cc, common_flags, countof(common_flags));
+  strlist_add_array(&build.cxx, common_flags, countof(common_flags));
+  if (c->buildmode == BUILDMODE_OPT) {
+    strlist_add_array(&build.as, common_flags_opt, countof(common_flags_opt));
+    strlist_add_array(&build.cc, common_flags_opt, countof(common_flags_opt));
+    strlist_add_array(&build.cxx, common_flags_opt, countof(common_flags_opt));
+  } else {
+    strlist_add_array(&build.as, common_flags_debug, countof(common_flags_debug));
+    strlist_add_array(&build.cc, common_flags_debug, countof(common_flags_debug));
+    strlist_add_array(&build.cxx, common_flags_debug, countof(common_flags_debug));
+  }
+
+  strlist_add(&build.cc,
+    "-std=c11"
+  );
+  strlist_add(&build.cxx,
+    "-std=c++20",
+    "-nostdinc++"
+  );
+
+  if (c->target.sys == SYS_wasi)
+    strlist_add(&build.cxx, "-fno-exceptions");
+
+  strlist_addf(&build.cxx, "-I%s/libcxx/include", coroot);
+  strlist_addf(&build.cxx, "-I%s/libcxxabi/include", coroot);
+  strlist_addf(&build.cxx, "-I%s/libcxx/src", coroot);
+  // strlist_addf(&build.cxx, "-isystem%s/include", c->sysroot);
+
+  strlist_add_array(&build.cc, c->cflags_sysinc.strings, c->cflags_sysinc.len);
+  strlist_add_array(&build.cxx, c->cflags_sysinc.strings, c->cflags_sysinc.len);
+
+  // temporary memory for storing source filenames
+  mem_t tmpbuf = mem_alloc(c->ma, countof(libcxx_sources) * (PATH_MAX+1));
+  safechecknotnull(tmpbuf.p);
+  memalloc_t ma = memalloc_bump(tmpbuf.p, tmpbuf.size, /*flags*/0);
+  for (u32 i = 0; i < countof(libcxx_sources); i++) {
+    if (c->target.sys == SYS_wasi && str_startswith(libcxx_sources[i], "filesystem/"))
+      continue; // skip
+    char* srcfile = safechecknotnull(path_join_m(ma, "src", libcxx_sources[i]));
+    cbuild_add_source(&build, srcfile);
+  }
+
+  u32 njobs = cbuild_njobs(&build) + 1;
+  bgtask_t* task = bgtask_start(c->ma, build.name, njobs, 0);
+
+  // copy headers
+  err_t err = 0;
+  // err_t err = copy_cxx_headers_dir(c, build.srcdir, task);
+
+  // build library
+  if (!err) {
+    char outfile[PATH_MAX];
+    syslib_path(c, outfile, SYSLIB_CXX);
+    err = cbuild_build(&build, outfile, task);
+  }
+
+  bgtask_end(task, "");
+  mem_free(c->ma, &tmpbuf);
+  cbuild_dispose(&build);
+  return err;
 }
 
 
@@ -751,34 +869,61 @@ static err_t create_ld_symlinks(compiler_t* c) {
 }
 
 
+#define SYSINC_HEADERS_STAMPFILE ".co-ok"
+
+
+static bool must_copy_sysinc_headers(compiler_t* c) {
+  char* stampfile = path_join_alloca(c->sysroot, "include", SYSINC_HEADERS_STAMPFILE);
+  return !fs_isfile(stampfile);
+}
+
+
+static err_t copy_sysinc_headers(compiler_t* c) {
+  bgtask_t* task = bgtask_start(c->ma, "sysinc", 0, 0);
+  err_t err = copy_target_layer_dirs(c, task, "sysinc", "include");
+  if (!err) {
+    char* stampfile = path_join_alloca(c->sysroot, "include", SYSINC_HEADERS_STAMPFILE);
+    err = fs_touch(stampfile, 0644);
+  }
+  bgtask_end(task, "");
+  return err;
+}
+
+
 static err_t build_syslibs(compiler_t* c, int flags) {
   err_t err = 0;
   lockfile_t lockfile;
-  char* lockfile_path = path_join_alloca(c->sysroot, "syslibs-build.lock");
+  char* lockfile_path = path_join_alloca(c->sysroot, "sysroot-build.lock");
   long lockee_pid;
 
   if (( err = lockfile_trylock(&lockfile, lockfile_path, &lockee_pid) )) {
-    if (err != ErrExists)
+    if (err != ErrExists) {
+      vlog("lockfile_trylock '%s' failed: %s", lockfile_path, err_str(err));
       return err;
+    }
     log("waiting for compis (pid %ld) to finish...", lockee_pid);
-    if (( err = lockfile_lock(&lockfile, lockfile_path) ))
+    if (( err = lockfile_lock(&lockfile, lockfile_path) )) {
+      vlog("lockfile_lock '%s' failed: %s", lockfile_path, err_str(err));
       return err;
+    }
   }
 
-  // note: must check again in case another process won and built the libs
+  // note: must check again after locking in case another process "won"
 
+  if (!err && must_copy_sysinc_headers(c))
+    err = copy_sysinc_headers(c);
   if (!err && must_build_libc(c))
     err = build_libc(c);
   if (!err && is_libfile_missing(c, SYSLIB_RT))
     err = build_librt(c);
 
   if ((flags & SYSLIB_BUILD_LIBCXX) && !c->opt_nostdlib) {
-    if (!err && is_libfile_missing(c, SYSLIB_CXX))
-      err = build_libcxx(c);
-    if (!err && is_libfile_missing(c, SYSLIB_CXXABI))
-      err = build_libcxxabi(c);
     if (!err && must_build_libunwind(c))
       err = build_libunwind(c);
+    if (!err && is_libfile_missing(c, SYSLIB_CXXABI))
+      err = build_libcxxabi(c);
+    if (!err && is_libfile_missing(c, SYSLIB_CXX))
+      err = build_libcxx(c);
   }
 
   lockfile_unlock(&lockfile);
@@ -787,43 +932,10 @@ static err_t build_syslibs(compiler_t* c, int flags) {
 }
 
 
-#define OK_MARKER_FILE ".co-ok"
-
-
-static err_t copy_sysinc_headers(compiler_t* c) {
-  err_t err = 0;
-  char* dstpath = path_join_alloca(c->sysroot, "include", OK_MARKER_FILE);
-  if (fs_isfile(dstpath))
-    return 0;
-
-  usize marker_slashpos = strlen(dstpath) - strlen(PATH_SEPARATOR_STR OK_MARKER_FILE);
-  dstpath[marker_slashpos] = 0;
-
-  u32 nlayers;
-  char** layers = target_layers(&c->target, c->ma, &nlayers, "sysinc");
-  if (!layers)
-    return ErrNoMem;
-
-  for (u32 i = nlayers; i--;) {
-    if (fs_isdir(layers[i])) {
-      if (( err = fs_copyfile(layers[i], dstpath, 0) ))
-        break;
-    }
-  }
-
-  // create "OK" marker file
-  if (err == 0) {
-    dstpath[marker_slashpos] = PATH_SEPARATOR;
-    err = fs_touch(dstpath, 0644);
-  }
-
-  target_layers_free(c->ma, layers, nlayers);
-  return err;
-}
-
-
 err_t build_syslibs_if_needed(compiler_t* c, int flags) {
+  // note: this function may be called by multiple processes at once
   err_t err = 0;
+  if (must_copy_sysinc_headers(c)) goto build;
   if (must_build_libc(c)) goto build;
   if (is_libfile_missing(c, SYSLIB_RT)) goto build;
   if ((flags & SYSLIB_BUILD_LIBCXX) && !c->opt_nostdlib) {
@@ -836,8 +948,6 @@ build:
   err = build_syslibs(c, flags);
 finish:
   if (!err)
-    err = copy_sysinc_headers(c);
-  if (!err)
-    err = create_ld_symlinks(c);
+    err = create_ld_symlinks(c); // mt-safe
   return err;
 }

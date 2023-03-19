@@ -3,6 +3,7 @@
 #pragma once
 #include "compiler.h"
 #include "strlist.h"
+#include "bgtask.h"
 ASSUME_NONNULL_BEGIN
 
 typedef u8 cobj_srctype_t;
@@ -56,9 +57,13 @@ bool cobj_addcflagf(cbuild_t*, cobj_t*, const char* fmt, ...) ATTR_FORMAT(printf
 void cobj_setobjfilef(cbuild_t*, cobj_t*, const char* fmt, ...) ATTR_FORMAT(printf,3,4);
 
 void cbuild_end_config(cbuild_t* b);
-inline static bool cbuild_config_ended(cbuild_t* b) { return b->cc_snapshot.len != 0; }
+inline static bool cbuild_config_ended(const cbuild_t* b) {
+  return b->cc_snapshot.len != 0;
+}
 
-err_t cbuild_build(cbuild_t* b, const char* outfile);
+u32 cbuild_njobs(const cbuild_t* b); // number of task jobs in cbuild_build
+
+err_t cbuild_build(cbuild_t* b, const char* outfile, bgtask_t* nullable task);
 
 inline static bool cbuild_ok(cbuild_t* b) {return b->cc.ok & b->cxx.ok & b->as.ok; }
 

@@ -181,16 +181,36 @@ end:
 }
 
 
-usize path_join(char* dst, usize dstcap, const char* path1, const char* path2) {
-  usize len = (usize)snprintf(dst, dstcap, "%s/%s", path1, path2);
-  return path_cleanx(dst, dstcap, dst, MIN(len, dstcap - 1));
+str_t path_joinv(usize count, va_list ap) {
+  str_t s = {0};
+  if LIKELY(str_appendv(&s, PATH_SEP, count, ap)) {
+    s.len = path_cleanx(s.p, s.cap, s.p, s.len);
+    if UNLIKELY(s.len >= s.cap) {
+      str_free(s);
+      s.p = NULL;
+      s.cap = 0;
+      s.len = 0;
+    }
+  }
+  return s;
+}
+
+
+str_t _path_join(usize count, ...) {
+  va_list ap;
+  va_start(ap, count);
+  str_t s = path_joinv(count, ap);
+  va_end(ap);
+  return s;
 }
 
 
 char* nullable path_join_m(memalloc_t ma, const char* path1, const char* path2) {
   mem_t m = mem_alloc(ma, strlen(path1) + 1 + strlen(path2) + 1);
-  if (m.p)
-    path_join(m.p, m.size, path1, path2);
+  if (!m.p)
+    return NULL;
+  usize len = (usize)snprintf(m.p, m.size, "%s/%s", path1, path2);
+  path_cleanx(m.p, m.size, m.p, MIN(len, m.size - 1));
   return m.p;
 }
 

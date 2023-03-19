@@ -164,44 +164,6 @@ usize target_fmt(const target_t* t, char* buf, usize bufcap) {
 }
 
 
-err_t target_visit_dirs(
-  target_t* t, const char* basedir, target_str_visitor_t visitor, void* ctx)
-{
-  char path[PATH_MAX];
-
-  usize offs = (usize)snprintf(path, sizeof(path), "%s/%s", coroot, basedir);
-  safecheck(offs < sizeof(path) - 1);
-  if (offs >= sizeof(path) - 1)
-    offs = sizeof(path) - 2;
-  usize pathcap = sizeof(path) - offs;
-  if (*basedir) {
-    pathcap--;
-    path[offs++] = '/';
-  }
-
-  err_t err = 0;
-
-  target_fmt(t, &path[offs], pathcap);
-  if (( err = visitor(path, ctx) ))
-    goto end;
-
-  if (*t->sysver) {
-    snprintf(&path[offs], pathcap, "any-%s.%s", sys_name(t->sys), t->sysver);
-    if (( err = visitor(path, ctx) ))
-      goto end;
-    snprintf(&path[offs], pathcap, "%s-%s", arch_name(t->arch), sys_name(t->sys));
-    if (( err = visitor(path, ctx) ))
-      goto end;
-  }
-
-  snprintf(&path[offs], pathcap, "any-%s", sys_name(t->sys));
-  err = visitor(path, ctx);
-
-end:
-  return err;
-}
-
-
 char** nullable target_layers(
   const target_t* target, memalloc_t ma, u32* len_out, const char* basedir)
 {
@@ -249,10 +211,17 @@ char** nullable target_layers(
   for (usize i = 1; i < cap; i++)
     layers[i] = layers[i - 1] + PATH_MAX;
 
-  // write "coroot/basedir/" or "coroot/" to layers
-  usize diroffs = (usize)snprintf(layers[0], PATH_MAX,
-    "%s" PATH_SEPARATOR_STR "%s", coroot, basedir);
-  safecheck(diroffs < PATH_MAX - 1);
+  usize diroffs;
+  if (*basedir && path_isabs(basedir)) {
+    diroffs = strlen(basedir);
+    safecheck(diroffs < PATH_MAX);
+    memcpy(layers[0], basedir, diroffs);
+  } else {
+    // write "coroot/basedir" or "coroot" to layers
+    diroffs = (usize)snprintf(
+      layers[0], PATH_MAX, "%s" PATH_SEP_STR "%s", coroot, basedir);
+    safecheck(diroffs < PATH_MAX - 1);
+  }
   if (diroffs >= PATH_MAX - 1)
     diroffs = PATH_MAX - 2;
   usize strcap = PATH_MAX - diroffs; // remaining string storage capacity

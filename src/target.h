@@ -74,12 +74,6 @@ void print_supported_targets(); // prints with log()
 
 typedef err_t (*target_str_visitor_t)(const char* s, void* ctx);
 
-// target_visit_dirs calls visitor for each possible dir for target,
-// rooted in "{coroot}/{basedir}/", or if basedir is "", just "{coroot}/".
-// Returns the first error returned from visitor.
-// DEPRECATED: use target_layers instead
-err_t target_visit_dirs(target_t*, const char* basedir, target_str_visitor_t, void* ctx);
-
 // target_layers returns all possible coroot "layers" for target
 // as absolute paths, rooted in "{coroot}/{basedir}/", or "{coroot}/" if basedir is "".
 // The resulting array of c-strings is at filevp, the length is the return value.

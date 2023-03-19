@@ -133,12 +133,13 @@ find . -empty -type d -delete
 # We needed to do this for the llvmbox-dedup-target-files tool to work.
 # Now we need to rename the dirs so that include/ is found.
 
+mkdir include-arch
 mv include/any-linux include2
 for arch in "${SUPPORTED_ARCHS[@]}"; do
   f=include/$arch-linux
   [ -d "$f" ] || continue
-  [ ! -e include2/$arch ] || _err "duplicate entry: include2/$arch"
-  mv "$f" include2/$arch
+  # [ ! -e include2/$arch ] || _err "duplicate entry: include2/$arch"
+  mv "$f" include-arch/$arch
 done
 rmdir include
 mv include2 include

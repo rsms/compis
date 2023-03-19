@@ -155,19 +155,16 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
     // add include flags for system headers and libc
     if (!nostdinc && !freestanding && !custom_sysroot) {
       if (iscxx && !c.opt_nolibcxx) {
+        // We need to specify C++ include directory like this so that it is searched
+        // before clang resource dir.
+        // If we don't do this, the wrong cstddef header will be used
+        // and we'll see errors like this:
+        //   "error: no member named 'nullptr_t' in the global namespace"
+        // strlist_addf(&args, "-isystem%s/include/c++/v1", c.sysroot);
+
         strlist_addf(&args, "-isystem%s/libcxx/include", coroot);
         strlist_addf(&args, "-isystem%s/libcxxabi/include", coroot);
-        // strlist_addf(&args, "-isystem%s/libunwind/include", coroot);
-        strlist_add(&args,
-          "-D_LIBCPP_ABI_VERSION=" CO_STRX(CO_LIBCXX_ABI_VERSION),
-          "-D_LIBCPP_ABI_NAMESPACE=__" CO_STRX(CO_LIBCXX_ABI_VERSION),
-          "-D_LIBCPP_DISABLE_VISIBILITY_ANNOTATIONS",
-          "-D_LIBCXXABI_DISABLE_VISIBILITY_ANNOTATIONS",
-          "-D_LIBCPP_HAS_NO_VENDOR_AVAILABILITY_ANNOTATIONS",
-          target->sys == SYS_wasi ? "-D_LIBCPP_HAS_NO_THREADS" : "",
-          ( target->sys == SYS_linux || target->sys == SYS_wasi ?
-            "-D_LIBCPP_HAS_MUSL_LIBC" : "")
-        );
+        strlist_addf(&args, "-isystem%s/libunwind/include", coroot);
       }
       strlist_add_array(&args, c.cflags_sysinc.strings, c.cflags_sysinc.len);
     }

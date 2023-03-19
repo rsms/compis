@@ -65,10 +65,10 @@ rm "$LIBCXX_DST/src/filesystem/int128_builtins.cpp"
 # remove empty directories
 find "$LIBCXX_DST" -type d -empty -delete
 
-# disable inclusion of __config_site header
-sed -E -i '' \
-  -e 's/(#include <__config_site>)/\/\/ \1 [compis]/' \
-  "$LIBCXX_DST/include/__config"
+# # disable inclusion of __config_site header
+# sed -E -i '' \
+#   -e 's/(#include <__config_site>)/\/\/ \1 [compis]/' \
+#   "$LIBCXX_DST/include/__config"
 
 echo "generating $(_relpath "$LIBCXX_H_FILE")"
 cat << END > "$LIBCXX_H_FILE"

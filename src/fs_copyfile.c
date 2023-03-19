@@ -33,13 +33,11 @@ static isize copy_fd_fd(int src_fd, int dst_fd, char* buf, usize bufsize) {
 }
 
 
-static err_t copy_file(const char* src, const char* dst) {
+static err_t copy_file(const char* src, const char* dst, int flags) {
   int src_fd = -1, dst_fd = -1;
   char* dstdir = NULL;
   int nretries = 0;
   int errno2;
-
-  vlog("copy file %s -> %s", relpath(src), relpath(dst));
 
 retry:
   errno = 0;
@@ -79,7 +77,7 @@ retry:
     // end
   } else if (errno == ENOENT && dstdir == NULL) {
     dstdir = path_dir_alloca(dst);
-    fs_mkdirs(dstdir, 0755);
+    fs_mkdirs(dstdir, 0755, flags);
     goto retry;
   } else if (errno == EEXIST) {
     unlink(dst);
@@ -94,7 +92,7 @@ end:
 }
 
 
-static err_t copy_symlink(const char* src, const char* dst, mode_t mode) {
+static err_t copy_symlink(const char* src, const char* dst, mode_t mode, int flags) {
   char target[PATH_MAX];
   char* dstdir = NULL;
   int nretries = 0;
@@ -108,12 +106,13 @@ static err_t copy_symlink(const char* src, const char* dst, mode_t mode) {
 
   mode &= (S_IRWXU | S_IRWXG | S_IRWXO);
 
-  vlog("create symlink %s -> %s", relpath(dst), relpath(target));
+  if (flags & FS_VERBOSE)
+    vlog("create symlink %s -> %s", relpath(dst), relpath(target));
 
 retry:
   if (symlink(target, dst) == 0) {
-    int flags = AT_SYMLINK_NOFOLLOW;
-    if (fchmodat(AT_FDCWD, dst, mode, flags) != 0) {
+    int chmod_flags = AT_SYMLINK_NOFOLLOW;
+    if (fchmodat(AT_FDCWD, dst, mode, chmod_flags) != 0) {
       err_t err = err_errno();
       vlog("failed to set mode on symlink %s: %s", relpath(dst), strerror(errno));
       return err;
@@ -125,7 +124,7 @@ retry:
     // end
   } else if (errno == ENOENT && dstdir == NULL) {
     dstdir = path_dir_alloca(dst);
-    fs_mkdirs(dstdir, 0755); // TODO: handle error
+    fs_mkdirs(dstdir, 0755, flags); // TODO: handle error
     goto retry;
   } else if (errno == EEXIST) {
     unlink(dst);
@@ -138,15 +137,16 @@ retry:
 }
 
 
-static err_t _mkdirs(const char* path, mode_t mode) {
-  err_t err = fs_mkdirs_verbose(path, mode & (S_IRWXU | S_IRWXG | S_IRWXO));
+static err_t _mkdirs(const char* path, mode_t mode, int flags) {
+  mode &= (S_IRWXU | S_IRWXG | S_IRWXO);
+  err_t err = fs_mkdirs(path, mode, flags);
   if (err)
     vlog("failed to create directory '%s': %s", path, err_str(err));
   return err;
 }
 
 
-static err_t copy_dir(const char* src, const char* dst, mode_t mode) {
+static err_t copy_dir(const char* src, const char* dst, mode_t mode, int flags) {
   err_t err;
   memalloc_t ma = memalloc_ctx();
 
@@ -166,7 +166,7 @@ static err_t copy_dir(const char* src, const char* dst, mode_t mode) {
   memcpy(dstpath, dst, dstlen);
 
   // create destination directory (mask mode to get only the permission bits)
-  if (( err = _mkdirs(dst, mode) ))
+  if (( err = _mkdirs(dst, mode, flags) ))
     goto end1;
 
   while (!err && (err = dirwalk_next(dw)) > 0) {
@@ -178,14 +178,14 @@ static err_t copy_dir(const char* src, const char* dst, mode_t mode) {
       case S_IFDIR:
         dirwalk_descend(dw);
         mode = dirwalk_lstat(dw)->st_mode;
-        err = _mkdirs(dstpath, mode);
+        err = _mkdirs(dstpath, mode, flags);
         break;
       case S_IFREG:
-        err = copy_file(dw->path, dstpath);
+        err = copy_file(dw->path, dstpath, flags);
         break;
       case S_IFLNK:
         mode = dirwalk_lstat(dw)->st_mode;
-        err = copy_symlink(dw->path, dstpath, mode);
+        err = copy_symlink(dw->path, dstpath, mode, /*verbose*/false);
         break;
       default:
         err = ErrInvalid;
@@ -208,9 +208,16 @@ err_t fs_copyfile(const char* src, const char* dst, int flags) {
     return err_errno();
 
   switch (st.st_mode & S_IFMT) {
-    case S_IFDIR: return copy_dir(src, dst, st.st_mode);
-    case S_IFREG: return copy_file(src, dst);
-    case S_IFLNK: return copy_symlink(src, dst, st.st_mode);
+    case S_IFDIR:
+      if (flags & FS_VERBOSE)
+        vlog("copy directory %s -> %s", relpath(src), relpath(dst));
+      return copy_dir(src, dst, st.st_mode, flags);
+    case S_IFREG:
+      if (flags & FS_VERBOSE)
+        vlog("copy file %s -> %s", relpath(src), relpath(dst));
+      return copy_file(src, dst, flags);
+    case S_IFLNK:
+      return copy_symlink(src, dst, st.st_mode, flags);
     default:
       vlog("cannot copy %s: unsupported type", src);
       return ErrInvalid;

@@ -93,7 +93,7 @@ static char* _setstatus_begin(bgtask_t* bgt) {
     int n;
     if (bgt->ntotal) {
       int digits = u64log10(bgt->ntotal) * (bgt->flags & BGTASK_FANCY);
-      n = snprintf(buf, avail, " %*u/%u] ", digits, bgt->n, bgt->ntotal);
+      n = snprintf(buf, avail, " %*u/%u] ", digits, bgt->n, MAX(bgt->ntotal, bgt->n));
     } else {
       n = snprintf(buf, avail, " %u] ", bgt->n);
     }
