@@ -25,7 +25,7 @@ char* nullable str_reserve(str_t*, usize len);
 // str_push appends one character, plus a null terminator
 bool str_push(str_t*, char c);
 
-// str_append(str_t* s, const char* adds...)
+// bool str_append(str_t* s, const char* adds...)
 // copies one or more c-strings to the end of s
 #define str_append(s, adds...) __VARG_DISP(_str_append, s, adds)
 
