@@ -8,17 +8,23 @@ cd "$(dirname "$0")"
 
 TEST_NAME=$(basename "$0" .sh)
 
-COEXE=${COEXE:-$OUT_DIR/opt/co}
+COEXE=${COEXE:-}
 COCACHE="${COCACHE:-"$OUT_DIR/$TEST_NAME-cache"}"
 NUM_RACING_PROCS=${NUM_RACING_PROCS:-4}
 
-# build coexe
-BUILD_ARGS=
-case "$COEXE" in
-  */debug/*) BUILD_ARGS="$BUILD_ARGS -debug" ;;
-  *)         BUILD_ARGS="$BUILD_ARGS -no-lto" ;;
-esac
-$BASH "$PROJECT/build.sh" $BUILD_ARGS
+# unless coexe is provided in env, use default build
+if [ -n "$COEXE" ]; then
+  f="$COEXE"
+  [[ "$COEXE" == "/"* ]] || f="$PWD0/$f"
+  [ -e "$f" ] || _err "$COEXE: not found"
+  [ -f "$f" ] || _err "$COEXE: not a file"
+  [ -x "$f" ] || _err "$COEXE: not executable"
+  COEXE="$(realpath "$f")"
+else
+  COEXE="$OUT_DIR/opt/co"
+  echo  "$(_relpath "$PROJECT/build.sh") -no-lto"
+  $BASH "$PROJECT/build.sh" -no-lto
+fi
 
 _build_one() { # <id>
   # build for wasi since it has small syslibs
