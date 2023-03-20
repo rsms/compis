@@ -30,7 +30,7 @@ Options:
   -jN             Run at most N tests in parallel (defaults to $(nproc))
   -1, -j1         Run one test at a time
   --coexe=<file>  Test specific, existing compis executable
-  -v              Verbose output (implies -j1)
+  -v              Verbose output (may be messy unless -j1 is set)
   -h, --help      Show help on stdout and exit
 <testname>
   Only run tests which name matches this glob-style pattern.
@@ -42,7 +42,6 @@ _END
   *)  PATTERNS+=( "$1" ); shift ;;
 esac; done
 
-$VERBOSE && PARALLELISM=1
 [ -n "$PARALLELISM" -a "$PARALLELISM" != 0 ] || PARALLELISM=$(nproc)
 
 #———————————————————————————————————————————————————————————————————————————————————————
@@ -66,6 +65,7 @@ fi
 
 # build co, if needed
 if [ -n "$BUILD_ARGS" ] &&
+   # -n causes ninja to do a "dry run"; check if build is needed
    [[ "$($BASH "$PROJECT/build.sh" $BUILD_ARGS -n)" == "["* ]]
 then
   # note: -n means "dry run"
@@ -138,7 +138,7 @@ source "\$PROJECT/test/libtest.sh"
 END
   cat "$script_src" >> "$script"
 
-  if $VERBOSE && [ $PARALLELISM -eq 1 ]; then
+  if $VERBOSE; then
     echo "[$n/$ntotal] $logname in $(_relpath "$rundir")/"
     if ! (cd "$rundir" && exec "$BASH" "$scriptname"); then
       echo "$(_relpath "$script_path"): FAILED"
