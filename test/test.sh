@@ -151,7 +151,7 @@ END
   local err="$rundir/stderr.log"
 
   if [ $PARALLELISM -gt 1 ]; then
-    $VERBOSE && echo "[$n/$ntotal] $logname: starting"
+    echo "starting $logname"
   else
     printf "[$n/$ntotal] $logname ..."
   fi
