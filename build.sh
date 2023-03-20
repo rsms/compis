@@ -437,14 +437,6 @@ CO_VERSION_GIT=
 [ -d "$PROJECT/.git" ] &&
   CO_VERSION_GIT=$(git -C "$PROJECT" rev-parse HEAD)
 
-# syslib hash
-SYSLIB_HASH_INPUTS=(
-  "$SRC_DIR"/build_syslibs.c \
-  $(echo "$SRC_DIR"/syslib_*.h | sort) \
-)
-SYSLIB_HASH=$(cat "${SYSLIB_HASH_INPUTS[@]}" | _sha256)
-XFLAGS+=( -DCO_SYSLIB_SHA256=$SYSLIB_HASH ) # 64 bytes
-
 # arch-and-system-specific flags
 case "$HOST_ARCH-$HOST_SYS" in
   x86_64-macos)  LDFLAGS_HOST+=( -Wl,-platform_version,macos,10.15,10.15 ) ;;
