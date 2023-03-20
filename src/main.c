@@ -135,15 +135,15 @@ static int ld_main(int argc, char* argv[]) {
 static void coroot_init(memalloc_t ma) {
   const char* envvar = getenv("COROOT");
   if (envvar && *envvar) {
-    coroot = path_abs(ma, envvar);
+    coroot = path_abs(envvar).p;
   } else {
-    coroot = path_dir_m(ma, coexefile);
+    coroot = path_dir(coexefile).p;
     #if DEBUG
       if (str_endswith(coroot, "/out/debug"))
-        coroot = path_join_m(ma, coroot, "../../lib");
+        coroot = path_join(coroot, "../../lib").p;
     #elif !defined(CO_DISTRIBUTION)
       if (str_endswith(coroot, "/out/opt") || str_endswith(coroot, "/out/debug"))
-        coroot = path_join_m(ma, coroot, "../../lib");
+        coroot = path_join(coroot, "../../lib").p;
     #endif
   }
   safecheck(coroot != NULL);
@@ -156,9 +156,9 @@ static void coroot_init(memalloc_t ma) {
 static void cocachedir_init(memalloc_t ma) {
   const char* envvar = getenv("COCACHE");
   if (envvar && *envvar) {
-    cocachedir = path_abs(ma, envvar);
+    cocachedir = path_abs(envvar).p;
   } else {
-    cocachedir = path_join_m(ma, sys_homedir(), COCACHE_DEFAULT "/" CO_VERSION_STR);
+    cocachedir = path_join(sys_homedir(), COCACHE_DEFAULT "/" CO_VERSION_STR).p;
   }
   safecheck(cocachedir != NULL);
 }
