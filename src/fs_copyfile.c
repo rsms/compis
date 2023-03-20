@@ -114,7 +114,7 @@ retry:
     int chmod_flags = AT_SYMLINK_NOFOLLOW;
     if (fchmodat(AT_FDCWD, dst, mode, chmod_flags) != 0) {
       err_t err = err_errno();
-      vlog("failed to set mode on symlink %s: %s", relpath(dst), strerror(errno));
+      elog("failed to set mode on symlink %s: %s", relpath(dst), strerror(errno));
       return err;
     }
     return 0;
@@ -130,7 +130,7 @@ retry:
     unlink(dst);
     goto retry;
   } else {
-    vlog("failed to create symlink %s: %s", dst, strerror(errno));
+    elog("failed to create symlink %s: %s", dst, strerror(errno));
   }
 
   return err_errno();
@@ -141,7 +141,7 @@ static err_t _mkdirs(const char* path, mode_t mode, int flags) {
   mode &= (S_IRWXU | S_IRWXG | S_IRWXO);
   err_t err = fs_mkdirs(path, mode, flags);
   if (err)
-    vlog("failed to create directory '%s': %s", path, err_str(err));
+    elog("failed to create directory '%s': %s", path, err_str(err));
   return err;
 }
 
