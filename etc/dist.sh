@@ -108,7 +108,9 @@ echo "deduplicating identical files using hardlinks"
 "$fdupes" --recurse --linkhard --noempty $DESTDIR >/dev/null
 
 if $TEST; then
-  echo "running tests"
+  echo "running test/test-build-sysroot-race.sh"
+  COEXE=$DESTDIR/compis ./test/test-build-sysroot-race.sh
+  echo "running test/test.sh"
   ./test/test.sh --coexe=$DESTDIR/compis
 fi
 
