@@ -33,13 +33,7 @@ const char* relpath(const char* path) {
 }
 
 
-usize path_dirlen(const char* filename, usize len) {
-  isize i = slastindexofn(filename, len, PATH_SEPARATOR);
-  return strim_end(filename, (usize)MAX(0,i), PATH_SEPARATOR);
-}
-
-
-usize path_dir(char* buf, usize bufcap, const char* path) {
+static usize path_dir_len(const char* path, char* singlecp) {
   // examples:
   //   "a/b/c"    => "a/b"
   //   "a/b//c//" => "a/b"
@@ -49,52 +43,64 @@ usize path_dir(char* buf, usize bufcap, const char* path) {
   //   "/a"       => "/"
   //   "/"        => "/"
   //   "/////"    => "/"
-  char singlec;
-  if (!path || *path == 0) {
-    singlec = '.';
-    goto singlechar;
+  usize pathlen = strlen(path);
+  if (pathlen == 0) {
+    *singlecp = '.';
+    return 1;
   }
-  usize i = strlen(path) - 1;
+  usize i = pathlen - 1;
   // trim away trailing separators, e.g. "a/b//c//" => "a/b//c" (or "//" => "/")
   for (; path[i] == PATH_SEPARATOR; i--) {
     if (i == 0) {
-      singlec = PATH_SEPARATOR;
-      goto singlechar;
+      *singlecp = PATH_SEPARATOR;
+      return 1;
     }
   }
   // skip last component, e.g. "a/b//c" => "a/b//" (or "a" => ".")
   for (; path[i] != PATH_SEPARATOR; i--) {
     if (i == 0) {
-      singlec = '.';
-      goto singlechar;
+      *singlecp = '.';
+      return 1;
     }
   }
   // trim away trailing separators, e.g. "a/b//" => "a/b" (or "/a/" => "/")
   for (; path[i] == PATH_SEPARATOR; i--) {
     if (i == 0) {
-      singlec = PATH_SEPARATOR;
-      goto singlechar;
+      *singlecp = PATH_SEPARATOR;
+      return 1;
     }
   }
-  usize len = MIN(bufcap - 1, i + 1);
-  if (len > 0) {
-    memcpy(buf, path, len);
-    buf[len] = 0;
-  }
-  return i + 1;
-singlechar:
-  if (bufcap > 1 && singlec) *buf++ = singlec;
-  if (bufcap > 0) *buf = 0;
-  return (usize)(singlec != 0);
+  i++;
+  if (i == 1)
+    *singlecp = *path;
+  return i;
 }
 
 
-char* nullable path_dir_m(memalloc_t ma, const char* path) {
-  usize cap = path_dirlen(path, strlen(path)) + 1;
-  char* buf = mem_alloc(ma, cap).p;
-  if (buf)
-    path_dir(buf, cap, path);
-  return buf;
+usize path_dir_buf(char* buf, usize bufcap, const char* path) {
+  char singlec;
+  usize dirlen = path_dir_len(path, &singlec);
+  if (dirlen == 1) {
+    if (bufcap > 1 && singlec) *buf++ = singlec;
+    if (bufcap > 0) *buf = 0;
+    return (usize)(singlec != 0);
+  }
+  usize copylen = MIN(bufcap - 1, dirlen);
+  if (copylen > 0) {
+    memcpy(buf, path, copylen);
+    buf[copylen] = 0;
+  }
+  return dirlen;
+}
+
+
+str_t path_dir(const char* path) {
+  char singlec;
+  usize dirlen = path_dir_len(path, &singlec);
+  assert(dirlen > 0);
+  if (dirlen == 1)
+    path = &singlec;
+  return str_makelen(path, dirlen);
 }
 
 
@@ -205,26 +211,12 @@ str_t _path_join(usize count, ...) {
 }
 
 
-char* nullable path_join_m(memalloc_t ma, const char* path1, const char* path2) {
-  mem_t m = mem_alloc(ma, strlen(path1) + 1 + strlen(path2) + 1);
-  if (!m.p)
-    return NULL;
-  usize len = (usize)snprintf(m.p, m.size, "%s/%s", path1, path2);
-  path_cleanx(m.p, m.size, m.p, MIN(len, m.size - 1));
-  return m.p;
-}
-
-
-char* nullable path_abs(memalloc_t ma, const char* path) {
+str_t path_abs(const char* path) {
   if (path_isabs(path)) {
-    usize pathlen = strlen(path);
-    mem_t m = mem_alloc(ma, pathlen + 1);
-    if (m.p)
-      path_cleanx(m.p, m.size, path, pathlen);
-    return m.p;
-  } else {
-    char cwd[PATH_MAX];
-    safechecknotnull(getcwd(cwd, sizeof(cwd)));
-    return path_join_m(ma, cwd, path);
+    str_t s = str_make(path);
+    path_clean(&s);
+    return s;
   }
+  char cwd[PATH_MAX];
+  return path_join(getcwd(cwd, sizeof(cwd)), path);
 }

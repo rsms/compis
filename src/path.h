@@ -22,16 +22,13 @@ ASSUME_NONNULL_BEGIN
 #define PATH_DELIM     PATH_DELIMITER
 #define PATH_DELIM_STR PATH_DELIMITER_STR
 
-// path_diroffs returns the position of the end of the directory part of path.
-// E.g. "foo/bar/baz" => 7, "foo/" => 3, "foo" => 0.
-// Returns 0 if path does not contain a directory part.
-usize path_dirlen(const char* path, usize len);
+// path_dir returns path without the last component.
+// E.g. "foo/bar/baz.x" => "foo/bar", "/a//b//" => "/a//b", "/lol" => "/"
+str_t path_dir(const char* path) WARN_UNUSED_RESULT;
 
 // path_dir writes all but the last path component to buf.
 // Returns bytes written to buf as if bufcap was infinite.
-// E.g. "foo/bar/baz.x" => "foo/bar", "/lol" => "/"
-usize path_dir(char* buf, usize bufcap, const char* path);
-char* nullable path_dir_m(memalloc_t ma, const char* path);
+usize path_dir_buf(char* buf, usize bufcap, const char* path);
 
 // path_base returns a pointer to the last path element. E.g. "foo/bar/baz.x" => "baz.x"
 // If the path is empty, returns "".
@@ -44,9 +41,11 @@ const char* path_ext(const char* path);
 
 // path_clean resolves parent paths ("..") and eliminates redundant "/" and "./",
 // reducing 'path' to a clean, canonical form. E.g. "a/b/../c//./d" => "a/c/d"
-static char* path_clean(char* path); // returns 'path'
 usize path_cleanx(char* buf, usize bufcap, const char* path, usize pathlen);
-inline static char* path_clean(char* path) {
+inline static void path_clean(str_t* path) {
+  path->len = path_cleanx(path->p, path->cap, path->p, path->len);
+}
+inline static char* path_clean_cstr(char* path) {
   usize len = strlen(path);
   return path_cleanx(path, len + 1, path, len), path;
 }
@@ -63,18 +62,15 @@ inline static char* path_clean(char* path) {
 #define _path_join7(paths...) _path_join(7,paths)
 #define _path_join8(paths...) _path_join(8,paths)
 #define _path_join9(paths...) _path_join(9,paths)
-str_t _path_join(usize count, ...);
-str_t path_joinv(usize count, va_list ap);
-
-// DEPRECATED: use path_join instead
-char* nullable path_join_m(memalloc_t, const char* path1, const char* path2);
+str_t _path_join(usize count, ...) WARN_UNUSED_RESULT;
+str_t path_joinv(usize count, va_list ap) WARN_UNUSED_RESULT;
 
 // path_isabs returns true if path is absolute
 inline static bool path_isabs(const char* path) { return *path == PATH_SEPARATOR; }
 
 // path_abs resolves path relative to cwd and calls path_clean on the result.
-// Note: It does not resolve symlinks (use realpath for that.)
-char* nullable path_abs(memalloc_t, const char* path);
+// Note: It does NOT resolve symlinks (use realpath for that); path need no exist.
+str_t path_abs(const char* path) WARN_UNUSED_RESULT;
 
 // relpath returns the path relative to the initial current working directory
 const char* relpath(const char* path);
@@ -86,7 +82,7 @@ void relpath_init();
   const char* p__ = (path); usize z__ = strlen(p__) + 1lu; \
   /* +(z__==1) for "" => "." */ \
   char* s__ = safechecknotnull(alloca(z__ + (z__ == 1))); \
-  path_dir(s__, z__ + (z__ == 1), p__); \
+  path_dir_buf(s__, z__ + (z__ == 1), p__); \
   s__; \
 })
 
