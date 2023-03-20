@@ -10,28 +10,28 @@
 #include <fcntl.h>
 
 #include <errno.h>
-#include <string.h>
-
-
-// #undef O_EXLOCK // XXX
 
 
 err_t lockfile_lock(lockfile_t* lf, const char* filename) {
   err_t err;
 
+  int openflags;
   #if defined(O_EXLOCK)
-    lf->fd = open(filename, O_WRONLY | O_CREAT | O_TRUNC | O_EXLOCK, 0666);
-    if (lf->fd < 0)
-      return err_errno();
+    openflags = O_WRONLY | O_CREAT | O_TRUNC | O_EXLOCK;
   #elif defined(F_SETLKW)
-    lf->fd = open(filename, O_WRONLY | O_CREAT | O_TRUNC, 0666);
-    if (lf->fd < 0)
-      return err_errno();
+    openflags O_WRONLY | O_CREAT | O_TRUNC;
+  #else
+    #error lockfile_lock not implemented for target platform
+  #endif
+
+  lf->fd = open(filename, openflags, 0666);
+  if (lf->fd < 0)
+    return err_errno();
+
+  #if !defined(O_EXLOCK) && defined(F_SETLKW)
     struct flock fl = { .l_type = F_WRLCK, .l_whence = SEEK_SET };
     if (fcntl(lf->fd, F_SETLKW, &fl) < 0)
       goto error;
-  #else
-    #error lockfile_lock not implemented for target platform
   #endif
 
   // write lockee's pid to lockfile
@@ -58,32 +58,23 @@ err_t lockfile_trylock(lockfile_t* lf, const char* filename, long* nullable lock
   err_t err = 0;
   char pidbuf[16];
   isize len;
-  char* dstdir = NULL;
+
   int openflags;
-
   #if defined(O_EXLOCK) && defined(O_NONBLOCK)
-    openflags = O_CREAT | O_EXLOCK | O_NONBLOCK
-              | (lockee_pid ? O_RDWR : (O_WRONLY | O_TRUNC));
+    openflags = O_CREAT | O_EXLOCK | O_NONBLOCK;
   #else
-    openflags = O_CREAT
-              | (lockee_pid ? O_RDWR : (O_WRONLY | O_TRUNC));
+    openflags = O_CREAT;
   #endif
+  openflags |= lockee_pid ? O_RDWR : (O_WRONLY | O_TRUNC);
 
-open:
   lf->fd = open(filename, openflags, 0666);
   if (lf->fd < 0) {
     if (errno == EAGAIN)
       goto lockfail;
-    if (errno == ENOENT && !dstdir) {
-      dstdir = path_dir_alloca(filename);
-      if ((err = fs_mkdirs(dstdir, 0755, 0)) == 0)
-        goto open;
-    }
-    warn("open(%s)", filename);
-    return err ? err : err_errno();
+    return err_errno();
   }
 
-  #if !defined(O_EXLOCK) && !defined(O_NONBLOCK)
+  #if !defined(O_EXLOCK) || !defined(O_NONBLOCK)
     #if defined(F_SETLK)
       struct flock fl = { .l_type = F_WRLCK, .l_whence = SEEK_SET };
       if (fcntl(lf->fd, F_SETLK, &fl) < 0) {
@@ -119,7 +110,6 @@ error:
   return err;
 
 lockfail:
-  dlog("lockfail");
   if (lockee_pid) {
     #if defined(O_EXLOCK) && defined(O_NONBLOCK)
       lf->fd = open(filename, O_RDONLY, 0);
@@ -158,7 +148,7 @@ err_t lockfile_unlock(lockfile_t* lf) {
     free(lf->_internal);
   #endif
 
-  #if !defined(O_EXLOCK)
+  #if !defined(O_EXLOCK) && defined(F_SETLKW)
     struct flock fl = { .l_type = F_UNLCK, .l_whence = SEEK_SET };
     r = fcntl(lf->fd, F_SETLKW, &fl) == 0 ? r : -1;
   #endif
