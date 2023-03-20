@@ -83,6 +83,24 @@ touch "$FINISHED_FILE"
 
 _create_tool_symlinks "$COEXE"
 
+# wipe cach dir if sysroot sources changed
+# syslib hash
+SYSROOT_SOURCES=(
+  ../src/build_sysroot.c \
+  $(echo ../src/syslib_*.h | sort) \
+)
+SYSROOT_HASH=$(cat "${SYSROOT_SOURCES[@]}" | _sha256) # 64 bytes
+if [ "$(cat "$COCACHE/sysroot-hash" 2>/dev/null)" != "$SYSROOT_HASH" ]; then
+  echo "rm COCACHE=$(_relpath "$COCACHE") (outdated)"
+  rm -rf "$COCACHE"
+  mkdir -p "$COCACHE"
+  printf "$SYSROOT_HASH" > "$COCACHE/sysroot-hash"
+elif [ ! -d "$COCACHE" ]; then
+  echo "mkdir COCACHE=$(_relpath "$COCACHE")"
+  mkdir -p "$COCACHE"
+  printf "$SYSROOT_HASH" > "$COCACHE/sysroot-hash"
+fi
+
 # sanity check
 for name in stdout.log stderr.log fail.log; do
   [ ! -e "$PWD/data/$name" ] || _err "data/$name conflicts with generated files!"
