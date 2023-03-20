@@ -149,15 +149,12 @@ memalloc_t memalloc_bump_in(memalloc_t parent, usize cap, int flags) {
   a->parent = parent;
   a->m = m;
 
-  elog("memalloc_bump_in create %p (parent %p)", a, parent);
-
   return (memalloc_t)a;
 }
 
 
 void memalloc_bump_in_dispose(memalloc_t ma) {
   bump_allocator_in_t* a = (bump_allocator_in_t*)ma;
-  elog("memalloc_bump_in_dispose %p (parent %p)", a, a->parent);
   if (a->bma.ma.f == &memalloc_null_impl)
     return;
   #if CO_SAFE
