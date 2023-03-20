@@ -125,13 +125,10 @@ static err_t configure_sysroot(compiler_t* c) {
     targetlen += n;
   }
 
-  err_t err;
   char sysroot[PATH_MAX];
   int n = snprintf(sysroot, sizeof(sysroot),
     "%s%c%s", cocachedir, PATH_SEPARATOR, target);
   safecheck(n > 0 && (usize)n < sizeof(sysroot));
-  if (( err = fs_mkdirs(sysroot, 0755, FS_VERBOSE) ))
-    return err;
 
   if (c->opt_verbose)
     log("using sysroot '%s'", sysroot);
@@ -147,7 +144,8 @@ static err_t configure_builddir(compiler_t* c, const char* buildroot) {
   // builddir    = {buildroot}/{mode}-{target}
   // pkgbuilddir = {builddir}/{pkgname}.pkg
 
-  if (!( c->buildroot = path_abs(c->ma, buildroot) ))
+  mem_freecstr(c->ma, c->buildroot);
+  if (!( c->buildroot = path_abs(buildroot).p ))
     return ErrNoMem;
 
   char targetstr[64];
@@ -284,8 +282,7 @@ err_t compiler_configure(compiler_t* c, const target_t* target, const char* buil
   return err;
 }
 
-
-//————————————————————————————————————————————————————————————————————————————
+//——————————————————————————————————————————————————————————————————————————————————————
 // name encoding
 
 
