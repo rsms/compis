@@ -71,6 +71,8 @@ fi
 if $CLEAN; then
   echo "building from scratch in $BUILDDIR"
   rm -rf $BUILDDIR
+else
+  echo "building incrementally in $BUILDDIR"
 fi
 ./build.sh -DCO_DISTRIBUTION=1 -opt -out=$BUILDDIR
 
