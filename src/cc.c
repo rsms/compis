@@ -8,10 +8,38 @@
 #include "clang/Basic/Version.inc" // CLANG_VERSION_STRING
 
 #include <err.h>
+#include <unistd.h>
+#include <errno.h>
 
 
 static void diaghandler(const diag_t* d, void* nullable userdata) {
   // unused
+}
+
+
+static err_t symlink_ld(compiler_t* c) {
+  if (*c->ldname == 0)
+    return 0;
+
+  const char* target = path_base(coexefile); // e.g. "compis"
+
+  // linkfile = path_dir(coexefile) "/" c->ldname
+  char linkfile[PATH_MAX];
+  usize n = path_dir_buf(linkfile, sizeof(linkfile), coexefile);
+  usize ldnamelen = strlen(c->ldname);
+  if (n + 1 + ldnamelen >= sizeof(linkfile))
+    return ErrOverflow;
+  linkfile[n++] = PATH_SEP;
+  memcpy(&linkfile[n], c->ldname, ldnamelen + 1);
+
+  if (symlink(target, linkfile) != 0) {
+    if (errno != EEXIST)
+      return err_errno();
+  } else {
+    vlog("symlink %s -> %s", relpath(linkfile), target);
+  }
+
+  return 0;
 }
 
 
@@ -113,12 +141,18 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
     return 1;
   }
 
+  // create symlink for linker invocation, required for clang driver to work (MT-safe)
+  if (!nolink && ( err = symlink_ld(&c) )) {
+    elog("failed to create linker symlink: %s", err_str(err));
+    return 1;
+  }
+
   // build system libraries, if needed
-  int syslib_build_flags = 0;
-  if (iscxx) syslib_build_flags |= SYSLIB_BUILD_LIBCXX;
-  if (( err = build_syslibs_if_needed(&c, syslib_build_flags) )) {
-    dlog("build_syslibs_if_needed: %s", err_str(err));
-    log("failed to configure sysroot%s",
+  int sysroot_build_flags = 0;
+  if (iscxx) sysroot_build_flags |= SYSROOT_BUILD_LIBCXX;
+  if (( err = build_sysroot_if_needed(&c, sysroot_build_flags) )) {
+    dlog("build_sysroot_if_needed: %s", err_str(err));
+    elog("failed to configure sysroot%s",
       coverbose ? "" : ". Run with -v for more details.");
     return 1;
   }
