@@ -178,12 +178,14 @@ static bool _memalloc_libc_impl(void* self, mem_t* m, usize size, bool zeroed) {
 
   // free
   safecheckf(m->p != NULL, "attempt to free NULL pointer of size %zu", m->size);
-  if (m->size > 0)
-    CO_MEM_FREE(m->p);
+  void* p = m->p;
+  size = m->size;
   #if CO_SAFE
     m->p = NULL;
     m->size = 0;
   #endif
+  if (size > 0)
+    CO_MEM_FREE(p);
   return true;
 }
 
