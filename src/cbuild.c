@@ -187,7 +187,7 @@ static err_t cbuild_mkdirs(cbuild_t* b) {
 
   for (u32 i = 0; i < b->objs.len; i++) {
     cobj_t* obj = &b->objs.v[i];
-    if (path_dir(dir, sizeof(dir), cbuild_objfile(b, obj)) >= sizeof(dir)) {
+    if (path_dir_buf(dir, sizeof(dir), cbuild_objfile(b, obj)) >= sizeof(dir)) {
       err = ErrOverflow;
       break;
     }
