@@ -150,25 +150,12 @@ err:
 }
 
 
-err_t fs_remove(const char* path) {
-  struct stat st;
-
-  if (lstat(path, &st) != 0)
-    return err_errno();
-
-  if (!S_ISDIR(st.st_mode)) {
-    if (unlink(path) != 0) {
-      warn("unlink(%s)", path);
-      return err_errno();
-    }
-    return 0;
-  }
-
+err_t fs_remove_dir_contents(const char* path) {
   DIR* dp = opendir(path);
-  if (dp == NULL) {
-    warn("opendir(%s)", path);
+  if (dp == NULL)
     return err_errno();
-  }
+
+  err_t err = 0;
   struct dirent* d;
 
   char path2[PATH_MAX];
@@ -182,15 +169,36 @@ err_t fs_remove(const char* path) {
     usize namelen = MIN(strlen(d->d_name), PATH_MAX - pathlen);
     memcpy(&path2[pathlen], d->d_name, namelen);
     path2[pathlen + namelen] = 0;
-    err_t err = fs_remove(path2);
+    if (( err = fs_remove(path2) ))
+      break;
+  }
+
+  closedir(dp);
+  return err;
+}
+
+
+err_t fs_remove(const char* path) {
+  struct stat st;
+
+  if (lstat(path, &st) != 0)
+    return err_errno();
+
+  if (S_ISDIR(st.st_mode)) {
+    err_t err = fs_remove_dir_contents(path);
     if (err)
       return err;
+    if (rmdir(path) != 0) {
+      warn("rmdir(%s)", path);
+      return err_errno();
+    }
+  } else {
+    if (unlink(path) != 0) {
+      warn("unlink(%s)", path);
+      return err_errno();
+    }
   }
-  closedir(dp);
-  if (rmdir(path) != 0) {
-    warn("rmdir(%s)", path);
-    return err_errno();
-  }
+
   return 0;
 }
 
