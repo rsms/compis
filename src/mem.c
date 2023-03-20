@@ -199,13 +199,11 @@ struct memalloc _memalloc_default = {
 _Thread_local memalloc_t _memalloc_ctx = &_memalloc_default;
 
 void _memalloc_scope_reset(memalloc_t* prevp) {
-  //dlog("_memalloc_scope_reset prev->a=%p", prev->a);
+  // dlog("_memalloc_scope_reset prevp=%p (*prevp=%p)", prevp, *prevp);
   // note: prev->f==1 when memalloc_scope macro is used and scope ended
   assertnotnull(prevp);
   assertnotnull(*prevp);
-  memalloc_t prev = *prevp;
-  if (prev->f == (void*)(uintptr)1)
-    memalloc_ctx_set(prev);
+  memalloc_ctx_set(*prevp);
 }
 
 
