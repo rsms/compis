@@ -810,61 +810,47 @@ static memalloc_t memalloc_ctx_set(memalloc_t); // returns previous allocator
 static memalloc_t memalloc_default(); // the default allocator
 static memalloc_t memalloc_null(); // an allocator that always fails
 memalloc_t memalloc_bump(void* storage, usize cap, int flags); // create bump allocator
+memalloc_t memalloc_bump_in(memalloc_t parent, usize cap, int flags);
+void memalloc_bump_in_dispose(memalloc_t ma);
 usize memalloc_bumpuse(memalloc_t ma);
 #define MEMALLOC_BUMP_OVERHEAD  (sizeof(void*)*4)
 
-// memalloc_scope_set saves the current contextual allocator on the stack
+// memalloc_ctx_set_scope saves the current contextual allocator on the stack
 // and sets newma as the current contextual allocator.
 // When the current lexical scope ends, the previous contextual allocator is restored.
 //
 // Example:
 //   void foo() {
-//     memalloc_scope_set(ma0);
+//     memalloc_ctx_set_scope(ma0);
 //     // memalloc_ctx is ma0 here
 //     bar();
 //     // memalloc_ctx is ma0 here
 //   }
 //   void bar() {
 //     // memalloc_ctx is ma0 here
-//     memalloc_scope_set(ma1);
+//     memalloc_ctx_set_scope(ma1);
 //     // memalloc_ctx is ma1 here
 //     {
-//       memalloc_scope_set(ma2);
+//       memalloc_ctx_set_scope(ma2);
 //       // memalloc_ctx is ma2 here
 //     } // memalloc_ctx is restored to ma1
 //     // memalloc_ctx is ma1 here
 //   } // memalloc_ctx is restored to ma0
 //
-// memalloc_scope_set can be called multiple times in a given lexical scope. e.g.
+// memalloc_ctx_set_scope can be called multiple times in a given lexical scope. e.g.
 //   // memalloc_ctx is ma0 here
 //   {
-//     memalloc_scope_set(ma1)
+//     memalloc_ctx_set_scope(ma1)
 //     // memalloc_ctx is ma1 here
-//     memalloc_scope_set(ma2)
+//     memalloc_ctx_set_scope(ma2)
 //     // memalloc_ctx is ma2 here
 //   }
 //   // memalloc_ctx is ma0 here
 //
-// void memalloc_scope_set(memalloc_t newma)
-#define memalloc_scope_set(newma) \
+// void memalloc_ctx_set_scope(memalloc_t newma)
+#define memalloc_ctx_set_scope(newma) \
   __attribute__((cleanup(_memalloc_scope_reset))) \
   UNUSED memalloc_t CONCAT(_tmp,__COUNTER__) = memalloc_ctx_set(newma)
-
-// memalloc_scope declares a new scope that uses newma as the contextual
-// allocator. When the scope ends, the previous contextual allocator is restored.
-// Example:
-//   void foo() {
-//     memalloc_scope(ma1) {
-//       // memalloc_ctx is ma1 here
-//     } // memalloc_ctx is restored
-//   }
-// void memalloc_scope(memalloc_t newma)
-#define memalloc_scope(newma) \
-  for ( \
-    __attribute__((cleanup(_memalloc_scope_reset))) \
-      UNUSED memalloc_t _prevma = memalloc_ctx_set(newma);\
-    _prevma != NULL; \
-    memalloc_ctx_set(_prevma), _prevma->f = (void*)(uintptr)1, _prevma = NULL )
 
 
 inline static slice_t slice_cstr(const char* cstr) {
@@ -888,13 +874,13 @@ inline static memalloc_t memalloc_null() {
   return &_memalloc_null;
 }
 
-extern _Thread_local memalloc_t _memalloc_ctx;
+extern _Thread_local memalloc_t _memalloc_ctx; // initially &_memalloc_default
 void _memalloc_scope_reset(memalloc_t* prev);
 inline static memalloc_t memalloc_ctx() { return _memalloc_ctx; }
 inline static memalloc_t memalloc_ctx_set(memalloc_t newma) {
+  // dlog("memalloc_ctx_set %p -> %p", _memalloc_ctx, newma);
   memalloc_t prevma = _memalloc_ctx;
   _memalloc_ctx = newma;
-  //dlog("memalloc_ctx_set %p -> %p", prevma, newma);
   return prevma;
 }
 
@@ -1029,6 +1015,7 @@ err_t fs_writefile(const char* filename, u32 mode, slice_t data);
 err_t fs_touch(const char* filename, u32 mode); // update {a,m}time, create if needed
 err_t fs_mkdirs(const char* path, int perms, int flags); // creates parent directories
 err_t fs_remove(const char* path); // delete file or recursively delete directory
+err_t fs_remove_dir_contents(const char* path); // delete _contents_ of dir at path
 err_t fs_copyfile(const char* srcpath, const char* dstpath, int flags);
 bool fs_isfile(const char* path); // true if S_ISREG, after resolving any symlinks
 bool fs_isdir(const char* path); // true if S_ISDIR, after resolving any symlinks
