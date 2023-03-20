@@ -833,9 +833,9 @@ inline static bool scope_istoplevel(const scope_t* s) { return s->base == 0; }
 void tmpbuf_init(memalloc_t);
 buf_t* tmpbuf_get(u32 bufindex /* [0-2) */);
 
-// syslibs
-#define SYSLIB_BUILD_LIBCXX (1<<0) // build libc++, libc++abi and libunwind
-err_t build_syslibs_if_needed(compiler_t* c, int flags);
+// sysroot
+#define SYSROOT_BUILD_LIBCXX (1<<0) // build libc++, libc++abi and libunwind
+err_t build_sysroot_if_needed(compiler_t* c, int flags); // build_sysroot.c
 typedef enum {
   SYSLIB_RT,     // librt
   SYSLIB_C,      // libc
