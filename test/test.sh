@@ -26,10 +26,10 @@ while [[ $# -gt 0 ]]; do case "$1" in
   -h|-help|--help) cat << _END
 Usage: $0 [options] [--] [<testname> ...]
 Options:
-  --debug         Test with a debug build of compis instead of an opt one
   -jN             Run at most N tests in parallel (defaults to $(nproc))
   -1, -j1         Run one test at a time
   --coexe=<file>  Test specific, existing compis executable
+  --debug         Test with a debug build (no effect if --coexe is used)
   -v              Verbose output (may be messy unless -j1 is set)
   -h, --help      Show help on stdout and exit
 <testname>
@@ -47,7 +47,6 @@ esac; done
 #———————————————————————————————————————————————————————————————————————————————————————
 # setup
 
-BUILD_ARGS=
 if [ -n "$COEXE" ]; then
   f=$COEXE
   [[ "$COEXE" == "/"* ]] || f="$PWD0/$f"
@@ -55,23 +54,26 @@ if [ -n "$COEXE" ]; then
   [ -f "$f" ] || _err "$COEXE: not a file"
   [ -x "$f" ] || _err "$COEXE: not executable"
   COEXE="$(realpath "$f")"
-elif $DEBUG; then
-  COEXE="$OUT_DIR/debug/co"
-  BUILD_ARGS=-debug
 else
-  COEXE="$OUT_DIR/opt/co"
-  BUILD_ARGS=-no-lto
+  BUILD_ARGS=
+  if $DEBUG; then
+    COEXE="$OUT_DIR/debug/co"
+    BUILD_ARGS=-debug
+  else
+    COEXE="$OUT_DIR/opt/co"
+    BUILD_ARGS=-no-lto
+  fi
+  # build co, if needed
+  if [ -n "$BUILD_ARGS" ] &&
+     # -n causes ninja to do a "dry run"; check if build is needed
+     [[ "$($BASH "$PROJECT/build.sh" $BUILD_ARGS -n)" == "["* ]]
+  then
+    # note: -n means "dry run"
+    echo  $(_relpath "$PROJECT/build.sh") $BUILD_ARGS
+    $BASH "$PROJECT/build.sh" $BUILD_ARGS
+  fi
 fi
 
-# build co, if needed
-if [ -n "$BUILD_ARGS" ] &&
-   # -n causes ninja to do a "dry run"; check if build is needed
-   [[ "$($BASH "$PROJECT/build.sh" $BUILD_ARGS -n)" == "["* ]]
-then
-  # note: -n means "dry run"
-  echo  $(_relpath "$PROJECT/build.sh") $BUILD_ARGS
-  $BASH "$PROJECT/build.sh" $BUILD_ARGS
-fi
 
 # create directory to run tests inside, copying template data into it
 WORK_DIR="$OUT_DIR/test"
