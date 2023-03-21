@@ -13,6 +13,7 @@ source libtest.sh
 
 DEBUG=false
 VERBOSE=false
+VERY_VERBOSE=false
 PARALLELISM=
 PATTERNS=()
 COEXE=
@@ -23,6 +24,7 @@ while [[ $# -gt 0 ]]; do case "$1" in
   -1)        PARALLELISM=1; shift ;;
   --coexe=*) COEXE=${1:8}; shift ;;
   -v)        VERBOSE=true; shift ;;
+  -vv)       VERBOSE=true; VERY_VERBOSE=true; shift ;;
   -h|-help|--help) cat << _END
 Usage: $0 [options] [--] [<testname> ...]
 Options:
@@ -31,6 +33,7 @@ Options:
   --coexe=<file>  Test specific, existing compis executable
   --debug         Test with a debug build (no effect if --coexe is used)
   -v              Verbose output (may be messy unless -j1 is set)
+  -vv             Very verbose output; sets -v for cc and c++
   -h, --help      Show help on stdout and exit
 <testname>
   Only run tests which name matches this glob-style pattern.
@@ -116,6 +119,17 @@ export COEXE
 export VERBOSE
 export COCACHE
 export PATH="$(dirname "$COEXE"):$PATH"
+
+if $VERY_VERBOSE; then
+  VBIN="$WORK_DIR/verbose-bin"
+  CONAME=$(basename "$COEXE")
+  mkdir "$VBIN"
+  printf "#!/bin/sh\ncmd=\$1;shift;exec $COEXE \$cmd -v \$@" > "$VBIN/$CONAME"
+  printf "#!/bin/sh\nexec $(dirname "$COEXE")/cc -v \$@" > "$VBIN/cc"
+  printf "#!/bin/sh\nexec $(dirname "$COEXE")/c++ -v \$@" > "$VBIN/c++"
+  chmod +x "$VBIN"/*
+  export PATH="$VBIN:$PATH"
+fi
 
 TESTS_DIR=tests
 
