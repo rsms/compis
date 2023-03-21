@@ -215,8 +215,16 @@ static err_t configure_cflags(compiler_t* c) {
   strlist_add(&c->cflags, "-nostdlib");
   if (c->target.sys == SYS_macos)
     strlist_add(&c->cflags, "-Wno-nullability-completeness");
-  if (c->buildmode == BUILDMODE_OPT && !target_is_riscv(&c->target))
+
+  // enable LTO for optimized builds.
+  // RISC-V is disabled because lld fails with float ABI errors.
+  // ARM is disabled becaues lld crashes when trying to LTO link.
+  if (c->buildmode == BUILDMODE_OPT &&
+      !target_is_riscv(&c->target) &&
+      !target_is_arm(&c->target))
+  {
     strlist_add(&c->cflags, "-flto=thin");
+  }
 
   // RISC-V has a bunch of optional features
   // https://gcc.gnu.org/onlinedocs/gcc/RISC-V-Options.html
