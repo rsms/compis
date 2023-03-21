@@ -13,8 +13,10 @@
 
 
 // locking mechanism
-#if defined(F_SETLK) && defined(F_SETLKW)
+#if defined(F_SETLK) && defined(F_SETLKW) \
+    && (!defined(__aarch64__) || !defined(__APPLE__))
   // use F_SETLK & F_SETLKW for locking
+  // Note: broken on macos arm64 (tested on macos 12.6.3)
   #define USE_SETLK
 #elif !defined(O_EXLOCK) || !defined(O_NONBLOCK)
   #error lockfile not implemented for target platform
