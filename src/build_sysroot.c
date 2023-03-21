@@ -365,7 +365,7 @@ static err_t build_librt(compiler_t* c) {
     "-fno-builtin",
     "-fomit-frame-pointer",
     "-fvisibility=hidden",
-    c->buildmode == BUILDMODE_OPT ? "-flto=thin" : "-g",
+    c->buildmode == BUILDMODE_DEBUG ? "-g" : "",
     // (c->target.arch == ARCH_riscv32) ? "-fforce-enable-int128" : "",
   };
   strlist_add_array(&build.as, common_flags, countof(common_flags));
@@ -376,6 +376,10 @@ static err_t build_librt(compiler_t* c) {
   strlist_addf(&build.as, "-I%s", build.srcdir);
   strlist_addf(&build.cc, "-I%s", build.srcdir);
   strlist_add_array(&build.cc, c->cflags_sysinc.strings, c->cflags_sysinc.len);
+
+  // for riscv/int_mul_impl.inc, included by riscv{32,64}/muldi3.S
+  if (target_is_riscv(&c->target))
+    strlist_add(&build.as, "-Iriscv");
 
   // TODO: cmake COMPILER_RT_HAS_FCF_PROTECTION_FLAG
   // if (compiler_accepts_flag_for_target("-fcf-protection=full"))
@@ -389,7 +393,6 @@ static err_t build_librt(compiler_t* c) {
   // if (compiles("_Float16 f(_Float16 x){return x;}"))
   //   strlist_add(&build.cc, "-DCOMPILER_RT_HAS_FLOAT16=1");
 
-  // strlist_add(&build.cc, c->buildmode == BUILDMODE_OPT ? "-flto=thin" : "-g");
   err_t err = 0;
 
   // find source list for target
@@ -465,7 +468,6 @@ static err_t build_libunwind(compiler_t* c) {
   };
   const char* common_flags_opt[] = {
     "-Os",
-    "-flto=thin",
     "-DNDEBUG",
   };
   const char* common_flags_debug[] = {
@@ -618,7 +620,6 @@ static err_t build_libcxxabi(compiler_t* c) {
   };
   const char* common_flags_opt[] = {
     "-Os",
-    "-flto=thin",
     "-DNDEBUG",
   };
   const char* common_flags_debug[] = {
@@ -709,7 +710,6 @@ static err_t build_libcxx(compiler_t* c) {
   };
   const char* common_flags_opt[] = {
     "-Os",
-    "-flto=thin",
     "-DNDEBUG",
   };
   const char* common_flags_debug[] = {

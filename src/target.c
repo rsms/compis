@@ -312,11 +312,6 @@ const char* target_linker_name(const target_t* t) {
 }
 
 
-static bool target_is_wasm(const target_t* t) {
-  return t->arch == ARCH_wasm32 || t->arch == ARCH_wasm64;
-}
-
-
 bool target_has_syslib(const target_t* t, syslib_t syslib) {
   switch ((enum syslib)syslib) {
     case SYSLIB_RT:

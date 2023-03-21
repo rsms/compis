@@ -105,6 +105,18 @@ const char* target_linker_name(const target_t* t);
 
 bool target_has_syslib(const target_t*, syslib_t);
 
+inline static bool target_is_wasm(const target_t* t) {
+  return t->arch == ARCH_wasm32 || t->arch == ARCH_wasm64;
+}
+
+inline static bool target_is_riscv(const target_t* t) {
+  return /*t->arch == ARCH_riscv32 ||*/ t->arch == ARCH_riscv64;
+}
+
+inline static bool target_is_arm(const target_t* t) {
+  return t->arch == ARCH_arm;
+}
+
 
 ASSUME_NONNULL_END
 #ifdef __cplusplus

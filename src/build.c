@@ -191,20 +191,23 @@ static err_t link_exe(
   // char libflag[PATH_MAX];
   // snprintf(libflag, sizeof(libflag), "-L%s", c->libdir);
 
+
   CoLLVMLink link = {
     .target_triple = c->target.triple,
     .outfile = outfile,
     .infilec = infilec,
     .sysroot = c->sysroot,
     .print_lld_args = opt_verbose || opt_logld,
-    .lto_level = c->buildmode == BUILDMODE_DEBUG ? 0 : 2,
+    .lto_level = 0,
     .lto_cachedir = "",
   };
 
-  err_t err = 0;
-
-  if (link.lto_level > 0)
+  if (c->buildmode == BUILDMODE_OPT && !target_is_riscv(&c->target)) {
+    link.lto_level = 2;
     link.lto_cachedir = path_join_alloca(c->builddir, "llvm");
+  }
+
+  err_t err = 0;
 
   // linker wants an array of cstring pointers
   link.infilev = mem_alloctv(c->ma, const char*, infilec);

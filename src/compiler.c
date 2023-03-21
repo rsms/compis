@@ -104,6 +104,12 @@ static void configure_target(compiler_t* c) {
   }
 
   c->ldname = target_linker_name(&c->target);
+
+  if (target_is_riscv(&c->target) && isatty(STDOUT_FILENO)) {
+    elog("%s: warning: RISC-V support is experimental", coprogname);
+  } else if (target_is_arm(&c->target) && isatty(STDOUT_FILENO)) {
+    elog("%s: warning: ARM support is experimental", coprogname);
+  }
 }
 
 
@@ -209,8 +215,47 @@ static err_t configure_cflags(compiler_t* c) {
   strlist_add(&c->cflags, "-nostdlib");
   if (c->target.sys == SYS_macos)
     strlist_add(&c->cflags, "-Wno-nullability-completeness");
-  if (c->buildmode == BUILDMODE_OPT)
+  if (c->buildmode == BUILDMODE_OPT && !target_is_riscv(&c->target))
     strlist_add(&c->cflags, "-flto=thin");
+
+  // RISC-V has a bunch of optional features
+  // https://gcc.gnu.org/onlinedocs/gcc/RISC-V-Options.html
+  if (c->target.arch == ARCH_riscv64) {
+    // e       RV32E (16 gp regs instead of 32)
+    // i       RV64
+    // a       Atomic Instructions
+    // c       Compressed Instructions
+    // f       Single-Precision Floating-Point
+    // d       Double-Precision Floating-Point (requires f)
+    // m       Integer Multiplication and Division
+    // v       Vector Extension for Application Processors
+    //         (requires d, zve64d, zvl128b)
+    // relax   Enable Linker relaxation
+    // zvl32b  Minimum Vector Length 32
+    // zvl64b  Minimum Vector Length 64 (requires zvl32b)
+    // zvl128b Minimum Vector Length 128 (requires zvl64b)
+    // zve32x  Vector Extensions for Embedded Processors with maximal 32 EEW
+    //         (requires zvl32b)
+    // zve32f  Vector Extensions for Embedded Processors with maximal 32 EEW
+    //         and F extension. (requires zve32x)
+    // zve64x  Vector Extensions for Embedded Processors with maximal 64 EEW
+    //         (requires zve32x, zvl64b)
+    // zve64f  Vector Extensions for Embedded Processors with maximal 64 EEW
+    //         and F extension. (requires zve32f, zve64x)
+    // zve64d  Vector Extensions for Embedded Processors with maximal 64 EEW,
+    //         F and D extension. (requires zve64f)
+    // ... AND A LOT MORE ...
+    strlist_add(&c->cflags,
+      "-march=rv64iafd",
+      "-mabi=lp64d", // ilp32d for riscv32
+      "-mno-relax",
+      "-mno-save-restore");
+  } else if (target_is_arm(&c->target)) {
+    strlist_add(&c->cflags,
+      "-march=armv6",
+      "-mfloat-abi=hard",
+      "-mfpu=vfp");
+  }
 
   // end of common flags
   u32 flags_common_end = c->cflags.len;
