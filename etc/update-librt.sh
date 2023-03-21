@@ -5,7 +5,7 @@ SCRIPTNAME=$(realpath "$0")
 cd "$(dirname "$0")/.."
 source etc/lib.sh
 PROJECT=$PWD
-SCRIPTNAME=${SCRIPTNAME:$#PROJECT}
+SCRIPTNAME=${SCRIPTNAME:$(( ${#PROJECT} + 1 ))}
 
 DESTDIR="$PROJECT/lib/librt"
 HEADER_FILE="$PROJECT/src/syslib_librt.h"
