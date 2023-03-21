@@ -138,12 +138,12 @@ memalloc_t memalloc_bump(void* storage, usize cap, int flags) {
 memalloc_t memalloc_bump_in(memalloc_t parent, usize cap, int flags) {
   mem_t m = mem_alloc(parent, cap);
 
-  if (m.size < sizeof(bump_allocator_t))
+  if (m.size < sizeof(bump_allocator_in_t))
     return &_memalloc_null;
   bump_allocator_in_t* a = m.p;
   a->bma.ma.f = _memalloc_bump_impl;
   a->bma.end = m.p + m.size;
-  a->bma.ptr = m.p + sizeof(bump_allocator_t);
+  a->bma.ptr = m.p + sizeof(bump_allocator_in_t);
   a->bma.flags = flags;
 
   a->parent = parent;
