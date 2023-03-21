@@ -18,7 +18,7 @@
 // ARCH(name)
 ARCH(any)
 ARCH(aarch64)
-ARCH(arm)
+ARCH(arm)  // ARMv6, float-abi=hard  FIXME
 ARCH(i386)
 ARCH(riscv64)  // no riscv32 since musl doesn't (yet) support it
 ARCH(wasm32)
@@ -57,3 +57,19 @@ TARGET(riscv64, none, "", 8, 8, "riscv64-unknown-unknown")
 TARGET(wasm32,  none, "", 4, 4, "wasm32-unknown-unknown")
 TARGET(wasm64,  none, "", 4, 4, "wasm64-unknown-unknown")
 TARGET(x86_64,  none, "", 8, 8, "x86_64-unknown-unknown")
+
+
+// arm Raspberry Pi targets:
+//
+//   Zero/W/WH & 1 Model A/B/A+/B+
+//     -march=armv6 -mfloat-abi=hard -mfpu=vfp
+//
+//   2 & 3 Model A/B
+//     -march=armv7-a -mfloat-abi=hard -mfpu=neon-vfpv4
+//
+//   3 & 4 Model A+/B+ & Compute 3/3-lite/3+ (32-Bit)
+//     -march=armv8-a -mfloat-abi=hard -mfpu=neon-fp-armv8
+//
+//   3 & 4 Model A+/B+ & Compute 3/3-lite/3+ (64-Bit)
+//     -march=armv8-a+fp+simd
+//
