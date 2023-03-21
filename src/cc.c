@@ -8,12 +8,19 @@
 #include "clang/Basic/Version.inc" // CLANG_VERSION_STRING
 
 #include <err.h>
-#include <unistd.h>
 #include <errno.h>
+#include <stdlib.h>
+#include <unistd.h>
 
 
 static void diaghandler(const diag_t* d, void* nullable userdata) {
   // unused
+}
+
+
+#define die(fmt, args...) { \
+  elog("%s: " fmt, coprogname, ##args); \
+  exit(1); \
 }
 
 
@@ -46,63 +53,148 @@ static err_t symlink_ld(compiler_t* c) {
 int cc_main(int user_argc, char* user_argv[], bool iscxx) {
   compiler_t c;
   compiler_init(&c, memalloc_default(), &diaghandler, "main"); // FIXME pkgname
+  c.buildmode = BUILDMODE_OPT; // default to optimized build
 
   const target_t* target = NULL;
-  bool nostdlib = false;
+
+  bool link = true;
+  bool link_libc = true;
+  bool link_libcxx = iscxx;
+  bool link_librt = true;
+  bool startfiles = true;
   bool nostdinc = false;
+  bool custom_ld = false;
   bool freestanding = false;
-  bool nolink = false;
-  bool iscompiling = false;
-  bool ispastflags = false;
-  bool custom_sysroot = false;
-  bool no_cxx_exceptions = false;
+  bool cxx_exceptions = true;
   bool explicit_exceptions = false;
   bool explicit_cxx_exceptions = false;
+  const char* custom_sysroot = NULL;
+
+  bool iscompiling = false;
+  bool ispastflags = false;
 
   // process input command-line args
+  // https://clang.llvm.org/docs/ClangCommandLineReference.html
+  // https://gcc.gnu.org/onlinedocs/gcc/Invoking-GCC.html
+  // https://gcc.gnu.org/onlinedocs/gcc/Directory-Options.html
   for (int i = 1; i < user_argc; i++) {
     const char* arg = user_argv[i];
     if (*arg == '-' && !ispastflags) {
-      if (streq(arg, "-nostdlib") || streq(arg, "-nolibc")) {
-        nostdlib = true;
-        c.opt_nostdlib = true;
-      } else if (streq(arg, "-nostdinc") ||
-            streq(arg, "--no-standard-includes") ||
-            streq(arg, "-nostdlibinc"))
-      {
-        nostdinc = true;
-      } else if (streq(arg, "-ffreestanding")) {
-        freestanding = true;
-      } else if (streq(arg, "-c") || streq(arg, "-S") || streq(arg, "-E")) {
-        nolink = true;
-      } else if (streq(arg, "-v") || streq(arg, "--verbose")) {
+
+      // general options
+      if (streq(arg, "-v") || streq(arg, "--verbose")) {
         c.opt_verbose = true;
         coverbose = true;
+      }
+
+      // linker flags
+      else if (streq(arg, "-nostartfiles")) {
+        // Do not use the standard system startup files when linking.
+        // The standard system libraries are used normally, unless -nostdlib, -nolibc,
+        // or -nodefaultlibs is used.
+        startfiles = false;
+      } else if (streq(arg, "-nodefaultlibs")) {
+        // Do not use the standard system libraries when linking.
+        // Only the libraries you specify are passed to the linker, and options
+        // specifying linkage of the system libraries are ignored.
+        // The standard startup files are used normally, unless -nostartfiles is used.
+        link_librt = false;
+        link_libc = false;
+        link_libcxx = false;
+      } else if (streq(arg, "-nolibc")) {
+        // Do not use the C library or system libraries tightly coupled with it when
+        // linking. Still link with the startup files, librt and libstdc++ unless
+        // options preventing their inclusion are used as well.
+        link_libc = false;
+      } else if (streq(arg, "-nostdlib") || streq(arg, "--no-standard-libraries")) {
+        // Do not use the standard system startup files or libraries when linking.
+        // No startup files and only the libraries you specify are passed to the linker,
+        // and options specifying linkage of the system libraries are ignored.
+        link_librt = false;
+        link_libc = false;
+        link_libcxx = false;
+        startfiles = false;
+      } else if (streq(arg, "-nostdlib++")) {
+        // Do not implicitly link with standard C++ libraries
+        link_libcxx = false;
+      } else if (str_startswith(arg, "-fuse-ld=")) {
+        custom_ld = true;
+      }
+
+      // compilation flags
+      else if (streq(arg, "-nostdinc") ||
+               streq(arg, "--no-standard-includes") ||
+               streq(arg, "-nostdlibinc"))
+      {
+        // Do not search the standard system directories for header files.
+        // Only the directories explicitly specified with -I, -iquote, -isystem,
+        // and/or -idirafter options (and the directory of the current file,
+        // if appropriate) are searched.
+        nostdinc = true;
+      } else if (streq(arg, "-ffreestanding")) {
+        // Assert that compilation targets a freestanding environment.
+        // This implies -fno-builtin. A freestanding environment is one in which the
+        // standard library may not exist, and program startup may not necessarily be
+        // at main.
+        freestanding = true;
+      } else if (streq(arg, "-c") || streq(arg, "-S") || streq(arg, "-E")) {
+        link = false;
+        iscompiling = true;
       } else if (streq(arg, "-O0")) {
         c.buildmode = BUILDMODE_DEBUG;
       } else if (str_startswith(arg, "-O")) {
         c.buildmode = BUILDMODE_OPT;
       } else if (streq(arg, "-fsyntax-only")) {
-        nolink = true;
+        link = false;
       } else if (streq(arg, "-fno-exceptions") || streq(arg, "-fno-cxx-exceptions")) {
-        no_cxx_exceptions = true;
+        cxx_exceptions = false;
       } else if (streq(arg, "-fcxx-exceptions")) {
         explicit_cxx_exceptions = true;
         explicit_exceptions = true;
       } else if (streq(arg, "-fexceptions")) {
         explicit_exceptions = true;
-      } else if (streq(arg, "-target")) {
-        panic("TODO -target");
-      } else if (streq(arg, "-sysroot") || str_startswith(arg, "--sysroot=")) {
-        custom_sysroot = true;
-        c.opt_nolibc = true; // don't build coroot/libc
-        c.opt_nolibcxx = true; // don't build coroot/libc++ et al
-      } else if (str_startswith(arg, "--target=")) {
-        arg += strlen("--target=");
+      }
+
+      // flags that affect both compilation and linking
+      else if (str_startswith(arg, "--target=") || streq(arg, "-target")) {
+        if (arg[1] == '-') { // --target=...
+          arg += strlen("--target=");
+        } else {
+          if (i + 1 == user_argc)
+            break;
+          arg = user_argv[i+1];
+        }
         if (!( target = target_find(arg) )) {
           log("Invalid target \"%s\"", arg);
           log("See `%s targets` for a list of supported targets", relpath(coexefile));
           return 1;
+        }
+      } else if (streq(arg, "--sysroot") || str_startswith(arg, "--sysroot=")) {
+        // a bug (or shortcoming?) in clang causes clang's driver to populate system
+        // search directories assuming sysroot ends in "/", which it often does not.
+        // (For example cmake will strip trailing slashes in CMAKE_OSX_SYSROOT.)
+        if (streq(arg, "--sysroot")) {
+          if (i+1 < user_argc) {
+            char* sysroot = user_argv[i+1];
+            custom_sysroot = sysroot;
+            usize len = strlen(sysroot);
+            if (len > 0 && sysroot[len - 1] != PATH_SEP) {
+              sysroot = mem_strdup(c.ma, (slice_t){{sysroot},len}, 1);
+              sysroot[len] = PATH_SEP;
+              sysroot[len + 1] = 0;
+              user_argv[i+1] = sysroot;
+            }
+          }
+        } else {
+          usize prefixlen = strlen("--sysroot=");
+          char* sysroot = user_argv[i] + prefixlen;
+          custom_sysroot = sysroot;
+          usize len = strlen(sysroot);
+          if (len > 0 && sysroot[len - 1] != PATH_SEP) {
+            user_argv[i] = mem_strdup(c.ma, (slice_t){{user_argv[i]},prefixlen+len}, 1);
+            user_argv[i][prefixlen + len] = PATH_SEP;
+            user_argv[i][prefixlen + len + 1] = 0;
+          }
         }
       } else if (streq(arg, "--")) {
         ispastflags = true;
@@ -124,8 +216,20 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
   if (!target)
     target = target_default();
 
+  c.opt_nolibc = !link_libc;
+  c.opt_nolibcxx = !link_libcxx;
+
+  err_t err = 0;
+  if (err || ( err = compiler_configure(&c, target, "build") ))
+    die("compiler_configure: %s", err_str(err));
+  if (custom_sysroot) {
+    if (( err = compiler_set_sysroot(&c, custom_sysroot) ))
+      die("compiler_set_sysroot: %s", err_str(err));
+  }
+
+  // print config in -v mode
+  char targetstr[64];
   if (coverbose) {
-    char targetstr[64];
     target_fmt(target, targetstr, sizeof(targetstr));
     printf("compis invoked as: %s\n", coprogname);
     printf("compis executable: %s\n", coexefile);
@@ -133,42 +237,27 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
     printf("COROOT=%s\n", coroot);
     printf("COCACHE=%s\n", cocachedir);
     printf("COMAXPROC=%u\n", comaxproc);
+    printf("sysroot=%s\n", c.sysroot);
   }
 
-  err_t err = 0;
-  if (err || ( err = compiler_configure(&c, target, "build") )) {
-    dlog("compiler_configure: %s", err_str(err));
-    return 1;
-  }
-
-  // create symlink for linker invocation, required for clang driver to work (MT-safe)
-  if (!nolink && ( err = symlink_ld(&c) )) {
-    elog("failed to create linker symlink: %s", err_str(err));
-    return 1;
-  }
-
-  // build system libraries, if needed
+  // build sysroot
   int sysroot_build_flags = 0;
-  if (iscxx && !c.opt_nolibcxx)
+  if (link_libcxx)
     sysroot_build_flags |= SYSROOT_BUILD_LIBCXX;
-  if (( err = build_sysroot_if_needed(&c, sysroot_build_flags) )) {
-    dlog("build_sysroot_if_needed: %s", err_str(err));
-    elog("failed to configure sysroot%s",
-      coverbose ? "" : ". Run with -v for more details.");
-    return 1;
-  }
+  if (( err = build_sysroot_if_needed(&c, sysroot_build_flags) ))
+    die("failed to configure sysroot: %s", err_str(err));
 
   // build actual args passed to clang
   strlist_t args = strlist_make(c.ma, iscxx ? "clang++" : "clang");
 
   // no exception support for WASI
-  if (iscompiling && iscxx && c.target.sys == SYS_wasi && !no_cxx_exceptions) {
+  if (iscompiling && iscxx && c.target.sys == SYS_wasi && cxx_exceptions) {
     if (explicit_exceptions) {
       // user explicitly requested exceptions; error
       errx(1, "error: wasi target does not support exceptions [%s]",
         explicit_cxx_exceptions ? "-fcxx-exceptions" : "-fexceptions");
     }
-    no_cxx_exceptions = true;
+    cxx_exceptions = false;
     strlist_add(&args, "-fno-exceptions");
   }
 
@@ -178,18 +267,16 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
   } else {
     // add fundamental "target" compilation flags
     if (iscompiling) {
-      if (!custom_sysroot) {
-        strlist_add_array(&args, c.cflags_common.strings, c.cflags_common.len);
+      if (custom_sysroot) {
+        strlist_add_array(&args, c.flags_common.strings, c.flags_common.len);
       } else {
-        strlist_addf(&args, "-resource-dir=%s/clangres/", coroot);
-        if (c.buildmode == BUILDMODE_OPT)
-          strlist_add(&args, "-flto=thin");
+        strlist_add_array(&args, c.cflags_common.strings, c.cflags_common.len);
       }
     }
 
     // add include flags for system headers and libc
-    if (!nostdinc && !freestanding && !custom_sysroot) {
-      if (iscxx && !c.opt_nolibcxx) {
+    if (!nostdinc) {
+      if (link_libcxx) {
         // We need to specify C++ include directories here so that they are searched
         // before clang resource dir. If we don't do this, the wrong cstddef header
         // will be used and we'll see errors like this:
@@ -198,25 +285,48 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
         strlist_addf(&args, "-isystem%s/libcxxabi/include", coroot);
         strlist_addf(&args, "-isystem%s/libunwind/include", coroot);
       }
-      strlist_add_array(&args, c.cflags_sysinc.strings, c.cflags_sysinc.len);
+      if (!custom_sysroot)
+        strlist_add_array(&args, c.cflags_sysinc.strings, c.cflags_sysinc.len);
     }
   }
 
   // linker flags
-  if (!nolink) {
-    char* bindir = path_dir_alloca(coexefile);
-    strlist_add(&args, "-nodefaultlibs");
-    strlist_addf(&args, "-fuse-ld=%s/%s", bindir, c.ldname);
+  if (link) {
+    // configure linker
+    if (custom_ld) {
+      // must disable LTO, or else clang complains:
+      //   "error: 'x86_64-unknown': unable to pass LLVM bit-code files to linker"
+      strlist_add(&args, "-fno-lto");
+    } else {
+      if (*c.ldname == 0) {
+        target_fmt(target, targetstr, sizeof(targetstr));
+        die("no linker available for target %s", targetstr);
+      }
+      // create symlink for linker invocation, required for clang driver to work
+      if (( err = symlink_ld(&c) ))
+        die("failed to create linker symlink: %s", err_str(err));
+      char* bindir = path_dir_alloca(coexefile);
+      strlist_addf(&args, "-fuse-ld=%s/%s", bindir, c.ldname); // TODO: just ldname?
+    }
 
-    if (!nostdlib && !freestanding && !custom_sysroot) {
+    // update link_LIB vars depending on target
+    link_librt  = link_librt  && target_has_syslib(target, SYSLIB_RT);
+    link_libc   = link_libc   && !freestanding && target_has_syslib(target, SYSLIB_C);
+    link_libcxx = link_libcxx && !freestanding && target_has_syslib(target, SYSLIB_CXX);
+
+    strlist_add(&args, "-nodefaultlibs");
+
+    if (link_librt || link_libc || link_libcxx) {
       strlist_addf(&args, "-L%s/lib", c.sysroot);
-      strlist_add(&args, "-lrt");
-      if (c.target.sys != SYS_none && !c.opt_nolibc)
+      if (link_librt)
+        strlist_add(&args, "-lrt");
+      if (link_libc) {
         strlist_add(&args, "-lc");
-      if (iscxx && c.target.sys != SYS_none && !c.opt_nolibcxx) {
-        strlist_add(&args, "-lc++", "-lc++abi");
-        if (!no_cxx_exceptions)
-          strlist_add(&args, "-lunwind");
+        if (link_libcxx) {
+          strlist_add(&args, "-lc++", "-lc++abi");
+          if (cxx_exceptions)
+            strlist_add(&args, "-lunwind");
+        }
       }
     }
 
@@ -239,9 +349,8 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
         break;
       }
       case SYS_linux: {
-        // strlist_add(&args, "-fuse-ld=lld");
-        strlist_addf(&args, "%s/lib/crt1.o", c.sysroot);
-        // strlist_add(&args, "-nostdinc","-nostdlib","-ffreestanding");
+        if (startfiles)
+          strlist_addf(&args, "%s/lib/crt1.o", c.sysroot);
         strlist_add(&args, "-nostartfiles", "-static", "-L-user-start");
         // strlist_add(&args, "-l-user-start"); // FIXME: if there are input files
         break;
@@ -288,7 +397,7 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
     }
   }
 
-  if (target->sys == SYS_linux && !nolink) {
+  if (target->sys == SYS_linux && link) {
     // strlist_add(&args, "-l-user-end"); // FIXME: if there are input files
     strlist_add(&args, "-L-user-end");
   }

@@ -537,8 +537,8 @@ typedef struct compiler {
   char*       pkgbuilddir;   // "{builddir}/{pkgname}.pkg"
   char*       pkgname;       // name of package being compiled
   strlist_t   cflags;        // cflags used for compis objects (includes cflags_common)
-  slice_t     sflags_common; // flags used for all assembly objects (slice of cflags)
-  slice_t     cflags_common; // cflags used for all objects (slice of cflags)
+  slice_t     flags_common;  // flags used for all objects; .s, .c etc.
+  slice_t     cflags_common; // cflags used for all objects (includes xflags_common)
   slice_t     cflags_sysinc; // cflags with -isystemPATH for current target
   const char* ldname;        // name of linker for target ("" if none)
 
@@ -565,7 +565,6 @@ typedef struct compiler {
   bool opt_genirdot;
   bool opt_genasm;  // write machine assembly .S source file to build dir
   bool opt_verbose;
-  bool opt_nostdlib;
   bool opt_nolibc;
   bool opt_nolibcxx;
 
@@ -614,6 +613,7 @@ filetype_t filetype_guess(const char* filename);
 void compiler_init(compiler_t*, memalloc_t, diaghandler_t, const char* pkgname);
 void compiler_dispose(compiler_t*);
 err_t compiler_configure(compiler_t*, const target_t* target, const char* buildroot);
+err_t compiler_set_sysroot(compiler_t*, const char* sysroot);
 err_t compiler_compile(compiler_t*, promise_t*, input_t*, buf_t* ofile);
 bool compiler_fully_qualified_name(const compiler_t*, buf_t* dst, const node_t*);
 bool compiler_mangle(const compiler_t*, buf_t* dst, const node_t*);

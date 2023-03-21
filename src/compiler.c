@@ -99,7 +99,6 @@ static void configure_target(compiler_t* c) {
   set_secondary_pointer_types(c);
 
   if (c->target.sys == SYS_none) {
-    c->opt_nostdlib = true;
     c->opt_nolibc = true;
     c->opt_nolibcxx = true;
   }
@@ -132,9 +131,6 @@ static err_t configure_sysroot(compiler_t* c) {
   int n = snprintf(sysroot, sizeof(sysroot),
     "%s%c%s", cocachedir, PATH_SEPARATOR, target);
   safecheck(n > 0 && (usize)n < sizeof(sysroot));
-
-  if (c->opt_verbose)
-    log("using sysroot '%s'", sysroot);
 
   mem_freecstr(c->ma, c->sysroot);
   if (( c->sysroot = mem_strdup(c->ma, slice_cstr(sysroot), 0) ) == NULL)
@@ -206,17 +202,20 @@ static err_t configure_cflags(compiler_t* c) {
 
   // flags used for all C and assembly compilation
   c->cflags = strlist_make(c->ma);
+  strlist_addf(&c->cflags, "-B%s", coroot);
   strlist_addf(&c->cflags, "--target=%s", c->target.triple);
   strlist_addf(&c->cflags, "--sysroot=%s/", c->sysroot);
   strlist_addf(&c->cflags, "-resource-dir=%s/clangres/", coroot);
   strlist_add(&c->cflags, "-nostdlib");
   if (c->target.sys == SYS_macos)
     strlist_add(&c->cflags, "-Wno-nullability-completeness");
+  if (c->buildmode == BUILDMODE_OPT)
+    strlist_add(&c->cflags, "-flto=thin");
 
   // end of common flags
   u32 flags_common_end = c->cflags.len;
-  // start of common cflags
 
+  // ————— start of common cflags —————
   if (c->target.sys == SYS_none) {
     // invariant: c->opt_nostdlib=true (when c->target.sys == SYS_none)
     strlist_add(&c->cflags,
@@ -226,29 +225,18 @@ static err_t configure_cflags(compiler_t* c) {
     strlist_addf(&c->cflags, "-isystem%s/clangres/include", coroot);
   }
 
-  if (c->buildmode == BUILDMODE_OPT)
-    strlist_add(&c->cflags, "-flto=thin");
-
   // end of common cflags
   u32 cflags_common_end = c->cflags.len;
 
-  // system-header dirs
-  if (!c->opt_nostdlib) {
-    switch (c->target.sys) {
-      case SYS_linux:
-        // strlist_addf(&c->cflags, "-isystem%s/musl/include/%s",
-        //   coroot, arch_name(c->target.arch));
-        // strlist_addf(&c->cflags, "-isystem%s/musl/include", coroot);
-        break;
-      case SYS_macos:
-        strlist_add(&c->cflags, "-include", "TargetConditionals.h");
-        break;
-    }
-  }
+  // ————— start of cflags_sysinc —————
+  // macos assumes constants in TargetConditionals.h are predefined
+  if (c->target.sys == SYS_macos && !c->opt_nolibc)
+    strlist_add(&c->cflags, "-include", "TargetConditionals.h");
+
+  // end of cflags_sysinc
   u32 cflags_sysinc_end = c->cflags.len;
 
-  // start of compis cflags
-
+  // ————— start of cflags (for compis builds) —————
   strlist_add(&c->cflags,
     "-std=c17",
     "-g",
@@ -264,8 +252,10 @@ static err_t configure_cflags(compiler_t* c) {
   // strlist_add(&c->cflags, "-fPIC");
   strlist_addf(&c->cflags, "-isystem%s/co", coroot);
 
+  // end of cflags
+
   const char*const* argv = (const char*const*)strlist_array(&c->cflags);
-  c->sflags_common = (slice_t){ .strings = argv, .len = (usize)flags_common_end };
+  c->flags_common = (slice_t){ .strings = argv, .len = (usize)flags_common_end };
   c->cflags_common = (slice_t){ .strings = argv, .len = (usize)cflags_common_end };
   c->cflags_sysinc = (slice_t){
     .strings = &argv[cflags_common_end],
@@ -273,6 +263,14 @@ static err_t configure_cflags(compiler_t* c) {
   };
 
   return c->cflags.ok ? 0 : ErrNoMem;
+}
+
+
+err_t compiler_set_sysroot(compiler_t* c, const char* sysroot) {
+  mem_freecstr(c->ma, c->sysroot);
+  if (( c->sysroot = mem_strdup(c->ma, slice_cstr(sysroot), 0) ) == NULL)
+    return ErrNoMem;
+  return configure_cflags(c);
 }
 
 

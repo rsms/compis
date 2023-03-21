@@ -319,6 +319,7 @@ static err_t build_libc(compiler_t* c) {
     case SYS_wasi:
       return build_libc_wasi(c);
     case SYS_none:
+      assert(target_has_syslib(&c->target, SYSLIB_C) == false);
       return 0;
   }
   safefail("target.sys #%u", c->target.sys);
@@ -351,6 +352,9 @@ static err_t librt_add_aarch64_lse_sources(cbuild_t* b) {
 
 
 static err_t build_librt(compiler_t* c) {
+  if (!target_has_syslib(&c->target, SYSLIB_RT))
+    return 0;
+
   cbuild_t build;
   cbuild_init(&build, c, "librt");
   build.srcdir = path_join_alloca(coroot, "librt");
@@ -846,7 +850,7 @@ err_t build_sysroot_if_needed(compiler_t* c, int flags) {
     // wipe any existing sysroot
     if ((err = fs_remove(c->sysroot)) && err == ErrNotFound)
       err = 0;
-
+    if (!err) err = fs_mkdirs(c->sysroot, 0755, 0);
     if (!err) err = copy_sysinc_headers(c);
     if (!err) err = build_libc(c);
     if (!err) err = build_librt(c);

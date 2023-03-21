@@ -21,7 +21,7 @@ void cbuild_init(cbuild_t* b, compiler_t* c, const char* name) {
   b->as = strlist_make(c->ma, "cc");
   strlist_add_array(&b->cc, c->cflags_common.strings, c->cflags_common.len);
   strlist_add_array(&b->cxx, c->cflags_common.strings, c->cflags_common.len);
-  strlist_add_array(&b->as, c->sflags_common.strings, c->sflags_common.len);
+  strlist_add_array(&b->as, c->flags_common.strings, c->flags_common.len);
 
   usize namelen = strlen(name);
   usize objdircap = strlen(c->builddir) + 1 + namelen + strlen(OBJDIR_SUFFIX) + 1;
