@@ -149,7 +149,8 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
 
   // build system libraries, if needed
   int sysroot_build_flags = 0;
-  if (iscxx) sysroot_build_flags |= SYSROOT_BUILD_LIBCXX;
+  if (iscxx && !c.opt_nolibcxx)
+    sysroot_build_flags |= SYSROOT_BUILD_LIBCXX;
   if (( err = build_sysroot_if_needed(&c, sysroot_build_flags) )) {
     dlog("build_sysroot_if_needed: %s", err_str(err));
     elog("failed to configure sysroot%s",
@@ -189,13 +190,10 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
     // add include flags for system headers and libc
     if (!nostdinc && !freestanding && !custom_sysroot) {
       if (iscxx && !c.opt_nolibcxx) {
-        // We need to specify C++ include directory like this so that it is searched
-        // before clang resource dir.
-        // If we don't do this, the wrong cstddef header will be used
-        // and we'll see errors like this:
+        // We need to specify C++ include directories here so that they are searched
+        // before clang resource dir. If we don't do this, the wrong cstddef header
+        // will be used and we'll see errors like this:
         //   "error: no member named 'nullptr_t' in the global namespace"
-        // strlist_addf(&args, "-isystem%s/include/c++/v1", c.sysroot);
-
         strlist_addf(&args, "-isystem%s/libcxx/include", coroot);
         strlist_addf(&args, "-isystem%s/libcxxabi/include", coroot);
         strlist_addf(&args, "-isystem%s/libunwind/include", coroot);
