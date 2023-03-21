@@ -48,6 +48,12 @@ TARGET(x86_64,  macos, "11", 8, 8, "x86_64-apple-macosx11.0.0")
 TARGET(x86_64,  macos, "12", 8, 8, "x86_64-apple-macosx12.0.0")
 TARGET(x86_64,  macos, "13", 8, 8, "x86_64-apple-macosx13.0.0")
 
-TARGET(wasm32,  wasi, "", 4, 4, "wasm32-wasi")
+TARGET(wasm32, wasi, "", 4, 4, "wasm32-wasi")
+
+TARGET(aarch64, none, "", 8, 8, "aarch64-unknown-unknown")
+TARGET(arm,     none, "", 4, 4, "arm-unknown-unknown")
+TARGET(i386,    none, "", 4, 4, "i386-unknown-unknown")
+TARGET(riscv64, none, "", 8, 8, "riscv64-unknown-unknown")
 TARGET(wasm32,  none, "", 4, 4, "wasm32-unknown-unknown")
 TARGET(wasm64,  none, "", 4, 4, "wasm64-unknown-unknown")
+TARGET(x86_64,  none, "", 8, 8, "x86_64-unknown-unknown")
