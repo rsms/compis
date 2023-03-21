@@ -27,9 +27,10 @@ else
 fi
 
 _build_one() { # <id>
-  # build for wasi since it has small syslibs
+  # build for wasm32-none since it only needs librt, minimizing the time this test takes
   set +e
-  "$COEXE" cc --target=wasm32-wasi data/hello.c -o "$OUT_DIR/$TEST_NAME-$1.exe"
+  "$COEXE" cc --target=wasm32-none -o "$OUT_DIR/$TEST_NAME-$1.out" \
+    "$PROJECT/examples/hello-wasm/hello.c"
   local status=$?
   set -e
   echo "_build_one $i exited ($status)"
@@ -38,8 +39,12 @@ _build_one() { # <id>
 
 # must start without COCACHE, even the dir must not exist as this tests mkdir race
 export COCACHE
-rm -rf "$COCACHE" "$OUT_DIR/$TEST_NAME"-*.exe
+rm -rf "$COCACHE" "$OUT_DIR/$TEST_NAME"-*.out
 echo "using COCACHE $(_relpath "$COCACHE")"
+if [ -t 1 ]; then
+  echo "note: you may be seeing less than $(( $NUM_RACING_PROCS - 1 )) \"waiting...\" messages, which "
+  echo "      may be over-written on stdout by \"fancy\" status lines."
+fi
 
 # warm up process to minimize latency in spawning
 "$COEXE" version >/dev/null
@@ -53,9 +58,9 @@ done
 wait
 echo "all finished; verifying output..."
 for (( i = 1; i < $NUM_RACING_PROCS + 1; i++ )); do
-  [ -f "$OUT_DIR/$TEST_NAME-$i.exe" ] || _err "_build_one $i did not produce output"
+  [ -f "$OUT_DIR/$TEST_NAME-$i.out" ] || _err "_build_one $i did not produce output"
 done
 echo "ok"
 
 # cleanup
-rm -rf "$COCACHE" "$OUT_DIR/$TEST_NAME"-*.exe
+rm -rf "$COCACHE" "$OUT_DIR/$TEST_NAME"-*.out
