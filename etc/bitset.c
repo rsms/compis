@@ -15,7 +15,7 @@ int bit_get(const void* bits, usize bit) {
 
 int main(int argc, char* argv[]) {
   int minargc = 2 + (argc > 1 && strcmp(argv[1], "-n") == 0);
-  if (argc < minargc || strcmp(argv[1], "--help") == 0) {
+  if (argc < minargc || strcmp(argv[1], "--help") == 0 || strcmp(argv[1], "-h") == 0) {
     fprintf(argc < minargc ? stderr : stdout,
       "usage: %s [-n] <BIT> ...\n", argv[0]);
     return argc < minargc;
@@ -32,7 +32,7 @@ int main(int argc, char* argv[]) {
   u32 maxbit = 8;
   u32 nbits = sizeof(bits) * 8;
 
-  while (--argc) {
+  while (argc--) {
     u32 bit = (u32)atoi(*argv++);
     if (bit >= nbits)
       errx(1, "bit %u too large (max=%u)", bit, nbits-1);
