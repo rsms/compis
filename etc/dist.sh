@@ -104,7 +104,7 @@ _create_tool_symlinks $DESTDIR/compis
 fdupes="$DEPS_DIR/fdupes/fdupes"
 if [ ! -x "$fdupes" ]; then
   git clone https://github.com/tobiasschulz/fdupes.git "$DEPS_DIR/fdupes"
-  make -C "$DEPS_DIR/fdupes" CC="$DESTDIR/cc" -j$(nproc)
+  make -C "$DEPS_DIR/fdupes" CC="$PWD/$DESTDIR/cc" -j$(nproc)
 fi
 echo "deduplicating identical files using hardlinks"
 "$fdupes" --recurse --linkhard --noempty $DESTDIR >/dev/null
