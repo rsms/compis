@@ -541,6 +541,7 @@ typedef struct compiler {
   slice_t     cflags_common; // cflags used for all objects (includes xflags_common)
   slice_t     cflags_sysinc; // cflags with -isystemPATH for current target
   const char* ldname;        // name of linker for target ("" if none)
+  int         lto;           // LTO level. 0 = disabled
 
   // diagnostics
   diaghandler_t  diaghandler; // called when errors are encountered

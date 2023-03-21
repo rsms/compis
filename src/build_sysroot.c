@@ -151,6 +151,21 @@ static err_t build_libc_musl(compiler_t* c) {
                           "-Isrc/internal");
   strlist_addf(&build.cc, "-isystem%s/include", c->sysroot);
 
+  if (c->target.arch == ARCH_aarch64 && c->target.sys == SYS_linux && c->lto) {
+    // disable LTO for aarch64-linux to work around an issue that causes broken
+    // executables where somehow init_have_lse_atomics calling getauxval causes
+    // PC to jump to 0x0. Here's a backtrace from an lldb run:
+    //
+    // * thread #1, name = 'hello', stop reason = signal SIGSEGV: invalid address
+    //   (fault address: 0x0)
+    //   * frame #0: 0x0000000000000000
+    //     frame #1: 0x000000000022d748 hello`init_have_lse_atomics + 12
+    //     frame #2: 0x000000000022d380 hello`libc_start_init + 52
+    //     frame #3: 0x000000000022d3fc hello`libc_start_main_stage2.llvm.1697 + 36
+    strlist_add(&build.as, "-fno-lto");
+    strlist_add(&build.cc, "-fno-lto");
+  }
+
   // add sources
   const musl_srclist_t* srclist = FIND_SRCLIST(&c->target, musl_srclist);
   if (!cobjarray_reserve(&build.objs, c->ma, countof(musl_sources))) {
@@ -370,6 +385,11 @@ static err_t build_librt(compiler_t* c) {
   };
   strlist_add_array(&build.as, common_flags, countof(common_flags));
   strlist_add_array(&build.cc, common_flags, countof(common_flags));
+
+  if (c->target.arch == ARCH_aarch64 && c->lto) {
+    strlist_add(&build.as, "-fno-lto");
+    strlist_add(&build.cc, "-fno-lto");
+  }
 
   strlist_add(&build.cc, "-std=c11");
 
