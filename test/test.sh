@@ -17,17 +17,20 @@ VERY_VERBOSE=false
 PARALLELISM=
 PATTERNS=()
 COEXE=
+JUST_LIST=false
 
 while [[ $# -gt 0 ]]; do case "$1" in
-  --debug)   DEBUG=true; shift ;;
+  -l)        JUST_LIST=true; shift ;;
   -j*)       PARALLELISM=${1:2}; shift ;;
   -1)        PARALLELISM=1; shift ;;
   --coexe=*) COEXE=${1:8}; shift ;;
+  --debug)   DEBUG=true; shift ;;
   -v)        VERBOSE=true; shift ;;
   -vv)       VERBOSE=true; VERY_VERBOSE=true; shift ;;
   -h|-help|--help) cat << _END
 Usage: $0 [options] [--] [<testname> ...]
 Options:
+  -l              List tests to run, but don't actually run them
   -jN             Run at most N tests in parallel (defaults to $(nproc))
   -1, -j1         Run one test at a time
   --coexe=<file>  Test specific, existing compis executable
@@ -171,7 +174,7 @@ END
   local err="$rundir/stderr.log"
 
   if [ $PARALLELISM -gt 1 ]; then
-    echo "starting $logname"
+    [ -t 1 ] && echo "starting $logname"
   else
     printf "[$n/$ntotal] $logname ..."
   fi
@@ -248,6 +251,21 @@ ntotal=${#TEST_SCRIPTS[@]}
 nstarted=0
 [ $ntotal = 0 ] && _err "no tests matches glob pattern(s): ${PATTERNS[@]}"
 [ $ntotal = 1 ] && PARALLELISM=1
+
+if $JUST_LIST; then
+  namelen=0
+  for f in "${TEST_SCRIPTS[@]}"; do
+    name="${f:$(( ${#TESTS_DIR} + 1 ))}"
+    name="${name%.sh}"
+    [ ${#name} -le $namelen ] || namelen=${#name}
+  done
+  echo $namelen
+  for f in "${TEST_SCRIPTS[@]}"; do
+    name="${f:$(( ${#TESTS_DIR} + 1 ))}"
+    printf "%-*s %s\n" $namelen "${name%.sh}" "$(_relpath "$PWD/$f")"
+  done
+  exit 0
+fi
 
 if [ $PARALLELISM -eq 1 ]; then
   for f in "${TEST_SCRIPTS[@]}"; do
