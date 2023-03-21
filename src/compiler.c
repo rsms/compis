@@ -98,8 +98,11 @@ static void configure_target(compiler_t* c) {
   }
   set_secondary_pointer_types(c);
 
-  if (c->target.sys == SYS_none)
+  if (c->target.sys == SYS_none) {
     c->opt_nostdlib = true;
+    c->opt_nolibc = true;
+    c->opt_nolibcxx = true;
+  }
 
   c->ldname = target_linker_name(&c->target);
 }
