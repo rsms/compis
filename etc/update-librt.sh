@@ -493,6 +493,7 @@ echo "" >> "$HEADER_FILE"
 _target_sources() {
   local indices=()
   local f srcidx ent var name excl_var_any excl_var_arch
+  # local debug_files=()
   for f in *.c $arch/*.[csS] any-$sys/*.[csS] $arch-$sys/*.[csS]; do
     [ -f "$f" ] || continue
     name=${f:0:$(( ${#f} - 2 ))}
@@ -512,9 +513,12 @@ _target_sources() {
     srcidx=${!var}
 
     indices+=( $srcidx )
+    # debug_files+=( $f )
   done
   "$PROJECT"/etc/bitset -n "${indices[@]}"
-  # echo "  ${indices[@]}"
+  # echo " /* ${indices[@]} */"
+  # echo " /* ${debug_files[@]} */"
+  # echo ""
 }
 
 # compile helper program
@@ -530,6 +534,10 @@ _target_sources() {
   echo "static const librt_srclist_t librt_srclist[] = {"
   for target_info in $(_co_targets); do  # ( "arch,sys,sysver,..." ... )
     IFS=, read -r arch sys sysver ign <<< "$target_info"
+    if [ "$sys" = none ] && [ "$arch" != wasm32 -a "$arch" != wasm64 ]; then
+      # no librt support for "none" with the exception of wasm
+      continue
+    fi
     printf "  {{ARCH_%s, SYS_%s, \"%s\"}, {" $arch $sys $sysver
     _target_sources
     echo "}},"
