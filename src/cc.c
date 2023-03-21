@@ -234,9 +234,9 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
     printf("compis invoked as: %s\n", coprogname);
     printf("compis executable: %s\n", coexefile);
     printf("target: %s\n", targetstr);
+    printf("COMAXPROC=%u\n", comaxproc);
     printf("COROOT=%s\n", coroot);
     printf("COCACHE=%s\n", cocachedir);
-    printf("COMAXPROC=%u\n", comaxproc);
     printf("sysroot=%s\n", c.sysroot);
   }
 
