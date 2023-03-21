@@ -1,4 +1,4 @@
-co c++ --target=wasm32-wasi hello.cc -o hello.wasm
+c++ --target=wasm32-wasi hello.cc -o hello.wasm
 
 if command -v wasmtime >/dev/null; then
   wasmtime hello.wasm
