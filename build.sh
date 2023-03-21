@@ -439,8 +439,14 @@ CO_VERSION_GIT=
 
 # arch-and-system-specific flags
 case "$HOST_ARCH-$HOST_SYS" in
-  x86_64-macos)  LDFLAGS_HOST+=( -Wl,-platform_version,macos,10.15,10.15 ) ;;
-  aarch64-macos) LDFLAGS_HOST+=( -Wl,-platform_version,macos,11.0,11.0 ) ;;
+  x86_64-macos)
+    XFLAGS_HOST+=( -mmacos-version-min=10.15 )
+    LDFLAGS_HOST+=( -Wl,-platform_version,macos,10.15,10.15 )
+    ;;
+  aarch64-macos)
+    XFLAGS_HOST+=( -mmacos-version-min=11.0 )
+    LDFLAGS_HOST+=( -Wl,-platform_version,macos,11.0,11.0 )
+    ;;
 esac
 
 # system-specific flags
