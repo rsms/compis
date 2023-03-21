@@ -14,4 +14,6 @@ echo "using custom sysroot: $SYSROOT"
 cc --target=wasm32-wasi --sysroot="$SYSROOT" hello.c -o hello.wasm
 cc --target=wasm32-wasi --sysroot "$SYSROOT" hello.c -o hello.wasm
 
-command -v wasmtime >/dev/null && wasmtime hello.wasm
+if command -v wasmtime >/dev/null; then
+  wasmtime hello.wasm
+fi
