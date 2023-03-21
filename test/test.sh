@@ -111,6 +111,20 @@ for name in stdout.log stderr.log fail.log; do
   [ ! -e "$PWD/data/$name" ] || _err "data/$name conflicts with generated files!"
 done
 
+BIN="$WORK_DIR/bin"
+CONAME=$(basename "$COEXE")
+mkdir "$BIN"
+
+if $VERY_VERBOSE; then
+  printf "#!/bin/sh\ncmd=\$1;shift;exec $COEXE \$cmd -v \$@" > "$BIN/$CONAME"
+  printf "#!/bin/sh\nexec $(dirname "$COEXE")/cc -v \$@" > "$BIN/cc"
+  printf "#!/bin/sh\nexec $(dirname "$COEXE")/c++ -v \$@" > "$BIN/c++"
+  chmod +x "$BIN"/*
+  [ $CONAME = co ] || ln -s $CONAME "$BIN/co"
+elif [ $CONAME != co ]; then
+  ln -s $CONAME "$BIN/co"
+fi
+
 #———————————————————————————————————————————————————————————————————————————————————————
 # run test scripts
 
@@ -118,18 +132,7 @@ export PROJECT
 export COEXE
 export VERBOSE
 export COCACHE
-export PATH="$(dirname "$COEXE"):$PATH"
-
-if $VERY_VERBOSE; then
-  VBIN="$WORK_DIR/verbose-bin"
-  CONAME=$(basename "$COEXE")
-  mkdir "$VBIN"
-  printf "#!/bin/sh\ncmd=\$1;shift;exec $COEXE \$cmd -v \$@" > "$VBIN/$CONAME"
-  printf "#!/bin/sh\nexec $(dirname "$COEXE")/cc -v \$@" > "$VBIN/cc"
-  printf "#!/bin/sh\nexec $(dirname "$COEXE")/c++ -v \$@" > "$VBIN/c++"
-  chmod +x "$VBIN"/*
-  export PATH="$VBIN:$PATH"
-fi
+export PATH="$BIN:$(dirname "$COEXE"):$PATH"
 
 TESTS_DIR=tests
 
