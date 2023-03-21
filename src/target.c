@@ -326,3 +326,18 @@ bool target_has_syslib(const target_t* t, syslib_t syslib) {
   return false;
 }
 
+
+void target_llvm_version(const target_t* t, char buf[16]) {
+  if (t->sys != SYS_macos) {
+    buf[0] = 0;
+    return;
+  }
+  if (streq(t->sysver, "10")) {
+    memcpy(buf, "10.15.0", strlen("10.15.0") + 1);
+  } else {
+    usize i = strlen(t->sysver);
+    safecheck(i < 16);
+    memcpy(buf, t->sysver, i);
+    snprintf(&buf[i], 16-i, ".0.0");
+  }
+}

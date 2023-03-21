@@ -334,13 +334,7 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
       case SYS_macos: {
         if (!custom_sysroot) {
           char macosver[16];
-          if (streq(target->sysver, "10")) {
-            memcpy(macosver, "10.15.0", strlen("10.15.0") + 1);
-          } else {
-            usize i = strlen(target->sysver);
-            memcpy(macosver, target->sysver, i);
-            snprintf(&macosver[i], sizeof(macosver)-i, ".0.0");
-          }
+          target_llvm_version(target, macosver);
           strlist_addf(&args, "-Wl,-platform_version,macos,%s,%s", macosver, macosver);
           const char* arch = (target->arch == ARCH_aarch64) ? "arm64"
                                                             : arch_name(target->arch);

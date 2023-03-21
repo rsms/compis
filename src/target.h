@@ -117,6 +117,8 @@ inline static bool target_is_arm(const target_t* t) {
   return t->arch == ARCH_arm;
 }
 
+void target_llvm_version(const target_t* t, char buf[16]);
+
 
 ASSUME_NONNULL_END
 #ifdef __cplusplus
