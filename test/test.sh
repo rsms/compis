@@ -136,6 +136,7 @@ export PATH="$BIN:$(dirname "$COEXE"):$PATH"
 
 TESTS_DIR=tests
 
+
 _run_test() { # <src-script> <n> <ntotal>
   local script_src="$1"
   local script_path="$TEST_DIR/$script_src"
@@ -181,15 +182,16 @@ END
   set -e
 
   if [ $status -eq 0 ]; then
+    local status="ok"; [ -s "$err" ] && status="ok (but printed to stderr)"
     if [ $PARALLELISM -gt 1 ]; then
       printf "." >> "$FINISHED_FILE"
       nfinished=$(stat $STAT_SIZE_ARGS "$FINISHED_FILE")
       local nrem=$(( $ntotal - $nfinished ))
-      echo "[$nfinished/$ntotal] $logname: ok"
-      [ -s "$err" ] && cat "$err" >&2
+      echo "[$nfinished/$ntotal] $logname: $status"
     else
-      echo " ok"
+      echo " $status"
     fi
+    [ -s "$err" ] && cat "$err" >&2
     return 0
   fi
 
@@ -223,7 +225,7 @@ END
 
 # find test scripts
 # sort without filename extension so that e.g. a.sh is ordered before a-b.sh
-TEST_SCRIPTS=( $(find $TESTS_DIR -type f -name \*.sh) )
+TEST_SCRIPTS=( $(find $TESTS_DIR \( -type f -o -type l \) -name \*.sh) )
 IFS=$'\n' TEST_SCRIPTS=( $(sort -n <<< "${TEST_SCRIPTS[*]/%.sh/}") ); unset IFS
 TEST_SCRIPTS=( "${TEST_SCRIPTS[@]/%/.sh}" )
 
