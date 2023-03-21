@@ -203,6 +203,7 @@ _need_regenerate_sysinc_dir() {
 _regenerate_sysinc_dir() {
   printf "Generating lib/sysinc from lib/sysinc-src ..."
   local LOGFILE="$OUT_DIR/gen-sysinc.log"
+  mkdir -p "$OUT_DIR"
   if ! $BASH "$PROJECT/etc/gen-sysinc.sh" > "$LOGFILE" 2>&1; then
     echo " failed. See $(_relpath "$LOGFILE")" >&2
     exit 1
