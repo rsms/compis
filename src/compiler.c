@@ -216,6 +216,8 @@ static err_t configure_cflags(compiler_t* c) {
   u32 flags_common_end = c->cflags.len;
 
   // ————— start of common cflags —————
+  if (c->buildmode == BUILDMODE_OPT)
+    strlist_add(&c->cflags, "-D_FORTIFY_SOURCE=2");
   if (c->target.sys == SYS_none) {
     // invariant: c->opt_nostdlib=true (when c->target.sys == SYS_none)
     strlist_add(&c->cflags,
