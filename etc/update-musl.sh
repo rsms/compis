@@ -29,7 +29,7 @@ mkdir -p "$SOURCE_DESTDIR/arch"
 
 for f in \
   $(find src -type f -name '*.h') \
-  compat/time32/*.c \
+  compat/time32/*.[ch] \
   crt/*.c \
   ldso/*.c \
   src/*/*.c \
