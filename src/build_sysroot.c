@@ -411,7 +411,7 @@ static err_t build_librt(compiler_t* c) {
       if (!(srclist->sources[i / 8] & ((u8)1u << (i % 8))))
         continue;
       const char* srcfile = librt_sources[i];
-      if (c->target.arch == ARCH_aarch64 && strcmp(srcfile, "aarch64/lse.S") == 0) {
+      if (c->target.arch == ARCH_aarch64 && streq(srcfile, "aarch64/lse.S")) {
         // This file is special -- it is compiled many times with different ppc defs
         // to produce different objects for different function signatures.
         // See compiler-rt/lib/builtins/CMakeLists.txt
