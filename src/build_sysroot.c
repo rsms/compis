@@ -319,7 +319,7 @@ static err_t build_libc(compiler_t* c) {
     case SYS_wasi:
       return build_libc_wasi(c);
     case SYS_none:
-      break;
+      return 0;
   }
   safefail("target.sys #%u", c->target.sys);
   return ErrInvalid;
@@ -770,6 +770,8 @@ static err_t build_libcxx(compiler_t* c) {
 
 
 static err_t copy_sysinc_headers(compiler_t* c) {
+  if (c->target.sys == SYS_none)
+    return 0;
   bgtask_t* task = bgtask_start(c->ma, "sysinc", 0, 0);
   err_t err = copy_target_layer_dirs(c, task, "sysinc", "include");
   bgtask_end(task, "");
@@ -813,6 +815,7 @@ static err_t acquire_build_lock(compiler_t* c, lockfile_t* lock) {
       elog("lockfile_trylock '%s' failed: %s", lockfile, err_str(err));
       return err;
     }
+    // note: lockee_pid may be -1 if lockee took a long time to write() its pid
     log("waiting for compis (pid %ld) to finish...", lockee_pid);
     if (( err = lockfile_lock(lock, lockfile) )) {
       elog("lockfile_lock '%s' failed: %s", lockfile, err_str(err));
@@ -825,9 +828,8 @@ static err_t acquire_build_lock(compiler_t* c, lockfile_t* lock) {
 
 err_t build_sysroot_if_needed(compiler_t* c, int flags) {
   // note: this function may be called by multiple processes at once
-  if (!must_build(c, "base") &&
-      ( (flags & SYSROOT_BUILD_LIBCXX) == 0 || !must_build(c, "libcxx") ) )
-  {
+  bool build_cxx = flags & SYSROOT_BUILD_LIBCXX;
+  if (!must_build(c, "base") && (!build_cxx || !must_build(c, "libcxx")) ) {
     // up to date
     return 0;
   }
@@ -851,7 +853,7 @@ err_t build_sysroot_if_needed(compiler_t* c, int flags) {
     if (!err) err = mark_built_ok(c, "base");
   }
 
-  if ((flags & SYSROOT_BUILD_LIBCXX) && must_build(c, "libcxx")) {
+  if (build_cxx && must_build(c, "libcxx")) {
     if (!err) err = build_libunwind(c);
     if (!err) err = build_cxx_config_site(c); // __config_site header
     if (!err) err = build_libcxxabi(c);
