@@ -145,11 +145,10 @@ static err_t build_libc_musl(compiler_t* c) {
     "-ffunction-sections",
     "-fdata-sections" );
   strlist_addf(&build.cc, "-Iarch/%s", arch_name(c->target.arch));
+  strlist_addf(&build.cc, "-Iinclude-arch/%s", arch_name(c->target.arch));
   strlist_add(&build.cc,  "-Iarch/generic",
                           "-Isrc/include",
                           "-Isrc/internal");
-  // strlist_addf(&build.cc, "-Iinclude-arch/%s", arch_name(c->target.arch));
-  // strlist_add(&build.cc,  "-Iinclude");
   strlist_addf(&build.cc, "-isystem%s/include", c->sysroot);
 
   // add sources
