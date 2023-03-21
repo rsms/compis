@@ -526,7 +526,7 @@ static err_t build_libunwind(compiler_t* c) {
 
   // add sources
   // ma: temporary memory allocator for storing source filenames
-  memalloc_t ma = memalloc_bump_in(c->ma, countof(libunwind_sources)*(PATH_MAX+1), 0);
+  memalloc_t ma = memalloc_bump_in(c->ma, countof(libunwind_sources)*PATH_MAX, 0);
   { memalloc_ctx_set_scope(ma);
     for (u32 i = 0; i < countof(libunwind_sources); i++) {
       char* srcfile = safechecknotnull(path_join("src", libunwind_sources[i]).p);
@@ -682,7 +682,7 @@ static err_t build_libcxxabi(compiler_t* c) {
 
   // add sources
   // ma: temporary memory allocator for storing source filenames
-  memalloc_t ma = memalloc_bump_in(c->ma, countof(libcxx_sources)*(PATH_MAX+1), 0);
+  memalloc_t ma = memalloc_bump_in(c->ma, countof(libcxx_sources)*PATH_MAX, 0);
   { memalloc_ctx_set_scope(ma);
     for (u32 i = 0; i < countof(libcxxabi_sources); i++) {
       if (c->target.sys == SYS_wasi &&
@@ -771,7 +771,7 @@ static err_t build_libcxx(compiler_t* c) {
 
   // add sources
   // ma: temporary memory allocator for storing source filenames
-  memalloc_t ma = memalloc_bump_in(c->ma, countof(libcxx_sources)*(PATH_MAX+1), 0);
+  memalloc_t ma = memalloc_bump_in(c->ma, countof(libcxx_sources)*PATH_MAX, 0);
   { memalloc_ctx_set_scope(ma);
     for (u32 i = 0; i < countof(libcxx_sources); i++) {
       if (c->target.sys == SYS_wasi && str_startswith(libcxx_sources[i], "filesystem/"))
