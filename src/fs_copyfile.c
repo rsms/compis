@@ -112,7 +112,7 @@ static err_t copy_symlink(const char* src, const char* dst, mode_t mode, int fla
 retry:
   if (symlink(target, dst) == 0) {
     int chmod_flags = AT_SYMLINK_NOFOLLOW;
-    if (fchmodat(AT_FDCWD, dst, mode, chmod_flags) != 0) {
+    if (fchmodat(AT_FDCWD, dst, mode, chmod_flags) != 0 && errno != ENOTSUP) {
       err_t err = err_errno();
       elog("failed to set mode on symlink %s: %s", relpath(dst), strerror(errno));
       return err;
