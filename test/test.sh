@@ -232,7 +232,9 @@ if [ ${#PATTERNS[@]} -gt 0 ]; then
     name="${f:$(( ${#TESTS_DIR} + 1 ))}"
     name="${name%.sh}"
     for pat in "${PATTERNS[@]}"; do
-      [[ $name == @($pat) ]] && TEST_SCRIPTS+=( "$f" )
+      # Can do this in bash >=4:
+      # [[ $name == @($pat) ]] && TEST_SCRIPTS+=( "$f" )
+      eval "[[ '$name' == $pat ]]" && TEST_SCRIPTS+=( "$f" )
     done
   done
 fi
