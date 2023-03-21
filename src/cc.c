@@ -205,6 +205,7 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
   // linker flags
   if (!nolink) {
     char* bindir = path_dir_alloca(coexefile);
+    strlist_add(&args, "-nodefaultlibs");
     strlist_addf(&args, "-fuse-ld=%s/%s", bindir, c.ldname);
 
     if (!nostdlib && !freestanding && !custom_sysroot) {
