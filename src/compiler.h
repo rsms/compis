@@ -836,14 +836,7 @@ buf_t* tmpbuf_get(u32 bufindex /* [0-2) */);
 // sysroot
 #define SYSROOT_BUILD_LIBCXX (1<<0) // build libc++, libc++abi and libunwind
 err_t build_sysroot_if_needed(compiler_t* c, int flags); // build_sysroot.c
-typedef enum {
-  SYSLIB_RT,     // librt
-  SYSLIB_C,      // libc
-  SYSLIB_CXX,    // libc++
-  SYSLIB_CXXABI, // libc++abi
-  SYSLIB_UNWIND, // libunwind
-} syslib_t;
-const char* syslib_filename(const target_t* target, syslib_t lib);
+const char* syslib_filename(const target_t* target, syslib_t);
 void syslib_path(compiler_t* c, char buf[PATH_MAX], syslib_t); // safecheck'd
 
 // pos

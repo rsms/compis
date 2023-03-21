@@ -25,6 +25,14 @@ typedef struct {
   const char* sysver;
 } targetdesc_t;
 
+typedef enum syslib {
+  SYSLIB_RT,     // librt
+  SYSLIB_C,      // libc
+  SYSLIB_CXX,    // libc++
+  SYSLIB_CXXABI, // libc++abi
+  SYSLIB_UNWIND, // libunwind
+} syslib_t;
+
 ASSUME_NONNULL_END
 
 #define TARGET CO_PLUS_ONE
@@ -94,6 +102,8 @@ void target_layers_free(memalloc_t ma, char** layers, u32 len);
 // target_linker_name returns the name of the lld linker for target (e.g. "ld.lld")
 // Returns "" if there's no linker for the target.
 const char* target_linker_name(const target_t* t);
+
+bool target_has_syslib(const target_t*, syslib_t);
 
 
 ASSUME_NONNULL_END
