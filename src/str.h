@@ -1,9 +1,9 @@
-// null-terminated mutable byte strings, allocated in memalloc_default()
+// null-terminated mutable byte strings, allocated in memalloc_ctx()
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 ASSUME_NONNULL_BEGIN
 
-#define STR_MEMALLOC memalloc_default()
+#define STR_MEMALLOC memalloc_ctx()
 
 typedef struct {
   char* nullable p;
@@ -71,31 +71,5 @@ inline static bool _str_append2(str_t* s, const char* cstr) {
 #define _str_append7(s, adds...) str_appendstrings(s, 0, 6, adds)
 #define _str_append8(s, adds...) str_appendstrings(s, 0, 7, adds)
 #define _str_append9(s, adds...) str_appendstrings(s, 0, 8, adds)
-
-// #else
-//   #define str_free _str_free
-// #endif
-// inline static void _str_free(str_t s) {
-//   mem_t* m = (mem_t*)&s;
-//   #if USIZE_MAX != U32_MAX
-//     m->size = (usize)s.cap;
-//   #endif
-//   mem_free(STR_MEMALLOC, m);
-// }
-
-/*
-// str_t is a mutable null-terminated string, always allocated in memalloc_default()
-typedef struct {
-  char* p[];
-  u32 cap, len;
-} str_t;
-
-str_t* nullable str_makedata(const void* data, usize size);
-
-inline static str_t* nullable str_make(const char* cstr) {
-  return str_makedata(cstr, strlen(cstr));
-}
-
-void str_free(str_t* s);*/
 
 ASSUME_NONNULL_END
