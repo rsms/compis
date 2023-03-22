@@ -7,6 +7,9 @@ extern "C" {
 #endif
 ASSUME_NONNULL_BEGIN
 
+// TARGET_FMT_BUFCAP: ideal buffer size fo target_fmt()
+#define TARGET_FMT_BUFCAP 24
+
 typedef u8 arch_t; // enum arch
 typedef u8 sys_t; // enum sys
 typedef struct {

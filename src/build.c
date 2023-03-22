@@ -140,7 +140,7 @@ int main_build(int argc, char* argv[]) {
     return 1;
   }
   #if DEBUG
-    char tmpbuf[64];
+    char tmpbuf[TARGET_FMT_BUFCAP];
     target_fmt(opt_target, tmpbuf, sizeof(tmpbuf));
     dlog("targeting %s (%s)", tmpbuf, opt_target->triple);
   #endif
@@ -235,16 +235,21 @@ static err_t build_exe(char*const* srcfilev, usize filecount) {
   if (filecount == 0)
     return ErrInvalid;
 
+  compiler_config_t ccfg = {
+    .target = opt_target,
+    .buildroot = opt_builddir,
+    .buildmode = opt_debug ? BUILDMODE_DEBUG : BUILDMODE_OPT,
+    .printast = opt_printast,
+    .printir = opt_printir,
+    .genirdot = opt_genirdot,
+    .genasm = opt_genasm,
+    .verbose = opt_verbose,
+    .nomain = opt_nomain,
+  };
+
   compiler_t c;
   compiler_init(&c, memalloc_ctx(), &diaghandler, "main"); // FIXME pkgname
-  c.opt_printast = opt_printast;
-  c.opt_printir = opt_printir;
-  c.opt_genirdot = opt_genirdot;
-  c.opt_genasm = opt_genasm;
-  c.opt_verbose = opt_verbose;
-  c.nomain = opt_nomain;
-  c.buildmode = opt_debug ? BUILDMODE_DEBUG : BUILDMODE_OPT;
-  if (err || ( err = compiler_configure(&c, opt_target, opt_builddir) )) {
+  if (err || ( err = compiler_configure(&c, &ccfg) )) {
     dlog("compiler_configure: %s", err_str(err));
     compiler_dispose(&c);
     return err;

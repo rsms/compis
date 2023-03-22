@@ -5,6 +5,12 @@
 #include <string.h>
 
 
+#define TARGET(ARCH, SYS, SYSVER, ...) \
+  static_assert(TARGET_FMT_BUFCAP > sizeof(#ARCH "-" #SYS "." SYSVER), "");
+#include "targets.h"
+#undef TARGET
+
+
 const target_t supported_targets[] = {
   #define TARGET(ARCH, SYS, SYSVER, INTSIZE, PTRSIZE, TRIPLE) { \
     .arch=ARCH_##ARCH, .sys=SYS_##SYS, .sysver=SYSVER, \
@@ -37,7 +43,7 @@ static bool slice_eq_case(slice_t s, const char* cstr) {
 
 
 void print_supported_targets() {
-  char tmpbuf[64];
+  char tmpbuf[TARGET_FMT_BUFCAP];
   for (usize i = 0; i < SUPPORTED_TARGETS_COUNT; i++) {
     target_fmt(&supported_targets[i], tmpbuf, sizeof(tmpbuf));
     log("%s", tmpbuf);
@@ -96,6 +102,12 @@ const target_t* target_default() {
   panic("no default target");
   return &supported_targets[0];
 }
+
+
+// TODO: allow specifying target features and introduce a parse function
+// to replace target_find.
+// E.g. "armv6{a,zvl32b}-linux" for ARMv6 with atomic instruction and 32-bit vectors.
+// err_t target_parse(target_t* result, const char* target_str);
 
 
 const target_t* target_find(const char* target_str) {

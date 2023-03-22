@@ -865,7 +865,9 @@ err_t build_sysroot_if_needed(compiler_t* c, int flags) {
 
   // note: must check again after locking, in case another process "won"
 
-  if (must_build(c, "base")) {
+  bool build_base = must_build(c, "base");
+  if (build_base) {
+    log("building sysroot %s", relpath(c->sysroot));
     // wipe any existing sysroot
     if ((err = fs_remove(c->sysroot)) && err == ErrNotFound)
       err = 0;
@@ -877,6 +879,8 @@ err_t build_sysroot_if_needed(compiler_t* c, int flags) {
   }
 
   if (build_cxx && must_build(c, "libcxx")) {
+    if (!build_base)
+      log("building C++ part of sysroot %s", relpath(c->sysroot));
     if (!err) err = build_libunwind(c);
     if (!err) err = build_cxx_config_site(c); // __config_site header
     if (!err) err = build_libcxxabi(c);

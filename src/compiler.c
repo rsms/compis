@@ -73,7 +73,8 @@ static void set_secondary_pointer_types(compiler_t* c) {
 }
 
 
-static void configure_target(compiler_t* c) {
+static err_t configure_target(compiler_t* c, const compiler_config_t* config) {
+  c->target = *config->target;
   switch (c->target.ptrsize) {
     case 1:
       c->addrtype = type_u8;
@@ -115,6 +116,7 @@ static void configure_target(compiler_t* c) {
   // RISC-V is disabled because lld fails with float ABI errors.
   // ARM is disabled becaues lld crashes when trying to LTO link.
   if (c->buildmode == BUILDMODE_OPT &&
+      !config->nolto &&
       !target_is_riscv(&c->target) &&
       !target_is_arm(&c->target))
   {
@@ -122,6 +124,28 @@ static void configure_target(compiler_t* c) {
   } else {
     c->lto = 0;
   }
+
+  return 0;
+}
+
+
+static err_t configure_sysroot(compiler_t* c) {
+  // sysroot = cocachedir "/" target "-lto"? "-debug"?
+  str_t sysroot = str_make(cocachedir);
+  bool ok = str_push(&sysroot, PATH_SEP);
+  if (( ok &= str_ensure_avail(&sysroot, TARGET_FMT_BUFCAP) ))
+    sysroot.len += target_fmt(&c->target, str_end(sysroot), TARGET_FMT_BUFCAP);
+  if (c->lto > 0)
+    ok &= str_append(&sysroot, "-lto");
+  if (c->buildmode == BUILDMODE_DEBUG)
+    ok &= str_append(&sysroot, "-debug");
+  if (!ok)
+    return ErrNoMem;
+
+  mem_freecstr(c->ma, c->sysroot);
+  c->sysroot = mem_strdup(c->ma, str_slice(sysroot), 0);
+  str_free(sysroot);
+  return c->sysroot ? 0 : ErrNoMem;
 }
 
 
@@ -134,38 +158,15 @@ static const char* buildmode_name(buildmode_t m) {
 }
 
 
-static err_t configure_sysroot(compiler_t* c) {
-  // sysroot = {cocachedir}/{target}[-debug]
-
-  char target[80];
-  usize targetlen = target_fmt(&c->target, target, sizeof(target));
-  if (c->buildmode == BUILDMODE_DEBUG) {
-    usize n = strlen("-debug");
-    memcpy(&target[targetlen], "-debug", n + 1);
-    targetlen += n;
-  }
-
-  char sysroot[PATH_MAX];
-  int n = snprintf(sysroot, sizeof(sysroot),
-    "%s%c%s", cocachedir, PATH_SEPARATOR, target);
-  safecheck(n > 0 && (usize)n < sizeof(sysroot));
-
-  mem_freecstr(c->ma, c->sysroot);
-  if (( c->sysroot = mem_strdup(c->ma, slice_cstr(sysroot), 0) ) == NULL)
-    return ErrNoMem;
-  return 0;
-}
-
-
-static err_t configure_builddir(compiler_t* c, const char* buildroot) {
+static err_t configure_builddir(compiler_t* c, const compiler_config_t* config) {
   // builddir    = {buildroot}/{mode}-{target}
   // pkgbuilddir = {builddir}/{pkgname}.pkg
 
   mem_freecstr(c->ma, c->buildroot);
-  if (!( c->buildroot = path_abs(buildroot).p ))
+  if (!( c->buildroot = path_abs(config->buildroot).p ))
     return ErrNoMem;
 
-  char targetstr[64];
+  char targetstr[TARGET_FMT_BUFCAP];
   target_fmt(&c->target, targetstr, sizeof(targetstr));
   slice_t target = slice_cstr(targetstr);
 
@@ -333,12 +334,28 @@ err_t compiler_set_sysroot(compiler_t* c, const char* sysroot) {
 }
 
 
-err_t compiler_configure(compiler_t* c, const target_t* target, const char* buildroot) {
-  c->target = *target;
-  configure_target(c);
-  err_t err = configure_builddir(c, buildroot);
-  if (!err) err = configure_sysroot(c);
-  if (!err) err = configure_cflags(c);
+err_t configure_options(compiler_t* c, const compiler_config_t* config) {
+  c->buildmode = config->buildmode;
+  c->opt_nolto = config->nolto;
+  c->opt_nomain = config->nomain;
+  c->opt_printast = config->printast;
+  c->opt_printir = config->printir;
+  c->opt_genirdot = config->genirdot;
+  c->opt_genasm = config->genasm;
+  c->opt_verbose = config->verbose;
+  c->opt_nolibc = config->nolibc;
+  c->opt_nolibcxx = config->nolibcxx;
+  return 0;
+}
+
+
+err_t compiler_configure(compiler_t* c, const compiler_config_t* config) {
+  err_t err;
+  err = configure_options(c, config);  if (err) return dlog("x"), err;
+  err = configure_target(c, config);   if (err) return dlog("x"), err;
+  err = configure_builddir(c, config); if (err) return dlog("x"), err;
+  err = configure_sysroot(c);          if (err) return dlog("x"), err;
+  err = configure_cflags(c);           if (err) return dlog("x"), err;
   return err;
 }
 

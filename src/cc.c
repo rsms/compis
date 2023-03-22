@@ -50,10 +50,24 @@ static err_t symlink_ld(compiler_t* c) {
 }
 
 
+static char* add_trailing_slash(memalloc_t ma, char* s) {
+  usize len = strlen(s);
+  if (len > 0 && s[len - 1] != PATH_SEP) {
+    s = mem_strdup(ma, (slice_t){{s},len}, 1);
+    s[len] = PATH_SEP;
+    s[len + 1] = 0;
+  }
+  return s;
+}
+
+
 int cc_main(int user_argc, char* user_argv[], bool iscxx) {
   compiler_t c;
   compiler_init(&c, memalloc_default(), &diaghandler, "main"); // FIXME pkgname
-  c.buildmode = BUILDMODE_OPT; // default to optimized build
+
+  compiler_config_t config = {0};
+  config.buildmode = BUILDMODE_OPT; // default to optimized build
+  config.nolto = true; // disable LTO for implicit -O0 (enabled for -O1+)
 
   const target_t* target = NULL;
 
@@ -72,6 +86,7 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
 
   bool iscompiling = false;
   bool ispastflags = false;
+  bool print_only = false;
 
   // process input command-line args
   // https://clang.llvm.org/docs/ClangCommandLineReference.html
@@ -83,8 +98,12 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
 
       // general options
       if (streq(arg, "-v") || streq(arg, "--verbose")) {
-        c.opt_verbose = true;
+        config.verbose = true;
         coverbose = true;
+      } else if (streq(arg, "-###")) {
+        config.verbose = true;
+        coverbose = true;
+        print_only = true;
       }
 
       // linker flags
@@ -141,9 +160,11 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
         link = false;
         iscompiling = true;
       } else if (streq(arg, "-O0")) {
-        c.buildmode = BUILDMODE_DEBUG;
+        config.nolto = true;
       } else if (str_startswith(arg, "-O")) {
-        c.buildmode = BUILDMODE_OPT;
+        config.nolto = false;
+      } else if (streq(arg, "--co-debug")) {
+        config.buildmode = BUILDMODE_DEBUG;
       } else if (streq(arg, "-fsyntax-only")) {
         link = false;
       } else if (streq(arg, "-fno-exceptions") || streq(arg, "-fno-cxx-exceptions")) {
@@ -169,33 +190,20 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
           log("See `%s targets` for a list of supported targets", relpath(coexefile));
           return 1;
         }
-      } else if (streq(arg, "--sysroot") || str_startswith(arg, "--sysroot=")) {
+      } else if (streq(arg, "--sysroot")) {
         // a bug (or shortcoming?) in clang causes clang's driver to populate system
         // search directories assuming sysroot ends in "/", which it often does not.
         // (For example cmake will strip trailing slashes in CMAKE_OSX_SYSROOT.)
-        if (streq(arg, "--sysroot")) {
-          if (i+1 < user_argc) {
-            char* sysroot = user_argv[i+1];
-            custom_sysroot = sysroot;
-            usize len = strlen(sysroot);
-            if (len > 0 && sysroot[len - 1] != PATH_SEP) {
-              sysroot = mem_strdup(c.ma, (slice_t){{sysroot},len}, 1);
-              sysroot[len] = PATH_SEP;
-              sysroot[len + 1] = 0;
-              user_argv[i+1] = sysroot;
-            }
-          }
-        } else {
-          usize prefixlen = strlen("--sysroot=");
-          char* sysroot = user_argv[i] + prefixlen;
-          custom_sysroot = sysroot;
-          usize len = strlen(sysroot);
-          if (len > 0 && sysroot[len - 1] != PATH_SEP) {
-            user_argv[i] = mem_strdup(c.ma, (slice_t){{user_argv[i]},prefixlen+len}, 1);
-            user_argv[i][prefixlen + len] = PATH_SEP;
-            user_argv[i][prefixlen + len + 1] = 0;
-          }
-        }
+        if (i+1 < user_argc)
+          custom_sysroot = user_argv[i+1] = add_trailing_slash(c.ma, user_argv[i+1]);
+      } else if (streq(arg, "-isysroot")) {
+        // This option is like the --sysroot option, but applies only to header files.
+        // On Darwin targets it applies to both header files and libraries.
+        if (i+1 < user_argc)
+          custom_sysroot = user_argv[i+1] = add_trailing_slash(c.ma, user_argv[i+1]);
+      } else if (str_startswith(arg, "--sysroot=")) {
+        user_argv[i] = add_trailing_slash(c.ma, user_argv[i]);
+        custom_sysroot = user_argv[i] + strlen("--sysroot=");
       } else if (streq(arg, "--")) {
         ispastflags = true;
       }
@@ -213,14 +221,16 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
     }
   }
 
+  // configure compiler
   if (!target)
     target = target_default();
-
-  c.opt_nolibc = !link_libc;
-  c.opt_nolibcxx = !link_libcxx;
+  config.target = target;
+  config.buildroot = "build-THIS-IS-A-BUG-IN-COMPIS"; // should never be used
+  config.nolibc = !link_libc;
+  config.nolibcxx = !link_libcxx;
 
   err_t err = 0;
-  if (err || ( err = compiler_configure(&c, target, "build") ))
+  if (err || ( err = compiler_configure(&c, &config) ))
     die("compiler_configure: %s", err_str(err));
   if (custom_sysroot) {
     if (( err = compiler_set_sysroot(&c, custom_sysroot) ))
@@ -228,7 +238,7 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
   }
 
   // print config in -v mode
-  char targetstr[64];
+  char targetstr[TARGET_FMT_BUFCAP];
   if (coverbose) {
     target_fmt(target, targetstr, sizeof(targetstr));
     printf("compis invoked as: %s\n", coprogname);
@@ -241,11 +251,13 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
   }
 
   // build sysroot
-  int sysroot_build_flags = 0;
-  if (link_libcxx)
-    sysroot_build_flags |= SYSROOT_BUILD_LIBCXX;
-  if (( err = build_sysroot_if_needed(&c, sysroot_build_flags) ))
-    die("failed to configure sysroot: %s", err_str(err));
+  if (!custom_sysroot && !print_only) {
+    int sysroot_build_flags = 0;
+    if (link_libcxx)
+      sysroot_build_flags |= SYSROOT_BUILD_LIBCXX;
+    if (( err = build_sysroot_if_needed(&c, sysroot_build_flags) ))
+      die("failed to configure sysroot: %s", err_str(err));
+  }
 
   // build actual args passed to clang
   strlist_t args = strlist_make(c.ma, iscxx ? "clang++" : "clang");
@@ -303,7 +315,7 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
         die("no linker available for target %s", targetstr);
       }
       // create symlink for linker invocation, required for clang driver to work
-      if (( err = symlink_ld(&c) ))
+      if (!print_only && ( err = symlink_ld(&c) ))
         die("failed to create linker symlink: %s", err_str(err));
       char* bindir = path_dir_alloca(coexefile);
       strlist_addf(&args, "-fuse-ld=%s/%s", bindir, c.ldname); // TODO: just ldname?
@@ -380,6 +392,7 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
         streq(arg, "-nostdinc") ||
         streq(arg, "--no-standard-includes") ||
         streq(arg, "-nostdlibinc") ||
+        streq(arg, "--co-debug") ||
         str_startswith(arg, "--target=") )
     {
       // skip single-arg flag

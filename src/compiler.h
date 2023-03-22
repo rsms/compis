@@ -559,21 +559,42 @@ typedef struct compiler {
   aliastype_t strtype;  // "str"
   map_t       builtins;
 
-  // configurable options
-  bool nomain;      // don't auto-generate C ABI "main" for main.main
-  bool opt_printast;
-  bool opt_printir;
-  bool opt_genirdot;
-  bool opt_genasm;  // write machine assembly .S source file to build dir
-  bool opt_verbose;
-  bool opt_nolibc;
-  bool opt_nolibcxx;
+  // configurable options (see compiler_config_t)
+  bool opt_nolto : 1;
+  bool opt_nomain : 1;
+  bool opt_printast : 1;
+  bool opt_printir : 1;
+  bool opt_genirdot : 1;
+  bool opt_genasm : 1;
+  bool opt_verbose : 1;
+  bool opt_nolibc : 1;
+  bool opt_nolibcxx : 1;
 
   // data created during parsing & analysis
   map_t           typeidmap;
   locmap_t        locmap;    // maps input <—> loc_t
   fun_t* nullable mainfun;   // main.main()
 } compiler_t;
+
+typedef struct { // compiler_config_t
+  // Required fields
+  const target_t* target;    // target to compile for
+  const char*     buildroot; // directory for user build products
+
+  // Optional fields; zero value is assumed to be a common default
+  buildmode_t buildmode; // BUILDMODE_ constant. 0 = BUILDMODE_DEBUG
+
+  // Options which maps to compiler_t.opt_
+  bool nolto;    // prevent use of LTO, even if that would be the default
+  bool nomain;   // don't auto-generate C ABI "main" for main.main
+  bool printast;
+  bool printir;
+  bool genirdot;
+  bool genasm;   // write machine assembly .S source file to build dir
+  bool verbose;
+  bool nolibc;
+  bool nolibcxx;
+} compiler_config_t;
 
 
 extern node_t* last_resort_node;
@@ -613,7 +634,7 @@ filetype_t filetype_guess(const char* filename);
 // compiler
 void compiler_init(compiler_t*, memalloc_t, diaghandler_t, const char* pkgname);
 void compiler_dispose(compiler_t*);
-err_t compiler_configure(compiler_t*, const target_t* target, const char* buildroot);
+err_t compiler_configure(compiler_t*, const compiler_config_t*);
 err_t compiler_set_sysroot(compiler_t*, const char* sysroot);
 err_t compiler_compile(compiler_t*, promise_t*, input_t*, buf_t* ofile);
 bool compiler_fully_qualified_name(const compiler_t*, buf_t* dst, const node_t*);

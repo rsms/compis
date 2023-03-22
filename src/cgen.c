@@ -2170,7 +2170,7 @@ err_t cgen_generate(cgen_t* g, const unit_t* n) {
     return ErrInvalid;
   unit(g, n);
 
-  if (g->compiler->mainfun && !g->compiler->nomain)
+  if (g->compiler->mainfun && !g->compiler->opt_nomain)
     gen_main(g);
 
   if (g->headbuf.len > 0) {
