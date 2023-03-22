@@ -93,12 +93,13 @@ _create_tool_symlinks "$COEXE"
 
 # wipe cach dir if sources changed which may affect sysroot build
 SYSROOT_SOURCES=(
+  ../version.txt \
   ../src/build_sysroot.c \
   $(echo ../src/syslib_*.h | sort) \
 )
 SYSROOT_HASH=$(cat "${SYSROOT_SOURCES[@]}" | _sha256) # 64 bytes
 if [ "$(cat "$COCACHE/sysroot-hash" 2>/dev/null)" != "$SYSROOT_HASH" ]; then
-  echo "rm COCACHE=$(_relpath "$COCACHE") (outdated)"
+  echo "rm -rf $(_relpath "$COCACHE") (outdated COCACHE)"
   rm -rf "$COCACHE"
   mkdir -p "$COCACHE"
   printf "$SYSROOT_HASH" > "$COCACHE/sysroot-hash"
