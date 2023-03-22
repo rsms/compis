@@ -11,8 +11,8 @@ SYSROOT=$(
 echo "using custom sysroot: $SYSROOT"
 [[ "$SYSROOT" == *"/" ]] && _err "SYSROOT ends with slash"
 
-# build actual sysroot if needed
-[ -d "$SYSROOT" ] || c++ $CFLAGS -c hello.cc
+# build actual sysroot (if needed)
+c++ $CFLAGS -c hello.cc
 
 # try both "--sysroot=" and "--sysroot" command-line arg flavors
 # since these take different code paths in cc.c
