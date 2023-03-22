@@ -338,9 +338,33 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
     strlist_add(&args, "-nodefaultlibs");
 
     if (link_librt || link_libc || link_libcxx) {
-      strlist_addf(&args, "-L%s/lib", c.sysroot);
-      if (link_librt)
-        strlist_add(&args, "-lrt");
+      if (custom_sysroot) {
+        str_t libdir = path_join(c.sysroot, "lib");
+        if (fs_isdir(libdir.p)) {
+          strlist_addf(&args, "-L%s", libdir.p);
+        } else {
+          str_free(libdir);
+          libdir = path_join(c.sysroot, "usr", "lib");
+          if (fs_isdir(libdir.p)) {
+            strlist_addf(&args, "-L%s", libdir.p);
+          } else {
+            libdir.len = 0;
+          }
+        }
+        if (link_librt && libdir.len > 0) {
+          // TODO: build librt separately from other syslibs
+          // and use it even for custom sysroots as it's libc-independent.
+          str_t libfile = path_join(libdir.p, "librt.a");
+          if (fs_isfile(libfile.p))
+            strlist_add(&args, "-lrt");
+          str_free(libfile);
+        }
+        str_free(libdir);
+      } else {
+        strlist_addf(&args, "-L%s/lib", c.sysroot);
+        if (link_librt)
+          strlist_add(&args, "-lrt");
+      }
       if (link_libc) {
         strlist_add(&args, "-lc");
         if (link_libcxx) {
