@@ -204,6 +204,9 @@ SOFTWARE.
 #include <simd/simd.h>
 #include <xpc/xpc.h>
 #include <CommonCrypto/CommonCrypto.h>
+#if __ENVIRONMENT_MAC_OS_X_VERSION_MIN_REQUIRED__ >= 110000
+  #include <libDER/DERItem.h> // added in macOS 11
+#endif
 
 #include <objc/message.h>
 #include <objc/NSObject.h>
@@ -231,5 +234,5 @@ SOFTWARE.
 #include <ucontext.h>
 
 int main(int argc, char **argv) {
-    return 0;
+  return 0;
 }
