@@ -116,9 +116,10 @@ _add_sdks() { # <path> ...
   done
 }
 
-_import_headers() { # <sdk-dir> <sysversion>
+_import_headers() { # <sdk-dir> <sysversion> <sdkver>
   local sdkdir=$1
-  local sysver=$2
+  local sysver=$2 # M
+  local sdkver=$3 # M.m
   local sysroot_name="$HOST_ARCH-macos.$sysver"
   local dst_incdir="$PROJECT/lib/sysinc-src/$sysroot_name"
   local name framework dstpath
@@ -129,9 +130,11 @@ _import_headers() { # <sdk-dir> <sysversion>
 
   echo "  finding headers"
   "$OUT_DIR/opt/co" cc \
+    -nostdinc \
     --sysroot="$sdkdir/" \
+    --target=x86_64-macos.$sysver \
     "-isystem$sdkdir/usr/include" \
-    -o "$HEADERS_OUTFILE" "$PROJECT/etc/macos-headers.c" \
+    -o "$HEADERS_OUTFILE" -c "$PROJECT/etc/macos-headers.c" \
     -MD -MV -MF "$HEADERS_OUTFILE.d"
 
   echo "  copying headers -> $(_relpath "$dst_incdir")/"
@@ -216,7 +219,9 @@ END
 
 _import_sdk() { # <path> <version>
   local sdkdir=$1
-  local sysver=$2
+  local sdkver=$2 # M.m
+  local sysver # M
+  IFS=. read -r sysver ign <<< "$sdkver"
   local sysroot_name="$HOST_ARCH-macos.$sysver"
   echo "importing $sysroot_name"
 
@@ -224,7 +229,7 @@ _import_sdk() { # <path> <version>
   [[ "$(basename "$sdkdir" .sdk)" == "MacOSX"* ]] ||
     _err "SDK doesn't start with 'MacOSX'; bailing out ($sdkdir)"
 
-  _import_headers "$sdkdir" "$sysver"
+  _import_headers "$sdkdir" "$sysver" "$sdkver"
   _import_libs    "$sdkdir" "$sysver"
 }
 
@@ -308,10 +313,10 @@ IFS=$'\n' SDKS_SORTED=($(sort -r <<< "${SDKS_TMP[*]}")); unset IFS
 SDKS=()
 SDK_MAJOR_VERSIONS=()
 for key_ver_path in "${SDKS_SORTED[@]}"; do
-  IFS=: read -r key ver path <<< "$key_ver_path"
+  IFS=: read -r key ver path <<< "$key_ver_path" # "10.15:/foo/bar"
   IFS=. read -r ver_key ver_min <<< "$ver"
   if _strset_add SDK_MAJOR_VERSIONS "$ver_key"; then
-    SDKS+=( "$ver_key:$path" )
+    SDKS+=( "$ver:$path" )
   fi
 done
 
@@ -336,3 +341,5 @@ for d in "${SDKS[@]}"; do
   IFS=: read -r ver path <<< "$d"
   _import_sdk "$path" "$ver"
 done
+
+_regenerate_sysinc_dir
