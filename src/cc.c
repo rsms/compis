@@ -138,6 +138,9 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
         link_libcxx = false;
       } else if (str_startswith(arg, "-fuse-ld=")) {
         custom_ld = true;
+        // must disable LTO, or else clang complains:
+        //   "error: 'x86_64-unknown': unable to pass LLVM bit-code files to linker"
+        config.nolto = true;
       }
 
       // compilation flags
@@ -204,10 +207,19 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
       } else if (str_startswith(arg, "--sysroot=")) {
         user_argv[i] = add_trailing_slash(c.ma, user_argv[i]);
         custom_sysroot = user_argv[i] + strlen("--sysroot=");
+      } else if (streq(arg, "-fno-lto")) {
+        config.nolto = true;
+      } else if (str_startswith(arg, "-flto")) {
+        config.nolto = false;
+        if (config.buildmode == BUILDMODE_DEBUG)
+          die("error: %s cannot be used together with --co-debug", arg);
       } else if (streq(arg, "--")) {
         ispastflags = true;
       }
-    } else {
+    }
+
+    // non-option args (does not start with "-" OR we have seen "--")
+    else {
       const char* ext = path_ext(arg);
       if (*ext++ == '.' && *ext) {
         if (ext[1] == 0) {
@@ -304,12 +316,9 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
 
   // linker flags
   if (link) {
+
     // configure linker
-    if (custom_ld) {
-      // must disable LTO, or else clang complains:
-      //   "error: 'x86_64-unknown': unable to pass LLVM bit-code files to linker"
-      strlist_add(&args, "-fno-lto");
-    } else {
+    if (!custom_ld) {
       if (*c.ldname == 0) {
         target_fmt(target, targetstr, sizeof(targetstr));
         die("no linker available for target %s", targetstr);
