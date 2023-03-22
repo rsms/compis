@@ -91,8 +91,7 @@ touch "$FINISHED_FILE"
 
 _create_tool_symlinks "$COEXE"
 
-# wipe cach dir if sysroot sources changed
-# syslib hash
+# wipe cach dir if sources changed which may affect sysroot build
 SYSROOT_SOURCES=(
   ../src/build_sysroot.c \
   $(echo ../src/syslib_*.h | sort) \

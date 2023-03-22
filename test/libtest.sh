@@ -6,7 +6,12 @@ COPATH="$(dirname "$COEXE")"
 VERBOSE=${VERBOSE:-false}
 VERY_VERBOSE=${VERY_VERBOSE:-false}
 
+# note: tool commands are available in PATH as cc, ar etc
 command -v co >/dev/null ||
   export PATH="$COPATH:$PATH"
 
-# note: tool commands are available in PATH as cc, ar etc
+if command -v wasmtime >/dev/null; then
+  wasi-run() { wasmtime "$@"; }
+else
+  wasi-run() { echo "wasi-run: no WASI vm available; skipping"; }
+fi
