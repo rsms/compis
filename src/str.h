@@ -22,6 +22,9 @@ inline static usize str_avail(str_t s) { return s.cap - (s.len + 1); }
 // and then increments s->len by len.
 char* nullable str_reserve(str_t*, usize len);
 
+// str_end returns a pointer to the null terminator (or NULL if uninitialized)
+inline static char* nullable str_end(str_t s) { return s.p + s.len; }
+
 // str_push appends one character, plus a null terminator
 bool str_push(str_t*, char c);
 
