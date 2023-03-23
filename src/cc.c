@@ -178,6 +178,7 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
       } else if (streq(arg, "-fexceptions")) {
         explicit_exceptions = true;
       } else if (str_startswith(arg, "-mmacosx-version-min=")) {
+        // TODO: parse and check that: value <= target.sysver && value >= minver(target)
         config.sysver = arg + strlen("-mmacosx-version-min=");
       }
 
@@ -353,6 +354,7 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
         if (link_librt && libdir.len > 0) {
           // TODO: build librt separately from other syslibs
           // and use it even for custom sysroots as it's libc-independent.
+          // Also make sure that config.sysver is honred.
           str_t libfile = path_join(libdir.p, "librt.a");
           if (fs_isfile(libfile.p))
             strlist_add(&args, "-lrt");
@@ -379,7 +381,10 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
         if (!custom_sysroot) {
           char macosver[16];
           target_llvm_version(target, macosver);
-          strlist_addf(&args, "-Wl,-platform_version,macos,%s,%s", macosver, macosver);
+          const char* minver = macosver;
+          if (config.sysver && *config.sysver)
+            minver = config.sysver;
+          strlist_addf(&args, "-Wl,-platform_version,macos,%s,%s", minver, macosver);
           const char* arch = (target->arch == ARCH_aarch64) ? "arm64"
                                                             : arch_name(target->arch);
           strlist_addf(&args, "-Wl,-arch,%s", arch);

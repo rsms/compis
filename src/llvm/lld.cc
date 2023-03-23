@@ -233,10 +233,10 @@ err_t LinkerArgs::add_macho_args() {
   const char* macos_ver;
   if (arch == Triple::ArchType::aarch64) {
     arch_name = "arm64";
-    macos_ver = "11.0.0";
+    macos_ver = "11.0.0"; // FIXME TODO: match target and custom compiler sysver
   } else {
     arch_name = triple_archname(triple);
-    macos_ver = "10.15.0";
+    macos_ver = "10.15.0"; // FIXME
   }
 
   // -platform_version <platform> <min_version> <sdk_version>
