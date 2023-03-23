@@ -20,7 +20,7 @@ ARCH(any)
 ARCH(aarch64)
 ARCH(arm)  // ARMv6, float-abi=hard  FIXME
 ARCH(i386)
-ARCH(riscv64)  // no riscv32 since musl doesn't (yet) support it
+ARCH(riscv64)
 ARCH(wasm32)
 ARCH(wasm64)
 ARCH(x86_64)
@@ -39,14 +39,14 @@ TARGET(i386,    linux, "", 4, 4, "i386-linux-musl")
 TARGET(riscv64, linux, "", 8, 8, "riscv64-linux-musl")
 TARGET(x86_64,  linux, "", 8, 8, "x86_64-linux-musl")
 
-TARGET(aarch64, macos, "11", 8, 8, "arm64-apple-macosx11.0.0")
-TARGET(aarch64, macos, "12", 8, 8, "arm64-apple-macosx12.0.0")
-TARGET(aarch64, macos, "13", 8, 8, "arm64-apple-macosx13.0.0")
+TARGET(aarch64, macos, "11", 8, 8, "arm64-apple-darwin20")
+TARGET(aarch64, macos, "12", 8, 8, "arm64-apple-darwin21")
+TARGET(aarch64, macos, "13", 8, 8, "arm64-apple-darwin22")
 
-TARGET(x86_64,  macos, "10", 8, 8, "x86_64-apple-macosx10.15.0")
-TARGET(x86_64,  macos, "11", 8, 8, "x86_64-apple-macosx11.0.0")
-TARGET(x86_64,  macos, "12", 8, 8, "x86_64-apple-macosx12.0.0")
-TARGET(x86_64,  macos, "13", 8, 8, "x86_64-apple-macosx13.0.0")
+TARGET(x86_64,  macos, "10", 8, 8, "x86_64-apple-darwin19")
+TARGET(x86_64,  macos, "11", 8, 8, "x86_64-apple-darwin20")
+TARGET(x86_64,  macos, "12", 8, 8, "x86_64-apple-darwin21")
+TARGET(x86_64,  macos, "13", 8, 8, "x86_64-apple-darwin22")
 
 TARGET(wasm32, wasi, "", 4, 4, "wasm32-wasi")
 

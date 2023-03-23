@@ -177,6 +177,8 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
         explicit_exceptions = true;
       } else if (streq(arg, "-fexceptions")) {
         explicit_exceptions = true;
+      } else if (str_startswith(arg, "-mmacosx-version-min=")) {
+        config.sysver = arg + strlen("-mmacosx-version-min=");
       }
 
       // flags that affect both compilation and linking
@@ -240,14 +242,11 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
   config.buildroot = "build-THIS-IS-A-BUG-IN-COMPIS"; // should never be used
   config.nolibc = !link_libc;
   config.nolibcxx = !link_libcxx;
+  config.sysroot = custom_sysroot;
 
   err_t err = 0;
   if (err || ( err = compiler_configure(&c, &config) ))
     die("compiler_configure: %s", err_str(err));
-  if (custom_sysroot) {
-    if (( err = compiler_set_sysroot(&c, custom_sysroot) ))
-      die("compiler_set_sysroot: %s", err_str(err));
-  }
 
   // print config in -v mode
   char targetstr[TARGET_FMT_BUFCAP];
@@ -419,6 +418,7 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
 
   // append user arguments
   for (int i = 1; i < user_argc; i++) {
+    // skip arguments which are managed by compiler.c, or handled specially
     const char* arg = user_argv[i];
     if (streq(arg, "-nostdlib") ||
         streq(arg, "-nolibc") ||
@@ -426,6 +426,7 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
         streq(arg, "--no-standard-includes") ||
         streq(arg, "-nostdlibinc") ||
         streq(arg, "--co-debug") ||
+        str_startswith(arg, "-mmacosx-version-min=") ||
         str_startswith(arg, "--target=") )
     {
       // skip single-arg flag

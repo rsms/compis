@@ -129,26 +129,6 @@ static err_t configure_target(compiler_t* c, const compiler_config_t* config) {
 }
 
 
-static err_t configure_sysroot(compiler_t* c) {
-  // sysroot = cocachedir "/" target "-lto"? "-debug"?
-  str_t sysroot = str_make(cocachedir);
-  bool ok = str_push(&sysroot, PATH_SEP);
-  if (( ok &= str_ensure_avail(&sysroot, TARGET_FMT_BUFCAP) ))
-    sysroot.len += target_fmt(&c->target, str_end(sysroot), TARGET_FMT_BUFCAP);
-  if (c->lto > 0)
-    ok &= str_append(&sysroot, "-lto");
-  if (c->buildmode == BUILDMODE_DEBUG)
-    ok &= str_append(&sysroot, "-debug");
-  if (!ok)
-    return ErrNoMem;
-
-  mem_freecstr(c->ma, c->sysroot);
-  c->sysroot = mem_strdup(c->ma, str_slice(sysroot), 0);
-  str_free(sysroot);
-  return c->sysroot ? 0 : ErrNoMem;
-}
-
-
 static const char* buildmode_name(buildmode_t m) {
   switch ((enum buildmode)m) {
     case BUILDMODE_DEBUG: return "debug";
@@ -216,7 +196,37 @@ static err_t configure_builddir(compiler_t* c, const compiler_config_t* config) 
 }
 
 
-static err_t configure_cflags(compiler_t* c) {
+static err_t configure_sysroot(compiler_t* c, const compiler_config_t* config) {
+  // custom sysroot
+  if (config->sysroot && *config->sysroot) {
+    char* sysroot = mem_strdup(c->ma, slice_cstr(config->sysroot), 0);
+    if (!sysroot)
+      return ErrNoMem;
+    c->sysroot = sysroot;
+    return 0;
+  }
+
+  // automatic sysroot
+  // sysroot = cocachedir "/" target "-lto"? "-debug"?
+  str_t sysroot = str_make(cocachedir);
+  bool ok = str_push(&sysroot, PATH_SEP);
+  if (( ok &= str_ensure_avail(&sysroot, TARGET_FMT_BUFCAP) ))
+    sysroot.len += target_fmt(&c->target, str_end(sysroot), TARGET_FMT_BUFCAP);
+  if (c->lto > 0)
+    ok &= str_append(&sysroot, "-lto");
+  if (c->buildmode == BUILDMODE_DEBUG)
+    ok &= str_append(&sysroot, "-debug");
+  if (!ok)
+    return ErrNoMem;
+
+  mem_freecstr(c->ma, c->sysroot);
+  c->sysroot = mem_strdup(c->ma, str_slice(sysroot), 0);
+  str_free(sysroot);
+  return c->sysroot ? 0 : ErrNoMem;
+}
+
+
+static err_t configure_cflags(compiler_t* c, const compiler_config_t* config) {
   strlist_dispose(&c->cflags);
 
   // flags used for all C and assembly compilation
@@ -226,8 +236,23 @@ static err_t configure_cflags(compiler_t* c) {
   strlist_addf(&c->cflags, "--sysroot=%s/", c->sysroot);
   strlist_addf(&c->cflags, "-resource-dir=%s/clangres/", coroot);
   strlist_add(&c->cflags, "-nostdlib");
-  if (c->target.sys == SYS_macos)
+
+  if (c->target.sys == SYS_macos) {
+    // set -mmacosx-version-min=version rather than embedding the target version
+    // in target.triple. This allows separating the sysroot version from the
+    // minimum supported OS version.
+    // For example, libdawn must be build with the macos 11 SDK when targeting macos 10.
+    const char* sysver = config->sysver;
+    char sysverbuf[16];
+    if (!sysver || *sysver == 0) {
+      target_llvm_version(&c->target, sysverbuf);
+      sysver = sysverbuf;
+    }
+    strlist_addf(&c->cflags, "-mmacosx-version-min=%s", sysver);
+    // disable "nullability completeness" warnings by default
     strlist_add(&c->cflags, "-Wno-nullability-completeness");
+  }
+
   if (c->lto)
     strlist_add(&c->cflags, "-flto=thin");
 
@@ -326,14 +351,6 @@ static err_t configure_cflags(compiler_t* c) {
 }
 
 
-err_t compiler_set_sysroot(compiler_t* c, const char* sysroot) {
-  mem_freecstr(c->ma, c->sysroot);
-  if (( c->sysroot = mem_strdup(c->ma, slice_cstr(sysroot), 0) ) == NULL)
-    return ErrNoMem;
-  return configure_cflags(c);
-}
-
-
 err_t configure_options(compiler_t* c, const compiler_config_t* config) {
   c->buildmode = config->buildmode;
   c->opt_nolto = config->nolto;
@@ -354,8 +371,8 @@ err_t compiler_configure(compiler_t* c, const compiler_config_t* config) {
   err = configure_options(c, config);  if (err) return dlog("x"), err;
   err = configure_target(c, config);   if (err) return dlog("x"), err;
   err = configure_builddir(c, config); if (err) return dlog("x"), err;
-  err = configure_sysroot(c);          if (err) return dlog("x"), err;
-  err = configure_cflags(c);           if (err) return dlog("x"), err;
+  err = configure_sysroot(c, config);  if (err) return dlog("x"), err;
+  err = configure_cflags(c, config);   if (err) return dlog("x"), err;
   return err;
 }
 

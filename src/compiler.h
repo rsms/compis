@@ -594,6 +594,14 @@ typedef struct { // compiler_config_t
   bool verbose;
   bool nolibc;
   bool nolibcxx;
+
+  // sysver sets the minimum system version. Ignored if NULL or "".
+  // Currently only supported for macos via -mmacosx-version-min=sysver.
+  // Defaults to the target's sysver if not set (common case.)
+  const char* nullable sysver;
+
+  // sysroot sets a custom sysroot. Ignored if NULL or "".
+  const char* nullable sysroot;
 } compiler_config_t;
 
 
@@ -635,7 +643,6 @@ filetype_t filetype_guess(const char* filename);
 void compiler_init(compiler_t*, memalloc_t, diaghandler_t, const char* pkgname);
 void compiler_dispose(compiler_t*);
 err_t compiler_configure(compiler_t*, const compiler_config_t*);
-err_t compiler_set_sysroot(compiler_t*, const char* sysroot);
 err_t compiler_compile(compiler_t*, promise_t*, input_t*, buf_t* ofile);
 bool compiler_fully_qualified_name(const compiler_t*, buf_t* dst, const node_t*);
 bool compiler_mangle(const compiler_t*, buf_t* dst, const node_t*);
