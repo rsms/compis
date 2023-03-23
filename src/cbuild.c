@@ -11,10 +11,10 @@
 #include <string.h>
 
 
-#define OBJDIR_SUFFIX ".obj"
+#define OBJ_DIR_PREFIX "tmp-"
 
 
-void cbuild_init(cbuild_t* b, compiler_t* c, const char* name) {
+void cbuild_init(cbuild_t* b, compiler_t* c, const char* name, const char* builddir) {
   b->c = c;
   b->cc = strlist_make(c->ma, "cc");
   b->cxx = strlist_make(c->ma, "c++");
@@ -23,15 +23,16 @@ void cbuild_init(cbuild_t* b, compiler_t* c, const char* name) {
   strlist_add_array(&b->cxx, c->cflags_common.strings, c->cflags_common.len);
   strlist_add_array(&b->as, c->flags_common.strings, c->flags_common.len);
 
+  // "{builddir}/{tmp}/{name}"
   usize namelen = strlen(name);
-  usize objdircap = strlen(c->builddir) + 1 + namelen + strlen(OBJDIR_SUFFIX) + 1;
-  b->objdir = mem_alloctv(c->ma, char, objdircap + namelen + 1);
+  usize cap = strlen(builddir) + 1 + strlen(OBJ_DIR_PREFIX) + namelen + 1;
+  b->objdir = mem_alloc(c->ma, cap).p;
   if (!b->objdir) {
     b->cc.ok = false;
   } else {
-    snprintf(b->objdir, objdircap, "%s/%s%s", c->builddir, name, OBJDIR_SUFFIX);
-    b->name = b->objdir + objdircap;
-    memcpy(b->name, name, namelen + 1);
+    snprintf(b->objdir, cap, "%s" PATH_SEP_STR OBJ_DIR_PREFIX "%s", builddir, name);
+    // name is at end of b->objdir
+    b->name = b->objdir + (cap - namelen - 1);
   }
 
   b->srcdir = ".";
@@ -180,7 +181,6 @@ static bool array_sortedset_addcstr(ptrarray_t* a, memalloc_t ma, const char* st
 
 
 static err_t cbuild_mkdirs(cbuild_t* b) {
-  // memalloc_t ma, const char* objdir, const cobj_t* objs, usize len
   err_t err = 0;
   char dir[PATH_MAX];
   ptrarray_t dirs = {0};

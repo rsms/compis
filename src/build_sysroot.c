@@ -117,7 +117,7 @@ static const void* _find_srclist(
 
 static err_t build_libc_musl(compiler_t* c) {
   cbuild_t build;
-  cbuild_init(&build, c, "libc");
+  cbuild_init(&build, c, "libc", /*builddir*/c->sysroot);
   build.srcdir = path_join_alloca(coroot, "musl");
   err_t err = 0;
 
@@ -246,7 +246,7 @@ end:
 
 static err_t build_libc_wasi(compiler_t* c) {
   cbuild_t build;
-  cbuild_init(&build, c, "libc");
+  cbuild_init(&build, c, "libc", /*builddir*/c->sysroot);
   build.srcdir = path_join_alloca(coroot, "wasi");
   err_t err = 0;
   // see deps/wasi/Makefile
@@ -370,7 +370,7 @@ static err_t build_librt(compiler_t* c) {
     return 0;
 
   cbuild_t build;
-  cbuild_init(&build, c, "librt");
+  cbuild_init(&build, c, "librt", /*builddir*/c->sysroot);
   build.srcdir = path_join_alloca(coroot, "librt");
 
   // see compiler-rt/lib/builtins/CMakeLists.txt
@@ -469,7 +469,7 @@ static err_t build_libunwind(compiler_t* c) {
     return 0;
 
   cbuild_t build;
-  cbuild_init(&build, c, "libunwind");
+  cbuild_init(&build, c, "libunwind", /*builddir*/c->sysroot);
   build.srcdir = path_join_alloca(coroot, "libunwind");
 
   const char* common_flags[] = {
@@ -620,7 +620,7 @@ static err_t build_cxx_config_site(compiler_t* c) {
 
 static err_t build_libcxxabi(compiler_t* c) {
   cbuild_t build;
-  cbuild_init(&build, c, "libc++abi");
+  cbuild_init(&build, c, "libc++abi", /*builddir*/c->sysroot);
   build.srcdir = path_join_alloca(coroot, "libcxxabi");
 
   const char* common_flags[] = {
@@ -712,7 +712,7 @@ static err_t build_libcxxabi(compiler_t* c) {
 
 static err_t build_libcxx(compiler_t* c) {
   cbuild_t build;
-  cbuild_init(&build, c, "libc++");
+  cbuild_init(&build, c, "libc++", /*builddir*/c->sysroot);
   build.srcdir = path_join_alloca(coroot, "libcxx");
 
   const char* common_flags[] = {

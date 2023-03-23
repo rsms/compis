@@ -48,7 +48,7 @@ typedef struct {
   char           objfile[PATH_MAX];
 } cbuild_t;
 
-void cbuild_init(cbuild_t* b, compiler_t* c, const char* name);
+void cbuild_init(cbuild_t* b, compiler_t* c, const char* name, const char* builddir);
 void cbuild_dispose(cbuild_t* b);
 
 cobj_t* nullable cbuild_add_source(cbuild_t* b, const char* srcfile);

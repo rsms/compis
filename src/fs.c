@@ -136,6 +136,7 @@ err_t fs_mkdirs(const char* path, int perms, int flags) {
 
   // mkdir starting with the first non-existant dir, e.g "/a", "/a/b", "/a/b/c"
   while (s < end) {
+    assert(!str_endswith(buf, "THIS-IS-A-BUG-IN-COMPIS"));
     if (mkdir(buf, perms) < 0 && errno != EEXIST) {
       dlog("mkdir %s: %s", buf, err_str(err_errno()));
       goto err;
