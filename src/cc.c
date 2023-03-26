@@ -80,9 +80,10 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
   bool custom_ld = false;
   bool freestanding = false;
   bool cxx_exceptions = true;
+  const char* nullable enable_modules = NULL; // if set, it's the first argv seen
   bool explicit_exceptions = false;
   bool explicit_cxx_exceptions = false;
-  const char* custom_sysroot = NULL;
+  const char* nullable custom_sysroot = NULL;
 
   bool iscompiling = false;
   bool ispastflags = false;
@@ -103,6 +104,8 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
       } else if (streq(arg, "-###")) {
         config.verbose = true;
         coverbose = true;
+        print_only = true;
+      } else if (streq(arg, "--help") || streq(arg, "-help")) {
         print_only = true;
       }
 
@@ -216,6 +219,9 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
         config.nolto = false;
         if (config.buildmode == BUILDMODE_DEBUG)
           die("error: %s cannot be used together with --co-debug", arg);
+      } else if (streq(arg, "-fmodules") || streq(arg, "-fcxx-modules")) {
+        if (enable_modules == NULL)
+          enable_modules = arg;
       } else if (streq(arg, "--")) {
         ispastflags = true;
       }
@@ -234,6 +240,11 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
         }
       }
     }
+  }
+
+  // check if modules are enabled
+  if (enable_modules && !custom_sysroot) {
+    die("error: %s is not yet supported (unless using a custom --sysroot with module support)", enable_modules);
   }
 
   // configure compiler
