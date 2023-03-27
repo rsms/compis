@@ -14,6 +14,7 @@ source libtest.sh
 DEBUG=false
 VERBOSE=false
 VERY_VERBOSE=false
+CLEAN=false
 PARALLELISM=
 PATTERNS=()
 COEXE=
@@ -25,6 +26,7 @@ while [[ $# -gt 0 ]]; do case "$1" in
   -1)        PARALLELISM=1; shift ;;
   --coexe=*) COEXE=${1:8}; shift ;;
   --debug)   DEBUG=true; shift ;;
+  --clean)   CLEAN=true; shift ;;
   -v)        VERBOSE=true; shift ;;
   -vv)       VERBOSE=true; VERY_VERBOSE=true; shift ;;
   -h|-help|--help) cat << _END
@@ -35,6 +37,7 @@ Options:
   -1, -j1         Run one test at a time
   --coexe=<file>  Test specific, existing compis executable
   --debug         Test with a debug build (no effect if --coexe is used)
+  --clean         Test without any cached sysroots
   -v              Verbose output (may be messy unless -j1 is set)
   -vv             Very verbose output; sets -v for cc and c++
   -h, --help      Show help on stdout and exit
@@ -87,7 +90,9 @@ COCACHE="${COCACHE:-"$OUT_DIR/test-cache"}"
 rm -rf "$WORK_DIR"
 mkdir -p "$WORK_DIR" "$COCACHE"
 FINISHED_FILE="$WORK_DIR/finished"
+FAILED_FILE="$WORK_DIR/failed"
 touch "$FINISHED_FILE"
+touch "$FAILED_FILE"
 
 _create_tool_symlinks "$COEXE"
 
@@ -97,9 +102,16 @@ SYSROOT_SOURCES=(
   ../src/build_sysroot.c \
   $(echo ../src/syslib_*.h | sort) \
 )
-SYSROOT_HASH=$(cat "${SYSROOT_SOURCES[@]}" | _sha256) # 64 bytes
-if [ "$(cat "$COCACHE/sysroot-hash" 2>/dev/null)" != "$SYSROOT_HASH" ]; then
-  echo "rm -rf $(_relpath "$COCACHE") (outdated COCACHE)"
+SYSROOT_HASH=
+if ! $CLEAN; then
+  SYSROOT_HASH=$(cat "${SYSROOT_SOURCES[@]}" | _sha256) # 64 bytes
+fi
+if $CLEAN || [ "$(cat "$COCACHE/sysroot-hash" 2>/dev/null)" != "$SYSROOT_HASH" ]; then
+  if $CLEAN; then
+    echo "rm -rf $(_relpath "$COCACHE") (--clean)"
+  elif [ -e "$COCACHE" ]; then
+    echo "rm -rf $(_relpath "$COCACHE") (outdated COCACHE)"
+  fi
   rm -rf "$COCACHE"
   mkdir -p "$COCACHE"
   printf "$SYSROOT_HASH" > "$COCACHE/sysroot-hash"
@@ -123,9 +135,9 @@ if $VERY_VERBOSE; then
   printf "#!/bin/sh\nexec $(dirname "$COEXE")/cc -v \$@" > "$BIN/cc"
   printf "#!/bin/sh\nexec $(dirname "$COEXE")/c++ -v \$@" > "$BIN/c++"
   chmod +x "$BIN"/*
-  [ $CONAME = co ] || ln -s $CONAME "$BIN/co"
+  [ $CONAME = co ] || ln -s "$COEXE" "$BIN/co"
 elif [ $CONAME != co ]; then
-  ln -s $CONAME "$BIN/co"
+  ln -s "$COEXE" "$BIN/co"
 fi
 
 #———————————————————————————————————————————————————————————————————————————————————————
@@ -165,6 +177,7 @@ END
     echo "[$n/$ntotal] $logname in $(_relpath "$rundir")/"
     if ! (cd "$rundir" && exec "$BASH" "$scriptname"); then
       echo "$(_relpath "$script_path"): FAILED"
+      printf "." >> "$FAILED_FILE"
       return 1
     fi
     return 0
@@ -198,9 +211,12 @@ END
     return 0
   fi
 
+  printf "." >> "$FAILED_FILE"
+
   # FAILED
   if [ $PARALLELISM -gt 1 ]; then
-    echo "$logname: FAILED" > "$rundir/fail.log"
+    echo "--------------------------------------------------" > "$rundir/fail.log"
+    echo "$logname: FAILED" >> "$rundir/fail.log"
     echo "$(_relpath "$script_path") exited with status $status" > "$rundir/fail.log"
     if [ -s "$out" ]; then
       echo "---------- $logname stdout: ----------" >> "$rundir/fail.log"
@@ -219,10 +235,11 @@ END
     echo "$(_relpath "$script_path") exited with status $status"
     [ ! -s "$out" ] || cat "$out"
     [ ! -s "$err" ] || cat "$err" >&2
+    touch $WORK_DIR/failed
     exit $status
   fi
   # interrupt all jobs ("-$$" = process group, $$ = leader pid)
-  kill -2 -$$
+  kill -15 -$$
   return 1
 }
 
@@ -295,3 +312,9 @@ for f in "${TEST_SCRIPTS[@]}"; do
 done
 
 wait
+nfailed=$(stat $STAT_SIZE_ARGS "$FAILED_FILE")
+if [ $nfailed -gt 0 ]; then
+  echo "$nfailed tests FAILED" >&2
+  exit 1
+fi
+exit 0
