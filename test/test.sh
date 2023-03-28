@@ -57,7 +57,7 @@ esac; done
 # setup
 
 if [ -n "$COEXE" ]; then
-  f=$COEXE
+  f="$COEXE"
   [[ "$COEXE" == "/"* ]] || f="$PWD0/$f"
   [ -e "$f" ] || _err "$COEXE: not found"
   [ -f "$f" ] || _err "$COEXE: not a file"
@@ -72,10 +72,11 @@ else
     COEXE="$OUT_DIR/opt/co"
     BUILD_ARGS=-no-lto
   fi
-  # build co, if needed
-  if [ -n "$BUILD_ARGS" ] &&
-     # -n causes ninja to do a "dry run"; check if build is needed
-     [[ "$($BASH "$PROJECT/build.sh" $BUILD_ARGS -n)" == "["* ]]
+  # build co if needed
+  # note: -n causes ninja to do a "dry run"; check if build is needed
+  if ! $JUST_LIST &&
+     [ -n "$BUILD_ARGS" ] &&
+     [[ "$($BASH "$PROJECT/build.sh" $BUILD_ARGS -n)" != *"nothing to do"* ]]
   then
     # note: -n means "dry run"
     echo  $(_relpath "$PROJECT/build.sh") $BUILD_ARGS
@@ -178,8 +179,10 @@ END
     if ! (cd "$rundir" && exec "$BASH" "$scriptname"); then
       echo "$(_relpath "$script_path"): FAILED"
       printf "." >> "$FAILED_FILE"
+      printf "." >> "$FINISHED_FILE"
       return 1
     fi
+    printf "." >> "$FINISHED_FILE"
     return 0
   fi
 
@@ -276,13 +279,14 @@ if $JUST_LIST; then
     name="${name%.sh}"
     [ ${#name} -le $namelen ] || namelen=${#name}
   done
-  echo $namelen
   for f in "${TEST_SCRIPTS[@]}"; do
     name="${f:$(( ${#TESTS_DIR} + 1 ))}"
     printf "%-*s %s\n" $namelen "${name%.sh}" "$(_relpath "$PWD/$f")"
   done
   exit 0
 fi
+
+trap "kill -15 -$$; return 1" SIGINT
 
 if [ $PARALLELISM -eq 1 ]; then
   for f in "${TEST_SCRIPTS[@]}"; do
