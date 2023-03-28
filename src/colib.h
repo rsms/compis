@@ -173,6 +173,12 @@ typedef double             f64;
 //—————————————————————————————————————————————————————————————————————————————————————
 // fundamental macros
 
+#if defined(CO_DISTRIBUTION)
+  #undef CO_DEVBUILD
+#else
+  #define CO_DEVBUILD
+#endif
+
 #ifndef countof
   #define countof(x) ((sizeof(x)/sizeof(0[x])) / ((usize)(!(sizeof(x) % sizeof(0[x])))))
 #endif
