@@ -1019,6 +1019,9 @@ err_t fs_remove_dir_contents(const char* path); // delete _contents_ of dir at p
 err_t fs_copyfile(const char* srcpath, const char* dstpath, int flags);
 bool fs_isfile(const char* path); // true if S_ISREG, after resolving any symlinks
 bool fs_isdir(const char* path); // true if S_ISDIR, after resolving any symlinks
+err_t fs_lock(int fd); // blocks until unlocked
+err_t fs_trylock(int fd, long* nullable lockee_pid);
+err_t fs_unlock(int fd);
 
 // flags
 #define FS_VERBOSE (1<<0) // vlog actions, e.g. "creating file /foo/bar"
