@@ -216,6 +216,46 @@ static err_t cbuild_clean_objdir(cbuild_t* b) {
 }
 
 
+#ifdef CO_DEVBUILD
+  static void create_markfile(const cbuild_t* b, const char* markfile_kind) {
+    // If CO_CBUILD_MARKFILE_DIR is set in env, create marker file,
+    // used for testing.
+    // If CO_CBUILD_MARKFILE_DIR is empty, filename is
+    // "{objdir}-cbuild-{timestamp}-{pid}.{kind}", else the filename is
+    // "{CO_CBUILD_MARKFILE_DIR}/cbuild-{timestamp}-{pid}.{kind}".
+    const char* markfile_dir = getenv("CO_CBUILD_MARKFILE_DIR");
+    if (!markfile_dir)
+      return;
+
+    i64 s__;
+    u64 ns__;
+    safecheckx(unixtime(&s__, &ns__) == 0);
+
+    char filename[PATH_MAX];
+    usize offs = 0;
+
+    if (*markfile_dir) {
+      str_t dir = path_abs(markfile_dir);
+      safecheck(dir.p != NULL);
+      fs_mkdirs(dir.p, 0755, /*flags*/0);
+      offs = (usize)snprintf(filename, sizeof(filename), "%s" PATH_SEP_STR, dir.p);
+      str_free(dir);
+    } else {
+      offs = (usize)snprintf(filename, sizeof(filename), "%s-", b->objdir);
+    }
+
+    snprintf(&filename[offs], sizeof(filename) - offs, "cbuild-%.6f-%d.%s",
+      (double)s__+(double)ns__/1000000000.0,
+      getpid(),
+      markfile_kind);
+
+    err_t err = fs_touch(filename, 0644);
+    if (err)
+      panic("cbuild failed to create markfile (%s)", err_str(err));
+  }
+#endif
+
+
 static err_t cbuild_build_compile(cbuild_t* b, bgtask_t* task, strlist_t* objfiles) {
   // create subprocs attached to promise
   promise_t promise = {0};
@@ -359,9 +399,17 @@ err_t cbuild_build(cbuild_t* b, const char* outfile, bgtask_t* nullable usertask
   }
 
 end:
-  cbuild_clean_objdir(b);
+  #ifdef CO_DEVBUILD
+    create_markfile(b, "done");
+    // keep temp build dir around on failure for debugging
+    if (!err)
+      cbuild_clean_objdir(b);
+  #else
+    cbuild_clean_objdir(b);
+  #endif
   if (!usertask)
     bgtask_end(task, "");
   strlist_dispose(&objfiles);
   return err;
 }
+
