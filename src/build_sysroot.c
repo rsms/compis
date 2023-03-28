@@ -5,7 +5,6 @@
 #include "strlist.h"
 #include "path.h"
 #include "bgtask.h"
-#include "lockfile.h"
 #include "llvm/llvm.h"
 
 #include "syslib_librt.h"
@@ -16,6 +15,8 @@
 #include "syslib_libunwind.h"
 
 #include <string.h>
+#include <fcntl.h> // open
+#include <unistd.h> // close
 
 
 // CXX_HEADER_INSTALL_DIR: install directory for C++ headers, relative to sysroot
@@ -89,10 +90,8 @@ bad:
 }
 
 
-void syslib_path(compiler_t* c, char buf[PATH_MAX], syslib_t lib) {
-  const char* filename = syslib_filename(&c->target, lib);
-  UNUSED int n = snprintf(buf, PATH_MAX, "%s/lib/%s", c->sysroot, filename);
-  safecheck(n < PATH_MAX);
+static str_t lib_install_path(compiler_t* c, syslib_t lib) {
+  return path_join(c->sysroot, "lib", syslib_filename(&c->target, lib));
 }
 
 
@@ -217,9 +216,9 @@ static err_t build_libc_musl(compiler_t* c) {
 
   // build library
   if (!err) {
-    char outfile[PATH_MAX];
-    syslib_path(c, outfile, SYSLIB_C);
-    err = cbuild_build(&build, outfile, task);
+    str_t libfile = lib_install_path(c, SYSLIB_C);
+    err = cbuild_build(&build, libfile.p, task);
+    str_free(libfile);
   }
 
   bgtask_end(task, "");
@@ -248,7 +247,6 @@ static err_t build_libc_wasi(compiler_t* c) {
   cbuild_t build;
   cbuild_init(&build, c, "libc", /*builddir*/c->sysroot);
   build.srcdir = path_join_alloca(coroot, "wasi");
-  err_t err = 0;
   // see deps/wasi/Makefile
 
   strlist_add(&build.cc,
@@ -306,9 +304,9 @@ static err_t build_libc_wasi(compiler_t* c) {
   #undef ADD_CRT_SOURCE
 
   // build
-  char outfile[PATH_MAX];
-  syslib_path(c, outfile, SYSLIB_C);
-  err = cbuild_build(&build, outfile, NULL);
+  str_t libfile = lib_install_path(c, SYSLIB_C);
+  err_t err = cbuild_build(&build, libfile.p, NULL);
+  str_free(libfile);
 
   cbuild_dispose(&build);
   return err;
@@ -453,9 +451,9 @@ static err_t build_librt(compiler_t* c) {
   //   strlist_add(&srclist, "truncsfbf2.c");
   // }
 
-  char outfile[PATH_MAX];
-  syslib_path(c, outfile, SYSLIB_RT);
-  err = cbuild_build(&build, outfile, NULL);
+  str_t libfile = lib_install_path(c, SYSLIB_RT);
+  err = cbuild_build(&build, libfile.p, NULL);
+  str_free(libfile);
 
 end:
   cbuild_dispose(&build);
@@ -535,9 +533,9 @@ static err_t build_libunwind(compiler_t* c) {
   }
 
   // build library
-  char outfile[PATH_MAX];
-  syslib_path(c, outfile, SYSLIB_UNWIND);
-  err_t err = cbuild_build(&build, outfile, NULL);
+  str_t libfile = lib_install_path(c, SYSLIB_UNWIND);
+  err_t err = cbuild_build(&build, libfile.p, NULL);
+  str_free(libfile);
 
   memalloc_bump_in_dispose(ma);
   cbuild_dispose(&build);
@@ -700,9 +698,9 @@ static err_t build_libcxxabi(compiler_t* c) {
   }
 
   // build library
-  char outfile[PATH_MAX];
-  syslib_path(c, outfile, SYSLIB_CXXABI);
-  err_t err = cbuild_build(&build, outfile, NULL);
+  str_t libfile = lib_install_path(c, SYSLIB_CXXABI);
+  err_t err = cbuild_build(&build, libfile.p, NULL);
+  str_free(libfile);
 
   memalloc_bump_in_dispose(ma);
   cbuild_dispose(&build);
@@ -782,9 +780,9 @@ static err_t build_libcxx(compiler_t* c) {
   }
 
   // build library
-  char outfile[PATH_MAX];
-  syslib_path(c, outfile, SYSLIB_CXX);
-  err_t err = cbuild_build(&build, outfile, NULL);
+  str_t libfile = lib_install_path(c, SYSLIB_CXX);
+  err_t err = cbuild_build(&build, libfile.p, NULL);
+  str_free(libfile);
 
   memalloc_bump_in_dispose(ma);
   cbuild_dispose(&build);
@@ -802,93 +800,156 @@ static err_t copy_sysinc_headers(compiler_t* c) {
 }
 
 
-#define BUILDMARK_FILE_SUFFIX ".buildmark"
-
-static bool must_build(compiler_t* c, const char* component) {
-  char* name = strcat_alloca(component, BUILDMARK_FILE_SUFFIX);
-  char* filename = path_join_alloca(c->sysroot, name);
-  return !fs_isfile(filename);
-}
-
-static err_t mark_built_ok(compiler_t* c, const char* component) {
-  char* name = strcat_alloca(component, BUILDMARK_FILE_SUFFIX);
-  char* filename = path_join_alloca(c->sysroot, name);
-  return fs_touch(filename, 0644);
-}
+#define build_ok_filename_alloca(c, component) \
+  strcat_alloca((c)->sysroot, PATH_SEP_STR, (component), ".ok")
 
 
-static err_t acquire_build_lock(compiler_t* c, lockfile_t* lock) {
-  err_t err = 0;
-  long lockee_pid;
-  char lockfile[PATH_MAX];
-
+static str_t lockfile_path(compiler_t* c, const char* component) {
   // IMPORTANT: the lock file must be stored in a directory which is guaranteed
-  // not to disappear or be moved while the lock is held.
-  int n = snprintf(lockfile, sizeof(lockfile),
-    "%s%c%s-build.lock", cocachedir, PATH_SEP, path_base(c->sysroot));
-  safecheck(n < (int)sizeof(lockfile));
+  // not to disappear or move while the lock is held.
+  str_t filename = {0};
+  str_append(&filename, c->sysroot, PATH_SEP_STR, component, ".lock");
+  safecheck(filename.p != NULL);
+  return filename;
+}
 
-  if ((err = fs_mkdirs(cocachedir, 0755, 0)) && err != ErrExists) {
-    elog("failed to create directory '%s': %s", cocachedir, err_str(err));
-    return err;
+
+__attribute__((__noinline__))
+static bool is_component_built(compiler_t* c, const char* component) {
+  char* filename = build_ok_filename_alloca(c, component);
+  return fs_isfile(filename);
+}
+
+
+// build_component
+// Returns true if this process should go ahead and build the component.
+// Returns false if the component is available (another process completed the work.)
+// If false is returned, caller should check *errp.
+static bool build_component(
+  compiler_t* c, int* lockfdp, err_t* errp, const char* component)
+{
+  *errp = 0;
+
+  // if the component is installed, no additional work is necessary
+  if (is_component_built(c, component)) {
+    vlog("{sysroot}/%s: up to date", component);
+    return false;
   }
 
-  if (( err = lockfile_trylock(lock, lockfile, &lockee_pid) )) {
-    if (err != ErrExists) {
-      elog("lockfile_trylock '%s' failed: %s", lockfile, err_str(err));
-      return err;
+  str_t lockfile = lockfile_path(c, component);
+
+  // open lockfile
+  int lockfd = open(lockfile.p, O_WRONLY | O_CREAT, 0644);
+  if (lockfd < 0) {
+    *errp = err_errno();
+    elog("%s: open '%s': %s", __FUNCTION__, lockfile.p, err_str(*errp));
+    return false;
+  }
+  *lockfdp = lockfd;
+
+  // try to acquire the lock
+  long lockee_pid;
+  err_t err = fs_trylock(lockfd, &lockee_pid);
+  if (err == 0) {
+    bool build = !is_component_built(c, component);
+    if (build) {
+      vlog("{sysroot}/%s: building", component);
+    } else {
+      // race condition; component already built
+      fs_unlock(lockfd);
+      close(lockfd);
     }
+    str_free(lockfile);
+    return build;
+  }
+
+  if (err == ErrExists) {
+    // another process is holding the lock
     // note: lockee_pid may be -1 if lockee took a long time to write() its pid
-    log("waiting for compis (pid %ld) to finish...", lockee_pid);
-    if (( err = lockfile_lock(lock, lockfile) )) {
-      elog("lockfile_lock '%s' failed: %s", lockfile, err_str(err));
-      return err;
+    // or if the lockfile implementation does not support getting lockee pid.
+    if (lockee_pid > -1) {
+      log("waiting for compis (pid %ld) to finish...", lockee_pid);
+    } else {
+      log("waiting for another compis process to finish...");
     }
+    // wait for lock
+    if (( err = fs_lock(lockfd) )) {
+      elog("fs_lock '%s': %s", lockfile.p, err_str(err));
+      *errp = err;
+    } else {
+      fs_unlock(lockfd);
+    }
+  } else {
+    // lockfile_trylock failed (for reason other than lock being held by other thread)
+    *errp = err;
+    elog("fs_unlock '%s': %s", lockfile.p, err_str(err));
   }
-  return 0;
+
+  str_free(lockfile);
+  close(lockfd);
+  return false;
+}
+
+
+__attribute__((__noinline__))
+static void finalize_build_component(
+  compiler_t* c, int lockfd, err_t* errp, const char* component)
+{
+  str_t lockfile = lockfile_path(c, component);
+  if (!*errp) {
+    // rename the lockfile to a ".ok" file, marking the build successful
+    char* ok_filename = build_ok_filename_alloca(c, component);
+    if (rename(lockfile.p, ok_filename) != 0)
+      *errp = err_errno();
+  }
+  str_free(lockfile);
+  // unlock the lockfile, resuming any processes waiting for the component
+  fs_unlock(lockfd);
+  close(lockfd);
 }
 
 
 err_t build_sysroot_if_needed(compiler_t* c, int flags) {
-  // note: this function may be called by multiple processes at once
-  bool build_cxx = flags & SYSROOT_BUILD_LIBCXX;
-  if (!must_build(c, "base") && (!build_cxx || !must_build(c, "libcxx")) ) {
-    // up to date
-    return 0;
-  }
+  // Coordinate with other racing processes using file-based locks
+  int lockfd;
+  err_t err;
 
-  // coordinate with other racing processes using an exclusive file-based lock
-  lockfile_t lock;
-  err_t err = acquire_build_lock(c, &lock);
-  if (err)
+  if (( err = fs_mkdirs(c->sysroot, 0755, 0) )) {
+    elog("mkdirs %s: %s", c->sysroot, err_str(err));
     return err;
-
-  // note: must check again after locking, in case another process "won"
-
-  bool build_base = must_build(c, "base");
-  if (build_base) {
-    log("building sysroot %s", relpath(c->sysroot));
-    // wipe any existing sysroot
-    if ((err = fs_remove(c->sysroot)) && err == ErrNotFound)
-      err = 0;
-    if (!err) err = fs_mkdirs(c->sysroot, 0755, 0);
-    if (!err) err = copy_sysinc_headers(c);
-    if (!err) err = build_libc(c);
-    if (!err) err = build_librt(c);
-    if (!err) err = mark_built_ok(c, "base");
   }
 
-  if (build_cxx && must_build(c, "libcxx")) {
-    if (!build_base)
-      log("building C++ part of sysroot %s", relpath(c->sysroot));
-    if (!err) err = build_libunwind(c);
+  if (!err && c->target.sys != SYS_none && build_component(c, &lockfd, &err, "sysinc")) {
+    err = copy_sysinc_headers(c);
+    finalize_build_component(c, lockfd, &err, "sysinc");
+  }
+
+  if (!err && target_has_syslib(&c->target, SYSLIB_C) &&
+      build_component(c, &lockfd, &err, "libc"))
+  {
+    err = build_libc(c);
+    finalize_build_component(c, lockfd, &err, "libc");
+  }
+
+  if (!err && target_has_syslib(&c->target, SYSLIB_RT) &&
+      build_component(c, &lockfd, &err, "librt"))
+  {
+    err = build_librt(c);
+    finalize_build_component(c, lockfd, &err, "librt");
+  }
+
+  if (!err && (flags & SYSROOT_ENABLE_CXX) &&
+      target_has_syslib(&c->target, SYSLIB_CXX) &&
+      build_component(c, &lockfd, &err, "libcxx"))
+  {
+    assert(target_has_syslib(&c->target, SYSLIB_UNWIND));
+    assert(target_has_syslib(&c->target, SYSLIB_CXXABI));
+    err = build_libunwind(c);
     if (!err) err = build_cxx_config_site(c); // __config_site header
     if (!err) err = build_libcxxabi(c);
     if (!err) err = build_libcxx(c);
-    if (!err) err = mark_built_ok(c, "libcxx");
+    finalize_build_component(c, lockfd, &err, "libcxx");
   }
-
-  lockfile_unlock(&lock);
 
   return err;
 }
