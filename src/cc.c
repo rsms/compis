@@ -240,16 +240,26 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
         }
       }
     }
-  }
+  } // end of argv loop
 
   // check if modules are enabled
   if (enable_modules && !custom_sysroot) {
-    die("error: %s is not yet supported (unless using a custom --sysroot with module support)", enable_modules);
+    die("error: %s is not yet supported"
+        "(unless using a custom --sysroot with module support)",
+        enable_modules);
   }
 
-  // configure compiler
+  // if no target is set, use the host
   if (!target)
     target = target_default();
+
+  // update link_LIB vars depending on target
+  link_librt  = link_librt  && target_has_syslib(target, SYSLIB_RT);
+  link_libc   = link_libc   && !freestanding && target_has_syslib(target, SYSLIB_C);
+  link_libcxx = link_libcxx && !freestanding && target_has_syslib(target, SYSLIB_CXX);
+  // FIXME: link_libcxx is also used to enable/disable C++ header inclusion
+
+  // configure compiler
   config.target = target;
   config.buildroot = "build-THIS-IS-A-BUG-IN-COMPIS"; // should never be used
   config.nolibc = !link_libc;
@@ -340,11 +350,6 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
       char* bindir = path_dir_alloca(coexefile);
       strlist_addf(&args, "-fuse-ld=%s/%s", bindir, c.ldname); // TODO: just ldname?
     }
-
-    // update link_LIB vars depending on target
-    link_librt  = link_librt  && target_has_syslib(target, SYSLIB_RT);
-    link_libc   = link_libc   && !freestanding && target_has_syslib(target, SYSLIB_C);
-    link_libcxx = link_libcxx && !freestanding && target_has_syslib(target, SYSLIB_CXX);
 
     strlist_add(&args, "-nodefaultlibs");
 
