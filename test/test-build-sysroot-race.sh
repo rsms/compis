@@ -33,10 +33,16 @@ else
   $BASH "$PROJECT/build.sh" -no-lto
 fi
 
+CO_DEVBUILD=false
+if "$COEXE" version | grep -q ' (dev '; then
+  CO_DEVBUILD=true
+fi
+
 _build_one() { # <id>
   local id=$1
   set +e
   # CO_CBUILD_DONE_MARK_FILE enables cbuild to write a marker file when done
+  # Only used for dev builds
   CO_CBUILD_MARKFILE_DIR="$WORK_DIR" \
   "$COEXE" cc --target=wasm32-none -o "$WORK_DIR/$id.out" \
     -c "$PROJECT/examples/hello-wasm/hello.c"
@@ -103,14 +109,16 @@ for (( i = 1; i < $NTOTAL + 1; i++ )); do
 done
 
 # verify that only one process built librt
-donefiles=( $(cd "$WORK_DIR" && ls *.done) )
-if [ ${#donefiles[@]} -eq 0 ] || [ ! -f "$WORK_DIR/${donefiles[0]}" ]; then
-  echo "No .done files! Bug in cbuild?" >&2
-  exit 1
-elif [ ${#donefiles[@]} -gt 1 ]; then
-  echo "Multiple .done files! More than one process built librt" >&2
-  for f in "${donefiles[@]}"; do echo "$WORK_DIR/$f"; done
-  exit 1
+if $CO_DEVBUILD; then
+  donefiles=( $(cd "$WORK_DIR" && ls *.done) )
+  if [ ${#donefiles[@]} -eq 0 ] || [ ! -f "$WORK_DIR/${donefiles[0]}" ]; then
+    echo "No .done files! Bug in cbuild?" >&2
+    exit 1
+  elif [ ${#donefiles[@]} -gt 1 ]; then
+    echo "Multiple .done files! More than one process built librt" >&2
+    for f in "${donefiles[@]}"; do echo "$WORK_DIR/$f"; done
+    exit 1
+  fi
 fi
 
 echo "$0: ok"
