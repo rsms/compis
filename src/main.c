@@ -89,6 +89,9 @@ static int usage(FILE* f) {
 void print_co_version() {
   printf(
     "compis " CO_VERSION_STR " ("
+    #ifdef CO_DEVBUILD
+      "dev "
+    #endif
     #if defined(CO_VERSION_GIT) && !defined(CO_DISTRIBUTION)
       "src=" CO_STRX(CO_VERSION_GIT) " "
     #endif
