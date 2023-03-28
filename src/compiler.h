@@ -866,7 +866,6 @@ buf_t* tmpbuf_get(u32 bufindex /* [0-2) */);
 #define SYSROOT_ENABLE_CXX (1<<0) // enable libc++, libc++abi, libunwind
 err_t build_sysroot_if_needed(compiler_t* c, int flags); // build_sysroot.c
 const char* syslib_filename(const target_t* target, syslib_t);
-void syslib_path(compiler_t* c, char buf[PATH_MAX], syslib_t); // safecheck'd
 
 // pos
 static void locmap_dispose(locmap_t* lm, memalloc_t ma);
