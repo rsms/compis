@@ -519,16 +519,32 @@ static bool type_cons_no_side_effects(const type_t* t) { switch (t->kind) {
   case TYPE_I16:
   case TYPE_I32:
   case TYPE_I64:
+  case TYPE_INT:
+  case TYPE_U8:
+  case TYPE_U16:
+  case TYPE_U32:
+  case TYPE_U64:
+  case TYPE_UINT:
   case TYPE_F32:
   case TYPE_F64:
-  case TYPE_INT:
     return true;
-  case TYPE_OPTIONAL:
-    return type_cons_no_side_effects(((opttype_t*)t)->elem);
+
+  case TYPE_PTR:
   case TYPE_REF:
-    return type_cons_no_side_effects(((reftype_t*)t)->elem);
+  case TYPE_MUTREF:
+  case TYPE_OPTIONAL:
+  case TYPE_SLICE:
+  case TYPE_MUTSLICE:
+  case TYPE_ARRAY:
+    // all ptrtype_t types
+    return type_cons_no_side_effects(((ptrtype_t*)t)->elem);
+
+  case TYPE_ALIAS:
+    return type_cons_no_side_effects(((aliastype_t*)t)->elem);
+
   // TODO: other types. E.g. check fields of struct
   default:
+    dlog("TODO %s %s", __FUNCTION__, nodekind_name(t->kind));
     return false;
 }}
 
@@ -566,8 +582,12 @@ bool expr_no_side_effects(const expr_t* n) { switch (n->kind) {
     return expr_no_side_effects(op->expr);
   }
 
+  case EXPR_CALL:
+    return false;
+
   // TODO: other kinds
   default:
+    dlog("TODO %s %s", __FUNCTION__, nodekind_name(t->kind));
     return false;
 }}
 
