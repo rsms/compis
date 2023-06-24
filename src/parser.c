@@ -923,10 +923,11 @@ static expr_t* expr_var(parser_t* p, const parselet_t* pl, nodeflag_t fl) {
 
   // check for required initializer expression
   if (!n->init && ok) {
-    if UNLIKELY(n->kind == EXPR_LET) {
-      error(p, NULL, "missing value for let binding, expecting '='");
-      ok = false;
-    } else if UNLIKELY(n->type->kind == TYPE_REF) {
+    // if UNLIKELY(n->kind == EXPR_LET) {
+    //   error(p, NULL, "missing value for let binding, expecting '='");
+    //   ok = false;
+    // } else
+    if UNLIKELY(n->type->kind == TYPE_REF) {
       error(p, NULL, "missing initial value for reference variable, expecting '='");
       ok = false;
     }
