@@ -570,6 +570,14 @@ bool expr_no_side_effects(const expr_t* n) { switch (n->kind) {
     );
   }
 
+  case EXPR_ARRAYLIT: {
+    const arraylit_t* alit = (arraylit_t*)n;
+    bool no_side_effects = type_cons_no_side_effects(alit->type);
+    for (u32 i = 0; no_side_effects && i < alit->values.len; i++)
+      no_side_effects &= expr_no_side_effects(alit->values.v[i]);
+    return no_side_effects;
+  }
+
   case EXPR_BINOP:
     return expr_no_side_effects(((binop_t*)n)->right) &&
            expr_no_side_effects(((binop_t*)n)->left);
