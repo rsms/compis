@@ -502,13 +502,22 @@ static err_t cc_to_asm_main(compiler_t* c, const char* cfile, const char* asmfil
   strlist_add_list(&args, &c->cflags);
   strlist_add(&args,
     "-w", // don't produce warnings (already reported by cc_to_obj_main)
+    "-fno-lto", // make sure LTO is disabled or we will write LLVM IR
     "-S", "-xc", cfile,
     "-o", asmfile);
   char* const* argv = strlist_array(&args);
   if (!args.ok)
     return ErrNoMem;
 
+  #if DEBUG
   dlog("cc %s -> %s", cfile, asmfile);
+  if (c->opt_verbose) {
+    for (u32 i = 0; i < args.len; i++)
+      fprintf(stderr, &" %s"[i==0], argv[i]);
+    fprintf(stderr, "\n");
+  }
+  #endif
+
   int status = clang_main(args.len, argv);
   return status == 0 ? 0 : ErrCanceled;
 }
@@ -572,7 +581,7 @@ static err_t cc_to_asm_async(
     return ErrNoMem;
 
   buf_t asmfile = buf_make(c->ma);
-  buf_append(&asmfile, ofile, strlen(ofile) - 1);
+  buf_append(&asmfile, ofile, strlen(ofile) - 1); // FIXME: assumes ".c"
   buf_print(&asmfile, "S");
   if (!buf_nullterm(&asmfile))
     return ErrNoMem;
