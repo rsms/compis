@@ -197,7 +197,7 @@ static err_t link_exe(
     .outfile = outfile,
     .infilec = infilec,
     .sysroot = c->sysroot,
-    .print_lld_args = opt_verbose || opt_logld,
+    .print_lld_args = coverbose || opt_logld,
     .lto_level = 0,
     .lto_cachedir = "",
   };
@@ -243,7 +243,7 @@ static err_t build_exe(char*const* srcfilev, usize filecount) {
     .printir = opt_printir,
     .genirdot = opt_genirdot,
     .genasm = opt_genasm,
-    .verbose = opt_verbose,
+    .verbose = coverbose,
     .nomain = opt_nomain,
   };
 
