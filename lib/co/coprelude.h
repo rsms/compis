@@ -44,12 +44,12 @@ __attribute__((__noreturn__)) void abort(void);
 
 inline static void* __co_mem_dup(const void* src, __co_uint size) {
   void* ptr = __builtin_memcpy(__builtin_malloc(size), src, size);
-  __builtin_printf("__co_mem_dup(%p, %lu) => %p\n", src, size, ptr);
+  // __builtin_printf("__co_mem_dup(%p, %lu) => %p\n", src, size, ptr);
   return ptr;
 }
 
 inline static void __co_mem_free(void* ptr, __co_uint size) {
-  __builtin_printf("__co_mem_free(%p, %lu)\n", ptr, size);
+  // __builtin_printf("__co_mem_free(%p, %lu)\n", ptr, size);
   __builtin_free(ptr);
 }
 
