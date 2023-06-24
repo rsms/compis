@@ -976,7 +976,7 @@ static bool expr_contains_owners(const expr_t* n) {
 
     case EXPR_ASSIGN:
     case EXPR_BINOP:
-      return expr_contains_owners(((binop_t*)n)->left) &&
+      return expr_contains_owners(((binop_t*)n)->left) ||
              expr_contains_owners(((binop_t*)n)->right);
 
     case EXPR_BLOCK: {
@@ -998,6 +998,10 @@ static bool expr_contains_owners(const expr_t* n) {
       }
       return false;
     }
+
+    case EXPR_SUBSCRIPT:
+      return expr_contains_owners(((subscript_t*)n)->recv) ||
+             expr_contains_owners(((subscript_t*)n)->index);
 
     case EXPR_FUN:
       return false;
