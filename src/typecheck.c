@@ -587,7 +587,7 @@ bool expr_no_side_effects(const expr_t* n) { switch (n->kind) {
 
   // TODO: other kinds
   default:
-    dlog("TODO %s %s", __FUNCTION__, nodekind_name(t->kind));
+    dlog("TODO %s %s", __FUNCTION__, nodekind_name(n->kind));
     return false;
 }}
 
