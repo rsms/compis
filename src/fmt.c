@@ -34,6 +34,8 @@ const char* nodekind_fmt(nodekind_t kind) {
       return "constant";
     case EXPR_MEMBER:
       return "member";
+    case EXPR_SUBSCRIPT:
+      return "subscript";
     case EXPR_FIELD:
       return "field";
     case TYPE_STRUCT:
@@ -303,6 +305,13 @@ static void fmt(abuf_t* s, const node_t* nullable n, u32 indent, u32 maxdepth) {
     abuf_str(s, ((const member_t*)n)->name);
     break;
 
+  case EXPR_SUBSCRIPT:
+    fmt(s, (node_t*)((const subscript_t*)n)->recv, indent, maxdepth);
+    abuf_c(s, '[');
+    fmt(s, (node_t*)((const subscript_t*)n)->index, indent, maxdepth);
+    abuf_c(s, ']');
+    break;
+
   case EXPR_IF:
     abuf_str(s, "if ");
     fmt(s, (node_t*)((const ifexpr_t*)n)->cond, indent, maxdepth);
@@ -434,8 +443,12 @@ static void fmt(abuf_t* s, const node_t* nullable n, u32 indent, u32 maxdepth) {
     arraytype_t* t = (arraytype_t*)n;
     abuf_c(s, '[');
     fmt(s, (node_t*)t->elem, indent, maxdepth);
-    if (t->len > 0)
-      abuf_fmt(s, " %llu", t->len);
+    if (t->len > 0) {
+      abuf_fmt(s, " <const %llu>", t->len);
+    } else if (t->lenexpr) {
+      abuf_c(s, ' ');
+      fmt(s, (node_t*)t->lenexpr, indent, maxdepth);
+    }
     abuf_c(s, ']');
     break;
   }
