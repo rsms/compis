@@ -1641,11 +1641,10 @@ static void assign(cgen_t* g, const binop_t* n) {
 
 
 static void vardef1(cgen_t* g, const local_t* n, const char* name, bool wrap_rvalue) {
-  // elide unused variable (unless it has side effects or in debug mode.)
+  // elide unused variable without side effects.
   // Note: This isn't very useful in practice as clang will optimize away
-  // unused code anyway, but it's a nice thing to do.
-  if (n->nuse == 0 &&
-      g->compiler->buildmode != BUILDMODE_DEBUG &&
+  // unused code anyway (when optimizing), but it's a nice thing to do.
+  if (n->nuse == 0 && // g->compiler->buildmode != BUILDMODE_DEBUG &&
       expr_no_side_effects((expr_t*)n))
   {
     PRINT("/* elided unused ");
