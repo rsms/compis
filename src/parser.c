@@ -1769,9 +1769,6 @@ static funtype_t* funtype(parser_t* p, loc_t loc, type_t* nullable recvt) {
     bubble_flags(ft, ft->result);
   }
 
-  if ((ft->flags & NF_UNKNOWN) == 0)
-    intern_usertype(p->scanner.compiler, (usertype_t**)&ft);
-
   return ft;
 }
 
