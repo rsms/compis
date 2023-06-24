@@ -423,6 +423,15 @@ static void repr(RPARAMS, const node_t* nullable n) {
     CHAR(' '), repr(RARGS, (node_t*)((member_t*)n)->target);
     break;
 
+  case EXPR_SUBSCRIPT: {
+    const subscript_t* ss = (const subscript_t*)n;
+    if (ss->index->flags & NF_CONST)
+      PRINTF(" [%llu]", ss->index_val);
+    CHAR(' '), repr(RARGS, (node_t*)ss->index);
+    CHAR(' '), repr(RARGS, (node_t*)ss->recv);
+    break;
+  }
+
   case EXPR_ID:
     if (((idexpr_t*)n)->ref) {
       CHAR(' ');
@@ -533,6 +542,9 @@ origin_t node_origin(const locmap_t* lm, const node_t* n) {
 
   case EXPR_LET:
     return origin_make(lm, loc_union(((local_t*)n)->loc, ((local_t*)n)->nameloc));
+
+  case EXPR_SUBSCRIPT:
+    return origin_union(r, origin_make(lm, ((subscript_t*)n)->endloc));
 
   case EXPR_FUN: {
     fun_t* fn = (fun_t*)n;
