@@ -177,7 +177,7 @@ static err_t configure_builddir(compiler_t* c, const compiler_config_t* config) 
   // pkgbuilddir
   mem_freecstr(c->ma, c->pkgbuilddir);
   slice_t pkgname = slice_cstr(c->pkgname);
-  slice_t suffix = slice_cstr(".pkg");
+  slice_t suffix = slice_cstr(".copkg");
   slice_t builddir = { .p = c->builddir, .len = len };
   usize pkgbuilddir_len = len + 1 + pkgname.len + suffix.len;
   c->pkgbuilddir = mem_alloctv(c->ma, char, pkgbuilddir_len + 1);
