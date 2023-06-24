@@ -23,6 +23,7 @@
   _( EXPR_VAR )\
   _( EXPR_LET )\
   _( EXPR_MEMBER )\
+  _( EXPR_SUBSCRIPT )\
   _( EXPR_PREFIXOP )\
   _( EXPR_POSTFIXOP )\
   _( EXPR_BINOP )\
@@ -187,6 +188,7 @@ typedef u8 nodeflag_t;
 #define NF_DROP        ((nodeflag_t)1<< 5) // type has drop() function
 #define NF_SUBOWNERS   ((nodeflag_t)1<< 6) // type has owning elements
 #define NF_EXIT        ((nodeflag_t)1<< 7) // block exits (i.e. "return" or "break")
+#define NF_CONST       ((nodeflag_t)1<< 7) // [anything but block] is a constant
 
 // NODEFLAGS_BUBBLE are flags that "bubble" (transfer) from children to parents
 #define NODEFLAGS_BUBBLE  NF_UNKNOWN
@@ -351,6 +353,14 @@ typedef struct {
   sym_t            name;   // e.g. "y" in "x.y"
   expr_t* nullable target; // e.g. "y" in "x.y"
 } member_t;
+
+typedef struct {
+  expr_t;
+  expr_t* recv;      // e.g. "x" in "x[3]"
+  expr_t* index;     // e.g. "3" in "x[3]"
+  u64     index_val; // valid if index is a constant or comptime
+  loc_t   endloc;    // location of terminating ']'
+} subscript_t;
 
 typedef struct { // PARAM, VAR, LET
   expr_t;
@@ -775,10 +785,6 @@ sym_t nullable _typeid(type_t*);
 inline static sym_t nullable typeid(type_t* t) { return t->tid ? t->tid : _typeid(t); }
 #define TYPEID_PREFIX(typekind)  ('A'+((typekind)-TYPE_VOID))
 
-// intern_usertype interns *tp in c->typeidmap.
-// returns true if *tp was replaced by existing type, false if added to c->typeidmap.
-bool intern_usertype(compiler_t* c, usertype_t** tp);
-
 inline static const type_t* canonical_primtype(const compiler_t* c, const type_t* t) {
   return t->kind == TYPE_INT ? c->inttype :
          t->kind == TYPE_UINT ? c->uinttype :
@@ -807,8 +813,10 @@ bool expr_no_side_effects(const expr_t* n);
 
 
 // comptime
-node_t* nullable comptime_eval(compiler_t*, expr_t*); // NULL if OOM
-bool comptime_eval_uint(compiler_t*, expr_t*, u64* result);
+typedef u8 ctimeflag_t;
+#define CTIME_NO_DIAG ((ctimeflag_t)1<< 0) // do not report diagnostics
+node_t* nullable comptime_eval(compiler_t*, expr_t*, ctimeflag_t); // NULL if OOM
+bool comptime_eval_uint(compiler_t*, expr_t*, ctimeflag_t, u64* result);
 
 // tokens
 const char* tok_name(tok_t); // e.g. TEQ => "TEQ"

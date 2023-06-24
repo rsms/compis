@@ -1559,13 +1559,21 @@ static expr_t* expr_postfix_call(
 
 // subscript = expr "[" expr "]"
 static expr_t* expr_postfix_subscript(
-  parser_t* p, const parselet_t* pl, expr_t* left, nodeflag_t fl)
+  parser_t* p, const parselet_t* pl, expr_t* recv, nodeflag_t fl)
 {
-  unaryop_t* n = mkexpr(p, unaryop_t, EXPR_POSTFIXOP, fl);
+  subscript_t* n = mkexpr(p, subscript_t, EXPR_SUBSCRIPT, fl);
   next(p);
-  left->flags |= NF_RVALUE;
-  bubble_flags(n, left);
-  panic("TODO");
+
+  recv->flags |= NF_RVALUE;
+
+  n->recv = recv;
+  n->index = expr(p, PREC_ASSIGN, fl | NF_RVALUE);
+  bubble_flags(n, recv);
+
+  // ']'
+  n->endloc = currloc(p);
+  expect(p, TRBRACK, "to end subscript");
+
   return (expr_t*)n;
 }
 

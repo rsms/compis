@@ -537,6 +537,7 @@ static err_t cc_to_obj_main(compiler_t* c, const char* cfile, const char* ofile)
       "-Werror=incompatible-pointer-types",
       "-Werror=format-insufficient-args",
       "-Wno-unused-value",
+      "-Wno-unused-function",
       "-Wno-tautological-compare" // e.g. "x == x"
     #else
       "-w"

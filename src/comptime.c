@@ -19,6 +19,7 @@ typedef struct {
   memalloc_t  ast_ma;
   u64array_t  stack;
   err_t       err;
+  ctimeflag_t flags;
 
   // call frame state
   expr_t* nullable   returnval;
@@ -63,8 +64,9 @@ static void seterr(ctx_t* ctx, err_t err) {
 
 // void diag(typecheck_t*, T origin, diagkind_t diagkind, const char* fmt, ...)
 // where T is one of: origin_t | loc_t | node_t* | expr_t*
-#define diag(ctx, origin, diagkind, fmt, args...) \
-  report_diag((ctx)->c, to_origin((ctx), (origin)), (diagkind), fmt, ##args)
+#define diag(ctx, origin, diagkind, fmt, args...) ( \
+  ((ctx)->flags & CTIME_NO_DIAG) ? ((void)0) : \
+  report_diag((ctx)->c, to_origin((ctx), (origin)), (diagkind), fmt, ##args) )
 
 #define error(ctx, origin, fmt, args...)   diag(ctx, origin, DIAG_ERR, fmt, ##args)
 #define warning(ctx, origin, fmt, args...) diag(ctx, origin, DIAG_WARN, fmt, ##args)
@@ -430,6 +432,7 @@ static void* eval1(ctx_t* ctx, void* np) {
 
   case EXPR_VAR:
   case EXPR_LET:
+  case EXPR_PARAM:
     return localdefinition(ctx, np);
 
   // —— TODO ——
@@ -438,6 +441,7 @@ static void* eval1(ctx_t* ctx, void* np) {
 
   case EXPR_TYPECONS:
   case EXPR_MEMBER:
+  case EXPR_SUBSCRIPT:
   case EXPR_IF:
   case EXPR_FOR:
   case EXPR_DEREF:
@@ -476,7 +480,6 @@ static void* eval1(ctx_t* ctx, void* np) {
   case NODE_BAD:
   case NODE_COMMENT:
   case NODEKIND_COUNT:
-  case EXPR_PARAM:
   case EXPR_FIELD:
     break;
   }
@@ -485,11 +488,12 @@ static void* eval1(ctx_t* ctx, void* np) {
 }
 
 
-node_t* nullable comptime_eval(compiler_t* c, expr_t* expr) {
+node_t* nullable comptime_eval(compiler_t* c, expr_t* expr, ctimeflag_t flags) {
   ctx_t ctx = {
     .c = c,
     .ma = c->ma,
     .ast_ma = c->ma, // TODO FIXME pass as function argument
+    .flags = flags,
   };
 
   if (!map_init(&ctx.localm, ctx.ma, 16))
@@ -499,7 +503,7 @@ node_t* nullable comptime_eval(compiler_t* c, expr_t* expr) {
 
   node_t* result = eval(&ctx, expr);
 
-  if UNLIKELY(c->errcount > errcount && loc_line(expr->loc))
+  if UNLIKELY(c->errcount > errcount && !(flags & CTIME_NO_DIAG) && loc_line(expr->loc))
     help(&ctx, expr, "comptime evaluation originated here");
 
   u64array_dispose(&ctx.stack, ctx.ma);
@@ -509,13 +513,13 @@ node_t* nullable comptime_eval(compiler_t* c, expr_t* expr) {
 }
 
 
-bool comptime_eval_uint(compiler_t* c, expr_t* expr, u64* result) {
+bool comptime_eval_uint(compiler_t* c, expr_t* expr, ctimeflag_t flags, u64* result) {
   intlit_t* n;
   if (expr->kind == EXPR_INTLIT) {
     // shortcut for common case, e.g. "3" in "var myarray [int 3]"
     n = (intlit_t*)expr;
   } else {
-    n = (intlit_t*)comptime_eval(c, expr);
+    n = (intlit_t*)comptime_eval(c, expr, flags);
     if (!n)
       return false;
   }
@@ -526,7 +530,9 @@ bool comptime_eval_uint(compiler_t* c, expr_t* expr, u64* result) {
   }
 
   // error
-  origin_t origin = node_origin(&c->locmap, (node_t*)expr);
-  report_diag(c, origin, DIAG_ERR, "expression does not result in a value of type uint");
+  if (!(flags & CTIME_NO_DIAG)) {
+    report_diag(c, node_origin(&c->locmap, (node_t*)expr), DIAG_ERR,
+      "expression does not result in a value of type uint");
+  }
   return false;
 }

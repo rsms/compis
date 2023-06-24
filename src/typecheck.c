@@ -360,11 +360,13 @@ bool type_isconvertible(const type_t* dst, const type_t* src) {
 }
 
 
-bool intern_usertype(compiler_t* c, usertype_t** tp) {
+// intern_usertype interns *tp in c->typeidmap.
+// returns true if *tp was replaced by existing type, false if added to c->typeidmap.
+static bool intern_usertype(compiler_t* c, usertype_t** tp) {
   assert(nodekind_isusertype((*tp)->kind));
 
-  usertype_t** p = (usertype_t**)map_assign_ptr(
-    &c->typeidmap, c->ma, typeid((type_t*)*tp));
+  sym_t tid = typeid((type_t*)*tp);
+  usertype_t** p = (usertype_t**)map_assign_ptr(&c->typeidmap, c->ma, tid);
 
   if UNLIKELY(!p) {
     report_diag(c, (origin_t){0}, DIAG_ERR, "out of memory (%s)", __FUNCTION__);
@@ -778,18 +780,9 @@ static void block_noscope(typecheck_t* a, block_t* n) {
     }
   }
 
-  // report unused expressions
-  for (u32 i = 0; i < stmt_end; i++) {
-    stmt_t* cn = stmtv[i];
-    if UNLIKELY(cn->nuse == 0 && nodekind_isexpr(cn->kind)) {
-      if (report_unused(a, cn))
-        break; // stop after the first reported diagnostic
-    }
-  }
-
   // we are done if block is not an rvalue or contains an explicit "return" statement
   if (stmt_end == count)
-    return;
+    goto end;
 
   // if the block is rvalue, treat last entry as implicitly-returned expression
   expr_t* lastexpr = (expr_t*)stmtv[stmt_end];
@@ -801,6 +794,16 @@ static void block_noscope(typecheck_t* a, block_t* n) {
 
   lastexpr->nuse = MAX(n->nuse, lastexpr->nuse);
   n->type = lastexpr->type;
+
+end:
+  // report unused expressions
+  for (u32 i = 0; i < stmt_end; i++) {
+    stmt_t* cn = stmtv[i];
+    if UNLIKELY(cn->nuse == 0 && nodekind_isexpr(cn->kind)) {
+      if (report_unused(a, cn))
+        break; // stop after the first reported diagnostic
+    }
+  }
 }
 
 
@@ -947,6 +950,7 @@ static void arraytype_calc_size(typecheck_t* a, arraytype_t* at) {
 
 static void arraytype(typecheck_t* a, arraytype_t** tp) {
   arraytype_t* at = *tp;
+
   if (at->lenexpr) {
     typectx_push(a, type_uint);
     expr(a, at->lenexpr);
@@ -955,15 +959,16 @@ static void arraytype(typecheck_t* a, arraytype_t** tp) {
     if (a->compiler->errcount > 0)
       return;
 
-    if (!comptime_eval_uint(a->compiler, at->lenexpr, &at->len))
-      return; // error has been reported
+    // note: comptime_eval_uint has already reported the error when returning false
+    if (!comptime_eval_uint(a->compiler, at->lenexpr, /*flags*/0, &at->len))
+      return;
 
     if UNLIKELY(at->len == 0 && a->compiler->errcount == 0)
       error(a, at, "zero length array");
   }
 
+  assert(at->tid == NULL);
   arraytype_calc_size(a, at);
-
   intern_usertype(a->compiler, (usertype_t**)tp);
 }
 
@@ -1787,6 +1792,64 @@ static void member(typecheck_t* a, member_t* n) {
 }
 
 
+static void unsigned_index_expr(typecheck_t* a, expr_t* n, u64* constval) {
+  incuse(n);
+
+  typectx_push(a, type_uint);
+  expr(a, n);
+  typectx_pop(a);
+
+  if (comptime_eval_uint(a->compiler, n, CTIME_NO_DIAG, constval)) {
+    n->flags |= NF_CONST;
+  } else switch (n->type->kind) {
+    case TYPE_U8:
+    case TYPE_UINT:
+      break;
+    case TYPE_U16:
+    case TYPE_U32:
+    case TYPE_U64:
+      // accept these types if they are convertible to uint without loss
+      if (n->type->size <= a->compiler->uinttype->size)
+        break;
+      FALLTHROUGH;
+    default:
+      error(a, n, "invalid index type %s; expecting uint", fmtnode(a, 0, n->type));
+  }
+}
+
+
+static void subscript(typecheck_t* a, subscript_t* n) {
+  incuse(n->recv);
+
+  typectx_push(a, type_unknown);
+  expr(a, n->recv);
+  typectx_pop(a);
+
+  unsigned_index_expr(a, n->index, &n->index_val);
+
+  ptrtype_t* recvt = (ptrtype_t*)unwrap_ptr_and_alias(n->recv->type);
+
+  switch (recvt->kind) {
+    case TYPE_ARRAY: {
+      n->type = recvt->elem;
+      arraytype_t* at = (arraytype_t*)recvt;
+      if ((n->index->flags & NF_CONST) && n->index_val >= at->len)
+        error(a, n, "out of bounds: element %llu of array %s",
+          n->index_val, fmtnode(a, 0, recvt));
+      break;
+    }
+    case TYPE_SLICE:
+    case TYPE_MUTSLICE:
+      n->type = recvt->elem;
+      break;
+    default:
+      n->type = a->typectx; // avoid cascading errors
+      error(a, n, "cannot index into type %s", fmtnode(a, 0, recvt));
+      return;
+  }
+}
+
+
 static void finalize_typecons(typecheck_t* a, typecons_t** np) {
   type_t* t = (*np)->type;
 
@@ -2324,6 +2387,7 @@ static void exprp(typecheck_t* a, expr_t** np) {
   case EXPR_CALL:      return call(a, (call_t**)np);
   case EXPR_TYPECONS:  return typecons(a, (typecons_t**)np);
   case EXPR_MEMBER:    return member(a, (member_t*)n);
+  case EXPR_SUBSCRIPT: return subscript(a, (subscript_t*)n);
   case EXPR_DEREF:     return deref(a, (unaryop_t*)n);
   case EXPR_INTLIT:    return intlit(a, (intlit_t*)n);
   case EXPR_FLOATLIT:  return floatlit(a, (floatlit_t*)n);

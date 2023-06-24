@@ -42,6 +42,11 @@ typedef long               __co_int;
 
 __attribute__((__noreturn__)) void abort(void);
 
+inline static void panic(const char* message) {
+  __builtin_printf("panic: %s\n", message);
+  abort();
+}
+
 inline static void* __co_mem_dup(const void* src, __co_uint size) {
   void* ptr = __builtin_memcpy(__builtin_malloc(size), src, size);
   // __builtin_printf("__co_mem_dup(%p, %lu) => %p\n", src, size, ptr);
@@ -51,6 +56,12 @@ inline static void* __co_mem_dup(const void* src, __co_uint size) {
 inline static void __co_mem_free(void* ptr, __co_uint size) {
   // __builtin_printf("__co_mem_free(%p, %lu)\n", ptr, size);
   __builtin_free(ptr);
+}
+
+inline static void __co_checkbounds(u64 len, u64 index) {
+  // len is first member of slice structs
+  if (__builtin_expect(index >= len, false))
+    panic("out of bounds access");
 }
 
 #define __nullcheck(x) ({ \

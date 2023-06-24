@@ -83,7 +83,8 @@ UNUSED static const char* fmtnode(cgen_t* g, u32 bufindex, const void* nullable 
 
 
 //#define INTERNAL_SEP    "·" // U+00B7 MIDDLE DOT (UTF8: "\xC2\xB7")
-#define CO_TYPE_PREFIX CO_INTERNAL_PREFIX "t_"
+#define CO_TYPE_PREFIX CO_INTERNAL_PREFIX
+#define CO_TYPE_SUFFIX "_t"
 #define ANON_PREFIX    CO_INTERNAL_PREFIX "v"
 #define ANON_FMT       ANON_PREFIX "%x"
 
@@ -377,7 +378,8 @@ static sym_t gen_struct_typename(cgen_t* g, const type_t* t) {
   if (st->mangledname)
     return st->mangledname;
   char buf[strlen(CO_TYPE_PREFIX "structXXXXXXXX.")];
-  return sym_snprintf(buf, sizeof(buf), CO_TYPE_PREFIX "struct%x", g->anon_idgen++);
+  return sym_snprintf(buf, sizeof(buf),
+    CO_TYPE_PREFIX "struct%x" CO_TYPE_SUFFIX, g->anon_idgen++);
 }
 
 
@@ -438,6 +440,7 @@ static sym_t gen_slice_typename(cgen_t* g, const type_t* tp) {
     seterr(g, ErrNoMem);
     return sym__;
   }
+  PRINT(CO_TYPE_SUFFIX);
   sym_t name = sym_intern(&g->outbuf.chars[len1], g->outbuf.len - len1);
   g->outbuf.len = len1;
   return name;
@@ -469,6 +472,7 @@ static sym_t gen_darray_typename(cgen_t* g, const type_t* tp) {
     seterr(g, ErrNoMem);
     return sym__;
   }
+  PRINT(CO_TYPE_SUFFIX);
   sym_t name = sym_intern(&g->outbuf.chars[len1], g->outbuf.len - len1);
   g->outbuf.len = len1;
   return name;
@@ -557,7 +561,8 @@ static void aliastype(cgen_t* g, const aliastype_t* t) {
 
 static sym_t gen_opt_typename(cgen_t* g, const type_t* t) {
   char namebuf[64];
-  return sym_snprintf(namebuf, sizeof(namebuf), CO_TYPE_PREFIX "opt%x", g->anon_idgen++);
+  return sym_snprintf(namebuf, sizeof(namebuf),
+    CO_TYPE_PREFIX "opt%x" CO_TYPE_SUFFIX, g->anon_idgen++);
 }
 
 static void gen_opt_typedef(cgen_t* g, const type_t* tp, sym_t typename) {
@@ -786,6 +791,21 @@ static const type_t* unwrap_ptr(const type_t* t) {
     case TYPE_REF:
     case TYPE_MUTREF:   t = assertnotnull(((reftype_t*)t)->elem); break;
     case TYPE_PTR:      t = assertnotnull(((ptrtype_t*)t)->elem); break;
+    default:            return t;
+  }
+}
+
+
+// unwrap_ptr_and_alias unwraps optional, ref, ptr and alias
+// e.g. "?&MyT" => "&MyT" => "MyT" => "T"
+static type_t* unwrap_ptr_and_alias(type_t* t) {
+  assertnotnull(t);
+  for (;;) switch (t->kind) {
+    case TYPE_OPTIONAL: t = assertnotnull(((opttype_t*)t)->elem); break;
+    case TYPE_REF:
+    case TYPE_MUTREF:   t = assertnotnull(((reftype_t*)t)->elem); break;
+    case TYPE_PTR:      t = assertnotnull(((ptrtype_t*)t)->elem); break;
+    case TYPE_ALIAS:    t = assertnotnull(((aliastype_t*)t)->elem); break;
     default:            return t;
   }
 }
@@ -1644,7 +1664,11 @@ static void vardef1(cgen_t* g, const local_t* n, const char* name, bool wrap_rva
   // elide unused variable without side effects.
   // Note: This isn't very useful in practice as clang will optimize away
   // unused code anyway (when optimizing), but it's a nice thing to do.
-  if (n->nuse == 0 && // g->compiler->buildmode != BUILDMODE_DEBUG &&
+  if (n->nuse == 0 &&
+      #if DEBUG
+      // disable for -d during in debug builds of compis itself
+      g->compiler->buildmode != BUILDMODE_DEBUG &&
+      #endif
       expr_no_side_effects((expr_t*)n))
   {
     PRINT("/* elided unused ");
@@ -1776,6 +1800,143 @@ static void member(cgen_t* g, const member_t* n) {
   member_op(g, n->recv->type);
   PRINT(n->name);
   if (insert_nullcheck)
+    CHAR(')');
+}
+
+
+static void subscript(cgen_t* g, const subscript_t* n) {
+  // If no bounds checking is needed, this is simply one of the follwoing:
+  //
+  //   recv[index]      -- for arrays of known size
+  //   recv.ptr[index]  -- for slices and dynamic arrays
+  //
+  // Otherwise one of the following are generated for slices and dynamic arrays,
+  // depending on idempotency of the recv and index:
+  //
+  //   (__co_checkbounds(recv.len,index),recv.ptr[index])
+  //
+  //   ({ __co_t_slice_s v1 = recv;
+  //      u64 v2 = index;
+  //      __co_checkbounds(v1.len,v2);
+  //      v1.ptr[v2]; })
+  //
+  //   ({ __co_t_slice_s v1 = recv;
+  //      __co_checkbounds(v1.len,2);
+  //      v1.ptr[2]; })
+  //
+  //   ({ u64 v1 = index;
+  //      __co_checkbounds(recv.len,v1);
+  //      recv.ptr[v1]; })
+  //
+  // For arrays of known size:
+  //
+  //   (__co_checkbounds(3,index),recv[index])
+  //
+  //   ({ u64 v1 = index;
+  //      __co_checkbounds(3,v1);
+  //      a[v1]; })
+  //
+  bool checkbounds = false;
+  char len_buf[16] = {0};
+  const char* ptr_code = ".ptr";
+
+  type_t* recv_type = unwrap_ptr_and_alias(n->recv->type);
+
+  switch (recv_type->kind) {
+    case TYPE_SLICE:
+    case TYPE_MUTSLICE:
+      checkbounds = true;
+      break;
+    case TYPE_ARRAY:
+      if (((arraytype_t*)recv_type)->len) {
+        ptr_code = "";
+        if (!(n->index->flags & NF_CONST)) {
+          checkbounds = true;
+          sfmtu64(len_buf, ((arraytype_t*)recv_type)->len, 10);
+          // note: len_buf is zeroed; we don't need to explicitly terminate it
+        }
+      } else {
+        checkbounds = true;
+      }
+      break;
+    default:
+      panic("TODO subscript recv type %s", nodekind_name(n->recv->type->kind));
+  }
+
+  u32 index_tmp_id = 0;
+  u32 recv_tmp_id = 0;
+
+  if (checkbounds) {
+    if (n->recv->kind != EXPR_ID)
+      recv_tmp_id = g->anon_idgen++;
+    if (!(n->index->flags & NF_CONST) && n->index->kind != EXPR_ID)
+      index_tmp_id = g->anon_idgen++;
+
+    CHAR('(');
+    if (index_tmp_id || recv_tmp_id)
+      CHAR('{');
+
+    if (recv_tmp_id) {
+      type(g, n->recv->type);
+      PRINTF(" " ANON_FMT " = ", recv_tmp_id);
+      expr_rvalue(g, n->recv, n->recv->type);
+      PRINT(";\n");
+    }
+
+    if (index_tmp_id) {
+      type(g, n->index->type);
+      PRINTF(" " ANON_FMT " = ", index_tmp_id);
+      expr_rvalue(g, n->index, n->index->type);
+      PRINT(";\n");
+    }
+
+    PRINT("__co_checkbounds(");
+    if (len_buf[0]) {
+      PRINT(len_buf);
+    } else {
+      if (recv_tmp_id) {
+        PRINTF(ANON_FMT, recv_tmp_id);
+      } else {
+        expr_rvalue(g, n->recv, n->recv->type);
+      }
+      PRINT(".len");
+    }
+    CHAR(',');
+    if (index_tmp_id) {
+      PRINTF(ANON_FMT, index_tmp_id);
+    } else if (n->index->flags & NF_CONST) {
+      PRINTF("%llu", n->index_val);
+    } else {
+      expr_rvalue(g, n->index, n->index->type);
+    }
+    CHAR(')');
+
+    CHAR((index_tmp_id || recv_tmp_id) ? ';' : ',');
+
+    if (recv_tmp_id) {
+      PRINTF(ANON_FMT, recv_tmp_id);
+    } else {
+      expr_rvalue(g, n->recv, n->recv->type);
+    }
+  } else {
+    expr_rvalue(g, n->recv, n->recv->type);
+  }
+
+  PRINT(ptr_code);
+
+  CHAR('[');
+  if (index_tmp_id) {
+    PRINTF(ANON_FMT, index_tmp_id);
+  } else if (n->index->flags & NF_CONST) {
+    PRINTF("%llu", n->index_val);
+  } else {
+    expr_rvalue(g, n->index, n->index->type);
+  }
+  CHAR(']');
+
+  if (index_tmp_id || recv_tmp_id)
+    PRINT(";}");
+  if (checkbounds)
     CHAR(')');
 }
 
@@ -2022,6 +2183,7 @@ static void expr(cgen_t* g, const expr_t* n) {
   case EXPR_CALL:      return call(g, (const call_t*)n);
   case EXPR_TYPECONS:  return typecons(g, (const typecons_t*)n);
   case EXPR_MEMBER:    return member(g, (const member_t*)n);
+  case EXPR_SUBSCRIPT: return subscript(g, (const subscript_t*)n);
   case EXPR_IF:        return ifexpr(g, (const ifexpr_t*)n);
   case EXPR_FOR:       return forexpr(g, (const forexpr_t*)n);
   case EXPR_RETURN:    return retexpr(g, (const retexpr_t*)n, NULL);
@@ -2155,7 +2317,7 @@ err_t cgen_generate(cgen_t* g, const unit_t* n) {
   buf_clear(&g->outbuf);
   map_clear(&g->typedefmap);
   map_clear(&g->tmpmap);
-  g->anon_idgen = 0;
+  g->anon_idgen = 1;
   g->inputid = 0;
   g->lineno = 0;
   g->scopenest = 0;
