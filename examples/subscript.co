@@ -1,6 +1,6 @@
 fun subscript_slice(a &[i16]) i16 { a[2] }
-fun subscript_dynarray_var(a [i16], i uint) i16 { a[i] }
-fun subscript_array_const() i16 { var a [i16 3]; a[2] }
-fun subscript_array_var(i uint) i16 { var a [i16 3]; a[i] }
+fun subscript_array_const(a [i16 3]) i16 { a[2] }
+fun subscript_array_var(a [i16 3], i uint) i16 { a[i] }
 fun subscript_array_ref_const(a &[i16 3]) i16 { a[2] }
 fun subscript_array_ref_var(a &[i16 3], i uint) i16 { a[i] }
+fun subscript_dynarray_var(a [i16], i uint) i16 { a[i] }
