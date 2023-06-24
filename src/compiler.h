@@ -239,8 +239,12 @@ typedef struct {
 
 typedef struct {
   usertype_t;
+  type_t* elem;
+} ptrtype_t;
+
+typedef struct {
+  ptrtype_t;
   loc_t            endloc; // "]"
-  type_t*          elem;
   u64              len;
   expr_t* nullable lenexpr;
 } arraytype_t;
@@ -264,11 +268,6 @@ typedef struct {
 } structtype_t;
 
 typedef struct {
-  usertype_t;
-  type_t* elem;
-} ptrtype_t;
-
-typedef struct {
   ptrtype_t;
 } reftype_t;
 
@@ -278,8 +277,7 @@ typedef struct {
 } slicetype_t;
 
 typedef struct {
-  usertype_t;
-  type_t* elem;
+  ptrtype_t;
 } opttype_t;
 
 typedef struct {
@@ -534,7 +532,7 @@ typedef struct compiler {
   char*       buildroot;     // where all generated files go, e.g. "build"
   char*       builddir;      // "{buildroot}/{mode}-{triple}"
   char*       sysroot;       // "{builddir}/sysroot"
-  char*       pkgbuilddir;   // "{builddir}/{pkgname}.pkg"
+  char*       pkgbuilddir;   // "{builddir}/{pkgname}.copkg"
   char*       pkgname;       // name of package being compiled
   strlist_t   cflags;        // cflags used for compis objects (includes cflags_common)
   slice_t     flags_common;  // flags used for all objects; .s, .c etc.
