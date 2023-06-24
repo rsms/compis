@@ -2,6 +2,10 @@
 #include "colib.h"
 #include "compiler.h"
 
+#if DEBUG
+#include "abuf.h"
+extern usize strnlen(const char* s, usize maxlen); // libc
+#endif
 
 static map_t      symbols;
 static memalloc_t sym_ma;
@@ -37,6 +41,17 @@ void sym_init(memalloc_t ma) {
 
 
 sym_t sym_intern(const void* key, usize keylen) {
+  #if DEBUG
+    if UNLIKELY(strnlen(key, keylen) != keylen) {
+      char tmp[128];
+      abuf_t s = abuf_make(tmp, sizeof(tmp));
+      abuf_repr(&s, (char*)key, keylen);
+      abuf_terminate(&s);
+      assertf(0, "symbol \"%s\" contains NUL byte (len %zu, nul at %zu)",
+        tmp, keylen, strnlen(key, keylen));
+    }
+  #endif
+
   mapent_t* ent = map_assign_ent(&symbols, sym_ma, key, keylen);
   if UNLIKELY(!ent)
     goto oom;
