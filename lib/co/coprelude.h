@@ -40,11 +40,9 @@ typedef long               __co_int;
 #define __co_pkg __attribute__((__visibility__("internal")))
 #define __co_pub __attribute__((__visibility__("default")))
 
-__attribute__((__noreturn__)) void abort(void);
-
-inline static void panic(const char* message) {
+inline static void __co_panic(const char* message) {
   __builtin_printf("panic: %s\n", message);
-  abort();
+  __builtin_abort();
 }
 
 inline static void* __co_mem_dup(const void* src, __co_uint size) {
@@ -61,10 +59,10 @@ inline static void __co_mem_free(void* ptr, __co_uint size) {
 inline static void __co_checkbounds(u64 len, u64 index) {
   // len is first member of slice structs
   if (__builtin_expect(index >= len, false))
-    panic("out of bounds access");
+    __co_panic("out of bounds access");
 }
 
 #define __nullcheck(x) ({ \
   __typeof__(x) x__ = (x); \
-  (x__ == NULL ? abort() : ((void)0)), x__; \
+  (x__ == NULL ? __builtin_abort() : ((void)0)), x__; \
 })
