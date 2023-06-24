@@ -1364,6 +1364,25 @@ static irval_t* member(ircons_t* c, member_t* n) {
 }
 
 
+static irval_t* subscript(ircons_t* c, subscript_t* n) {
+  // e.g. "a[2]" =>
+  //   v0  &[i8] = ...
+  //   v1  i8    = GEP    v0  2
+  // e.g. "a[x]" =>
+  //   v0  &[i8] = ...
+  //   v1  u64   = ...                # x
+  //   v2  i8    = GEP    v0  v1  0
+  irval_t* v = pushval(c, c->b, OP_GEP, n->loc, n->type);
+  pusharg(v, load_expr(c, n->recv));
+  if (n->index->flags & NF_CONST) {
+    v->aux.i64val = n->index_val;
+  } else {
+    pusharg(v, load_expr(c, n->index));
+  }
+  return v;
+}
+
+
 static irval_t* typecons(ircons_t* c, typecons_t* n) {
   if (n->expr == NULL)
     return pushval(c, c->b, OP_ZERO, n->loc, n->type);
@@ -2096,6 +2115,7 @@ static irval_t* expr(ircons_t* c, void* expr_node) {
   case EXPR_IF:        return ifexpr(c, (ifexpr_t*)n);
   case EXPR_RETURN:    return retexpr(c, (retexpr_t*)n);
   case EXPR_MEMBER:    return member(c, (member_t*)n);
+  case EXPR_SUBSCRIPT: return subscript(c, (subscript_t*)n);
 
   case EXPR_BOOLLIT:
   case EXPR_INTLIT:
