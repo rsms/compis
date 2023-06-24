@@ -191,3 +191,11 @@ bool buf_print_leb128_u32(buf_t* b, u32 n) {
   b->len += leb128_u32_write(b->bytes + b->len, n);
   return true;
 }
+
+
+bool buf_print_leb128_u64(buf_t* b, u64 n) {
+  if (!buf_reserve(b, LEB128_NBYTE_64))
+    return false;
+  b->len += leb128_u64_write(b->bytes + b->len, n);
+  return true;
+}

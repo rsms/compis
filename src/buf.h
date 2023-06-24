@@ -106,5 +106,6 @@ bool buf_vprintf(buf_t* b, const char* fmt, va_list);
 bool buf_print_u64(buf_t* b, u64 n, u32 base);
 bool buf_print_u32(buf_t* b, u32 n, u32 base);
 bool buf_print_leb128_u32(buf_t* b, u32 n);
+bool buf_print_leb128_u64(buf_t* b, u64 n);
 
 ASSUME_NONNULL_END
