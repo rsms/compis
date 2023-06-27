@@ -91,14 +91,13 @@ static void help(const char* prog) {
   exit(0);
 }
 
-typedef enum {
-  PRODKIND_NONE = 0, // just compile (--no-link)
-  PRODKIND_LIB  = 1, // library
-  PRODKIND_EXE  = 2, // executable
-} prodkind_t;
+typedef u8 buildflags_t;
+#define BUILD_NOLINK ((u8)1 << 0)  // don't link
 
 
-static err_t build_pkg(pkg_t* pkg, const compiler_config_t* ccfg);
+static err_t build_pkg(
+  pkg_t* pkg, const compiler_config_t* ccfg, const char* outfile, buildflags_t);
+static err_t build_dep_pkg(str_t pkgname, const compiler_config_t* ccfg);
 
 
 static void set_comaxproc() {
@@ -178,6 +177,8 @@ int main_build(int argc, char* argv[]) {
   // if (pkgc > 1) {
   //   errx(1, "more than one package requested; please only specify one package");
   // }
+  if (pkgc > 1 && *opt_out)
+    errx(1, "cannot specify -o option when building multiple packages");
 
   // configuration for building requested packages
   compiler_config_t ccfg = {
@@ -192,15 +193,48 @@ int main_build(int argc, char* argv[]) {
     .nomain = opt_nomain,
   };
 
+  // XXX FIXME
+  if (!streq(pkgv[0].name.p, "std/runtime")) {
+    if (( err = build_dep_pkg(str_make("std/runtime"), &ccfg) ))
+      return 1;
+  }
+
   // build packages
+  buildflags_t buildflags = 0;
+  if (opt_nolink)
+    buildflags |= BUILD_NOLINK;
   for (u32 i = 0; i < pkgc; i++) {
-    if (( err = build_pkg(&pkgv[i], &ccfg) )) {
+    if (( err = build_pkg(&pkgv[i], &ccfg, opt_out, buildflags) )) {
       dlog("error while building pkg %s: %s", pkgv[i].name.p, err_str(err));
       break;
     }
   }
 
   return (int)!!err;
+}
+
+
+static err_t build_dep_pkg(str_t pkgname, const compiler_config_t* parent_ccfg) {
+  pkg_t pkg = {
+    .name = pkgname,
+  };
+  if (!pkg_find_dir(&pkg)) {
+    elog("package not found: %s", pkgname.p);
+    return ErrNotFound;
+  }
+
+  compiler_config_t ccfg = *parent_ccfg;
+  ccfg.printast = false;
+  ccfg.printir = false;
+  ccfg.genirdot = false;
+  ccfg.genasm = false;
+  ccfg.nomain = false;
+
+  err_t err = build_pkg(&pkg, &ccfg, "", /*flags*/0);
+  if (err)
+    dlog("error while building pkg %s: %s", pkg.name.p, err_str(err));
+
+  return err;
 }
 
 
@@ -376,7 +410,9 @@ static err_t mkdirs_for_files(memalloc_t ma, const char*const* filev, u32 filec)
 }
 
 
-static err_t build_pkg(pkg_t* pkg, const compiler_config_t* ccfg) {
+static err_t build_pkg(
+  pkg_t* pkg, const compiler_config_t* ccfg, const char* outfile, buildflags_t flags)
+{
   err_t err = 0;
 
   // make sure we have source files
@@ -426,7 +462,7 @@ static err_t build_pkg(pkg_t* pkg, const compiler_config_t* ccfg) {
 
   // configure a bgtask
   int taskflags = c.opt_verbose ? BGTASK_NOFANCY : 0;
-  u32 tasklen = pkg->files.len + (u32)!opt_nolink;
+  u32 tasklen = pkg->files.len + (u32)!(flags & BUILD_NOLINK);
   bgtask_t* task = bgtask_start(c.ma, pkg->name.p, tasklen, taskflags);
 
   // compile source files
@@ -446,12 +482,11 @@ static err_t build_pkg(pkg_t* pkg, const compiler_config_t* ccfg) {
   }
 
   // create executable if there's a main function
-  const char* outfile = opt_out;
-  if (!opt_nolink && c.mainfun) {
+  if (!(flags & BUILD_NOLINK) && c.mainfun) {
     if (!*outfile)
       outfile = path_join_alloca(c.builddir, c.pkg->name.p);
     err = link_exe(&c, task, outfile, objfilev, pkg->files.len);
-  } else if (!opt_nolink) {
+  } else if (!(flags & BUILD_NOLINK)) {
     // create static library
     if (!*outfile)
       outfile = path_join_alloca(c.builddir, strcat_alloca(c.pkg->name.p, ".a"));
@@ -465,7 +500,7 @@ static err_t build_pkg(pkg_t* pkg, const compiler_config_t* ccfg) {
   }
 
   // end bgtask
-  bgtask_end(task, "%s", opt_nolink ? "(compile only)" : relpath(outfile));
+  bgtask_end(task, "%s", (flags & BUILD_NOLINK) ? "(compile only)" : relpath(outfile));
 
 end2:
   strlist_dispose(&objfiles);
