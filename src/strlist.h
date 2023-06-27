@@ -9,6 +9,7 @@
 //   char* const* v = strlist_array(&cflags);
 //   for (u32 i = 0; i < cflags.len; i++)
 //     dlog("cflags[%d] = %s", i, v[i]);
+//   strlist_dispose(&cflags);
 //
 #pragma once
 #include "buf.h"

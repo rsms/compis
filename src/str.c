@@ -103,3 +103,14 @@ bool str_appendstrings(str_t* s, char glue, usize count, ...) {
   va_end(ap);
   return ok;
 }
+
+
+bool str_prependlen(str_t* s, const char* src, usize len) {
+  if (!str_ensure_avail(s, len))
+    return false;
+  memmove(s->p + len, s->p, s->len);
+  memcpy(s->p, src, len);
+  s->len += len;
+  s->p[s->len] = 0;
+  return true;
+}

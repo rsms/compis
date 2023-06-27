@@ -132,9 +132,9 @@ static void add_srcline(
 
 
 static void add_srclines(compiler_t* c, origin_t origin, abuf_t* s) {
-  const input_t* input = assertnotnull(origin.input);
+  const srcfile_t* srcfile = assertnotnull(origin.file);
 
-  if (abuf_avail(s) < 4 || origin.line == 0 || input->data.size == 0)
+  if (abuf_avail(s) < 4 || origin.line == 0 || srcfile->size == 0)
     return;
 
   u32 nlinesbefore = 0; // TODO: make configurable
@@ -144,9 +144,9 @@ static void add_srclines(compiler_t* c, origin_t origin, abuf_t* s) {
   u32 ln = startline;
 
   // start & end of line
-  const char* p = (const char*)input->data.p;
+  const char* p = (const char*)srcfile->data;
   const char* end = p;
-  const char* srcend = p + input->data.size;
+  const char* srcend = p + srcfile->size;
 
   // forward to startline
   for (;;) {
@@ -207,10 +207,10 @@ void report_diagv(
     abuf_t s = abuf_make(c->diagbuf.p, c->diagbuf.cap);
     c->diag.msg = s.p;
 
-    if (origin.line > 0 && origin.input) {
-      abuf_fmt(&s, "%s:%u:%u: ", origin.input->name, origin.line, origin.column);
-    } else if (origin.input && origin.input->name[0] != 0) {
-      abuf_fmt(&s, "%s: ", origin.input->name);
+    if (origin.line > 0 && origin.file) {
+      abuf_fmt(&s, "%s:%u:%u: ", origin.file->name.p, origin.line, origin.column);
+    } else if (origin.file && origin.file->name.p[0] != 0) {
+      abuf_fmt(&s, "%s: ", origin.file->name.p);
     }
 
     switch (kind) {
@@ -232,7 +232,7 @@ void report_diagv(
 
     // populate c->diag.srclines
     c->diag.srclines = "";
-    if (origin.input && origin.line)
+    if (origin.file && origin.line)
       add_srclines(c, origin, &s);
 
     usize len = abuf_terminate(&s);

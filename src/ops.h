@@ -26,15 +26,15 @@ _( OP_STR, 0 )   // "..."
 _( OP_VAR, 0 )   // stack memory
 _( OP_STORE, 0 ) // T -> T
 _( OP_DEREF, 0 ) // *T -> T
-_( OP_ALIAS, 0 ) // T -> &T
+_( OP_ALIAS, 0 ) // T -> *T
 _( OP_GEP, 0 )   // get element pointer
 
 // ownership & lifetime
-_( OP_MOVE, 0 )       // *T -> *T
-_( OP_BORROW, 0 )     // T -> &T
-_( OP_BORROW_MUT, 0 ) // T -> mut&T
-_( OP_DROP, 0 )
-_( OP_OCHECK, 0 )     // test if T? has value
+_( OP_MOVE, 0 )   // T -> T
+_( OP_REF, 0 )    // T -> &T
+_( OP_MUTREF, 0 ) // T -> mut&T
+_( OP_DROP, 0 )   //
+_( OP_OCHECK, 0 ) // test if T? has value
 
 // unary
 _( OP_INC,  0 ) // ++

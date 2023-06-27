@@ -108,6 +108,9 @@ struct LinkerArgs {
   }
 
   err_t add_lto_args();
+
+  err_t add_libfile_args();
+
   err_t add_coff_args();
   err_t add_elf_arg();
   err_t add_macho_args();
@@ -123,6 +126,13 @@ err_t LinkerArgs::unsupported_sys() {
   dlog("lld: unsupported system %s (%s)", osname, triple.str().c_str());
   #endif
   return ErrNotSupported;
+}
+
+
+err_t LinkerArgs::add_libfile_args() {
+  for (u32 i = 0; i < options.libfilec; i++)
+    addarg(options.libfilev[i]);
+  return 0;
 }
 
 
@@ -206,6 +216,14 @@ err_t LinkerArgs::add_elf_arg() {
     addarg("-o", options.outfile);
 
   addarg("-static");
+
+  // note: order of libraries is important for symbol resolution.
+  // If we list std/runtime.a after -lc, then e.g. "strlen" in libc
+  // is used instead of "strlen" in std/runtime.
+  err_t err = add_libfile_args();
+  if (err)
+    return err;
+
   addargf("-L%s/lib", options.sysroot);
   addarg("-lc", "-lrt");
 
@@ -249,6 +267,10 @@ err_t LinkerArgs::add_macho_args() {
   if (options.outfile)
     addarg("-o", options.outfile);
 
+  err_t err = add_libfile_args();
+  if (err)
+    return err;
+
   addargf("-L%s/lib", options.sysroot);
   addarg("-lc", "-lrt");
   return 0;
@@ -259,6 +281,11 @@ err_t LinkerArgs::add_wasm_args() {
   // flavor=wasm-ld
   dlog("TODO: %s", __FUNCTION__);
   addarg("--no-pie");
+
+  err_t err = add_libfile_args();
+  if (err)
+    return err;
+
   return ErrNotSupported;
 }
 

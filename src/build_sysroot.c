@@ -772,8 +772,11 @@ static err_t build_libcxx(compiler_t* c) {
   memalloc_t ma = memalloc_bump_in(c->ma, countof(libcxx_sources)*PATH_MAX, 0);
   { memalloc_ctx_set_scope(ma);
     for (u32 i = 0; i < countof(libcxx_sources); i++) {
-      if (c->target.sys == SYS_wasi && str_startswith(libcxx_sources[i], "filesystem/"))
+      if (c->target.sys == SYS_wasi &&
+          string_startswith(libcxx_sources[i], "filesystem/"))
+      {
         continue; // skip
+      }
       char* srcfile = safechecknotnull(path_join("src", libcxx_sources[i]).p);
       cbuild_add_source(&build, srcfile);
     }

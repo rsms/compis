@@ -1360,7 +1360,7 @@ static expr_t* expr_deref(parser_t* p, const parselet_t* pl, nodeflag_t fl) {
 // mut_expr|ref_expr = "mut"? "&" expr
 static expr_t* expr_ref1(parser_t* p, nodeflag_t fl, bool ismut) {
   unaryop_t* n = mkexpr(p, unaryop_t, EXPR_PREFIXOP, fl);
-  n->op = OP_AND;
+  n->op = ismut ? OP_MUTREF : OP_REF;
   next(p);
   n->expr = expr(p, PREC_UNARY_PREFIX, fl | NF_RVALUE);
   bubble_flags(n, n->expr);
@@ -1379,11 +1379,13 @@ static expr_t* expr_ref1(parser_t* p, nodeflag_t fl, bool ismut) {
     error(p, n, "mutable reference to immutable %s %s", nodekind_fmt(k), s);
   }
 
-  reftype_t* t = mkreftype(p, ismut);
-  t->elem = n->expr->type;
-  bubble_flags(t, t->elem);
+  // // note: set type now, even though n->expr->type might be unknown,
+  // // to communicate "&" vs "mut&" to typechecker
+  // reftype_t* t = mkreftype(p, ismut);
+  // t->elem = n->expr->type;
+  // bubble_flags(t, t->elem);
+  // n->type = (type_t*)t;
 
-  n->type = (type_t*)t;
   return (expr_t*)n;
 }
 
@@ -2008,10 +2010,12 @@ static stmt_t* stmt_pub(parser_t* p) {
 }
 
 
-unit_t* parser_parse(parser_t* p, memalloc_t ast_ma, input_t* input) {
+unit_t* parser_parse(parser_t* p, memalloc_t ast_ma, srcfile_t* srcfile) {
   p->ast_ma = ast_ma;
   scope_clear(&p->scope);
-  scanner_set_input(&p->scanner, input);
+
+  scanner_begin(&p->scanner, srcfile);
+
   unit_t* unit = mknode(p, unit_t, NODE_UNIT);
   p->unit = unit;
   next(p);

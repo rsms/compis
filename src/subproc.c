@@ -152,23 +152,23 @@ err_t subproc_await(subproc_t* p) {
   #elif defined(SUBPROC_USE_PGRP)
     // wait for process-group leader
     if UNLIKELY(waitpid(p->pid, &status, 0) == -1) {
-      p->err = err_errno();
+      p->err = errno ? err_errno() : ErrIO;
     } else {
       if (status != 0)
         p->err = status < 0 ? ErrInvalid : (err_t)-status;
       // wait for other process in the group
       while (waitpid(-p->pid, NULL, 0) != -1) {}
       if UNLIKELY(errno != ECHILD && p->err == 0)
-        p->err = err_errno();
+        p->err = errno ? err_errno() : ErrCanceled;
     }
   #else // not SUBPROC_USE_PGRP
     if (waitpid(p->pid, &status, 0) < 0) {
-      p->err = err_errno();
+      p->err = errno ? err_errno() : ErrIO;
       log_errno("waitpid %d", p->pid);
     } else if (WIFEXITED(status)) {
       if (WEXITSTATUS(status) != 0) {
-        p->err = err_errno();
-        trace("proc[%d] failed", p->pid);
+        p->err = errno ? err_errno() : ErrCanceled;
+        trace("proc[%d] failed (status %d)", p->pid, status);
       }
     } else if (WIFSIGNALED(status)) {
       p->err = errno ? err_errno() : ErrCanceled;
@@ -353,27 +353,24 @@ void subprocs_cancel(subprocs_t* sp) {
 
 
 static err_t _subprocs_await(subprocs_t* sp, u32 maxcount) {
-  err_t err = ErrEnd;
+  err_t err = 0;
+  u32 nawait = 0;
 
   for (u32 i = 0; i < sp->cap; i++) {
     subproc_t* proc = &sp->procs[i];
     if (proc->pid == 0)
       continue;
 
+    nawait++;
     err_t err1 = subproc_await(proc);
-    if UNLIKELY(err1) {
-      if (err1)
-        dlog("subproc_await error %d", err1);
-      if (!err)
-        err = err1;
-    } else {
-      err = 0;
-    }
+    if (err == 0)
+      err = err1;
 
     if (maxcount-- == 1)
       break;
   }
-  return err;
+
+  return nawait == 0 ? ErrEnd : err;
 }
 
 

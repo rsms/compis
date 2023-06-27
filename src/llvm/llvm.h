@@ -218,9 +218,11 @@ typedef struct {
 // CoLLVMLink specifies parameters for an invocation of llvm_link
 typedef struct {
   const char*          target_triple; // target machine triple
-  const char* nullable outfile; // output file. NULL for no output
-  const char**         infilev; // input file array
-  u32                  infilec; // input file count
+  const char* nullable outfile;  // output file. NULL for no output
+  const char*const*    infilev;  // input file array
+  u32                  infilec;  // input file count
+  const char*const*    libfilev; // input libs (.a) array
+  u32                  libfilec; // input libs count
   const char*          sysroot;
   bool                 strip_dead;
   bool                 print_lld_args;
@@ -303,7 +305,7 @@ CoLLVMArchiveKind llvm_sys_archive_kind(sys_t sys);
 EXTERN_C err_t llvm_write_archive(
   CoLLVMArchiveKind kind,
   const char*       outfile,
-  char*const*       infilev,
+  const char*const* infilev,
   u32               infilec,
   char** nullable   errmsg);
 

@@ -13,6 +13,9 @@ static_assert(offsetof(slice_t,p) == offsetof(mem_t,p), "");
 static_assert(offsetof(slice_t,len) == offsetof(mem_t,size), "");
 
 
+static const char* kHexchars = "0123456789abcdef";
+
+
 void buf_init(buf_t* b, memalloc_t ma) {
   b->p = NULL;
   b->cap = 0;
@@ -116,6 +119,34 @@ bool buf_appendrepr(buf_t* b, const void* src, usize len) {
     }
     cap = a.len;
   }
+}
+
+
+bool buf_appendhex(buf_t* b, const void* src, usize len) {
+  if (len == 0)
+    return true;
+
+  usize nwrite = len * 2;
+  if UNLIKELY(!buf_reserve(b, nwrite))
+    return false;
+
+  char* p = b->chars + b->len;
+  const u8* srcp = src;
+
+  for (usize i = 0; i < len; i++) {
+    u8 c = *srcp++;
+    if (c < 0x10) {
+      p[0] = '0';
+      p[1] = kHexchars[c];
+    } else {
+      p[0] = kHexchars[c >> 4];
+      p[1] = kHexchars[c & 0xf];
+    }
+    p += 2;
+  }
+
+  b->len += nwrite;
+  return true;
 }
 
 

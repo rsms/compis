@@ -91,6 +91,7 @@ UNUSED static const char* fmtnode(cgen_t* g, u32 bufindex, const void* nullable 
 #define CHAR(ch)             ( buf_push(&g->outbuf, (ch)), ((void)0) )
 #define PRINT(cstr)          ( buf_print(&g->outbuf, (cstr)), ((void)0) )
 #define PRINTF(fmt, args...) ( buf_printf(&g->outbuf, (fmt), ##args), ((void)0) )
+#define PRINTN(bytes, len)   ( buf_append(&g->outbuf, (bytes), (len)), ((void)0) )
 
 
 static char lastchar(cgen_t* g) {
@@ -100,7 +101,7 @@ static char lastchar(cgen_t* g) {
 
 
 static bool startloc(cgen_t* g, loc_t loc) {
-  bool inputok = loc_inputid(loc) == 0 || g->inputid == loc_inputid(loc);
+  bool inputok = loc_srcfileid(loc) == 0 || g->inputid == loc_srcfileid(loc);
   u32 lineno = loc_line(loc);
 
   if (lineno == 0 || (g->lineno == lineno && inputok))
@@ -115,9 +116,9 @@ static bool startloc(cgen_t* g, loc_t loc) {
       CHAR('\n');
     PRINTF("#line %u", lineno);
     if (!inputok) {
-      input_t* input = loc_input(loc, locmap(g));
-      g->inputid = loc_inputid(loc);
-      PRINTF(" \"%s\"", assertnotnull(input)->name);
+      srcfile_t* sf = assertnotnull(loc_srcfile(loc, locmap(g)));
+      g->inputid = loc_srcfileid(loc);
+      PRINT(" \""), PRINTN(sf->name.p, sf->name.len), CHAR('"');
     }
   }
 
@@ -179,8 +180,8 @@ static const char* operator(op_t op) {
   switch ((enum op)op) {
   case OP_ALIAS:
   case OP_ARG:
-  case OP_BORROW:
-  case OP_BORROW_MUT:
+  case OP_REF:
+  case OP_MUTREF:
   case OP_CALL:
   case OP_DROP:
   case OP_FCONST:
@@ -197,6 +198,7 @@ static const char* operator(op_t op) {
   case OP_ZERO:
   case OP_CAST:
   case OP_GEP:
+    // bad op
     break;
 
   // unary
@@ -436,7 +438,8 @@ static sym_t gen_slice_typename(cgen_t* g, const type_t* tp) {
   } else {
     PRINT(CO_TYPE_PREFIX "mutslice_");
   }
-  if UNLIKELY(compiler_mangle_type(g->compiler, &g->outbuf, t->elem)) {
+  if UNLIKELY(!compiler_mangle_type(g->compiler, &g->outbuf, t->elem)) {
+    dlog("compiler_mangle_type failed");
     seterr(g, ErrNoMem);
     return sym__;
   }
@@ -468,7 +471,8 @@ static sym_t gen_darray_typename(cgen_t* g, const type_t* tp) {
   const arraytype_t* t = (const arraytype_t*)tp;
   usize len1 = g->outbuf.len;
   PRINT(CO_TYPE_PREFIX "array_");
-  if UNLIKELY(compiler_mangle_type(g->compiler, &g->outbuf, t->elem)) {
+  if UNLIKELY(!compiler_mangle_type(g->compiler, &g->outbuf, t->elem)) {
+    dlog("compiler_mangle_type failed");
     seterr(g, ErrNoMem);
     return sym__;
   }
@@ -1678,7 +1682,7 @@ static void vardef1(cgen_t* g, const local_t* n, const char* name, bool wrap_rva
     PRINT("/* elided unused ");
     PRINT(nodekind_fmt(n->kind));
     CHAR(' ');
-    if (name[0] != '_' || (name[1] && !str_startswith(name, CO_INTERNAL_PREFIX))) {
+    if (name[0] != '_' || (name[1] && !string_startswith(name, CO_INTERNAL_PREFIX))) {
       PRINT(name);
     } else {
       // catch all "_" and "{CO_INTERNAL_PREFIX}..." vars
@@ -1753,7 +1757,23 @@ static void deref(cgen_t* g, const unaryop_t* n) {
 }
 
 
+static void doref(cgen_t* g, const unaryop_t* n) {
+  // e.g. "&x"
+  switch (n->expr->type->kind) {
+    case TYPE_ARRAY:
+      // nothing to do; array is already a pointer
+      break;
+    default:
+      panic("TODO ref to expr `%s` of type kind %s",
+        fmtnode(g, 0, n->expr), nodekind_name(n->expr->type->kind));
+  }
+  expr_rvalue(g, n->expr, n->type);
+}
+
+
 static void prefixop(cgen_t* g, const unaryop_t* n) {
+  if (n->op == OP_REF || n->op == OP_MUTREF)
+    return doref(g, n);
   if (n->expr->kind == EXPR_INTLIT && n->expr->type->kind < TYPE_I32)
     CHAR('('), type(g, n->expr->type), CHAR(')');
   PRINT(operator(n->op));
@@ -1793,7 +1813,7 @@ static void member(cgen_t* g, const member_t* n) {
   // bool insert_nullcheck = n->type->kind == TYPE_REF || n->type->kind == TYPE_FUN;
   bool insert_nullcheck = false;
   if (insert_nullcheck) {
-    PRINT("__nullcheck(");
+    PRINT(CO_INTERNAL_PREFIX "checknull(");
     expr(g, n->recv);
   } else {
     expr_rvalue(g, n->recv, n->recv->type);
@@ -1809,7 +1829,7 @@ static void member(cgen_t* g, const member_t* n) {
 
 
 static void subscript(cgen_t* g, const subscript_t* n) {
-  // If no bounds checking is needed, this is simply one of the follwoing:
+  // If no bounds checking is needed, this is simply one of the following:
   //
   //   recv[index]      -- for arrays of known size
   //   recv.ptr[index]  -- for slices and dynamic arrays
@@ -1817,28 +1837,19 @@ static void subscript(cgen_t* g, const subscript_t* n) {
   // Otherwise one of the following are generated for slices and dynamic arrays,
   // depending on idempotency of the recv and index:
   //
-  //   (__co_checkbounds(recv.len,index),recv.ptr[index])
+  //   ( __co_checkbounds(recv.len,index), recv.ptr[index] )
   //
-  //   ({ __co_t_slice_s v1 = recv;
-  //      u64 v2 = index;
-  //      __co_checkbounds(v1.len,v2);
-  //      v1.ptr[v2]; })
+  //   ({ __co_t_slice_s v1 = recv; u64 v2 = index;
+  //      __co_checkbounds(v1.len,v2); v1.ptr[v2]; })
   //
-  //   ({ __co_t_slice_s v1 = recv;
-  //      __co_checkbounds(v1.len,2);
-  //      v1.ptr[2]; })
+  //   ({ __co_t_slice_s v1 = recv; __co_checkbounds(v1.len,2); v1.ptr[2]; })
   //
-  //   ({ u64 v1 = index;
-  //      __co_checkbounds(recv.len,v1);
-  //      recv.ptr[v1]; })
+  //   ({ u64 v1 = index; __co_checkbounds(recv.len,v1); recv.ptr[v1]; })
   //
-  // For arrays of known size:
+  // For arrays of known size, e.g. "[int 3]":
   //
-  //   (__co_checkbounds(3,index),recv[index])
-  //
-  //   ({ u64 v1 = index;
-  //      __co_checkbounds(3,v1);
-  //      a[v1]; })
+  //   ( __co_checkbounds(3,index), recv[index] )
+  //   ({ u64 v1 = index; __co_checkbounds(3,v1);  a[v1]; })
   //
   bool checkbounds = false;
   char len_buf[16] = {0};
@@ -1894,7 +1905,7 @@ static void subscript(cgen_t* g, const subscript_t* n) {
       PRINT(";\n");
     }
 
-    PRINT("__co_checkbounds(");
+    PRINT(CO_INTERNAL_PREFIX "checkbounds(");
     if (len_buf[0]) {
       PRINT(len_buf);
     } else {
@@ -2304,13 +2315,16 @@ static void unit(cgen_t* g, const unit_t* n) {
 
 
 static void gen_main(cgen_t* g) {
-  PRINT(
+  assertnotnull(g->compiler->mainfun);
+  assertnotnull(g->compiler->mainfun->mangledname);
+  PRINTF(
     "\n"
     "\n"
     "#line 0 \"<builtin>\"\n"
     "int main(int argc, char* argv[]) {\n"
-    "  return NfM4main4main(), 0;\n"
-    "}"
+    "  return %s(), 0;\n"
+    "}",
+    g->compiler->mainfun->mangledname
   );
 }
 
@@ -2329,13 +2343,13 @@ err_t cgen_generate(cgen_t* g, const unit_t* n) {
 
   PRINT("#include <coprelude.h>\n");
 
-  // input_t* input = loc_input(n->loc, locmap(g));
-  // if (input) {
-  //   g->inputid = loc_inputid(n->loc);
+  // srcfile_t* sf = loc_srcfile(n->loc, locmap(g));
+  // if (sf) {
+  //   g->inputid = loc_srcfileid(n->loc);
   //   g->lineno = 1;
   //   g->headlineno = g->lineno;
   //   g->headinputid = g->inputid;
-  //   PRINTF("\n#line 1 \"%s\"\n", input->name);
+  //   PRINTF("\n#line 1 \"%s\"\n", sf->name);
   // }
 
   usize headstart = g->outbuf.len;

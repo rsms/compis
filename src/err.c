@@ -23,6 +23,7 @@ const char* err_str(err_t e) {
   case ErrReadOnly:     return "read-only";
   case ErrIO:           return "I/O error";
   case ErrNotDir:       return "not a directory";
+  case ErrIsDir:        return "is a directory";
   }
   return "(unknown error)";
 }
@@ -38,10 +39,13 @@ err_t err_errnox(int e) {
     case EROFS:   return ErrReadOnly;
     case EIO:     return ErrIO;
     case ENOTDIR: return ErrNotDir;
+    case EISDIR:  return ErrIsDir;
     case ENOTSUP:
     case ENOSYS:
       return ErrNotSupported;
-    default: return ErrInvalid;
+    case EINVAL:
+    default:
+      return ErrInvalid;
   }
 }
 

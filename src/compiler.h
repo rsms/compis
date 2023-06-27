@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 #include "buf.h"
+#include "str.h"
 #include "array.h"
 #include "map.h"
 #include "strlist.h"
@@ -100,23 +101,37 @@ enum filetype {
 
 ASSUME_NONNULL_BEGIN
 
+typedef struct pkg_ pkg_t;
+
 typedef struct {
-  mem_t      data;
-  bool       ismmap; // true if data is read-only mmap-ed
-  filetype_t type;
-  char       name[];
-} input_t;
+  pkg_t*         pkg;    // parent package (set by pkg_add_srcfile)
+  str_t          name;   // relative to pkg.dir (or absolute if there's no pkg.dir)
+  void* nullable data;   // NULL until srcfile_open (and NULL after srcfile_close)
+  usize          size;   // byte size of data (set by pkg_find_files, pkgs_for_argv)
+  unixtime_t     mtime;  // modification time (set by pkg_find_files, pkgs_for_argv)
+  u32            sha256[8];
+  bool           ismmap; // true if srcfile_open used mmap
+  filetype_t     type;   // file type (set by pkg_add_srcfile)
+} srcfile_t;
+
+typedef array_type(srcfile_t) srcfilearray_t;
+
+typedef struct pkg_ {
+  str_t          name;  // e.g. "main" or "std/runtime"
+  str_t          dir;
+  srcfilearray_t files; // source files
+} pkg_t;
 
 // loc_t is a compact representation of a source location: file, line, column & width.
 // Inspired by the Go compiler's xpos & lico. (loc_t)0 is invalid.
 typedef u64 loc_t;
 
-// locmap_t maps loc_t to input_t
-typedef array_type(input_t*) locmap_t; // slot 0 is always NULL
+// locmap_t maps loc_t to srcfile_t
+typedef array_type(srcfile_t*) locmap_t; // slot 0 is always NULL
 
 // origin_t describes the origin of diagnostic message (usually derived from loc_t)
 typedef struct {
-  const input_t* nullable input;
+  const srcfile_t* nullable file;
   u32 line;      // 0 if unknown (if so, other fields below are invalid)
   u32 column;
   u32 width;     // >0 if it's a range (starting at line & column)
@@ -462,16 +477,16 @@ typedef struct {
 // ———————— END IR ————————
 
 typedef struct {
-  input_t*  input;       // input source
-  const u8* inp;         // input buffer current pointer
-  const u8* inend;       // input buffer end
-  const u8* linestart;   // start of current line
-  const u8* tokstart;    // start of current token
-  const u8* tokend;      // end of previous token
-  tok_t     tok;         // recently parsed token (current token during scanning)
-  loc_t     loc;         // recently parsed token's source location
-  bool      insertsemi;  // insert a semicolon before next newline
-  u32       lineno;      // monotonic line number counter (!= tok.loc.line)
+  srcfile_t* srcfile;     // input source
+  const u8*  inp;         // input buffer current pointer
+  const u8*  inend;       // input buffer end
+  const u8*  linestart;   // start of current line
+  const u8*  tokstart;    // start of current token
+  const u8*  tokend;      // end of previous token
+  tok_t      tok;         // recently parsed token (current token during scanning)
+  loc_t      loc;         // recently parsed token's source location
+  bool       insertsemi;  // insert a semicolon before next newline
+  u32        lineno;      // monotonic line number counter (!= tok.loc.line)
 } scanstate_t;
 
 typedef struct {
@@ -543,7 +558,7 @@ typedef struct compiler {
   char*       builddir;      // "{buildroot}/{mode}-{triple}"
   char*       sysroot;       // "{builddir}/sysroot"
   char*       pkgbuilddir;   // "{builddir}/{pkgname}.copkg"
-  char*       pkgname;       // name of package being compiled
+  pkg_t*      pkg;           // package being compiled
   strlist_t   cflags;        // cflags used for compis objects (includes cflags_common)
   slice_t     flags_common;  // flags used for all objects; .s, .c etc.
   slice_t     cflags_common; // cflags used for all objects (includes xflags_common)
@@ -581,7 +596,7 @@ typedef struct compiler {
   // data created during parsing & analysis
   map_t           typeidmap;
   locmap_t        locmap;    // maps input <—> loc_t
-  fun_t* nullable mainfun;   // main.main()
+  fun_t* nullable mainfun;   // fun main(), if any
 } compiler_t;
 
 typedef struct { // compiler_config_t
@@ -640,18 +655,26 @@ extern type_t* type_u64;
 extern type_t* type_f32;
 extern type_t* type_f64;
 
-// input
-input_t* nullable input_create(memalloc_t ma, const char* filename);
-void input_free(input_t* input, memalloc_t ma);
-err_t input_open(input_t* input);
-void input_close(input_t* input);
+// pkg
+void pkg_dispose(pkg_t* pkg);
+bool pkg_find_dir(pkg_t* pkg); // updates pkg->dir if successful
+err_t pkgs_for_argv(int argc, char* argv[], pkg_t** pkgvp, u32* pkgcp);
+srcfile_t* pkg_add_srcfile(pkg_t* pkg, const char* name);
+err_t pkg_find_files(pkg_t* pkg); // updates pkg->files, sets sf.mtime
+unixtime_t pkg_source_mtime(const pkg_t* pkg); // max(f.mtime for f in files)
+
+// srcfile
+err_t srcfile_open(srcfile_t* sf);
+void srcfile_close(srcfile_t* sf);
+
+// filetype
 filetype_t filetype_guess(const char* filename);
 
 // compiler
-void compiler_init(compiler_t*, memalloc_t, diaghandler_t, const char* pkgname);
+void compiler_init(compiler_t*, memalloc_t, diaghandler_t, pkg_t* pkg);
 void compiler_dispose(compiler_t*);
 err_t compiler_configure(compiler_t*, const compiler_config_t*);
-err_t compiler_compile(compiler_t*, promise_t*, input_t*, buf_t* ofile);
+err_t compiler_compile(compiler_t*, promise_t*, srcfile_t*, const char* ofile);
 bool compiler_fully_qualified_name(const compiler_t*, buf_t* dst, const node_t*);
 bool compiler_mangle(const compiler_t*, buf_t* dst, const node_t*);
 bool compiler_mangle_type(const compiler_t* c, buf_t* buf, const type_t* t);
@@ -677,7 +700,7 @@ err_t spawn_tool(
 // scanner
 bool scanner_init(scanner_t* s, compiler_t* c);
 void scanner_dispose(scanner_t* s);
-void scanner_set_input(scanner_t* s, input_t*);
+void scanner_begin(scanner_t* s, srcfile_t*);
 void scanner_next(scanner_t* s);
 void stop_scanning(scanner_t* s);
 slice_t scanner_lit(const scanner_t* s); // e.g. `"\n"` => slice_t{.chars="\n", .len=1}
@@ -686,7 +709,7 @@ slice_t scanner_strval(const scanner_t* s);
 // parser
 bool parser_init(parser_t* p, compiler_t* c);
 void parser_dispose(parser_t* p);
-unit_t* parser_parse(parser_t* p, memalloc_t ast_ma, input_t*);
+unit_t* parser_parse(parser_t* p, memalloc_t ast_ma, srcfile_t*);
 
 // post-parse passes
 err_t typecheck(parser_t*, unit_t* unit);
@@ -764,6 +787,11 @@ inline static bool type_isptrlike(const type_t* nullable t) { // &T | mut&T | *T
   return nodekind_isptrliketype(assertnotnull(t)->kind); }
 inline static bool type_isslice(const type_t* nullable t) {  // &[T] | mut&[T]
   return nodekind_isslicetype(assertnotnull(t)->kind); }
+inline static bool type_isreflike(const type_t* nullable t) {
+  // &T | mut&T | &[T] | mut&[T]
+  return nodekind_isreftype(assertnotnull(t)->kind) ||
+         nodekind_isslicetype(t->kind);
+}
 inline static bool type_isprim(const type_t* nullable t) {  // void, bool, int, u8, ...
   return nodekind_isprimtype(assertnotnull(t)->kind); }
 inline static bool type_isopt(const type_t* nullable t) {  // ?T
@@ -876,15 +904,15 @@ const char* syslib_filename(const target_t* target, syslib_t);
 // pos
 static void locmap_dispose(locmap_t* lm, memalloc_t ma);
 inline static void locmap_clear(locmap_t* lm) { lm->len = 0; }
-u32 locmap_inputid(locmap_t* lm, input_t*, memalloc_t); // get input id for source
+u32 locmap_srcfileid(locmap_t* lm, srcfile_t*, memalloc_t); // get id for source file
 
 static loc_t loc_make(u32 inputid, u32 line, u32 col, u32 width);
 
-static input_t* nullable loc_input(loc_t p, const locmap_t*);
+static srcfile_t* nullable loc_srcfile(loc_t p, const locmap_t*);
 static u32 loc_line(loc_t p);
 static u32 loc_col(loc_t p);
 static u32 loc_width(loc_t p);
-static u32 loc_inputid(loc_t p); // key for locmap_t; 0 for pos without input
+static u32 loc_srcfileid(loc_t p); // key for locmap_t; 0 for pos without input
 
 static loc_t loc_with_inputid(loc_t p, u32 inputid); // copy of p with specific inputid
 static loc_t loc_with_line(loc_t p, u32 line);       // copy of p with specific line
@@ -903,7 +931,7 @@ loc_t loc_union(loc_t a, loc_t b); // a and b must be on the same line
 
 static loc_t loc_min(loc_t a, loc_t b);
 static loc_t loc_max(loc_t a, loc_t b);
-inline static bool loc_isknown(loc_t p) { return !!(loc_inputid(p) | loc_line(p)); }
+inline static bool loc_isknown(loc_t p) { return !!(loc_srcfileid(p) | loc_line(p)); }
 
 // p is {before,after} q in same input
 inline static bool loc_isbefore(loc_t p, loc_t q) { return p < q; }
@@ -928,35 +956,36 @@ origin_t origin_union(origin_t a, origin_t b);
 // Limits: inputs: 1048575, lines: 1048575, columns: 4095, width: 4095
 // If this is too tight, we can either make lico 64b wide, or we can introduce a
 // tiered encoding where we remove column information as line numbers grow bigger.
-static const u64 _loc_widthBits   = 12;
-static const u64 _loc_colBits     = 12;
-static const u64 _loc_lineBits    = 20;
-static const u64 _loc_inputidBits = 64 - _loc_lineBits - _loc_colBits - _loc_widthBits;
+static const u64 _loc_widthBits     = 12;
+static const u64 _loc_colBits       = 12;
+static const u64 _loc_lineBits      = 20;
+static const u64 _loc_srcfileidBits = 64 - _loc_lineBits - _loc_colBits - _loc_widthBits;
 
-static const u64 _loc_inputidMax = (1llu << _loc_inputidBits) - 1;
-static const u64 _loc_lineMax    = (1llu << _loc_lineBits) - 1;
-static const u64 _loc_colMax     = (1llu << _loc_colBits) - 1;
-static const u64 _loc_widthMax   = (1llu << _loc_widthBits) - 1;
+static const u64 _loc_srcfileidMax = (1llu << _loc_srcfileidBits) - 1;
+static const u64 _loc_lineMax      = (1llu << _loc_lineBits) - 1;
+static const u64 _loc_colMax       = (1llu << _loc_colBits) - 1;
+static const u64 _loc_widthMax     = (1llu << _loc_widthBits) - 1;
 
-static const u64 _loc_inputidShift = _loc_inputidBits + _loc_colBits + _loc_widthBits;
-static const u64 _loc_lineShift    = _loc_colBits + _loc_widthBits;
-static const u64 _loc_colShift     = _loc_widthBits;
+static const u64 _loc_srcfileidShift =
+  _loc_srcfileidBits + _loc_colBits + _loc_widthBits;
+static const u64 _loc_lineShift = _loc_colBits + _loc_widthBits;
+static const u64 _loc_colShift  = _loc_widthBits;
 
 
 inline static loc_t loc_make_unchecked(u32 inputid, u32 line, u32 col, u32 width) {
-  return (loc_t)( ((loc_t)inputid << _loc_inputidShift)
+  return (loc_t)( ((loc_t)inputid << _loc_srcfileidShift)
               | ((loc_t)line << _loc_lineShift)
               | ((loc_t)col << _loc_colShift)
               | width );
 }
 inline static loc_t loc_make(u32 inputid, u32 line, u32 col, u32 width) {
   return loc_make_unchecked(
-    MIN(_loc_inputidMax, inputid),
+    MIN(_loc_srcfileidMax, inputid),
     MIN(_loc_lineMax, line),
     MIN(_loc_colMax, col),
     MIN(_loc_widthMax, width));
 }
-inline static u32 loc_inputid(loc_t p) { return p >> _loc_inputidShift; }
+inline static u32 loc_srcfileid(loc_t p) { return p >> _loc_srcfileidShift; }
 inline static u32 loc_line(loc_t p)    { return (p >> _loc_lineShift) & _loc_lineMax; }
 inline static u32 loc_col(loc_t p)     { return (p >> _loc_colShift) & _loc_colMax; }
 inline static u32 loc_width(loc_t p)   { return p & _loc_widthMax; }
@@ -964,27 +993,27 @@ inline static u32 loc_width(loc_t p)   { return p & _loc_widthMax; }
 // TODO: improve the efficiency of these
 inline static loc_t loc_with_inputid(loc_t p, u32 inputid) {
   return loc_make_unchecked(
-    MIN(_loc_inputidMax, inputid), loc_line(p), loc_col(p), loc_width(p));
+    MIN(_loc_srcfileidMax, inputid), loc_line(p), loc_col(p), loc_width(p));
 }
 inline static loc_t loc_with_line(loc_t p, u32 line) {
   return loc_make_unchecked(
-    loc_inputid(p), MIN(_loc_lineMax, line), loc_col(p), loc_width(p));
+    loc_srcfileid(p), MIN(_loc_lineMax, line), loc_col(p), loc_width(p));
 }
 inline static loc_t loc_with_col(loc_t p, u32 col) {
   return loc_make_unchecked(
-    loc_inputid(p), loc_line(p), MIN(_loc_colMax, col), loc_width(p));
+    loc_srcfileid(p), loc_line(p), MIN(_loc_colMax, col), loc_width(p));
 }
 inline static loc_t loc_with_width(loc_t p, u32 width) {
   return loc_make_unchecked(
-    loc_inputid(p), loc_line(p), loc_col(p), MIN(_loc_widthMax, width));
+    loc_srcfileid(p), loc_line(p), loc_col(p), MIN(_loc_widthMax, width));
 }
 
 inline static void loc_set_line(loc_t* p, u32 line) { *p = loc_with_line(*p, line); }
 inline static void loc_set_col(loc_t* p, u32 col) { *p = loc_with_col(*p, col); }
 inline static void loc_set_width(loc_t* p, u32 width) { *p = loc_with_width(*p, width); }
 
-inline static input_t* nullable loc_input(loc_t p, const locmap_t* lm) {
-  u32 id = loc_inputid(p);
+inline static srcfile_t* nullable loc_srcfile(loc_t p, const locmap_t* lm) {
+  u32 id = loc_srcfileid(p);
   return lm->len > id ? lm->v[id] : NULL;
 }
 
@@ -998,7 +1027,7 @@ inline static loc_t loc_max(loc_t a, loc_t b) {
 }
 
 inline static void locmap_dispose(locmap_t* lm, memalloc_t ma) {
-  array_dispose(input_t*, (array_t*)lm, ma);
+  array_dispose(srcfile_t*, (array_t*)lm, ma);
 }
 
 

@@ -34,6 +34,10 @@ err_t dirwalk_next(dirwalk_t*);
 // Results are cached and may have been updated by dirwalk_next.
 struct stat* dirwalk_lstat(dirwalk_t*);
 
+// dirwalk_stat returns status of the current entry, resolving any symlinks.
+// Results are cached and may have been updated by dirwalk_next.
+struct stat* dirwalk_stat(dirwalk_t*);
+
 // dirwalk_descend requests that the current entry be visited.
 // Note: Has no effect unless type==S_IFDIR
 void dirwalk_descend(dirwalk_t*);

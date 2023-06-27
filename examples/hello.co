@@ -1,0 +1,5 @@
+pub "c" fun panic(str) void
+
+fun main() {
+  panic("hi")
+}

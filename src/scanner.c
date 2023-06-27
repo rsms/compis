@@ -38,13 +38,14 @@ void scanner_dispose(scanner_t* s) {
 }
 
 
-void scanner_set_input(scanner_t* s, input_t* input) {
-  s->input = input;
-  s->inp = input->data.p;
-  s->inend = input->data.p + input->data.size;
-  s->linestart = input->data.p;
-  u32 input_loc_inputid = locmap_inputid(&s->compiler->locmap, input, s->compiler->ma);
-  s->loc = loc_make(input_loc_inputid, 1, 1, 1);
+void scanner_begin(scanner_t* s, srcfile_t* srcfile) {
+  assert(srcfile->size == 0 || srcfile->data != NULL);
+  s->srcfile = srcfile;
+  s->inp = srcfile->data;
+  s->inend = srcfile->data + srcfile->size;
+  s->linestart = srcfile->data;
+  u32 loc_srcfileid = locmap_srcfileid(&s->compiler->locmap, srcfile, s->compiler->ma);
+  s->loc = loc_make(loc_srcfileid, 1, 1, 1);
   s->lineno = 1;
 }
 

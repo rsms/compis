@@ -17,24 +17,12 @@
 #include <string.h> // XXX
 
 
-static void set_cstr(memalloc_t ma, char*nullable* dst, slice_t src) {
-  mem_freecstr(ma, *dst);
-  *dst = mem_strdup(ma, src, 0);
-  safecheck(*dst);
-}
-
-
-void compiler_set_pkgname(compiler_t* c, const char* pkgname) {
-  set_cstr(c->ma, &c->pkgname, slice_cstr(pkgname));
-}
-
-
-void compiler_init(compiler_t* c, memalloc_t ma, diaghandler_t dh, const char* pkgname) {
+void compiler_init(compiler_t* c, memalloc_t ma, diaghandler_t dh, pkg_t* pkg) {
   memset(c, 0, sizeof(*c));
   c->ma = ma;
+  c->pkg = pkg;
   c->diaghandler = dh;
   buf_init(&c->diagbuf, c->ma);
-  compiler_set_pkgname(c, pkgname);
   if (!map_init(&c->typeidmap, c->ma, 16))
     panic("out of memory");
 }
@@ -49,7 +37,6 @@ void compiler_dispose(compiler_t* c) {
   mem_freecstr(c->ma, c->builddir);
   mem_freecstr(c->ma, c->sysroot);
   mem_freecstr(c->ma, c->pkgbuilddir);
-  mem_freecstr(c->ma, c->pkgname);
 }
 
 
@@ -140,7 +127,7 @@ static const char* buildmode_name(buildmode_t m) {
 
 static err_t configure_builddir(compiler_t* c, const compiler_config_t* config) {
   // builddir    = {buildroot}/{mode}-{target}
-  // pkgbuilddir = {builddir}/{pkgname}.pkg
+  // pkgbuilddir = {builddir}/{pkg.name}.pkg
 
   mem_freecstr(c->ma, c->buildroot);
   if (!( c->buildroot = path_abs(config->buildroot).p ))
@@ -176,17 +163,16 @@ static err_t configure_builddir(compiler_t* c, const compiler_config_t* config) 
 
   // pkgbuilddir
   mem_freecstr(c->ma, c->pkgbuilddir);
-  slice_t pkgname = slice_cstr(c->pkgname);
   slice_t suffix = slice_cstr(".copkg");
   slice_t builddir = { .p = c->builddir, .len = len };
-  usize pkgbuilddir_len = len + 1 + pkgname.len + suffix.len;
+  usize pkgbuilddir_len = len + 1 + c->pkg->name.len + suffix.len;
   c->pkgbuilddir = mem_alloctv(c->ma, char, pkgbuilddir_len + 1);
   if (!c->pkgbuilddir)
     return ErrNoMem;
   p = c->pkgbuilddir;
   APPEND(builddir);
   *p++ = PATH_SEPARATOR;
-  APPEND(pkgname);
+  APPEND(c->pkg->name);
   APPEND(suffix);
   *p = 0;
 
@@ -392,7 +378,7 @@ static bool fqn_recv(const compiler_t* c, buf_t* buf, const type_t* recv) {
 
 static bool fqn_fun(const compiler_t* c, buf_t* buf, const fun_t* fn) {
   if (fn->abi == ABI_CO) {
-    buf_print(buf, c->pkgname);
+    buf_append(buf, c->pkg->name.p, c->pkg->name.len);
     buf_push(buf, '.');
     if (fn->recvt) {
       fqn_recv(c, buf, fn->recvt);
@@ -565,17 +551,17 @@ static err_t cc_to_obj_main(compiler_t* c, const char* cfile, const char* ofile)
 
 
 static err_t cc_to_obj_async(
-  compiler_t* c, subprocs_t* sp, const char* cfile, const char* ofile)
+  compiler_t* c, subprocs_t* sp, const char* wdir, const char* cfile, const char* ofile)
 {
   subproc_t* p = subprocs_alloc(sp);
   if (!p)
     return ErrNoMem;
-  return subproc_fork(p, cc_to_obj_main, /*cwd*/NULL, c, cfile, ofile);
+  return subproc_fork(p, cc_to_obj_main, wdir, c, cfile, ofile);
 }
 
 
 static err_t cc_to_asm_async(
-  compiler_t* c, subprocs_t* sp, const char* cfile, const char* ofile)
+  compiler_t* c, subprocs_t* sp, const char* wdir, const char* cfile, const char* ofile)
 {
   subproc_t* p = subprocs_alloc(sp);
   if (!p)
@@ -587,7 +573,7 @@ static err_t cc_to_asm_async(
   if (!buf_nullterm(&asmfile))
     return ErrNoMem;
 
-  return subproc_fork(p, cc_to_asm_main, /*cwd*/NULL, c, cfile, asmfile.chars);
+  return subproc_fork(p, cc_to_asm_main, wdir, c, cfile, asmfile.chars);
 }
 
 
@@ -603,7 +589,7 @@ static err_t dump_ast(const node_t* ast) {
 }
 
 
-static err_t compile_co_to_c(compiler_t* c, input_t* input, const char* cfile) {
+static err_t compile_co_to_c(compiler_t* c, srcfile_t* srcfile, const char* cfile) {
   u32 errcount = c->errcount;
   err_t err = 0;
   bool printed_trace_ast = false;
@@ -618,15 +604,21 @@ static err_t compile_co_to_c(compiler_t* c, input_t* input, const char* cfile) {
   parser_t parser;
   if (!parser_init(&parser, c)) {
     err = ErrNoMem;
-    goto end;
+    goto end1;
+  }
+
+  // open source file for reading
+  if (( err = srcfile_open(srcfile) )) {
+    elog("%s: %s", srcfile->name.p, err_str(err));
+    goto end2;
   }
 
   // parse
   dlog_if(opt_trace_parse, "————————— parse —————————");
-  unit_t* unit = parser_parse(&parser, ast_ma, input);
+  unit_t* unit = parser_parse(&parser, ast_ma, srcfile);
   if (c->errcount > errcount) {
     err = ErrCanceled;
-    goto end_parser;
+    goto end3;
   }
   if (opt_trace_parse && c->opt_printast) {
     dlog("————————— AST after parse —————————");
@@ -637,10 +629,10 @@ static err_t compile_co_to_c(compiler_t* c, input_t* input, const char* cfile) {
   // typecheck
   dlog_if(opt_trace_typecheck, "————————— typecheck —————————");
   if (( err = typecheck(&parser, unit) ))
-    goto end_parser;
+    goto end3;
   if (c->errcount > errcount) {
     err = ErrCanceled;
-    goto end_parser;
+    goto end3;
   }
   if (opt_trace_typecheck && c->opt_printast) {
     dlog("————————— AST after typecheck —————————");
@@ -655,11 +647,11 @@ static err_t compile_co_to_c(compiler_t* c, input_t* input, const char* cfile) {
   memalloc_t ir_ma = ast_ma;
   if (( err = analyze(c, unit, ir_ma) )) {
     dlog("IR analyze: err=%s", err_str(err));
-    goto end_parser;
+    goto end3;
   }
   if (c->errcount > errcount) {
     err = ErrCanceled;
-    goto end_parser;
+    goto end3;
   }
 
   // print AST, if requested
@@ -674,26 +666,28 @@ static err_t compile_co_to_c(compiler_t* c, input_t* input, const char* cfile) {
   dlog_if(opt_trace_cgen, "————————— cgen —————————");
   cgen_t g;
   if (!cgen_init(&g, c, c->ma))
-    goto end_parser;
+    goto end3;
   err = cgen_generate(&g, unit);
   if (!err) {
     if (opt_trace_cgen) {
       fprintf(stderr, "——————————\n%.*s\n——————————\n",
         (int)g.outbuf.len, g.outbuf.chars);
     }
-    dlog("cgen %s -> %s", input->name, cfile);
+    dlog("cgen %s -> %s", srcfile->name.p, cfile);
     err = fs_writefile(cfile, 0660, buf_slice(g.outbuf));
   }
   cgen_dispose(&g);
 
 
-end_parser:
+end3:
+  srcfile_close(srcfile);
   if (c->opt_printast) {
     // in case an error occurred, print AST "what we have so far"
     dump_ast((node_t*)unit);
   }
+end2:
   parser_dispose(&parser);
-end:
+end1:
   mem_free(c->ma, &ast_mem);
   if (c->errcount > errcount && !err)
     err = ErrCanceled;
@@ -702,7 +696,7 @@ end:
 
 
 #if 0
-  static err_t fmt_ofile(compiler_t* c, input_t* input, buf_t* ofile) {
+  static err_t fmt_ofile(compiler_t* c, srcfile_t* srcfile, buf_t* ofile) {
     u8 sha256[32];
     usize needlen = strlen(c->pkgbuilddir) + 1 + sizeof(sha256)*2 + 2; // pkgbuilddir/sha256.o
     for (;;) {
@@ -714,7 +708,7 @@ end:
       abuf_c(&s, PATH_SEPARATOR);
 
       // compute SHA-256 checksum of input file
-      sha256_data(sha256, input->data.p, input->data.size);
+      sha256_data(sha256, srcfile->data.p, srcfile->data.size);
       abuf_reprhex(&s, sha256, sizeof(sha256), /*spaced*/false);
 
       abuf_str(&s, ".o");
@@ -726,45 +720,42 @@ end:
       needlen = n+1;
     }
   }
-#else
-  static err_t fmt_ofile(compiler_t* c, input_t* input, buf_t* ofile) {
+#elif 0
+  static err_t fmt_ofile(compiler_t* c, srcfile_t* srcfile, buf_t* ofile) {
     // {pkgbuilddir}/{input_basename}.o
-    // note that pkgbuilddir includes pkgname
+    // note that pkgbuilddir includes pkg->name
     buf_clear(ofile);
     buf_print(ofile, c->pkgbuilddir);
     buf_push(ofile, PATH_SEPARATOR);
-
-    isize p = slastindexof(input->name, PATH_SEPARATOR);
-    buf_print(ofile, p != -1 ? &input->name[p + 1] : input->name);
+    buf_print(ofile, path_base(srcfile->name.p));
     buf_print(ofile, ".o");
-
     return buf_nullterm(ofile) ? 0 : ErrNoMem;
   }
 #endif
 
 
-err_t compiler_compile(compiler_t* c, promise_t* promise, input_t* input, buf_t* ofile) {
-  err_t err = fmt_ofile(c, input, ofile);
-  if (err)
-    return err;
+err_t compiler_compile(
+  compiler_t* c, promise_t* promise, srcfile_t* srcfile, const char* ofile)
+{
+  err_t err = 0;
 
   // C source file path
   buf_t cfile = buf_make(c->ma);
 
   // do different things depending on the input type
-  switch (input->type) {
+  switch (srcfile->type) {
 
-  case FILE_C: // C (cfile == input->name)
-    if (!buf_append(&cfile, input->name, strlen(input->name) + 1))
+  case FILE_C: // C (cfile == srcfile->name)
+    if (!buf_append(&cfile, srcfile->name.p, srcfile->name.len + 1))
       err = ErrNoMem;
     break;
 
   case FILE_CO: // co (co => cfile)
-    if (!buf_append(&cfile, ofile->p, ofile->len + 1)) {
+    if (!buf_append(&cfile, ofile, strlen(ofile) + 1)) {
       err = ErrNoMem;
     } else {
       cfile.chars[cfile.len - 2] = 'c'; // /foo/bar.o\0 -> /foo/bar.c\0
-      err = compile_co_to_c(c, input, cfile.chars);
+      err = compile_co_to_c(c, srcfile, cfile.chars);
     }
     break;
 
@@ -773,7 +764,7 @@ err_t compiler_compile(compiler_t* c, promise_t* promise, input_t* input, buf_t*
   //   break;
 
   default:
-    log("%s: unrecognized file type", input->name);
+    log("%s: unrecognized file type", srcfile->name.p);
     err = ErrNotSupported;
   }
 
@@ -787,15 +778,18 @@ err_t compiler_compile(compiler_t* c, promise_t* promise, input_t* input, buf_t*
     goto end;
   }
 
+  // working directory for subprocesses
+  const char* wdir = srcfile->pkg->dir.p;
+
   // compile C -> object
-  err = cc_to_obj_async(c, subprocs, cfile.chars, ofile->chars);
+  err = cc_to_obj_async(c, subprocs, wdir, cfile.chars, ofile);
   if (err) {
     subprocs_cancel(subprocs);
     goto end;
   }
 
   if (c->opt_genasm) {
-    err = cc_to_asm_async(c, subprocs, cfile.chars, ofile->chars);
+    err = cc_to_asm_async(c, subprocs, wdir, cfile.chars, ofile);
     if (err) {
       subprocs_cancel(subprocs);
       goto end;

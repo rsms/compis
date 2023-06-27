@@ -3,21 +3,21 @@
 #include "compiler.h"
 
 
-u32 locmap_inputid(locmap_t* lm, input_t* input, memalloc_t ma) {
-  assertnotnull(input);
+u32 locmap_srcfileid(locmap_t* lm, srcfile_t* sf, memalloc_t ma) {
+  assertnotnull(sf);
   for (u32 i = 1; i < lm->len; i++) {
-    if (lm->v[i] == input)
+    if (lm->v[i] == sf)
       return i;
   }
   if (lm->len == 0) {
-    if UNLIKELY(!array_reserve(input_t*, (array_t*)lm, ma, 8))
+    if UNLIKELY(!array_reserve(srcfile_t*, (array_t*)lm, ma, 8))
       return 0;
     lm->v[0] = NULL;
-    lm->v[1] = input;
+    lm->v[1] = sf;
     lm->len = 2;
     return 1;
   }
-  if UNLIKELY(!array_push(input_t*, (array_t*)lm, ma, input))
+  if UNLIKELY(!array_push(srcfile_t*, (array_t*)lm, ma, sf))
     return 0;
   return lm->len - 1;
 }
@@ -28,7 +28,7 @@ loc_t loc_adjuststart(loc_t p, i32 deltacol) {
   i32 w = (i32)loc_width(p);
   deltacol = (deltacol > 0) ? MIN(deltacol, w) : MAX(deltacol, -c);
   return loc_make_unchecked(
-    loc_inputid(p),
+    loc_srcfileid(p),
     loc_line(p),
     (u32)(c + deltacol),
     (u32)(w - deltacol)
@@ -58,22 +58,22 @@ loc_t loc_union(loc_t a, loc_t b) {
   if (bstart > aend)
     aend = bstart;
   w = aend - c + bw;
-  return loc_make_unchecked(loc_inputid(a), loc_line(a), c, w);
+  return loc_make_unchecked(loc_srcfileid(a), loc_line(a), c, w);
 }
 
 
 usize loc_fmt(loc_t p, char* buf, usize bufcap, const locmap_t* lm) {
-  input_t* input = loc_input(p, lm);
-  if (input && loc_line(p) == 0)
-    return snprintf(buf, bufcap, "%s", input->name);
+  srcfile_t* sf = loc_srcfile(p, lm);
+  if (sf && loc_line(p) == 0)
+    return snprintf(buf, bufcap, "%s", sf->name.p);
   return snprintf(buf, bufcap, "%s:%u:%u",
-    input ? input->name : "<input>", loc_line(p), loc_col(p));
+    sf ? sf->name.p : "<input>", loc_line(p), loc_col(p));
 }
 
 
 origin_t _origin_make2(const locmap_t* m, loc_t loc) {
   return (origin_t){
-    .input = loc_input(loc, m),
+    .file = loc_srcfile(loc, m),
     .line = loc_line(loc),
     .column = loc_col(loc),
     .width = loc_width(loc),
@@ -82,7 +82,7 @@ origin_t _origin_make2(const locmap_t* m, loc_t loc) {
 
 origin_t _origin_make3(const locmap_t* m, loc_t loc, u32 focus_col) {
   return (origin_t){
-    .input = loc_input(loc, m),
+    .file = loc_srcfile(loc, m),
     .line = loc_line(loc),
     .column = loc_col(loc),
     .width = loc_width(loc),
@@ -120,13 +120,13 @@ origin_t _origin_make3(const locmap_t* m, loc_t loc, u32 focus_col) {
 
 
 origin_t origin_union(origin_t a, origin_t b) {
-  if (!a.input) {
-    a.input = b.input;
-  } else if (!b.input) {
-    b.input = a.input;
+  if (!a.file) {
+    a.file = b.file;
+  } else if (!b.file) {
+    b.file = a.file;
   }
 
-  if (a.line != b.line || a.input != b.input) {
+  if (a.line != b.line || a.file != b.file) {
     // origin_t can't express spans across lines (for now)
     return a.line ? a : b;
   }

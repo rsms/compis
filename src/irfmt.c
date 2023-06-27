@@ -112,9 +112,9 @@ static void val(fmtctx_t* ctx, const irval_t* v, bool isdot) {
 
   if (loc_line(v->loc)) {
     TABULATE(start, COMMENT_COL + 25);
-    input_t* input = loc_input(v->loc, &ctx->c->locmap);
-    if (input) {
-      PRINTF(" %s:%u:%u", input->name, loc_line(v->loc), loc_col(v->loc));
+    srcfile_t* sf = loc_srcfile(v->loc, &ctx->c->locmap);
+    if (sf) {
+      PRINTF(" %s:%u:%u", sf->name.p, loc_line(v->loc), loc_col(v->loc));
     } else {
       PRINTF(" %u:%u", loc_line(v->loc), loc_col(v->loc));
     }
@@ -188,7 +188,7 @@ static void fun(fmtctx_t* ctx, const irfun_t* f) {
     node_fmt(&ctx->out, (node_t*)ft->result, 0);
   } else {
     // best effort; name will be wrong for type functions (missing recvt)
-    PRINTF("%s.%s(", ctx->c->pkgname, f->name);
+    PRINTF("%s.%s(", ctx->c->pkg->name.p, f->name);
     if (f->blocks.len) {
       const irblock_t* b = f->blocks.v[0];
       for (u32 i = 0, n = 0; i < b->values.len; i++) {

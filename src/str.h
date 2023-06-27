@@ -32,7 +32,8 @@ bool str_push(str_t*, char c);
 // copies one or more c-strings to the end of s
 #define str_append(s, adds...) __VARG_DISP(_str_append, s, adds)
 
-// str_appendlen appends len characters from src to s, plus a terminating null char.
+// str_appendlen appends len characters from src to end of s,
+// plus a terminating null char.
 // Caution: Does not check if src contains null characters.
 bool str_appendlen(str_t*, const char* src, usize len);
 
@@ -42,6 +43,16 @@ bool str_appendv(str_t*, char glue, usize count, va_list ap);
 
 // str_appendstrings calls str_appendv with 'count' input strings
 bool str_appendstrings(str_t* s, char glue, usize count, ...);
+
+// str_prependlen appends src characters from src to beginning of s.
+// Ensures that s is terminated with a null char.
+// Caution: Does not check if src contains null characters.
+bool str_prependlen(str_t* s, const char* src, usize len);
+
+inline static bool str_startswith(str_t s, const char* prefix) {
+  usize prefixlen = strlen(prefix);
+  return s.len >= prefixlen && memcmp(s.p, prefix, prefixlen) == 0;
+}
 
 // str_slice returns a slice_t of a str_t
 // 1. slice_t str_slice(const str_t s)

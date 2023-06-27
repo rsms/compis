@@ -1165,7 +1165,7 @@ static irval_t* move(
 
 
 static irval_t* reference(ircons_t* c, irval_t* rvalue, loc_t loc) {
-  op_t op = ((reftype_t*)rvalue->type)->kind == TYPE_MUTREF ? OP_BORROW_MUT : OP_BORROW;
+  op_t op = ((reftype_t*)rvalue->type)->kind == TYPE_MUTREF ? OP_MUTREF : OP_REF;
   irval_t* v = pushval(c, c->b, op, loc, rvalue->type);
   pusharg(v, rvalue);
   return v;
@@ -1400,7 +1400,7 @@ static irval_t* call(ircons_t* c, call_t* n) {
 
   irval_t* recv = load_expr(c, n->recv);
 
-  irval_t* v = pushval(c, c->b, OP_CALL, n->loc, n->type);
+  irval_t* v = mkval(c, OP_CALL, n->loc, n->type);
   pusharg(v, recv);
 
   for (u32 i = 0; i < n->args.len; i++) {
@@ -1412,6 +1412,9 @@ static irval_t* call(ircons_t* c, call_t* n) {
     //   arg_v = move_or_copy(c, arg_v, arg->loc, NULL);
     pusharg(v, arg_v);
   }
+
+  if UNLIKELY(!ptrarray_push(&c->b->values, c->ir_ma, v))
+    out_of_mem(c);
 
   if (type_isowner(v->type))
     owners_add(c, v);
@@ -1781,6 +1784,14 @@ static irval_t* binop(ircons_t* c, binop_t* n) {
 }
 
 
+static irval_t* prefixop(ircons_t* c, unaryop_t* n) {
+  irval_t* expr  = load_expr(c, n->expr);
+  irval_t* v = pushval(c, c->b, n->op, n->loc, n->type);
+  pusharg(v, expr);
+  return v;
+}
+
+
 static irval_t* intlit(ircons_t* c, intlit_t* n) {
   return intconst(c, n->type, n->intval, n->loc);
 }
@@ -1803,7 +1814,7 @@ static irval_t* arraylit(ircons_t* c, arraylit_t* n) {
       vv = move_or_copy(c, vv, cn->loc, NULL);
     pusharg(v, vv);
   }
-  comment(c, v, "arraylit");
+  comment(c, v, "");
   return v;
 }
 
@@ -2106,6 +2117,7 @@ static irval_t* expr(ircons_t* c, void* expr_node) {
   switch ((enum nodekind)n->kind) {
   case EXPR_ASSIGN:    return assign(c, (binop_t*)n);
   case EXPR_BINOP:     return binop(c, (binop_t*)n);
+  case EXPR_PREFIXOP:  return prefixop(c, (unaryop_t*)n);
   case EXPR_BLOCK:     return blockexpr(c, (block_t*)n);
   case EXPR_CALL:      return call(c, (call_t*)n);
   case EXPR_TYPECONS:  return typecons(c, (typecons_t*)n);
@@ -2138,7 +2150,6 @@ static irval_t* expr(ircons_t* c, void* expr_node) {
     return param(c, (local_t*)n);
 
   // TODO
-  case EXPR_PREFIXOP:  // return prefixop(c, (unaryop_t*)n);
   case EXPR_POSTFIXOP: // return postfixop(c, (unaryop_t*)n);
   case EXPR_FOR:
     irval_t* v = push_TODO_val(c, c->b, type_void, "expr(%s)", nodekind_name(n->kind));

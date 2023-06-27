@@ -502,14 +502,16 @@ static expr_t* mkretexpr(typecheck_t* a, expr_t* value, loc_t loc) {
 
 static char* mangle(typecheck_t* a, const node_t* n) {
   buf_t* buf = tmpbuf_get(0);
-  compiler_mangle(a->compiler, buf, n);
-  char* s = mem_strdup(a->ast_ma, buf_slice(*buf), 0);
-  if UNLIKELY(!s) {
-    out_of_mem(a);
-    static char last_resort[1] = {0};
-    s = last_resort;
+  if UNLIKELY(!compiler_mangle(a->compiler, buf, n)) {
+    dlog("compiler_mangle failed");
+  } else {
+    char* s = mem_strdup(a->ast_ma, buf_slice(*buf), 0);
+    if (s)
+      return s;
   }
-  return s;
+  out_of_mem(a);
+  static char last_resort[1] = {0};
+  return last_resort;
 }
 
 
@@ -716,7 +718,13 @@ static void implicit_rvalue_deref(typecheck_t* a, const type_t* ltype, expr_t** 
   expr_t* rval = *rvalp;
   ltype = unwrap_alias_const(ltype);
   const type_t* rtype = unwrap_alias(rval->type);
-  if (!type_isref(ltype) && type_isref(rtype))
+
+  // dlog("%s ltype: %s (kind %s, isreflike %d), rtype: %s (kind %s, isreflike %d)",
+  //   __FUNCTION__,
+  //   fmtnode(a, 0, ltype), nodekind_name(ltype->kind), type_isreflike(ltype),
+  //   fmtnode(a, 1, rtype), nodekind_name(rtype->kind), type_isreflike(rtype) );
+
+  if (!type_isreflike(ltype) && type_isreflike(rtype))
     *rvalp = mkderef(a, rval, rval->loc);
 }
 
@@ -1146,8 +1154,7 @@ static void fun(typecheck_t* a, fun_t* n) {
     // is this the "main.main" function?
     if (!n->recvt &&
         n->name == sym_main &&
-        assertnotnull(n->nsparent)->kind == NODE_UNIT &&
-        strcmp(a->compiler->pkgname, "main") == 0 )
+        assertnotnull(n->nsparent)->kind == NODE_UNIT)
     {
       main_fun(a, n);
     }
@@ -1516,25 +1523,25 @@ static void binop(typecheck_t* a, binop_t* n) {
 
 
 static void unaryop(typecheck_t* a, unaryop_t* n) {
+  incuse(n->expr);
   expr(a, n->expr);
 
   if (n->type->kind == TYPE_UNRESOLVED || n->type == type_unknown)
     n->type = n->expr->type;
 
-  // TODO: create dedicated EXPR_REF refexpr_t for "&expr"
-  //       since the semantics are different from e.g. "!expr"
-
   switch (n->op) {
-    case OP_AND:
-      assert(n->type->kind == TYPE_REF);
-      // if (n->type->kind != TYPE_REF)
-      //   n->type = (type_t*)mkreftype(a, n->type, /*ismut*/false);
+    case OP_REF:
+    case OP_MUTREF:
+      n->type = (type_t*)mkreftype(a, n->expr->type, n->op == OP_MUTREF);
       break;
     case OP_INC:
     case OP_DEC:
       // TODO: specialized check here since it's not actually assignment
       // (ownership et al)
       check_assign(a, n->expr);
+      break;
+    default:
+      assertf(0, "unexpected unaryop %s", op_name(n->op));
       break;
   }
 }

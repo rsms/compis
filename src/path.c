@@ -13,13 +13,12 @@ static usize initcwd_len = 0;
 void relpath_init() {
   getcwd(initcwd, sizeof(initcwd));
   initcwd_len = strlen(initcwd);
-  if (initcwd_len > 1)
-    initcwd[initcwd_len++] = '/';
+  initcwd[initcwd_len++] = PATH_SEP;
 }
 
 
 const char* relpath(const char* path) {
-  if (*path == 0 || *path != '/')
+  if (*path == 0 || *path != PATH_SEP)
     return path;
   usize len = strlen(path);
   if (len == initcwd_len-1) {
@@ -187,6 +186,14 @@ end:
 }
 
 
+bool path_clean(str_t* path) {
+  if UNLIKELY(path->len == 0)
+    return str_push(path, '.');
+  path->len = path_cleanx(path->p, path->cap, path->p, path->len);
+  return true;
+}
+
+
 str_t path_joinv(usize count, va_list ap) {
   str_t s = {0};
   if LIKELY(str_appendv(&s, PATH_SEP, count, ap)) {
@@ -219,4 +226,68 @@ str_t path_abs(const char* path) {
   }
   char cwd[PATH_MAX];
   return path_join(getcwd(cwd, sizeof(cwd)), path);
+}
+
+
+bool path_makeabs(str_t* path) {
+  bool ok = path_clean(path);
+  if (path_isabs(path->p))
+    return ok;
+  // note: initcwd[initcwd_len-1] is always PATH_SEP
+  return str_prependlen(path, initcwd, initcwd_len);
+}
+
+
+str_t path_cwd() {
+  char cwd[PATH_MAX];
+  return str_make(getcwd(cwd, sizeof(cwd)));
+}
+
+
+char** nullable path_parselist(memalloc_t ma, const char* pathlist) {
+  usize len = strlen(pathlist);
+  usize count = 0;
+  usize strcap = 0;
+
+  for (usize start = 0, end = 0; ; end++) {
+    if (end != len && pathlist[end] != PATH_DELIMITER)
+      continue;
+    if (end - start) {
+      // dlog(">> '%.*s'", (int)(end - start), &pathlist[start]);
+      strcap += (end - start) + 1;
+      count++;
+    }
+    if (end == len)
+      break;
+    start = end + 1;
+  }
+
+  usize arraysize = sizeof(void*) * (count + 1);
+
+  char** slist = mem_alloc(ma, arraysize + strcap).p;
+  if UNLIKELY(slist == NULL)
+    return NULL;
+
+  char** slistp = slist;
+
+  // strings are stored after pointer array
+  char* strv = (void*)slist + arraysize;
+  char* strp = strv;
+
+  for (usize start = 0, end = 0; ; end++) {
+    if (end != len && pathlist[end] != PATH_DELIMITER)
+      continue;
+    if (end - start) {
+      *slistp++ = strp;
+      memcpy(strp, &pathlist[start], end - start);
+      strp += end - start;
+      *strp++ = 0;
+    }
+    if (end == len)
+      break;
+    start = end + 1;
+  }
+
+  *slistp = NULL;
+  return slist;
 }

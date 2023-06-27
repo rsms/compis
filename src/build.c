@@ -4,11 +4,12 @@
 #include "compiler.h"
 #include "subproc.h"
 #include "bgtask.h"
+#include "dirwalk.h"
+#include "sha256.h"
 
 #include <stdlib.h> // exit
 #include <unistd.h> // getopt
 #include <string.h> // strdup
-#include <sys/stat.h>
 #include <err.h>
 #include <errno.h>
 #include <getopt.h>
@@ -78,17 +79,26 @@ static const char* opt_builddir = "build";
 static void help(const char* prog) {
   printf(
     "Compis " CO_VERSION_STR ", your friendly neighborhood compiler\n"
-    "Usage: %s %s [options] [--] <source> ...\n"
+    "Usage: %s %s [options] [--] <package>\n"
+    "       %s %s [options] [--] <sourcedir>\n"
+    "       %s %s [options] [--] <sourcefile> ...\n"
     "Options:\n"
     "",
-    coprogname,
-    prog);
+    coprogname, prog,
+    coprogname, prog,
+    coprogname, prog);
   print_options();
   exit(0);
 }
 
+typedef enum {
+  PRODKIND_NONE = 0, // just compile (--no-link)
+  PRODKIND_LIB  = 1, // library
+  PRODKIND_EXE  = 2, // executable
+} prodkind_t;
 
-static err_t build_exe(char*const* srcfilev, usize filecount);
+
+static err_t build_pkg(pkg_t* pkg, const compiler_config_t* ccfg);
 
 
 static void set_comaxproc() {
@@ -125,7 +135,7 @@ int main_build(int argc, char* argv[]) {
   }
 
   if (optind == argc)
-    errx(1, "missing input source");
+    errx(1, "no input");
 
   if (*opt_maxproc)
     set_comaxproc();
@@ -134,6 +144,12 @@ int main_build(int argc, char* argv[]) {
   argv += optind;
   argc -= optind;
 
+  if (opt_nolink && *opt_out) {
+    elog("cannot specify both --no-link and -o (nothing to output when not linking)");
+    return 1;
+  }
+
+  // configure target
   if (!( opt_target = target_find(opt_targetstr) )) {
     elog("Invalid target \"%s\"", opt_targetstr);
     elog("See `%s targets` for a list of supported targets", relpath(coexefile));
@@ -145,16 +161,46 @@ int main_build(int argc, char* argv[]) {
     dlog("targeting %s (%s)", tmpbuf, opt_target->triple);
   #endif
 
-  if (opt_nolink && *opt_out) {
-    elog("cannot specify both --no-link and -o (nothing to output when not linking)");
+  // decide what package to build
+  pkg_t* pkgv;
+  u32 pkgc;
+  err_t err = 0;
+  if (( err = pkgs_for_argv(argc, argv, &pkgv, &pkgc) ))
     return 1;
+  #if DEBUG
+    printf("[D] building %u package%s:", pkgc, pkgc != 1 ? "s" : "");
+    for (u32 i = 0; i < pkgc; i++)
+      printf(&", %s (\"%s\")"[((u32)!i)], pkgv[i].name.p, pkgv[i].dir.p);
+    printf("\n");
+  #endif
+
+  // // for now we limit ourselves to building one package per compis invocation
+  // if (pkgc > 1) {
+  //   errx(1, "more than one package requested; please only specify one package");
+  // }
+
+  // configuration for building requested packages
+  compiler_config_t ccfg = {
+    .target = opt_target,
+    .buildroot = opt_builddir,
+    .buildmode = opt_debug ? BUILDMODE_DEBUG : BUILDMODE_OPT,
+    .printast = opt_printast,
+    .printir = opt_printir,
+    .genirdot = opt_genirdot,
+    .genasm = opt_genasm,
+    .verbose = coverbose,
+    .nomain = opt_nomain,
+  };
+
+  // build packages
+  for (u32 i = 0; i < pkgc; i++) {
+    if (( err = build_pkg(&pkgv[i], &ccfg) )) {
+      dlog("error while building pkg %s: %s", pkgv[i].name.p, err_str(err));
+      break;
+    }
   }
 
-  err_t err = build_exe(argv, (usize)argc);
-  if (err && err != ErrCanceled)
-    dlog("failed to build: %s", err_str(err));
-
-  return err == 0 ? 0 : 1;
+  return (int)!!err;
 }
 
 
@@ -165,37 +211,24 @@ static void diaghandler(const diag_t* d, void* nullable userdata) {
 }
 
 
-static input_t* open_input(memalloc_t ma, const char* filename) {
-  input_t* input = input_create(ma, filename);
-  if (input == NULL)
-    panic("out of memory");
-  err_t err;
-  if ((err = input_open(input)))
-    errx(1, "%s: %s", filename, err_str(err));
-  return input;
-}
-
-
-typedef struct {
-  input_t*  input;
-  buf_t     ofile;
-  promise_t promise;
-} buildfile_t;
-
-
 static err_t link_exe(
-  compiler_t* c, bgtask_t* task, const char* outfile,
-  buildfile_t* infilev, usize infilec)
+  compiler_t* c, bgtask_t* task, const char* outfile, char*const* infilev, u32 infilec)
 {
   // TODO: -Llibdir
   // char libflag[PATH_MAX];
   // snprintf(libflag, sizeof(libflag), "-L%s", c->libdir);
 
+  const char* libfiles[] = {
+    path_join_alloca(c->builddir, "std/runtime.a"),
+  };
 
   CoLLVMLink link = {
     .target_triple = c->target.triple,
     .outfile = outfile,
+    .infilev = (const char*const*)infilev,
     .infilec = infilec,
+    .libfilev = libfiles,
+    .libfilec = countof(libfiles),
     .sysroot = c->sysroot,
     .print_lld_args = coverbose || opt_logld,
     .lto_level = 0,
@@ -209,110 +242,271 @@ static err_t link_exe(
 
   err_t err = 0;
 
-  // linker wants an array of cstring pointers
-  link.infilev = mem_alloctv(c->ma, const char*, infilec);
-  if (!link.infilev) {
-    err = ErrNoMem;
-    goto end;
-  }
-  for (usize i = 0; i < infilec; i++)
-    link.infilev[i] = infilev[i].ofile.chars;
-
   task->n++;
   bgtask_setstatusf(task, "link %s", relpath(outfile));
   err = llvm_link(&link);
 
-  mem_freetv(c->ma, link.infilev, infilec);
-
-end:
   return err;
 }
 
 
-static err_t build_exe(char*const* srcfilev, usize filecount) {
+static err_t archive_lib(
+  compiler_t* c, bgtask_t* task, const char* outfile, char*const* objv, u32 objc)
+{
   err_t err = 0;
+  assert(objc <= (usize)U32_MAX);
 
-  if (filecount == 0)
-    return ErrInvalid;
+  task->n++;
+  bgtask_setstatusf(task, "create %s", relpath(outfile));
 
-  compiler_config_t ccfg = {
-    .target = opt_target,
-    .buildroot = opt_builddir,
-    .buildmode = opt_debug ? BUILDMODE_DEBUG : BUILDMODE_OPT,
-    .printast = opt_printast,
-    .printir = opt_printir,
-    .genirdot = opt_genirdot,
-    .genasm = opt_genasm,
-    .verbose = coverbose,
-    .nomain = opt_nomain,
-  };
-
-  compiler_t c;
-  compiler_init(&c, memalloc_ctx(), &diaghandler, "main"); // FIXME pkgname
-  if (err || ( err = compiler_configure(&c, &ccfg) )) {
-    dlog("compiler_configure: %s", err_str(err));
-    compiler_dispose(&c);
+  char* dir = path_dir_alloca(outfile);
+  if (( err = fs_mkdirs(dir, 0755, FS_VERBOSE) ))
     return err;
+
+  CoLLVMArchiveKind arkind;
+  if (c->target.sys == SYS_none) {
+    arkind = llvm_sys_archive_kind(target_default()->sys);
+  } else {
+    arkind = llvm_sys_archive_kind(c->target.sys);
   }
 
-  // build sysroot
-  if (!opt_nolink && (err = build_sysroot_if_needed(&c, /*flags*/0)))
-    return err;
+  char* errmsg = "?";
+  err = llvm_write_archive(arkind, outfile, (const char*const*)objv, objc, &errmsg);
+
+  if (err) {
+    elog("llvm_write_archive: (err=%s) %s", err_str(err), errmsg);
+    if (err == ErrNotFound) {
+      for (u32 i = 0; i < objc; i++) {
+        if (!fs_isfile(objv[i]))
+          elog("%s: file not found", objv[i]);
+      }
+    }
+    LLVMDisposeMessage(errmsg);
+  }
+
+  return err;
+}
+
+
+static bool pkg_is_built(pkg_t* pkg, compiler_t* c) {
+  // str_t statusfile = path_join(c->pkgbuilddir, "status.toml");
+  // unixtime_t status_mtime = fs_mtime(statusfile.p);
+  // unixtime_t source_mtime = pkg_source_mtime(pkg);
+
+  // TODO: Read "default_outfile" from statusfile and check its mtime and existence
+  //       Use const char* opt_out if set.
+
+  return false;
+}
+
+
+static char*const* pkg_mkobjfilelist(pkg_t* pkg, compiler_t* c, strlist_t* objfiles) {
+  str_t s = {0};
+  strlist_init(objfiles, c->ma);
+
+  for (u32 i = 0; i < pkg->files.len; i++) {
+    srcfile_t* srcfile = &pkg->files.v[i];
+
+    // {pkgbuilddir}/{srcfile}.o
+    // note that pkgbuilddir includes pkgname
+    s.len = 0;
+    str_append(&s, c->pkgbuilddir);
+    str_push(&s, PATH_SEPARATOR);
+    str_appendlen(&s, srcfile->name.p, srcfile->name.len);
+    if UNLIKELY(!str_append(&s, ".o"))
+      goto oom;
+
+    strlist_add_raw(objfiles, s.p, s.len, 1);
+  }
+
+  assert(objfiles->len == pkg->files.len);
+  char*const* objfilev = strlist_array(objfiles);
+  if (!objfiles->ok)
+    goto oom;
+
+  str_free(s);
+
+  return objfilev;
+oom:
+  panic("out of memory");
+}
+
+
+static int cstr_cmp(const char** a, const char** b, void* ctx) {
+  return strcmp(*a, *b);
+}
+
+
+static err_t mkdirs_for_files(memalloc_t ma, const char*const* filev, u32 filec) {
+  err_t err = 0;
+  char dir[PATH_MAX];
+  ptrarray_t dirs = {0};
+
+  for (u32 i = 0; i < filec; i++) {
+    // e.g. "/foo/bar/cat.lol" => "/foo/bar"
+    usize dirlen = path_dir_buf(dir, sizeof(dir), filev[i]);
+    if (dirlen >= sizeof(dir)) {
+      err = ErrOverflow;
+      break;
+    }
+
+    const char** vp = array_sortedset_assign(
+      const char*, &dirs, ma, &dir, (array_sorted_cmp_t)cstr_cmp, NULL);
+    if UNLIKELY(!vp) {
+      err = ErrNoMem;
+      break;
+    }
+    if (*vp == NULL) {
+      *vp = mem_strdup(ma, (slice_t){.p=dir,.len=dirlen}, 0);
+      if UNLIKELY(*vp == NULL) {
+        err = ErrNoMem;
+        break;
+      }
+    }
+  }
+
+  if (!err) for (u32 i = 0; i < dirs.len; i++) {
+    const char* dir = (const char*)dirs.v[i];
+    if (( err = fs_mkdirs(dir, 0755, 0) ))
+      break;
+  }
+
+  ptrarray_dispose(&dirs, ma);
+  return err;
+}
+
+
+static err_t build_pkg(pkg_t* pkg, const compiler_config_t* ccfg) {
+  err_t err = 0;
+
+  // make sure we have source files
+  if (pkg->files.len == 0)
+    pkg_find_files(pkg);
+  if (pkg->files.len == 0) {
+    elog("[%s] no source files in %s", pkg->name.p, relpath(pkg->dir.p));
+    return ErrNotFound;
+  }
+
+  compiler_t c;
+  compiler_init(&c, memalloc_ctx(), &diaghandler, pkg);
+  if (err || ( err = compiler_configure(&c, ccfg) )) {
+    dlog("error in compiler_configure: %s", err_str(err));
+    goto end1;
+  }
+
+  // check if package is already built
+  if (pkg_is_built(pkg, &c)) {
+    log("[%s] up to date", pkg->name.p); // in lieu of bgtask
+    goto end1;
+  }
+
+  // build sysroot if needed
+  if (( err = build_sysroot_if_needed(&c, /*flags*/0) ))
+    goto end1;
 
   // create output dir
   if (( err = fs_mkdirs(c.pkgbuilddir, 0770, FS_VERBOSE) ))
-    goto end;
+    goto end1;
 
-  // fv is an array of files we are building
-  buildfile_t* fv = mem_alloctv(c.ma, buildfile_t, filecount);
-  if (!fv) {
-    compiler_dispose(&c);
-    return ErrNoMem;
-  }
-  for (usize i = 0; i < filecount; i++) {
-    fv[i].input = open_input(c.ma, srcfilev[i]);
-    buf_init(&fv[i].ofile, c.ma);
-  }
+  // allocate array for promises
+  promise_t* promisev = mem_alloctv(c.ma, promise_t, (usize)pkg->files.len);
+  safecheckf(promisev, "out of memory");
 
-  const char* outfile;
-  if (*opt_out) {
-    outfile = opt_out;
-  } else {
-    outfile = path_join_alloca(c.builddir, c.pkgname);
+  // create list of object files
+  strlist_t objfiles;
+  char*const* objfilev = pkg_mkobjfilelist(pkg, &c, &objfiles);
+
+  // create objfile directories, if needed.
+  // note: only "main" package may have srcfiles with subdirectories.
+  if (streq(pkg->name.p, "main")) {
+    err = mkdirs_for_files(c.ma, (const char*const*)objfilev, (usize)pkg->files.len);
+    if (err)
+      goto end2;
   }
 
+  // configure a bgtask
   int taskflags = c.opt_verbose ? BGTASK_NOFANCY : 0;
-  u32 tasklen = (u32)filecount + !opt_nolink;
-  bgtask_t* task = bgtask_start(c.ma, c.pkgname, tasklen, taskflags);
+  u32 tasklen = pkg->files.len + (u32)!opt_nolink;
+  bgtask_t* task = bgtask_start(c.ma, pkg->name.p, tasklen, taskflags);
 
-  // compile object files
-  for (usize i = 0; i < filecount; i++) {
+  // compile source files
+  for (u32 i = 0; i < pkg->files.len; i++) {
+    srcfile_t* sf = &pkg->files.v[i];
     task->n++;
-    bgtask_setstatusf(task, "compile %s", relpath(fv[i].input->name));
-    if (( err = compiler_compile(&c, &fv[i].promise, fv[i].input, &fv[i].ofile) ))
+    bgtask_setstatusf(task, "compile %s", relpath(sf->name.p));
+    if (( err = compiler_compile(&c, &promisev[i], sf, objfilev[i]) ))
       break;
   }
 
   // wait for all compiler processes
-  for (usize i = 0; i < filecount; i++) {
-    err_t err1 = promise_await(&fv[i].promise);
+  for (u32 i = 0; i < pkg->files.len; i++) {
+    err_t err1 = promise_await(&promisev[i]);
     if (!err)
       err = err1;
   }
 
-  // link executable
-  if (!err && !opt_nolink)
-    err = link_exe(&c, task, outfile, fv, filecount);
+  // create executable if there's a main function
+  const char* outfile = opt_out;
+  if (!opt_nolink && c.mainfun) {
+    if (!*outfile)
+      outfile = path_join_alloca(c.builddir, c.pkg->name.p);
+    err = link_exe(&c, task, outfile, objfilev, pkg->files.len);
+  } else if (!opt_nolink) {
+    // create static library
+    if (!*outfile)
+      outfile = path_join_alloca(c.builddir, strcat_alloca(c.pkg->name.p, ".a"));
+    err = archive_lib(&c, task, outfile, objfilev, pkg->files.len);
+  }
 
-  bgtask_end(task, "%s", relpath(outfile));
-  task = NULL;
+  // cleanup object files
+  if (!err) for (u32 i = 0; i < pkg->files.len; i++) {
+    if (unlink(objfilev[i]) != 0)
+      elog("warning: failed to remove %s: %s", objfilev[i], err_str(err_errno()));
+  }
 
-end:
-  for (usize i = 0; i < filecount; i++)
-    input_free(fv[i].input, c.ma);
-  mem_freetv(c.ma, fv, filecount);
+  // end bgtask
+  bgtask_end(task, "%s", opt_nolink ? "(compile only)" : relpath(outfile));
+
+end2:
+  strlist_dispose(&objfiles);
+
+  mem_freetv(c.ma, promisev, (usize)pkg->files.len);
+
+  for (u32 i = 0; i < pkg->files.len; i++)
+    srcfile_close(&pkg->files.v[i]);
+end1:
   compiler_dispose(&c);
-  if (task)
-    bgtask_end_nomsg(task);
   return err;
 }
+
+
+/*
+static int buildfile_cmp(const buildfile_t* x, const buildfile_t* y, void* nullable _) {
+  int d = memcmp(x->ofile.p, y->ofile.p, MIN(x->ofile.len, y->ofile.len));
+  return d != 0 ? d :
+         x->ofile.len < y->ofile.len ? 1 :
+         y->ofile.len < x->ofile.len ? -1 :
+         0;
+}
+
+
+static err_t pkg_checksum_src(compiler_t* c, buildfile_t* fv, u32 fc, u8 result[32]) {
+  SHA256 state;
+  sha256_init(&state, result);
+
+  co_qsort(fv, fc, sizeof(*fv), (co_qsort_cmp)buildfile_cmp, NULL);
+  for (u32 i = 0; i < fc; i++)
+    sha256_write(&state, fv[i].input->sha256, 32);
+
+  sha256_close(&state);
+
+  #if DEBUG
+    buf_t b = buf_make(c->ma);
+    buf_appendhex(&b, result, 32);
+    if (buf_nullterm(&b))
+      dlog("result: %s", b.chars);
+    buf_dispose(&b);
+  #endif
+
+  return ErrCanceled; // XXX
+}*/

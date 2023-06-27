@@ -6,6 +6,7 @@
 #if defined __APPLE__
   #include <mach/mach_time.h>
 #endif
+#include <sys/stat.h>
 
 
 #if defined(__APPLE__)
@@ -18,19 +19,46 @@
 #endif
 
 
-err_t unixtime(i64* sec, u64* nsec) {
+static unixtime_t timestamp_of_timespec(struct timespec ts) {
+  assert(ts.tv_sec > -1); // caller should check before
+  return (unixtime_t)ts.tv_sec*1000000llu + (unixtime_t)ts.tv_nsec/1000llu;
+}
+
+
+unixtime_t unixtime_of_stat_mtime(const struct stat* st) {
+  if (st->st_mtime < 0)
+    return 0llu;
+  #if defined(__linux__) || defined(__wasi__)
+    // "struct stat" has "struct timespec st_mtim"
+    return timestamp_of_timespec(st->st_mtim);
+  #elif defined(__APPLE__)
+    #if !defined(_POSIX_C_SOURCE) || defined(_DARWIN_C_SOURCE)
+      return timestamp_of_timespec(st->st_mtimespec);
+    #else
+      return (unixtime_t)st->st_mtime*1000000llu + (unixtime_t)st->st_mtimensec/1000llu;
+    #endif
+  #else
+    return (unixtime_t)st->st_mtime * 1000000llu;
+  #endif
+}
+
+
+unixtime_t unixtime_now() {
   #ifdef CLOCK_REALTIME
     struct timespec ts;
-    if (clock_gettime(CLOCK_REALTIME, &ts))
-      return err_errno();
-    *sec = (i64)ts.tv_sec;
-    *nsec = (u64)ts.tv_nsec;
+    if UNLIKELY(clock_gettime(CLOCK_REALTIME, &ts) != 0) {
+      dlog("clock_gettime: %s", err_str(err_errno()));
+      return 0;
+    }
+    return ts.tv_sec < 0 ? 0 : timestamp_of_timespec(ts);
   #else
     struct timeval tv;
-    if (gettimeofday(&tv, 0) != 0)
-      return err_errno();
-    *sec = (i64)tv.tv_sec;
-    *nsec = ((u64)tv.tv_usec) * 1000;
+    if UNLIKELY(gettimeofday(&tv, 0) != 0) {
+      dlog("gettimeofday: %s", err_str(err_errno()));
+      return 0;
+    }
+    return tv.tv_sec < 0 ? 0 :
+           (unixtime_t)tv.tv_sec*1000000llu + (unixtime_t)tv.tv_usec;
   #endif
   return 0;
 }

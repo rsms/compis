@@ -64,10 +64,72 @@ static void start_path(encoder_t* e, const node_t* n) {
 }
 
 
+// append_escape writes src string, escaping any chars not in 0-9A-Za-z_
+// by "$XX" where XX is the hexadecimal encoding of the byte value,
+// or "·" (U+00B7, UTF-8 C2 B7) for '/' and '\'
+static void append_escape(encoder_t* e, str_t src) {
+  usize i = 0, dstlen;
+
+  for (; i < src.len; i++) {
+    u8 c = (u8)src.p[i];
+    if (!isalnum(c) && c != '_')
+      goto escape;
+  }
+
+  // only 0-9A-Za-z_
+  e->ok &= buf_print_u32(&e->buf, src.len, 10);
+  e->ok &= buf_append(&e->buf, src.p, src.len);
+  return;
+
+escape:
+  dstlen = i;
+  for (usize j = i; j < src.len; j++) {
+    u8 c = (u8)src.p[j];
+    usize isslash = (1llu * (usize)(c == '/' || c == '\\'));
+    usize isspecial = (2llu * (usize)(!isalnum(c) && c != '_'));
+    dstlen += 1llu + isspecial*(usize)!isslash + isslash;
+  }
+
+  e->ok &= buf_print_u32(&e->buf, dstlen, 10);
+  e->ok &= buf_reserve(&e->buf, dstlen);
+  if (!e->ok)
+    return;
+
+  char* dst = e->buf.chars + e->buf.len;
+  memcpy(dst, src.p, i);
+  dst += i;
+
+  static const char* kHexchars = "0123456789ABCDEF";
+
+  for (; i < src.len; i++) {
+    u8 c = (u8)src.p[i];
+    if (isalnum(c) || c == '_') {
+      *dst++ = c;
+    } else if (c == '/' || c == '\\') {
+      dst[0] = 0xC2; dst[1] = 0xB7; // UTF-8 of U+00B7 MIDDLE DOT "·"
+      dst += 2;
+    } else {
+      dst[0] = '$';
+      dst[1] = kHexchars[c >> 4];
+      dst[2] = kHexchars[c & 0xf];
+      dst += 3;
+    }
+  }
+
+  usize wlen = (usize)(uintptr)(dst - (e->buf.chars + e->buf.len));
+  e->buf.len += wlen;
+}
+
+
+static void append_pkgname(encoder_t* e) {
+  append_escape(e, e->c->pkg->name);
+}
+
+
 static void end_path(encoder_t* e, const node_t* n) {
   switch (n->kind) {
   case NODE_UNIT:
-    append_zname(e, e->c->pkgname);
+    append_pkgname(e);
     break;
   case EXPR_FUN:
     assertf(((fun_t*)n)->name, "unnamed %s in ns path", nodekind_name(n->kind));
@@ -162,6 +224,7 @@ static encoder_t mkencoder(const compiler_t* c, buf_t* buf) {
   encoder_t e = {
     .c = c,
     .buf = *buf,
+    .ok = true,
   };
   e.nsstack.v = e.nsstack.st;
   e.nsstack.cap = countof(e.nsstack.st);

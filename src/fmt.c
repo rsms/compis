@@ -61,8 +61,8 @@ const char* op_fmt(op_t op) {
   case OP_ALIAS:
   case OP_ARG:
   case OP_ARRAY:
-  case OP_BORROW:
-  case OP_BORROW_MUT:
+  case OP_REF:
+  case OP_MUTREF:
   case OP_CALL:
   case OP_CAST:
   case OP_DROP:

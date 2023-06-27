@@ -62,8 +62,10 @@ static char* add_trailing_slash(memalloc_t ma, char* s) {
 
 
 int cc_main(int user_argc, char* user_argv[], bool iscxx) {
+  pkg_t pkg = { .name = str_make("main") }; // FIXME pkgname
+
   compiler_t c;
-  compiler_init(&c, memalloc_default(), &diaghandler, "main"); // FIXME pkgname
+  compiler_init(&c, memalloc_default(), &diaghandler, &pkg);
 
   compiler_config_t config = {0};
   config.buildmode = BUILDMODE_OPT; // default to optimized build
@@ -139,7 +141,7 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
       } else if (streq(arg, "-nostdlib++")) {
         // Do not implicitly link with standard C++ libraries
         link_libcxx = false;
-      } else if (str_startswith(arg, "-fuse-ld=")) {
+      } else if (string_startswith(arg, "-fuse-ld=")) {
         custom_ld = true;
         // must disable LTO, or else clang complains:
         //   "error: 'x86_64-unknown': unable to pass LLVM bit-code files to linker"
@@ -167,7 +169,7 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
         iscompiling = true;
       } else if (streq(arg, "-O0")) {
         config.nolto = true;
-      } else if (str_startswith(arg, "-O")) {
+      } else if (string_startswith(arg, "-O")) {
         config.nolto = false;
       } else if (streq(arg, "--co-debug")) {
         config.buildmode = BUILDMODE_DEBUG;
@@ -180,13 +182,13 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
         explicit_exceptions = true;
       } else if (streq(arg, "-fexceptions")) {
         explicit_exceptions = true;
-      } else if (str_startswith(arg, "-mmacosx-version-min=")) {
+      } else if (string_startswith(arg, "-mmacosx-version-min=")) {
         // TODO: parse and check that: value <= target.sysver && value >= minver(target)
         config.sysver = arg + strlen("-mmacosx-version-min=");
       }
 
       // flags that affect both compilation and linking
-      else if (str_startswith(arg, "--target=") || streq(arg, "-target")) {
+      else if (string_startswith(arg, "--target=") || streq(arg, "-target")) {
         if (arg[1] == '-') { // --target=...
           arg += strlen("--target=");
         } else {
@@ -210,12 +212,12 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
         // On Darwin targets it applies to both header files and libraries.
         if (i+1 < user_argc)
           custom_sysroot = user_argv[i+1] = add_trailing_slash(c.ma, user_argv[i+1]);
-      } else if (str_startswith(arg, "--sysroot=")) {
+      } else if (string_startswith(arg, "--sysroot=")) {
         user_argv[i] = add_trailing_slash(c.ma, user_argv[i]);
         custom_sysroot = user_argv[i] + strlen("--sysroot=");
       } else if (streq(arg, "-fno-lto")) {
         config.nolto = true;
-      } else if (str_startswith(arg, "-flto")) {
+      } else if (string_startswith(arg, "-flto")) {
         config.nolto = false;
         if (config.buildmode == BUILDMODE_DEBUG)
           die("error: %s cannot be used together with --co-debug", arg);
@@ -447,8 +449,8 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
         streq(arg, "--no-standard-includes") ||
         streq(arg, "-nostdlibinc") ||
         streq(arg, "--co-debug") ||
-        str_startswith(arg, "-mmacosx-version-min=") ||
-        str_startswith(arg, "--target=") )
+        string_startswith(arg, "-mmacosx-version-min=") ||
+        string_startswith(arg, "--target=") )
     {
       // skip single-arg flag
     } else if (streq(arg, "-target")) {

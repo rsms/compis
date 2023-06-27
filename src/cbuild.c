@@ -227,9 +227,7 @@ static err_t cbuild_clean_objdir(cbuild_t* b) {
     if (!markfile_dir)
       return;
 
-    i64 s__;
-    u64 ns__;
-    safecheckx(unixtime(&s__, &ns__) == 0);
+    unixtime_t now = unixtime_now();
 
     char filename[PATH_MAX];
     usize offs = 0;
@@ -245,7 +243,7 @@ static err_t cbuild_clean_objdir(cbuild_t* b) {
     }
 
     snprintf(&filename[offs], sizeof(filename) - offs, "cbuild-%.6f-%d.%s",
-      (double)s__+(double)ns__/1000000000.0,
+      (double)now/1000000000.0,
       getpid(),
       markfile_kind);
 
@@ -326,7 +324,7 @@ static err_t cbuild_create_archive(
   }
 
   char* errmsg = "?";
-  err = llvm_write_archive(arkind, outfile, objv, objc, &errmsg);
+  err = llvm_write_archive(arkind, outfile, (const char*const*)objv, objc, &errmsg);
   if (!err)
     return 0;
   elog("llvm_write_archive: (err=%s) %s", err_str(err), errmsg);

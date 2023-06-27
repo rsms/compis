@@ -646,6 +646,7 @@ enum err_ {
   ErrReadOnly     = -15, // read-only
   ErrIO           = -16, // I/O error
   ErrNotDir       = -17, // not a directory
+  ErrIsDir        = -18, // is a directory
 };
 
 EXTERN_C err_t err_errno(); // current errno value
@@ -942,9 +943,9 @@ inline static void mem_freev(memalloc_t ma, void* array, usize count, usize elem
 
 #define ascii_tolower(c) ( (c) | 0x20 )
 
-isize slastindexofn(const char* s, usize len, char c);
 isize sindexof(const char* s, char c);
 isize slastindexof(const char* s, char c);
+isize slastindexofn(const char* s, usize len, char c);
 
 // strim_begin returns offset into s past any leading trimc characters.
 // e.g. strim_begin("  hello", 7, ' ') => "hello"
@@ -954,8 +955,8 @@ const char* strim_begin(const char* s, usize len, char trimc);
 // e.g. strim_end("hello  ", 7, ' ') => 5
 usize strim_end(const char* s, usize len, char trimc);
 
-// str_endswith returns true if null-terminated string s begins with prefix
-bool str_startswith(const char* s, const char* prefix);
+// string_startswith returns true if null-terminated string s begins with prefix
+bool string_startswith(const char* s, const char* prefix);
 
 // str_endswith returns true if null-terminated string s ends with suffix
 bool str_endswith(const char* s, const char* suffix);
@@ -1000,9 +1001,13 @@ char* _strcat(char* buf, usize bufcap, usize count, ...); // string.c
     4, s__[0],z__[0],s__[1],z__[1],s__[2],z__[2],s__[3],z__[3]); \
 })
 
+struct stat;
+
 //—————————————————————————————————————————————————————————————————————————————————————
 // time
-err_t unixtime(i64* sec, u64* nsec); // date & time of day
+typedef u64 unixtime_t; // microseconds since Jan 1 1970 UTC
+unixtime_t unixtime_now(); // current date & time of day
+unixtime_t unixtime_of_stat_mtime(const struct stat*);
 u64 nanotime(); // monotonic high-res
 usize fmtduration(char buf[25], u64 duration_ns);
 u64 microsleep(u64 microseconds);
@@ -1015,8 +1020,9 @@ const char* sys_homedir();
 //—————————————————————————————————————————————————————————————————————————————————————
 // files
 
-err_t mmap_file(const char* filename, mem_t* data_out);
-err_t mmap_unmap(mem_t);
+err_t mmap_file_ro(const char* filename, usize size, void** resultp);
+err_t mmap_file(const char* filename, mem_t* data_out, struct stat* nullable stp); // D!
+err_t mmap_unmap(void* p, usize size);
 err_t fs_writefile(const char* filename, u32 mode, slice_t data);
 err_t fs_touch(const char* filename, u32 mode); // update {a,m}time, create if needed
 err_t fs_mkdirs(const char* path, int perms, int flags); // creates parent directories
@@ -1025,6 +1031,7 @@ err_t fs_remove_dir_contents(const char* path); // delete _contents_ of dir at p
 err_t fs_copyfile(const char* srcpath, const char* dstpath, int flags);
 bool fs_isfile(const char* path); // true if S_ISREG, after resolving any symlinks
 bool fs_isdir(const char* path); // true if S_ISDIR, after resolving any symlinks
+unixtime_t fs_mtime(const char* path); // returns 0 on error
 err_t fs_lock(int fd); // blocks until unlocked
 err_t fs_trylock(int fd, long* nullable lockee_pid);
 err_t fs_unlock(int fd);
@@ -1053,6 +1060,11 @@ u32 leb128_u64_write(u8 out[LEB128_NBYTE_64], u64 val);
 u32 leb128_u32_write(u8 out[LEB128_NBYTE_32], u32 val);
 
 //—————————————————————————————————————————————————————————————————————————————————————
+// co_qsort is qsort_r aka qsort_s
+typedef int(*co_qsort_cmp)(const void* x, const void* y, void* nullable ctx);
+void co_qsort(void* base, usize nmemb, usize size, co_qsort_cmp cmp, void* nullable ctx);
+
+//—————————————————————————————————————————————————————————————————————————————————————
 // constants defined in main.c
 
 // coprogname: program name, as invoked, e.g. "compis", "cc", "ld" etc
@@ -1068,6 +1080,10 @@ extern const char* coroot;
 // cocachedir: directory of compis cache (~/.cache/compis)
 // Can be overridden with env var COCACHE
 extern const char* cocachedir;
+
+// copath: NULL-terminated list of directories to search for packages (["."])
+// Can be overridden with env var COPATH
+extern const char*const* copath;
 
 // coverbose: set to true if -v was passed on the command line
 extern bool coverbose;

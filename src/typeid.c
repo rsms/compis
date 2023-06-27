@@ -82,8 +82,6 @@ static void append(buf_t* buf, type_t* t) {
   usize bufstart = buf->len;
   buf_push(buf, TYPEID_PREFIX(t->kind));
 
-  dlog("mk typeid %s '%c'", nodekind_name(t->kind), TYPEID_PREFIX(t->kind));
-
   switch (t->kind) {
     case TYPE_ARRAY:    arraytype(buf, (arraytype_t*)t); break;
     case TYPE_FUN:      funtype(buf, (funtype_t*)t); break;
@@ -106,27 +104,27 @@ static void append(buf_t* buf, type_t* t) {
   if (t->tid)
     return;
 
-  #if DEBUG
-    char tmp[128];
-    {
-      abuf_t s = abuf_make(tmp, sizeof(tmp));
-      abuf_repr(&s, &buf->bytes[bufstart], buf->len - bufstart);
-      abuf_terminate(&s);
-      dlog("%s buf = \"%s\"", nodekind_name(t->kind), tmp);
-    }
-  #endif
+  // #if DEBUG
+  //   char tmp[128];
+  //   {
+  //     abuf_t s = abuf_make(tmp, sizeof(tmp));
+  //     abuf_repr(&s, &buf->bytes[bufstart], buf->len - bufstart);
+  //     abuf_terminate(&s);
+  //     dlog("%s buf = \"%s\"", nodekind_name(t->kind), tmp);
+  //   }
+  // #endif
 
   // update t
   t->tid = sym_intern(&buf->bytes[bufstart], buf->len - bufstart);
 
-  #if DEBUG
-    {
-      abuf_t s = abuf_make(tmp, sizeof(tmp));
-      abuf_repr(&s, t->tid, strlen(t->tid));
-      abuf_terminate(&s);
-      dlog("_typeid(%s) => \"%s\"", nodekind_name(t->kind), tmp);
-    }
-  #endif
+  // #if DEBUG
+  //   {
+  //     abuf_t s = abuf_make(tmp, sizeof(tmp));
+  //     abuf_repr(&s, t->tid, strlen(t->tid));
+  //     abuf_terminate(&s);
+  //     dlog("_typeid(%s) => \"%s\"", nodekind_name(t->kind), tmp);
+  //   }
+  // #endif
 }
 
 

@@ -47,6 +47,7 @@ typedef struct dirinfo {
 typedef struct {
   dirwalk_t           d;
   struct stat         st;       // status of current entry (uninitialized if st_nlink==0)
+  struct stat         st2;      // status after resolving symlinks
   DIR* nullable       dirp;     // current directory handle
   dirinfo_t* nullable dir;      // current directory info (null means "dequeue a dir")
   dirinfo_t* nullable dirstack; // enqueued directories, to visit
@@ -206,6 +207,20 @@ struct stat* dirwalk_lstat(dirwalk_t* d) {
   if (dw->st.st_nlink == 0 && lstat(d->path, &dw->st) != 0)
     d->err = err_errno();
   return &dw->st;
+}
+
+
+struct stat* dirwalk_stat(dirwalk_t* d) {
+  dirw0_t* dw = (dirw0_t*)d;
+  if (dw->st2.st_nlink == 0) {
+    if (dw->st.st_nlink != 0 && !S_ISLNK(dw->st.st_mode)) {
+      // copy lstat results
+      dw->st2 = dw->st;
+    } else if (stat(d->path, &dw->st2) != 0) {
+      d->err = err_errno();
+    }
+  }
+  return &dw->st2;
 }
 
 

@@ -42,13 +42,15 @@ const char* path_ext(const char* path);
 // path_clean resolves parent paths ("..") and eliminates redundant "/" and "./",
 // reducing 'path' to a clean, canonical form. E.g. "a/b/../c//./d" => "a/c/d"
 usize path_cleanx(char* buf, usize bufcap, const char* path, usize pathlen);
-inline static void path_clean(str_t* path) {
-  path->len = path_cleanx(path->p, path->cap, path->p, path->len);
-}
+bool path_clean(str_t* path);
 inline static char* path_clean_cstr(char* path) {
   usize len = strlen(path);
   return path_cleanx(path, len + 1, path, len), path;
 }
+
+// path_parselist parses a PATH_DELIMITER separated list.
+// Returns a NULL-terminated array (or NULL if memory allocation failed.)
+char** nullable path_parselist(memalloc_t ma, const char* pathlist);
 
 // str_t path_join(const char* path ...)
 // joins two or more path components together and calls path_clean on the result.
@@ -71,6 +73,12 @@ inline static bool path_isabs(const char* path) { return *path == PATH_SEPARATOR
 // path_abs resolves path relative to cwd and calls path_clean on the result.
 // Note: It does NOT resolve symlinks (use realpath for that); path need no exist.
 str_t path_abs(const char* path) WARN_UNUSED_RESULT;
+
+// path_makeabs works like path_abs, but updates the string in place
+bool path_makeabs(str_t* path);
+
+// path_cwd returns the current working directory
+str_t path_cwd() WARN_UNUSED_RESULT;
 
 // relpath returns the path relative to the initial current working directory
 const char* relpath(const char* path);

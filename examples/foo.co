@@ -1,25 +1,35 @@
 
 // pub "c" fun printu64(u64) void
 
-fun hello() {}
+fun subscript_slice(a &[i16]) i16 { a[2] }
+fun subscript_array_const(a [i16 3]) i16 { a[2] }
+fun subscript_array_var(a [i16 3], i uint) i16 { a[i] }
+fun subscript_array_ref_const(a &[i16 3]) i16 { a[2] }
+fun subscript_array_ref_var(a &[i16 3], i uint) i16 { a[i] }
+fun subscript_dynarray_var(a [i16], i uint) i16 { a[i] }
 
-fun consume_i16_array(a [i16]) {
-  // drop(a)
-}
+// fun hello() {}
+
+/*fun consume_i16_array(a [i16]) i16 {
+  return a[0]
+} // drop(a)
 
 fun arrays_literals(x i32) {
   var _ &[int]    // slice
   var _ mut&[int] // mutable slice
-  var _ [i16]     // runtime-dynamic array
-  var _ [u32 3]   // fixed-size array
+  var _ [i16]     // mutable runtime-dynamic array
+  var _ [u32 3]   // mutable fixed-size array
+  let _ [u32 3]   // immutable fixed-size array
 
   var _         = [x, 2, 3]   // [i32 3]
-  var _ [int 5] = [1, 2, 3]   // [int 5]
-  //var _ [int 2] = [1, 2, 3] // error: excess value
+  var _ [int 5] = [1, 2, 3]   // [int 5]; last two elements are 0
+  // var _ [int 2] = [1, 2, 3] // error: excess value
 
   // runtime-dynamic arrays are owned types
-  var a [i16]   = [1, 2, 3]   // [i16]
+  var a [i16] = [1, 2, 3]  // [i16]
   consume_i16_array(a) // ownership moved to function
+
+  // var _ = a // error: use of dead value a
 
   // TODO allow [T N] initializer for dynamic arrays
 }
@@ -27,7 +37,7 @@ fun arrays_literals(x i32) {
 pub "c" fun foo(x, y int) int {
   arrays_literals(i32(x))
   0
-}
+}*/
 
 
 // type Vec2 {

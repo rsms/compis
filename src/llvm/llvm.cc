@@ -389,7 +389,7 @@ err_t llvm_module_emit(
 
 err_t llvm_write_archive(
   CoLLVMArchiveKind kind,
-  const char* outfile, char*const* infilev, u32 infilec, char** errmsg)
+  const char* outfile, const char*const* infilev, u32 infilec, char** errmsg)
 {
   // see llvm/tools/llvm-ar/llvm-ar.cpp
   object::Archive::Kind llvmkind;

@@ -23,6 +23,7 @@ const char* coprogname;
 const char* coexefile;
 const char* coroot;
 const char* cocachedir;
+const char*const* copath;
 bool coverbose = false;
 u32 comaxproc = 1;
 
@@ -156,6 +157,18 @@ static void coroot_init(memalloc_t ma) {
 }
 
 
+static void copath_init(memalloc_t ma) {
+  const char* s = getenv("COPATH");
+  if (s && *s) {
+    copath = (const char*const*)path_parselist(ma, s);
+    safecheckf(copath, "out of memory");
+  } else {
+    static const char* copath_default[] = {".", NULL};
+    copath = copath_default;
+  }
+}
+
+
 static void cocachedir_init(memalloc_t ma) {
   const char* envvar = getenv("COCACHE");
   if (envvar && *envvar) {
@@ -194,8 +207,8 @@ int main(int argc, char* argv[]) {
 
   bool is_multicall = (
     !streq(coprogname, exe_basename) &&
-    !str_startswith(coprogname, "compis") &&
-    !str_startswith(coprogname, "co") );
+    !string_startswith(coprogname, "compis") &&
+    !string_startswith(coprogname, "co") );
   const char* cmd = is_multicall ? coprogname : argv[1] ? argv[1] : "";
 
   if (*cmd == 0) {
@@ -234,6 +247,7 @@ int main(int argc, char* argv[]) {
   tmpbuf_init(ma);
   sym_init(ma);
   coroot_init(ma);
+  copath_init(ma);
   cocachedir_init(ma);
   err_t err = llvm_init();
   if (err) errx(1, "llvm_init: %s", err_str(err));

@@ -66,7 +66,7 @@ usize sfmtu64(char* buf, u64 v, u32 base) {
 }
 
 
-bool str_startswith(const char* s, const char* prefix) {
+bool string_startswith(const char* s, const char* prefix) {
   usize slen = strlen(s);
   usize prefixlen = strlen(prefix);
   return slen >= prefixlen && memcmp(s, prefix, prefixlen) == 0;
