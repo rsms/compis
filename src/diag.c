@@ -3,6 +3,7 @@
 #include "colib.h"
 #include "compiler.h"
 #include "abuf.h"
+#include "path.h"
 
 
 const char* tok_name(tok_t t) {
@@ -207,10 +208,15 @@ void report_diagv(
     abuf_t s = abuf_make(c->diagbuf.p, c->diagbuf.cap);
     c->diag.msg = s.p;
 
-    if (origin.line > 0 && origin.file) {
-      abuf_fmt(&s, "%s:%u:%u: ", origin.file->name.p, origin.line, origin.column);
-    } else if (origin.file && origin.file->name.p[0] != 0) {
-      abuf_fmt(&s, "%s: ", origin.file->name.p);
+    if (origin.file) {
+      if (origin.line > 0) {
+        abuf_fmt(&s, "%s" PATH_SEP_STR "%s:%u:%u: ",
+          relpath(origin.file->pkg->dir.p), origin.file->name.p,
+          origin.line, origin.column);
+      } else if (origin.file->name.len > 0) {
+        abuf_fmt(&s, "%s" PATH_SEP_STR "%s: ",
+          relpath(origin.file->pkg->dir.p), origin.file->name.p);
+      }
     }
 
     switch (kind) {

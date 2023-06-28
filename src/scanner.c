@@ -612,8 +612,11 @@ static void scan1(scanner_t* s) {
       s->inp--; // identifier_utf8 needs to read c
       return identifier_utf8(s);
     }
-    if (isalpha(c) || c == '_')
+    if LIKELY(isalpha(c) || c == '_')
       return identifier(s);
+
+    dlog("unexpected input at srcfile.data[%zu] (srcfile.size=%zu)",
+      (usize)(uintptr)((void*)s->inp - s->srcfile->data), s->srcfile->size);
     error(s, "unexpected input byte 0x%02X '%C'", c, c);
     stop_scanning(s);
   }

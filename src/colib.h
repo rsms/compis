@@ -3,6 +3,9 @@
 #if defined(__linux__) && !defined(_GNU_SOURCE)
   #define _GNU_SOURCE // because glibc is a troublemaker
 #endif
+#if !defined(WIN32) && defined(_WIN32)
+  #define WIN32
+#endif
 //—————————————————————————————————————————————————————————————————————————————————————
 // types
 
@@ -793,7 +796,7 @@ static void mem_free(memalloc_t, mem_t* m);
 static void mem_freex(memalloc_t, mem_t m); // does not zero m
 
 // mem_freev frees an array allocated with mem_allocv
-static void mem_freev(memalloc_t, void* array, usize count, usize elemsize);
+static void mem_freev(memalloc_t, void* nullable array, usize count, usize elemsize);
 
 // mem_freet frees an element of type T
 // void mem_freet(memalloc_t, T* ptr)
@@ -816,11 +819,14 @@ static memalloc_t memalloc_ctx(); // current contextual allocator
 static memalloc_t memalloc_ctx_set(memalloc_t); // returns previous allocator
 static memalloc_t memalloc_default(); // the default allocator
 static memalloc_t memalloc_null(); // an allocator that always fails
-memalloc_t memalloc_bump(void* storage, usize cap, int flags); // create bump allocator
+// bump allocator. caller should check if result == memalloc_null()
+memalloc_t memalloc_bump(void* storage, usize cap, int flags);
 memalloc_t memalloc_bump_in(memalloc_t parent, usize cap, int flags);
+memalloc_t memalloc_bump_in_zeroed(memalloc_t parent, usize cap, int flags);
 void memalloc_bump_in_dispose(memalloc_t ma);
+usize memalloc_bumpcap(memalloc_t ma);
 usize memalloc_bumpuse(memalloc_t ma);
-#define MEMALLOC_BUMP_OVERHEAD  (sizeof(void*)*4)
+#define MEMALLOC_BUMP_OVERHEAD  (sizeof(void*)*6)
 
 // memalloc_ctx_set_scope saves the current contextual allocator on the stack
 // and sets newma as the current contextual allocator.
@@ -915,12 +921,13 @@ inline static void mem_freex(memalloc_t ma, mem_t m) {
   ma->f(ma, &m, 0, false);
 }
 
-inline static void mem_free2(memalloc_t ma, void* p, usize size) {
+inline static void mem_free2(memalloc_t ma, void* nullable p, usize size) {
   mem_t m = { .p = p, .size = size };
   ma->f(ma, &m, 0, false);
 }
 
-inline static void mem_freev(memalloc_t ma, void* array, usize count, usize elemsize) {
+inline static void mem_freev(memalloc_t ma, void* nullable array, usize count, usize elemsize) {
+  assert(array != NULL || count == 0);
   assert_no_mul_overflow(count, elemsize);
   mem_free2(ma, array, count * elemsize);
 }
@@ -1026,6 +1033,7 @@ err_t mmap_unmap(void* p, usize size);
 err_t fs_writefile(const char* filename, u32 mode, slice_t data);
 err_t fs_touch(const char* filename, u32 mode); // update {a,m}time, create if needed
 err_t fs_mkdirs(const char* path, int perms, int flags); // creates parent directories
+err_t fs_mkdirs_for_files(memalloc_t, const char*const* filev, u32 filec);
 err_t fs_remove(const char* path); // delete file or recursively delete directory
 err_t fs_remove_dir_contents(const char* path); // delete _contents_ of dir at path
 err_t fs_copyfile(const char* srcpath, const char* dstpath, int flags);

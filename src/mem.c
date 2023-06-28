@@ -43,16 +43,12 @@ struct memalloc _memalloc_null = {
 
 typedef struct {
   struct memalloc ma;
-  void* end; // end of backing memory
-  void* ptr; // next allocation
-  int   flags;
+  void*      end; // end of backing memory
+  void*      ptr; // next allocation
+  usize      cap;
+  memalloc_t parent;
+  int        flags;
 } bump_allocator_t;
-
-typedef struct {
-  bump_allocator_t bma;
-  memalloc_t       parent;
-  mem_t            m;
-} bump_allocator_in_t;
 
 static_assert(sizeof(bump_allocator_t) == MEMALLOC_BUMP_OVERHEAD, "");
 
@@ -123,45 +119,62 @@ static bool _memalloc_bump_impl(void* self, mem_t* m, usize size, bool zeroed) {
 }
 
 
-memalloc_t memalloc_bump(void* storage, usize cap, int flags) {
-  if (cap < sizeof(bump_allocator_t))
-    return &_memalloc_null;
+static bump_allocator_t* make_memalloc_bump(void* storage, usize cap, int flags) {
+  assert(cap >= sizeof(bump_allocator_t));
   bump_allocator_t* a = storage;
   a->ma.f = _memalloc_bump_impl;
   a->end = storage + cap;
   a->ptr = storage + sizeof(bump_allocator_t);
+  a->cap = cap - sizeof(bump_allocator_t);
   a->flags = flags;
+  return a;
+}
+
+
+memalloc_t memalloc_bump(void* storage, usize cap, int flags) {
+  if (cap < sizeof(bump_allocator_t))
+    return &_memalloc_null;
+  bump_allocator_t* a = make_memalloc_bump(storage, cap, flags);
+  a->parent = NULL;
   return (memalloc_t)a;
 }
 
 
 memalloc_t memalloc_bump_in(memalloc_t parent, usize cap, int flags) {
+  assert((flags & MEMALLOC_STORAGE_ZEROED) == 0);
   mem_t m = mem_alloc(parent, cap);
-
-  if (m.size < sizeof(bump_allocator_in_t))
+  if (m.size < sizeof(bump_allocator_t))
     return &_memalloc_null;
-  bump_allocator_in_t* a = m.p;
-  a->bma.ma.f = _memalloc_bump_impl;
-  a->bma.end = m.p + m.size;
-  a->bma.ptr = m.p + sizeof(bump_allocator_in_t);
-  a->bma.flags = flags;
-
+  bump_allocator_t* a = make_memalloc_bump(m.p, m.size, flags);
   a->parent = parent;
-  a->m = m;
+  return (memalloc_t)a;
+}
 
+
+memalloc_t memalloc_bump_in_zeroed(memalloc_t parent, usize cap, int flags) {
+  mem_t m = mem_alloc_zeroed(parent, cap);
+  if (m.size < sizeof(bump_allocator_t))
+    return &_memalloc_null;
+  flags |= MEMALLOC_STORAGE_ZEROED;
+  bump_allocator_t* a = make_memalloc_bump(m.p, m.size, flags);
+  a->parent = parent;
   return (memalloc_t)a;
 }
 
 
 void memalloc_bump_in_dispose(memalloc_t ma) {
-  bump_allocator_in_t* a = (bump_allocator_in_t*)ma;
-  if (a->bma.ma.f == &memalloc_null_impl)
+  bump_allocator_t* a = (bump_allocator_t*)ma;
+  if (a->ma.f == &memalloc_null_impl)
     return;
-  #if CO_SAFE
-  a->bma.end = a->bma.ptr;
-  #endif
-  // note: must not use mem_free here since a->m is part of the allocation
-  mem_freex(a->parent, a->m);
+  assertnotnull(a->parent);
+  usize size = sizeof(bump_allocator_t) + a->cap;
+  mem_freex(a->parent, MEM(a->end - size, size));
+}
+
+
+usize memalloc_bumpcap(memalloc_t ma) {
+  bump_allocator_t* a = (bump_allocator_t*)ma;
+  return a->cap;
 }
 
 

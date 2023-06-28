@@ -7,6 +7,7 @@ static _Thread_local buf_t _tmpbuf[2];
 buf_t* tmpbuf_get(u32 bufindex) {
   assert(bufindex < countof(_tmpbuf));
   buf_t* buf = &_tmpbuf[bufindex];
+  buf->ma = memalloc_ctx();
   buf_clear(buf);
   return buf;
 }

@@ -13,9 +13,33 @@ static int srcfile_cmp(const srcfile_t* a, const srcfile_t* b, void* ctx) {
 }
 
 
-void pkg_dispose(pkg_t* pkg) {
+err_t pkg_init(pkg_t* pkg, memalloc_t ma) {
+  // err_t err = rwmutex_init(&pkg->mu);
+  // if (err)
+  //   return err;
+  err_t err = 0;
+  if (( err = map_init(&pkg->defs, ma, 32) ? 0 : ErrNoMem )) {
+    // rwmutex_dispose(&pkg->mu);
+    return err;
+  }
+  if (( err = map_init(&pkg->tfuns, ma, 32) ? 0 : ErrNoMem )) {
+    map_dispose(&pkg->defs, ma);
+    // rwmutex_dispose(&pkg->mu);
+    return err;
+  }
+  return 0;
+}
+
+
+void pkg_dispose(pkg_t* pkg, memalloc_t ma) {
   str_free(pkg->name);
   str_free(pkg->dir);
+  if (pkg->defs.cap == 0)
+    return;
+  // rwmutex_dispose(&pkg->mu);
+  array_dispose(srcfile_t, (array_t*)&pkg->files, ma);
+  map_dispose(&pkg->defs, ma);
+  map_dispose(&pkg->tfuns, ma);
 }
 
 
@@ -176,6 +200,12 @@ err_t pkgs_for_argv(int argc, char* argv[], pkg_t** pkgvp, u32* pkgcp) {
     err = ErrNoMem;
     goto end;
   }
+  for (u32 i = 0; i < pkgc; i++) {
+    if (( err = pkg_init(&pkgv[i], ma) )) {
+      dlog("pkg_init failed");
+      goto end;
+    }
+  }
 
   // ad-hoc main package?
   if (input_type == 1) {
@@ -237,6 +267,10 @@ err_t pkgs_for_argv(int argc, char* argv[], pkg_t** pkgvp, u32* pkgcp) {
   str_free(cwd);
 
 end:
+  if (err && pkgv) {
+    for (u32 i = 0; i < pkgc; i++)
+      pkg_dispose(&pkgv[i], ma);
+  }
   mem_freetv(ma, stv, (usize)argc);
   *pkgcp = pkgc;
   return err;

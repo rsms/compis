@@ -433,17 +433,43 @@ static void structtype(cgen_t* g, const structtype_t* t) {
 static sym_t gen_slice_typename(cgen_t* g, const type_t* tp) {
   const slicetype_t* t = (const slicetype_t*)tp;
   usize len1 = g->outbuf.len;
-  if (t->kind == TYPE_SLICE) {
-    PRINT(CO_TYPE_PREFIX "slice_");
-  } else {
-    PRINT(CO_TYPE_PREFIX "mutslice_");
+
+  PRINT(CO_TYPE_PREFIX);
+
+  // use familiar names for common types,
+  // e.g. "__co_u8_slice_t" instead of "__co_h_slice_t" for &[u8]
+  const char* prefix = NULL;
+  switch (t->elem->kind) {
+    case TYPE_BOOL: prefix = "bool"; break;
+    case TYPE_I8:   prefix = "i8"; break;
+    case TYPE_I16:  prefix = "i16"; break;
+    case TYPE_I32:  prefix = "i32"; break;
+    case TYPE_I64:  prefix = "i64"; break;
+    case TYPE_INT:  prefix = "int"; break;
+    case TYPE_U8:   prefix = "u8"; break;
+    case TYPE_U16:  prefix = "u16"; break;
+    case TYPE_U32:  prefix = "u32"; break;
+    case TYPE_U64:  prefix = "u64"; break;
+    case TYPE_UINT: prefix = "uint"; break;
+    case TYPE_F32:  prefix = "f32"; break;
+    case TYPE_F64:  prefix = "f64"; break;
+    default: goto mangled_prefix;
   }
+  PRINT(prefix);
+  goto fin;
+
+mangled_prefix:
   if UNLIKELY(!compiler_mangle_type(g->compiler, &g->outbuf, t->elem)) {
     dlog("compiler_mangle_type failed");
     seterr(g, ErrNoMem);
     return sym__;
   }
+
+fin:
+  CHAR('_');
+  PRINT(&"mutslice"[3lu*(usize)(t->kind == TYPE_SLICE)]);
   PRINT(CO_TYPE_SUFFIX);
+
   sym_t name = sym_intern(&g->outbuf.chars[len1], g->outbuf.len - len1);
   g->outbuf.len = len1;
   return name;

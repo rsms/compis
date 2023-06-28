@@ -53,7 +53,7 @@ static int usage(FILE* f) {
   fprintf(f,
     "Usage: %s <command> [args ...]\n"
     "Commands:\n"
-    "  build     Build a project\n"
+    "  build     Build a package\n"
     "\n"
     "  ar        Archiver\n"
     "  cc        C compiler (clang)\n"

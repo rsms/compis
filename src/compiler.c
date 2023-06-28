@@ -337,6 +337,45 @@ static err_t configure_cflags(compiler_t* c, const compiler_config_t* config) {
 }
 
 
+static err_t configure_builtins(compiler_t* c) {
+  if (c->builtins.cap > 0)
+    map_dispose(&c->builtins, c->ma);
+
+  const struct {
+    sym_t       sym;
+    const void* node;
+  } entries[] = {
+    // types
+    {sym_cstr("void"), type_void},
+    {sym_cstr("bool"), type_bool},
+    {sym_cstr("int"),  type_int},
+    {sym_cstr("uint"), type_uint},
+    {sym_cstr("i8"),   type_i8},
+    {sym_cstr("i16"),  type_i16},
+    {sym_cstr("i32"),  type_i32},
+    {sym_cstr("i64"),  type_i64},
+    {sym_cstr("u8"),   type_u8},
+    {sym_cstr("u16"),  type_u16},
+    {sym_cstr("u32"),  type_u32},
+    {sym_cstr("u64"),  type_u64},
+    {sym_cstr("f32"),  type_f32},
+    {sym_cstr("f64"),  type_f64},
+    {sym_str,          &c->strtype},
+  };
+
+  if UNLIKELY(!map_init(&c->builtins, c->ma, countof(entries)))
+    return ErrNoMem;
+
+  for (usize i = 0; i < countof(entries); i++) {
+    void** valp = map_assign_ptr(&c->builtins, c->ma, entries[i].sym);
+    assertnotnull(valp);
+    *valp = (void*)entries[i].node;
+  }
+
+  return 0;
+}
+
+
 err_t configure_options(compiler_t* c, const compiler_config_t* config) {
   c->buildmode = config->buildmode;
   c->opt_nolto = config->nolto;
@@ -359,6 +398,7 @@ err_t compiler_configure(compiler_t* c, const compiler_config_t* config) {
   err = configure_builddir(c, config); if (err) return dlog("x"), err;
   err = configure_sysroot(c, config);  if (err) return dlog("x"), err;
   err = configure_cflags(c, config);   if (err) return dlog("x"), err;
+  err = configure_builtins(c);         if (err) return dlog("x"), err;
   return err;
 }
 
@@ -550,7 +590,7 @@ static err_t cc_to_obj_main(compiler_t* c, const char* cfile, const char* ofile)
 }
 
 
-static err_t cc_to_obj_async(
+err_t compile_c_to_obj_async(
   compiler_t* c, subprocs_t* sp, const char* wdir, const char* cfile, const char* ofile)
 {
   subproc_t* p = subprocs_alloc(sp);
@@ -560,7 +600,7 @@ static err_t cc_to_obj_async(
 }
 
 
-static err_t cc_to_asm_async(
+err_t compile_c_to_asm_async(
   compiler_t* c, subprocs_t* sp, const char* wdir, const char* cfile, const char* ofile)
 {
   subproc_t* p = subprocs_alloc(sp);
@@ -594,12 +634,6 @@ static err_t compile_co_to_c(compiler_t* c, srcfile_t* srcfile, const char* cfil
   err_t err = 0;
   bool printed_trace_ast = false;
 
-  // create bump allocator for AST
-  mem_t ast_mem = mem_alloc_zeroed(c->ma, 1024*1024*100);
-  if (ast_mem.p == NULL)
-    return ErrNoMem;
-  memalloc_t ast_ma = memalloc_bump(ast_mem.p, ast_mem.size, MEMALLOC_STORAGE_ZEROED);
-
   // create parser
   parser_t parser;
   if (!parser_init(&parser, c)) {
@@ -613,12 +647,21 @@ static err_t compile_co_to_c(compiler_t* c, srcfile_t* srcfile, const char* cfil
     goto end2;
   }
 
+  // allocate a slab of memory for AST and IR
+  usize ast_memsize = 1024*1024*8lu; // 8 MiB for AST & IR
+  memalloc_t ast_ma = memalloc_bump_in_zeroed(c->ma, ast_memsize, /*flags*/0);
+  if (ast_ma == memalloc_null()) {
+    elog("failed to allocate %zu MiB memory for AST", ast_memsize/(1024*1024lu));
+    err = ErrNoMem;
+    goto end3;
+  }
+
   // parse
   dlog_if(opt_trace_parse, "————————— parse —————————");
   unit_t* unit = parser_parse(&parser, ast_ma, srcfile);
   if (c->errcount > errcount) {
     err = ErrCanceled;
-    goto end3;
+    goto end4;
   }
   if (opt_trace_parse && c->opt_printast) {
     dlog("————————— AST after parse —————————");
@@ -626,13 +669,15 @@ static err_t compile_co_to_c(compiler_t* c, srcfile_t* srcfile, const char* cfil
     dump_ast((node_t*)unit);
   }
 
+  dlog("TODO: move parser.pkgdefs to c.pkg.defs");
+
   // typecheck
   dlog_if(opt_trace_typecheck, "————————— typecheck —————————");
-  if (( err = typecheck(&parser, unit) ))
-    goto end3;
+  if (( err = typecheck(c, unit, ast_ma) ))
+    goto end4;
   if (c->errcount > errcount) {
     err = ErrCanceled;
-    goto end3;
+    goto end4;
   }
   if (opt_trace_typecheck && c->opt_printast) {
     dlog("————————— AST after typecheck —————————");
@@ -647,11 +692,11 @@ static err_t compile_co_to_c(compiler_t* c, srcfile_t* srcfile, const char* cfil
   memalloc_t ir_ma = ast_ma;
   if (( err = analyze(c, unit, ir_ma) )) {
     dlog("IR analyze: err=%s", err_str(err));
-    goto end3;
+    goto end4;
   }
   if (c->errcount > errcount) {
     err = ErrCanceled;
-    goto end3;
+    goto end4;
   }
 
   // print AST, if requested
@@ -666,7 +711,7 @@ static err_t compile_co_to_c(compiler_t* c, srcfile_t* srcfile, const char* cfil
   dlog_if(opt_trace_cgen, "————————— cgen —————————");
   cgen_t g;
   if (!cgen_init(&g, c, c->ma))
-    goto end3;
+    goto end4;
   err = cgen_generate(&g, unit);
   if (!err) {
     if (opt_trace_cgen) {
@@ -679,6 +724,8 @@ static err_t compile_co_to_c(compiler_t* c, srcfile_t* srcfile, const char* cfil
   cgen_dispose(&g);
 
 
+end4:
+  memalloc_bump_in_dispose(ast_ma);
 end3:
   srcfile_close(srcfile);
   if (c->opt_printast) {
@@ -688,50 +735,10 @@ end3:
 end2:
   parser_dispose(&parser);
 end1:
-  mem_free(c->ma, &ast_mem);
   if (c->errcount > errcount && !err)
     err = ErrCanceled;
   return err;
 }
-
-
-#if 0
-  static err_t fmt_ofile(compiler_t* c, srcfile_t* srcfile, buf_t* ofile) {
-    u8 sha256[32];
-    usize needlen = strlen(c->pkgbuilddir) + 1 + sizeof(sha256)*2 + 2; // pkgbuilddir/sha256.o
-    for (;;) {
-      ofile->len = 0;
-      if (!buf_reserve(ofile, needlen))
-        return ErrNoMem;
-      abuf_t s = abuf_make(ofile->p, ofile->cap);
-      abuf_str(&s, c->pkgbuilddir);
-      abuf_c(&s, PATH_SEPARATOR);
-
-      // compute SHA-256 checksum of input file
-      sha256_data(sha256, srcfile->data.p, srcfile->data.size);
-      abuf_reprhex(&s, sha256, sizeof(sha256), /*spaced*/false);
-
-      abuf_str(&s, ".o");
-      usize n = abuf_terminate(&s);
-      if (n < needlen) {
-        ofile->len = n;
-        return 0;
-      }
-      needlen = n+1;
-    }
-  }
-#elif 0
-  static err_t fmt_ofile(compiler_t* c, srcfile_t* srcfile, buf_t* ofile) {
-    // {pkgbuilddir}/{input_basename}.o
-    // note that pkgbuilddir includes pkg->name
-    buf_clear(ofile);
-    buf_print(ofile, c->pkgbuilddir);
-    buf_push(ofile, PATH_SEPARATOR);
-    buf_print(ofile, path_base(srcfile->name.p));
-    buf_print(ofile, ".o");
-    return buf_nullterm(ofile) ? 0 : ErrNoMem;
-  }
-#endif
 
 
 err_t compiler_compile(
@@ -782,14 +789,14 @@ err_t compiler_compile(
   const char* wdir = srcfile->pkg->dir.p;
 
   // compile C -> object
-  err = cc_to_obj_async(c, subprocs, wdir, cfile.chars, ofile);
+  err = compile_c_to_obj_async(c, subprocs, wdir, cfile.chars, ofile);
   if (err) {
     subprocs_cancel(subprocs);
     goto end;
   }
 
   if (c->opt_genasm) {
-    err = cc_to_asm_async(c, subprocs, wdir, cfile.chars, ofile);
+    err = compile_c_to_asm_async(c, subprocs, wdir, cfile.chars, ofile);
     if (err) {
       subprocs_cancel(subprocs);
       goto end;

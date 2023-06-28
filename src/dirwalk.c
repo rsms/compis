@@ -197,6 +197,7 @@ readdir_again:
       return d->err = err_errno();
     d->type = dw->st.st_mode & S_IFMT;
   #endif
+  dw->st2.st_nlink = 0; // mark as uninitialized
 
   return 1;
 }

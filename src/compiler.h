@@ -120,6 +120,8 @@ typedef struct pkg_ {
   str_t          name;  // e.g. "main" or "std/runtime"
   str_t          dir;
   srcfilearray_t files; // source files
+  map_t          defs;  // package-level definitions
+  map_t          tfuns; // type functions {type_t* => map_t*{sym_t name => fun_t*}}
 } pkg_t;
 
 // loc_t is a compact representation of a source location: file, line, column & width.
@@ -223,6 +225,7 @@ typedef struct {
 typedef struct {
   node_t;
   ptrarray_t children;
+  scope_t    scope;
 } unit_t;
 
 typedef struct {
@@ -504,7 +507,7 @@ typedef struct {
   scope_t          scope;
   map_t            pkgdefs;
   map_t            tmpmap;
-  map_t            recvtmap; // maps type_t* -> ptrarray_t of methods (fun_t*[])
+  map_t            tfuns; // type functions {type_t* => map_t*{sym_t name => fun_t*}}
   fun_t* nullable  fun;      // current function
   unit_t* nullable unit;     // current unit
   expr_t* nullable dotctx;   // for ".name" shorthand
@@ -516,9 +519,8 @@ typedef struct {
 
 typedef struct {
   compiler_t*     compiler;
-  parser_t*       p;
-  memalloc_t      ma;        // p->scanner.compiler->ma
-  memalloc_t      ast_ma;    // p->ast_ma
+  memalloc_t      ma;        // compiler->ma
+  memalloc_t      ast_ma;    // compiler->ast_ma
   scope_t         scope;
   err_t           err;
   fun_t* nullable fun;       // current function
@@ -526,6 +528,10 @@ typedef struct {
   ptrarray_t      typectxstack;
   ptrarray_t      nspath;
   map_t           postanalyze; // set of nodes to analyze at the very end (keys only)
+  map_t           tmpmap;
+  const map_t     pkgdefs;  // borrowed from c->pkg->defs
+  const map_t     pkgtfuns; // borrowed from c->pkg->tfuns
+  bool            reported_error; // true if an error diagnostic has been reported
   #if DEBUG
     int traceindent;
   #endif
@@ -594,7 +600,7 @@ typedef struct compiler {
   bool opt_nolibcxx : 1;
 
   // data created during parsing & analysis
-  map_t           typeidmap;
+  map_t           typeidmap; // sym_t typeid => type_t*
   locmap_t        locmap;    // maps input <—> loc_t
   fun_t* nullable mainfun;   // fun main(), if any
 } compiler_t;
@@ -656,7 +662,8 @@ extern type_t* type_f32;
 extern type_t* type_f64;
 
 // pkg
-void pkg_dispose(pkg_t* pkg);
+err_t pkg_init(pkg_t* pkg, memalloc_t ma);
+void pkg_dispose(pkg_t* pkg, memalloc_t ma);
 bool pkg_find_dir(pkg_t* pkg); // updates pkg->dir if successful
 err_t pkgs_for_argv(int argc, char* argv[], pkg_t** pkgvp, u32* pkgcp);
 srcfile_t* pkg_add_srcfile(pkg_t* pkg, const char* name);
@@ -675,6 +682,10 @@ void compiler_init(compiler_t*, memalloc_t, diaghandler_t, pkg_t* pkg);
 void compiler_dispose(compiler_t*);
 err_t compiler_configure(compiler_t*, const compiler_config_t*);
 err_t compiler_compile(compiler_t*, promise_t*, srcfile_t*, const char* ofile);
+err_t compile_c_to_obj_async(
+  compiler_t* c, subprocs_t* sp, const char* wdir, const char* cfile, const char* ofile);
+err_t compile_c_to_asm_async(
+  compiler_t* c, subprocs_t* sp, const char* wdir, const char* cfile, const char* ofile);
 bool compiler_fully_qualified_name(const compiler_t*, buf_t* dst, const node_t*);
 bool compiler_mangle(const compiler_t*, buf_t* dst, const node_t*);
 bool compiler_mangle_type(const compiler_t* c, buf_t* buf, const type_t* t);
@@ -710,9 +721,10 @@ slice_t scanner_strval(const scanner_t* s);
 bool parser_init(parser_t* p, compiler_t* c);
 void parser_dispose(parser_t* p);
 unit_t* parser_parse(parser_t* p, memalloc_t ast_ma, srcfile_t*);
+void tfunmap_dispose(map_t* tfuns, memalloc_t ma);
 
 // post-parse passes
-err_t typecheck(parser_t*, unit_t* unit);
+err_t typecheck(compiler_t*, unit_t* unit, memalloc_t ast_ma);
 err_t analyze(compiler_t*, unit_t* unit, memalloc_t ir_ma);
 
 // ir
@@ -731,7 +743,7 @@ const char* nodekind_fmt(nodekind_t); // e.g. "variable"
 err_t node_fmt(buf_t* buf, const node_t* nullable n, u32 depth); // e.g. i32, x, "foo"
 err_t node_repr(buf_t* buf, const node_t* n); // S-expr AST tree
 origin_t node_origin(const locmap_t*, const node_t*); // compute source origin of node
-node_t* _mknode(parser_t* p, usize size, nodekind_t kind); // parser.c
+node_t* nullable ast_mknode(memalloc_t ast_ma, usize size, nodekind_t kind);
 node_t* clone_node(parser_t* p, const node_t* n);
 // T* CLONE_NODE(T* node)
 #define CLONE_NODE(p, nptr) ( \

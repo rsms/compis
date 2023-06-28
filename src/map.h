@@ -1,5 +1,6 @@
 // hash map
 // SPDX-License-Identifier: Apache-2.0
+#pragma once
 ASSUME_NONNULL_BEGIN
 
 typedef struct {

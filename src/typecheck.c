@@ -434,7 +434,8 @@ inline static locmap_t* locmap(typecheck_t* a) {
 #define diag(a, origin, diagkind, fmt, args...) \
   report_diag((a)->compiler, to_origin((a), (origin)), (diagkind), (fmt), ##args)
 
-#define error(a, origin, fmt, args...)    diag(a, origin, DIAG_ERR, (fmt), ##args)
+#define error(a, origin, fmt, args...) \
+  ((a)->reported_error = true, diag((a), origin, DIAG_ERR, (fmt), ##args))
 #define warning(a, origin, fmt, args...)  diag(a, origin, DIAG_WARN, (fmt), ##args)
 #define help(a, origin, fmt, args...)     diag(a, origin, DIAG_HELP, (fmt), ##args)
 
@@ -445,7 +446,15 @@ static void out_of_mem(typecheck_t* a) {
 }
 
 
-#define mknode(a, TYPE, kind)  ( (TYPE*)_mknode((a)->p, sizeof(TYPE), (kind)) )
+#define mknode(a, TYPE, kind)  ( (TYPE*)_mknode((a), sizeof(TYPE), (kind)) )
+
+
+static node_t* _mknode(typecheck_t* a, usize size, nodekind_t kind) {
+  node_t* n = ast_mknode(a->ast_ma, size, kind);
+  if (!n)
+    return out_of_mem(a), last_resort_node;
+  return n;
+}
 
 
 static void transfer_nuse_to_wrapper(void* wrapper_node, void* wrapee_node) {
@@ -673,7 +682,7 @@ static node_t* nullable lookup(typecheck_t* a, sym_t name) {
   node_t* n = scope_lookup(&a->scope, name, U32_MAX);
   if (!n) {
     // look in package scope and its parent universe scope
-    void** vp = map_lookup_ptr(&a->p->pkgdefs, name);
+    void** vp = map_lookup_ptr(&a->pkgdefs, name);
     if (!vp)
       return NULL;
     n = *vp;
@@ -1754,7 +1763,7 @@ static expr_t* nullable find_member(typecheck_t* a, type_t* t, sym_t name) {
   //   2 MyT (alias of T)
   //   3 T
   bt = unwrap_ptr(t); // e.g. "?*MyMyT" => "MyMyT"
-  map_t recvtmap = a->p->recvtmap; // {type_t* => map_t*}
+  map_t recvtmap = a->pkgtfuns; // {type_t* => map_t*}
   for (;;) {
     // dlog("get recvtmap for %s %s", nodekind_name(bt->kind), fmtnode(a, 0, bt));
     map_t** mp = (map_t**)map_lookup_ptr(&recvtmap, bt);
@@ -1936,7 +1945,7 @@ static void check_call_type_struct(typecheck_t* a, call_t* call, structtype_t* t
   ptrarray_t args = call->args;
 
   // build field map
-  map_t fieldmap = a->p->tmpmap;
+  map_t fieldmap = a->tmpmap;
   map_clear(&fieldmap);
   if UNLIKELY(!map_reserve(&fieldmap, a->ma, t->fields.len))
     return out_of_mem(a);
@@ -2007,7 +2016,7 @@ static void check_call_type_struct(typecheck_t* a, call_t* call, structtype_t* t
     }
   }
 
-  a->p->tmpmap = fieldmap; // in case map grew
+  a->tmpmap = fieldmap; // in case map grew
 }
 
 
@@ -2236,6 +2245,9 @@ static void call(typecheck_t* a, call_t** np) {
   call_t* n = *np;
   expr(a, n->recv);
 
+  if (a->reported_error)
+    return;
+
   node_t* recv = unwrap_id(n->recv);
   type_t* recvtype;
 
@@ -2361,6 +2373,8 @@ static void _type(typecheck_t* a, type_t** tp) {
 
 
 static void stmt(typecheck_t* a, stmt_t* n) {
+  if UNLIKELY(a->reported_error)
+    return;
   if (n->kind == STMT_TYPEDEF) {
     if (n->flags & NF_CHECKED)
       return;
@@ -2375,9 +2389,13 @@ static void stmt(typecheck_t* a, stmt_t* n) {
 
 static void exprp(typecheck_t* a, expr_t** np) {
   expr_t* n = *np;
+
   if (n->flags & NF_CHECKED)
     return;
   n->flags |= NF_CHECKED;
+
+  if UNLIKELY(a->reported_error)
+    return;
 
   TRACE_NODE(a, "", np);
 
@@ -2507,20 +2525,22 @@ again:
 }
 
 
-err_t typecheck(parser_t* p, unit_t* unit) {
-  scope_clear(&p->scope);
-
+err_t typecheck(compiler_t* c, unit_t* unit, memalloc_t ast_ma) {
   typecheck_t a = {
-    .compiler = p->scanner.compiler,
-    .p = p,
-    .ma = p->scanner.compiler->ma,
-    .ast_ma = p->ast_ma,
-    .scope = p->scope,
+    .compiler = c,
+    .ma = c->ma,
+    .ast_ma = ast_ma,
     .typectx = type_void,
+    .pkgdefs = c->pkg->defs,
+    .pkgtfuns = c->pkg->tfuns,
   };
 
   if (!map_init(&a.postanalyze, a.ma, 32))
     return ErrNoMem;
+  if (!map_init(&a.tmpmap, a.ma, 32)) {
+    a.err = ErrNoMem;
+    goto end1;
+  }
 
   enter_scope(&a);
   enter_ns(&a, unit);
@@ -2535,10 +2555,9 @@ err_t typecheck(parser_t* p, unit_t* unit) {
 
   ptrarray_dispose(&a.nspath, a.ma);
   ptrarray_dispose(&a.typectxstack, a.ma);
+  map_dispose(&a.tmpmap, a.ma);
+end1:
   map_dispose(&a.postanalyze, a.ma);
-
-  // update borrowed containers owned by p (in case they grew)
-  p->scope = a.scope;
 
   return a.err;
 }

@@ -329,14 +329,23 @@ static bool expect2(parser_t* p, tok_t tok, const char* errmsg) {
 }
 
 
+node_t* nullable ast_mknode(memalloc_t ast_ma, usize size, nodekind_t kind) {
+  node_t* n = mem_alloc_zeroed(ast_ma, size).p;
+  if (n)
+    n->kind = kind;
+  return n;
+}
+
+
 #define mknode(p, TYPE, kind)      ( (TYPE*)_mknode((p), sizeof(TYPE), (kind)) )
 #define mkexpr(p, TYPE, kind, fl)  ( (TYPE*)_mkexpr((p), sizeof(TYPE), (kind), (fl)) )
 
 
-node_t* _mknode(parser_t* p, usize size, nodekind_t kind) {
+static node_t* _mknode(parser_t* p, usize size, nodekind_t kind) {
   mem_t m = mem_alloc_zeroed(p->ast_ma, size);
-  if UNLIKELY(m.p == NULL)
+  if UNLIKELY(m.p == NULL) {
     return out_of_mem(p), last_resort_node;
+  }
   node_t* n = m.p;
   n->kind = kind;
   n->loc = currloc(p);
@@ -589,9 +598,16 @@ static type_t* type_array(parser_t* p) {
 }
 
 
+void tfunmap_dispose(map_t* tfuns, memalloc_t ma) {
+  for (const mapent_t* e = map_it(tfuns); map_itnext(tfuns, &e); )
+    map_dispose((map_t*)e->value, ma);
+  map_dispose(tfuns, ma);
+}
+
+
 fun_t* nullable lookup_typefun(parser_t* p, type_t* recv, sym_t name) {
   // find function map for recv
-  void** mmp = map_lookup_ptr(&p->recvtmap, recv);
+  void** mmp = map_lookup_ptr(&p->tfuns, recv);
   if (!mmp)
     return NULL; // no functions on recv
   map_t* mm = assertnotnull(*mmp);
@@ -1790,9 +1806,9 @@ static type_t* type_fun(parser_t* p) {
 }
 
 
-static map_t* nullable get_or_create_recvtmap(parser_t* p, const type_t* t) {
+static map_t* nullable get_or_create_tfunmap(parser_t* p, const type_t* t) {
   // get or create function map for type
-  void** mmp = map_assign_ptr(&p->recvtmap, p->ma, t);
+  void** mmp = map_assign_ptr(&p->tfuns, p->ma, t);
   if UNLIKELY(!mmp)
     return out_of_mem(p), NULL;
   if (!*mmp) {
@@ -1813,7 +1829,7 @@ static void typefun_add(parser_t* p, type_t* recvt, sym_t name, fun_t* fun, loc_
 
   fun->recvt = recvt;
 
-  map_t* mm = get_or_create_recvtmap(p, recvt);
+  map_t* mm = get_or_create_tfunmap(p, recvt);
   if UNLIKELY(!mm)
     return;
   void** mp = map_assign_ptr(mm, p->ma, name);
@@ -2049,61 +2065,19 @@ unit_t* parser_parse(parser_t* p, memalloc_t ast_ma, srcfile_t* srcfile) {
 }
 
 
-static map_t* nullable compiler_builtins(compiler_t* c) {
-  if (c->builtins.cap > 0)
-    return &c->builtins;
-
-  const struct {
-    sym_t       sym;
-    const void* node;
-  } entries[] = {
-    // types
-    {sym_cstr("void"), type_void},
-    {sym_cstr("bool"), type_bool},
-    {sym_cstr("int"),  type_int},
-    {sym_cstr("uint"), type_uint},
-    {sym_cstr("i8"),   type_i8},
-    {sym_cstr("i16"),  type_i16},
-    {sym_cstr("i32"),  type_i32},
-    {sym_cstr("i64"),  type_i64},
-    {sym_cstr("u8"),   type_u8},
-    {sym_cstr("u16"),  type_u16},
-    {sym_cstr("u32"),  type_u32},
-    {sym_cstr("u64"),  type_u64},
-    {sym_cstr("f32"),  type_f32},
-    {sym_cstr("f64"),  type_f64},
-    {sym_str,          &c->strtype},
-  };
-
-  if UNLIKELY(!map_init(&c->builtins, c->ma, countof(entries)))
-    return NULL;
-
-  for (usize i = 0; i < countof(entries); i++) {
-    void** valp = map_assign_ptr(&c->builtins, c->ma, entries[i].sym);
-    assertnotnull(valp);
-    *valp = (void*)entries[i].node;
-  }
-  return &c->builtins;
-}
-
-
 bool parser_init(parser_t* p, compiler_t* c) {
   memset(p, 0, sizeof(*p));
-
-  map_t* builtins = compiler_builtins(c);
-  if (!builtins)
-    return false;
 
   if (!scanner_init(&p->scanner, c))
     return false;
 
   if (!map_init(&p->pkgdefs, c->ma, 32))
     goto err1;
-  p->pkgdefs.parent = builtins;
+  p->pkgdefs.parent = &c->builtins;
 
   if (!map_init(&p->tmpmap, c->ma, 32))
     goto err2;
-  if (!map_init(&p->recvtmap, c->ma, 32))
+  if (!map_init(&p->tfuns, c->ma, 32))
     goto err3;
 
   p->ma = p->scanner.compiler->ma;
@@ -2125,9 +2099,10 @@ err1:
 void parser_dispose(parser_t* p) {
   map_dispose(&p->pkgdefs, p->ma);
   map_dispose(&p->tmpmap, p->ma);
-  map_dispose(&p->recvtmap, p->ma);
+  map_dispose(&p->tfuns, p->ma);
   ptrarray_dispose(&p->dotctxstack, p->ma);
   scanner_dispose(&p->scanner);
+  scope_dispose(&p->scope, p->ma);
 }
 
 

@@ -419,6 +419,7 @@ static err_t subprocs_promise_await(void* ptr) {
 
 
 subprocs_t* nullable subprocs_create_promise(memalloc_t ma, promise_t* dst_p) {
+  assertf(dst_p->await == NULL, "promise %p already initialized", dst_p);
   subprocs_t* sp = mem_alloct(ma, subprocs_t);
   if (!sp)
     return NULL;

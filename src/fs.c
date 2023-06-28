@@ -2,6 +2,7 @@
 #include "colib.h"
 #include "llvm/llvm.h"
 #include "path.h"
+#include "array.h"
 
 #include <fcntl.h> // open
 #include <err.h>
@@ -181,6 +182,50 @@ err_t fs_mkdirs(const char* path, int perms, int flags) {
   return 0;
 err:
   return err_errno();
+}
+
+
+static int cstr_cmp(const char** a, const char** b, void* ctx) {
+  return strcmp(*a, *b);
+}
+
+
+err_t fs_mkdirs_for_files(memalloc_t ma, const char*const* filev, u32 filec) {
+  err_t err = 0;
+  char dir[PATH_MAX];
+  ptrarray_t dirs = {0};
+
+  for (u32 i = 0; i < filec; i++) {
+    // e.g. "/foo/bar/cat.lol" => "/foo/bar"
+    usize dirlen = path_dir_buf(dir, sizeof(dir), filev[i]);
+    if (dirlen >= sizeof(dir)) {
+      err = ErrOverflow;
+      break;
+    }
+
+    const char** vp = array_sortedset_assign(
+      const char*, &dirs, ma, &dir, (array_sorted_cmp_t)cstr_cmp, NULL);
+    if UNLIKELY(!vp) {
+      err = ErrNoMem;
+      break;
+    }
+    if (*vp == NULL) {
+      *vp = mem_strdup(ma, (slice_t){.p=dir,.len=dirlen}, 0);
+      if UNLIKELY(*vp == NULL) {
+        err = ErrNoMem;
+        break;
+      }
+    }
+  }
+
+  if (!err) for (u32 i = 0; i < dirs.len; i++) {
+    const char* dir = (const char*)dirs.v[i];
+    if (( err = fs_mkdirs(dir, 0755, 0) ))
+      break;
+  }
+
+  ptrarray_dispose(&dirs, ma);
+  return err;
 }
 
 
