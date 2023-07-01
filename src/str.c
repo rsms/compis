@@ -9,8 +9,7 @@ static_assert(offsetof(str_t,cap) == offsetof(mem_t,size), "");
 
 
 str_t str_makelen(const char* p, usize len) {
-  safecheck(len < USIZE_MAX);
-  mem_t m = mem_alloc(STR_MEMALLOC, (usize)len + 1/*nullterm*/);
+  mem_t m = mem_alloc(STR_MEMALLOC, len + 1/*nullterm*/);
   if LIKELY(m.p) {
     memcpy(m.p, p, len);
     ((char*)m.p)[len] = 0;
@@ -19,6 +18,18 @@ str_t str_makelen(const char* p, usize len) {
     .p = m.p,
     .cap = m.size,
     .len = len * (usize)!!m.p,
+  };
+}
+
+
+str_t str_makeempty(usize cap) {
+  mem_t m = mem_alloc(STR_MEMALLOC, cap + 1/*nullterm*/);
+  if LIKELY(m.p)
+    ((char*)m.p)[0] = 0;
+  return (str_t){
+    .p = m.p,
+    .cap = m.size,
+    .len = 0,
   };
 }
 

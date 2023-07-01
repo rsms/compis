@@ -12,6 +12,7 @@ typedef struct {
 
 str_t str_makelen(const char* p, usize len);
 static str_t str_make(const char* cstr);
+str_t str_makeempty(usize cap);
 inline void str_free(str_t);
 
 // str_ensure_avail makes sure there is >= minavail free bytes at p+len

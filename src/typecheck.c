@@ -132,7 +132,7 @@ static const type_t* unwrap_alias_const(const type_t* t) {
 
 // unwrap_ptr unwraps optional, ref and ptr
 // e.g. "?&T" => "&T" => "T"
-static type_t* unwrap_ptr(type_t* t) {
+type_t* type_unwrap_ptr(type_t* t) {
   assertnotnull(t);
   for (;;) switch (t->kind) {
     case TYPE_OPTIONAL: t = assertnotnull(((opttype_t*)t)->elem); break;
@@ -365,25 +365,30 @@ bool type_isconvertible(const type_t* dst, const type_t* src) {
 static bool intern_usertype(compiler_t* c, usertype_t** tp) {
   assert(nodekind_isusertype((*tp)->kind));
 
+  bool did_replace = false;
   sym_t tid = typeid((type_t*)*tp);
+
+  rwmutex_lock(&c->typeidmap_mu);
+
   usertype_t** p = (usertype_t**)map_assign_ptr(&c->typeidmap, c->ma, tid);
 
   if UNLIKELY(!p) {
     report_diag(c, (origin_t){0}, DIAG_ERR, "out of memory (%s)", __FUNCTION__);
-    return false;
+    goto end;
   }
 
-  if (*p) {
-    if (*tp == *p)
-      return false;
+  if (*p && *tp != *p) {
     //dlog("%s replace %p with existing %p", __FUNCTION__, *tp, *p);
     assert((*p)->kind == (*tp)->kind);
     *tp = *p;
-    return true;
+    did_replace = true;
+  } else {
+    *p = *tp;
   }
 
-  *p = *tp;
-  return false;
+end:
+  rwmutex_unlock(&c->typeidmap_mu);
+  return did_replace;
 }
 
 
@@ -511,7 +516,7 @@ static expr_t* mkretexpr(typecheck_t* a, expr_t* value, loc_t loc) {
 
 static char* mangle(typecheck_t* a, const node_t* n) {
   buf_t* buf = tmpbuf_get(0);
-  if UNLIKELY(!compiler_mangle(a->compiler, buf, n)) {
+  if UNLIKELY(!compiler_mangle(a->compiler, a->pkg, buf, n)) {
     dlog("compiler_mangle failed");
   } else {
     char* s = mem_strdup(a->ast_ma, buf_slice(*buf), 0);
@@ -682,7 +687,7 @@ static node_t* nullable lookup(typecheck_t* a, sym_t name) {
   node_t* n = scope_lookup(&a->scope, name, U32_MAX);
   if (!n) {
     // look in package scope and its parent universe scope
-    void** vp = map_lookup_ptr(&a->pkgdefs, name);
+    void** vp = map_lookup_ptr(&a->pkg->defs, name);
     if (!vp)
       return NULL;
     n = *vp;
@@ -1053,7 +1058,7 @@ static type_t* check_retval(typecheck_t* a, const void* originptr, expr_t*nullab
 
 
 static void main_fun(typecheck_t* a, fun_t* n) {
-  a->compiler->mainfun = n;
+  a->pkg->mainfun = n;
 
   funtype_t* ft = (funtype_t*)n->type;
 
@@ -1758,31 +1763,11 @@ static expr_t* nullable find_member(typecheck_t* a, type_t* t, sym_t name) {
     }
   }
 
-  // look for type function, testing each alias in turn, e.g.
-  //   1 MyMyT (alias of MyT)
-  //   2 MyT (alias of T)
-  //   3 T
-  bt = unwrap_ptr(t); // e.g. "?*MyMyT" => "MyMyT"
-  map_t recvtmap = a->pkgtfuns; // {type_t* => map_t*}
-  for (;;) {
-    // dlog("get recvtmap for %s %s", nodekind_name(bt->kind), fmtnode(a, 0, bt));
-    map_t** mp = (map_t**)map_lookup_ptr(&recvtmap, bt);
-    if (mp) {
-      assertnotnull(*mp); // {sym_t name => fun_t*}
-      fun_t** fnp = (fun_t**)map_lookup_ptr(*mp, name);
-      if (fnp) {
-        assert((*fnp)->kind == EXPR_FUN);
-        if CHECK_ONCE(*fnp)
-          fun(a, *fnp);
-        return (expr_t*)*fnp;
-      }
-    }
-    if (bt->kind != TYPE_ALIAS)
-      break;
-    bt = assertnotnull(((aliastype_t*)bt)->elem);
-  }
-
-  return NULL;
+  // look for type function
+  fun_t* fn = typefuntab_lookup(&a->pkg->tfundefs, t, name);
+  if (fn && CHECK_ONCE(fn))
+    fun(a, fn);
+  return (expr_t*)fn;
 }
 
 
@@ -2525,14 +2510,15 @@ again:
 }
 
 
-err_t typecheck(compiler_t* c, unit_t* unit, memalloc_t ast_ma) {
+err_t typecheck(
+  compiler_t* c, memalloc_t ast_ma, pkg_t* pkg, unit_t** unitv, u32 unitc)
+{
   typecheck_t a = {
     .compiler = c,
+    .pkg = pkg,
     .ma = c->ma,
     .ast_ma = ast_ma,
     .typectx = type_void,
-    .pkgdefs = c->pkg->defs,
-    .pkgtfuns = c->pkg->tfuns,
   };
 
   if (!map_init(&a.postanalyze, a.ma, 32))
@@ -2542,16 +2528,25 @@ err_t typecheck(compiler_t* c, unit_t* unit, memalloc_t ast_ma) {
     goto end1;
   }
 
-  enter_scope(&a);
-  enter_ns(&a, unit);
+  enter_scope(&a); // package
 
-  for (u32 i = 0; i < unit->children.len; i++)
-    stmt(&a, unit->children.v[i]);
+  for (u32 unit_i = 0; unit_i < unitc; unit_i++) {
+    unit_t* unit = unitv[unit_i];
 
-  leave_ns(&a);
-  leave_scope(&a);
+    enter_scope(&a);
+    enter_ns(&a, unit);
 
+    for (u32 i = 0; i < unit->children.len; i++)
+      stmt(&a, unit->children.v[i]);
+
+    leave_ns(&a);
+    leave_scope(&a);
+  }
+
+  // TODO: should this run after each unit?
   postanalyze(&a);
+
+  leave_scope(&a); // package
 
   ptrarray_dispose(&a.nspath, a.ma);
   ptrarray_dispose(&a.typectxstack, a.ma);

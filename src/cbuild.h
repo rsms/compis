@@ -33,22 +33,23 @@ typedef enum cbuild_kind {
 } cbuild_kind_t;
 
 typedef struct {
-  compiler_t*    c;
-  strlist_t      cc;
-  strlist_t      cc_snapshot;
-  strlist_t      cxx;
-  strlist_t      cxx_snapshot;
-  strlist_t      as;
-  strlist_t      as_snapshot;
-  cbuild_kind_t  kind;
-  char*          name;
-  const char*    srcdir;
-  char* nullable objdir;
-  cobjarray_t    objs;
-  char           objfile[PATH_MAX];
+  const compiler_t* c;
+  strlist_t         cc;
+  strlist_t         cc_snapshot;
+  strlist_t         cxx;
+  strlist_t         cxx_snapshot;
+  strlist_t         as;
+  strlist_t         as_snapshot;
+  cbuild_kind_t     kind;
+  char*             name;
+  const char*       srcdir;
+  char* nullable    objdir;
+  cobjarray_t       objs;
+  char              objfile[PATH_MAX];
 } cbuild_t;
 
-void cbuild_init(cbuild_t* b, compiler_t* c, const char* name, const char* builddir);
+void cbuild_init(
+  cbuild_t* b, const compiler_t* c, const char* name, const char* builddir);
 void cbuild_dispose(cbuild_t* b);
 
 cobj_t* nullable cbuild_add_source(cbuild_t* b, const char* srcfile);

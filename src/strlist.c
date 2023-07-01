@@ -76,6 +76,13 @@ void _strlist_add2(strlist_t* a, const char* cstr) {
 }
 
 
+void strlist_addlen(strlist_t* a, const char* cstr, usize len) {
+  a->ok &= buf_append(&a->buf, cstr, len);
+  a->ok &= buf_push(&a->buf, 0);
+  a->ok &= !check_add_overflow(a->len, 1u, &a->len);
+}
+
+
 void _strlist_adda(strlist_t* a, u32 count, ...) {
   va_list ap;
   va_start(ap, count);

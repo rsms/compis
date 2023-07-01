@@ -70,6 +70,9 @@ static const struct {
 #define PRINT(cstr) ( \
   buf_print(&r->outbuf, (cstr)) ?: seterr(r, ErrNoMem) )
 
+#define PRINTN(cstr, len) ( \
+  buf_append(&r->outbuf, (cstr), (len)) ?: seterr(r, ErrNoMem) )
+
 #define PRINTF(fmt, args...) ( \
   buf_printf(&r->outbuf, (fmt), ##args) ?: seterr(r, ErrNoMem) )
 
@@ -310,8 +313,11 @@ static void repr(RPARAMS, const node_t* nullable n) {
   }
 
   const char* kindname = STRTAB_GET(nodekind_strtab, n->kind);
-  if (nodekind_isexpr(n->kind))
+  if (nodekind_isexpr(n->kind)) {
     kindname += strlen("EXPR_");
+  } else if (n->kind == NODE_UNIT) {
+    kindname += strlen("NODE_");
+  }
   REPR_BEGIN('(', kindname);
 
   bool isnew = !seen(r, n);
@@ -366,11 +372,18 @@ static void repr(RPARAMS, const node_t* nullable n) {
 
   switch (n->kind) {
 
-  case NODE_UNIT:     repr_nodearray(RARGS, &((unit_t*)n)->children); break;
   case STMT_TYPEDEF:  repr_typedef(RARGS, (typedef_t*)n); break;
   case EXPR_FUN:      repr_fun(RARGS, (fun_t*)n); break;
   case EXPR_CALL:     repr_call(RARGS, (call_t*)n); break;
   case EXPR_TYPECONS: repr_typecons(RARGS, (typecons_t*)n); break;
+
+  case NODE_UNIT: {
+    const unit_t* unit = (unit_t*)n;
+    if (unit->srcfile)
+      CHAR(' '), PRINTN(unit->srcfile->name.p, unit->srcfile->name.len);
+    repr_nodearray(RARGS, &unit->children);
+    break;
+  }
 
   case EXPR_RETURN:
     if (((retexpr_t*)n)->value)
@@ -517,7 +530,7 @@ err_t node_repr(buf_t* buf, const node_t* n) {
 }
 
 
-origin_t node_origin(const locmap_t* lm, const node_t* n) {
+origin_t node_origin(locmap_t* lm, const node_t* n) {
   origin_t r = origin_make(lm, n->loc);
   switch (n->kind) {
 
@@ -597,4 +610,10 @@ origin_t node_origin(const locmap_t* lm, const node_t* n) {
 
   }
   return r;
+}
+
+
+const char* node_srcfilename(const node_t* n, locmap_t* lm) {
+  srcfile_t* sf = n->loc != 0 ? loc_srcfile(n->loc, lm) : NULL;
+  return sf ? sf->name.p : "<input>";
 }

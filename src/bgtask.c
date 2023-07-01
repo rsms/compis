@@ -17,7 +17,7 @@
 #define BUFAVAIL(bgt, ptr)  ((usize)(uintptr)(((bgt)->linebuf + LINEBUF_CAP) - (ptr)))
 
 
-bgtask_t* bgtask_start(memalloc_t ma, const char* name, u32 ntotal, int flags) {
+bgtask_t* bgtask_open(memalloc_t ma, const char* name, u32 ntotal, int flags) {
   bgtask_t* bgt = mem_alloc(ma, sizeof(bgtask_t) + LINEBUF_CAP).p;
   if (!bgt)
     panic("out of memory");
@@ -53,6 +53,16 @@ bgtask_t* bgtask_start(memalloc_t ma, const char* name, u32 ntotal, int flags) {
     bgtask_setstatus(bgt, name);
 
   return bgt;
+}
+
+
+void bgtask_close(bgtask_t* bgt) {
+  memalloc_t ma = assertnotnull(bgt->ma);
+  usize size = sizeof(bgtask_t) + LINEBUF_CAP;
+  #if CO_SAFE
+    memset(bgt, 0, size);
+  #endif
+  mem_freex(ma, MEM(bgt, size));
 }
 
 
@@ -147,6 +157,30 @@ static void _setstatus_end(bgtask_t* bgt, char* buf) {
     *lastbyte = '\n';
   }
 
+  assert((uintptr)(buf - bgt->linebuf) <= (uintptr)U32_MAX);
+  bgt->len = (u32)(uintptr)(buf - bgt->linebuf);
+
+  usize len = (usize)(uintptr)(buf - bufstart);
+  assert(buf < bgt->linebuf + LINEBUF_CAP);
+  fwrite(bufstart, len, 1, fp);
+  fflush(fp);
+  bgt->fpos = ftell(fp);
+}
+
+
+void bgtask_refresh(bgtask_t* bgt) {
+  if (bgt->len == 0)
+    return;
+
+  FILE* fp = OUTPUT_FILE;
+  char* bufstart = bgt->linebuf;
+  char* buf = bgt->linebuf + (usize)bgt->len;
+
+  if (bgt->flags & BGTASK_FANCY) {
+    if (ftell(fp) != bgt->fpos)
+      bufstart += strlen(FANCY_START);
+  }
+
   usize len = (usize)(uintptr)(buf - bufstart);
   assert(buf < bgt->linebuf + LINEBUF_CAP);
   fwrite(bufstart, len, 1, fp);
@@ -163,25 +197,20 @@ void bgtask_setstatus(bgtask_t* bgt, const char* cstr) {
 }
 
 
-void bgtask_setstatusf(bgtask_t* bgt, const char* fmt, ...) {
-  va_list ap;
+void bgtask_setstatusv(bgtask_t* bgt, const char* fmt, va_list ap) {
   char* buf = _setstatus_begin(bgt);
   usize cap = BUFAVAIL(bgt, buf);
-  va_start(ap, fmt);
   int w = vsnprintf(buf, cap, fmt, ap);
   safecheck(w >= 0);
-  va_end(ap);
   _setstatus_end(bgt, buf + MIN(cap - 1, (usize)w));
 }
 
 
-void bgtask_end_nomsg(bgtask_t* bgt) {
-  memalloc_t ma = bgt->ma;
-  usize size = sizeof(bgtask_t) + LINEBUF_CAP;
-  #if CO_SAFE
-    memset(bgt, 0, size);
-  #endif
-  mem_freex(ma, MEM(bgt, size));
+void bgtask_setstatusf(bgtask_t* bgt, const char* fmt, ...) {
+  va_list ap;
+  va_start(ap, fmt);
+  bgtask_setstatusv(bgt, fmt, ap);
+  va_end(ap);
 }
 
 
@@ -216,6 +245,4 @@ void bgtask_end(bgtask_t* bgt, const char* fmt, ...) {
 
   if (buf)
     _setstatus_end(bgt, buf);
-
-  bgtask_end_nomsg(bgt);
 }

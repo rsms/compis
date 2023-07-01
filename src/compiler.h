@@ -7,6 +7,7 @@
 #include "strlist.h"
 #include "subproc.h"
 #include "target.h"
+#include "thread.h"
 
 // nodekind_t
 #define FOREACH_NODEKIND(_) \
@@ -101,39 +102,32 @@ enum filetype {
 
 ASSUME_NONNULL_BEGIN
 
-typedef struct pkg_ pkg_t;
+typedef struct pkg_t pkg_t;
+typedef struct srcfile_t srcfile_t;
+typedef struct fun_t fun_t;
 
+// typefuntab_t maps types to sets of type functions.
+// Each pkg_t has a typefuntab_t describing type functions defined by that package.
+// Each unit_t has a typefuntab_t describing imported type functions.
 typedef struct {
-  pkg_t*         pkg;    // parent package (set by pkg_add_srcfile)
-  str_t          name;   // relative to pkg.dir (or absolute if there's no pkg.dir)
-  void* nullable data;   // NULL until srcfile_open (and NULL after srcfile_close)
-  usize          size;   // byte size of data (set by pkg_find_files, pkgs_for_argv)
-  unixtime_t     mtime;  // modification time (set by pkg_find_files, pkgs_for_argv)
-  u32            sha256[8];
-  bool           ismmap; // true if srcfile_open used mmap
-  filetype_t     type;   // file type (set by pkg_add_srcfile)
-} srcfile_t;
-
-typedef array_type(srcfile_t) srcfilearray_t;
-
-typedef struct pkg_ {
-  str_t          name;  // e.g. "main" or "std/runtime"
-  str_t          dir;
-  srcfilearray_t files; // source files
-  map_t          defs;  // package-level definitions
-  map_t          tfuns; // type functions {type_t* => map_t*{sym_t name => fun_t*}}
-} pkg_t;
+  map_t     m;  // { sym_t typeid => map_t*{ sym_t name => fun_t* } }
+  rwmutex_t mu; // guards access to m
+} typefuntab_t;
 
 // loc_t is a compact representation of a source location: file, line, column & width.
 // Inspired by the Go compiler's xpos & lico. (loc_t)0 is invalid.
 typedef u64 loc_t;
 
-// locmap_t maps loc_t to srcfile_t
-typedef array_type(srcfile_t*) locmap_t; // slot 0 is always NULL
+// locmap_t maps loc_t to srcfile_t.
+// All locmap_ functions are thread safe.
+typedef struct {
+  array_type(srcfile_t*) m;  // {loc_t => srcfile_t*} (slot 0 is always NULL)
+  rwmutex_t              mu; // guards access to m
+} locmap_t;
 
 // origin_t describes the origin of diagnostic message (usually derived from loc_t)
 typedef struct {
-  const srcfile_t* nullable file;
+  srcfile_t* nullable file;
   u32 line;      // 0 if unknown (if so, other fields below are invalid)
   u32 column;
   u32 width;     // >0 if it's a range (starting at line & column)
@@ -153,6 +147,30 @@ typedef struct diag {
   origin_t    origin;   // origin of error (.line=0 if unknown)
   diagkind_t  kind;
 } diag_t;
+
+typedef struct srcfile_t {
+  pkg_t*         pkg;    // parent package (set by pkg_add_srcfile)
+  str_t          name;   // relative to pkg.dir (or absolute if there's no pkg.dir)
+  void* nullable data;   // NULL until srcfile_open (and NULL after srcfile_close)
+  usize          size;   // byte size of data (set by pkg_find_files, pkgs_for_argv)
+  unixtime_t     mtime;  // modification time (set by pkg_find_files, pkgs_for_argv)
+  u32            sha256[8];
+  u32            id;     // index in pkg.files
+  bool           ismmap; // true if srcfile_open used mmap
+  filetype_t     type;   // file type (set by pkg_add_srcfile)
+} srcfile_t;
+
+typedef array_type(srcfile_t) srcfilearray_t;
+
+typedef struct pkg_t {
+  str_t           name;     // e.g. "main" or "std/runtime"
+  str_t           dir;      // absolute path to source directory (empty for ad-hoc pkg)
+  srcfilearray_t  files;    // source files
+  map_t           defs;     // package-level definitions
+  rwmutex_t       defs_mu;  // protects access to defs field
+  typefuntab_t    tfundefs; // type functions defined by the package
+  fun_t* nullable mainfun;  // fun main(), if any
+} pkg_t;
 
 typedef struct {
   u32    cap;  // capacity of ptr (in number of entries)
@@ -224,8 +242,10 @@ typedef struct {
 
 typedef struct {
   node_t;
-  ptrarray_t children;
-  scope_t    scope;
+  ptrarray_t          children;
+  scope_t             scope;
+  srcfile_t* nullable srcfile;
+  typefuntab_t        tfuns;   // imported type functions
 } unit_t;
 
 typedef struct {
@@ -390,7 +410,7 @@ typedef struct { // PARAM, VAR, LET
   u64              offset;  // [FIELD only] memory offset in bytes
 } local_t;
 
-typedef struct { // fun is a declaration (stmt) or an expression depending on use
+typedef struct fun_t { // fun is a declaration (stmt) or an expression depending on use
   expr_t;
   sym_t nullable    name;         // NULL if anonymous
   loc_t             nameloc;      // source location of name
@@ -474,7 +494,8 @@ typedef struct {
 } irfun_t;
 
 typedef struct {
-  ptrarray_t functions;
+  ptrarray_t          functions;
+  srcfile_t* nullable srcfile;
 } irunit_t;
 
 // ———————— END IR ————————
@@ -490,6 +511,8 @@ typedef struct {
   loc_t      loc;         // recently parsed token's source location
   bool       insertsemi;  // insert a semicolon before next newline
   u32        lineno;      // monotonic line number counter (!= tok.loc.line)
+  u32        errcount;    // number of error diagnostics reported
+  err_t      err;         // non-syntax error that occurred
 } scanstate_t;
 
 typedef struct {
@@ -497,7 +520,7 @@ typedef struct {
   compiler_t* compiler;
   u64         litint;      // parsed INTLIT
   buf_t       litbuf;      // interpreted source literal (e.g. "foo\n")
-  sym_t       sym;         // identifier
+  sym_t       sym;         // current identifier value
 } scanner_t;
 
 typedef struct {
@@ -505,9 +528,7 @@ typedef struct {
   memalloc_t       ma;     // general allocator (== scanner.compiler->ma)
   memalloc_t       ast_ma; // AST allocator
   scope_t          scope;
-  map_t            pkgdefs;
   map_t            tmpmap;
-  map_t            tfuns; // type functions {type_t* => map_t*{sym_t name => fun_t*}}
   fun_t* nullable  fun;      // current function
   unit_t* nullable unit;     // current unit
   expr_t* nullable dotctx;   // for ".name" shorthand
@@ -519,6 +540,7 @@ typedef struct {
 
 typedef struct {
   compiler_t*     compiler;
+  pkg_t*          pkg;
   memalloc_t      ma;        // compiler->ma
   memalloc_t      ast_ma;    // compiler->ast_ma
   scope_t         scope;
@@ -529,8 +551,6 @@ typedef struct {
   ptrarray_t      nspath;
   map_t           postanalyze; // set of nodes to analyze at the very end (keys only)
   map_t           tmpmap;
-  const map_t     pkgdefs;  // borrowed from c->pkg->defs
-  const map_t     pkgtfuns; // borrowed from c->pkg->tfuns
   bool            reported_error; // true if an error diagnostic has been reported
   #if DEBUG
     int traceindent;
@@ -538,23 +558,24 @@ typedef struct {
 } typecheck_t;
 
 typedef struct {
-  compiler_t* compiler;
-  memalloc_t  ma;         // compiler->ma
-  buf_t       outbuf;
-  buf_t       headbuf;
-  usize       headoffs;
-  u32         headnest;
-  u32         headlineno;
-  u32         headinputid;
-  u32         inputid;
-  u32         lineno;
-  u32         scopenest;
-  err_t       err;
-  u32         anon_idgen;
-  usize       indent;
-  map_t       typedefmap;
-  map_t       tmpmap;
-  ptrarray_t  funqueue;   // [fun_t*] queue of (nested) functions awaiting build
+  compiler_t*  compiler;
+  const pkg_t* pkg;
+  memalloc_t   ma;         // compiler->ma
+  buf_t        outbuf;
+  buf_t        headbuf;
+  usize        headoffs;
+  u32          headnest;
+  u32          headlineno;
+  u32          headinputid;
+  u32          inputid;
+  u32          lineno;
+  u32          scopenest;
+  err_t        err;
+  u32          anon_idgen;
+  usize        indent;
+  map_t        typedefmap;
+  map_t        tmpmap;
+  ptrarray_t   funqueue;   // [fun_t*] queue of (nested) functions awaiting build
 } cgen_t;
 
 typedef struct compiler {
@@ -563,8 +584,6 @@ typedef struct compiler {
   char*       buildroot;     // where all generated files go, e.g. "build"
   char*       builddir;      // "{buildroot}/{mode}-{triple}"
   char*       sysroot;       // "{builddir}/sysroot"
-  char*       pkgbuilddir;   // "{builddir}/{pkgname}.copkg"
-  pkg_t*      pkg;           // package being compiled
   strlist_t   cflags;        // cflags used for compis objects (includes cflags_common)
   slice_t     flags_common;  // flags used for all objects; .s, .c etc.
   slice_t     cflags_common; // cflags used for all objects (includes xflags_common)
@@ -595,14 +614,15 @@ typedef struct compiler {
   bool opt_printir : 1;
   bool opt_genirdot : 1;
   bool opt_genasm : 1;
-  bool opt_verbose : 1;
   bool opt_nolibc : 1;
   bool opt_nolibcxx : 1;
+  u8   opt_verbose; // 0=off 1=on 2=extra
 
   // data created during parsing & analysis
-  map_t           typeidmap; // sym_t typeid => type_t*
-  locmap_t        locmap;    // maps input <—> loc_t
-  fun_t* nullable mainfun;   // fun main(), if any
+  // mutex must be locked when multiple threads share a compiler instance
+  map_t     typeidmap; // sym_t typeid => type_t*
+  rwmutex_t typeidmap_mu;
+  locmap_t  locmap;    // maps loc_t => srcfile_t*
 } compiler_t;
 
 typedef struct { // compiler_config_t
@@ -669,6 +689,11 @@ err_t pkgs_for_argv(int argc, char* argv[], pkg_t** pkgvp, u32* pkgcp);
 srcfile_t* pkg_add_srcfile(pkg_t* pkg, const char* name);
 err_t pkg_find_files(pkg_t* pkg); // updates pkg->files, sets sf.mtime
 unixtime_t pkg_source_mtime(const pkg_t* pkg); // max(f.mtime for f in files)
+bool pkg_is_built(const pkg_t* pkg, const compiler_t* c);
+str_t pkg_builddir(const pkg_t* pkg, const compiler_t* c); // "{c.builddir}/{pkg.name}.copkg"
+node_t* nullable pkg_def_get(pkg_t* pkg, sym_t name);
+err_t pkg_def_set(pkg_t* pkg, memalloc_t ma, sym_t name, node_t* n);
+err_t pkg_def_add(pkg_t* pkg, memalloc_t ma, sym_t name, node_t** np_inout);
 
 // srcfile
 err_t srcfile_open(srcfile_t* sf);
@@ -678,28 +703,28 @@ void srcfile_close(srcfile_t* sf);
 filetype_t filetype_guess(const char* filename);
 
 // compiler
-void compiler_init(compiler_t*, memalloc_t, diaghandler_t, pkg_t* pkg);
+void compiler_init(compiler_t*, memalloc_t, diaghandler_t);
 void compiler_dispose(compiler_t*);
 err_t compiler_configure(compiler_t*, const compiler_config_t*);
-err_t compiler_compile(compiler_t*, promise_t*, srcfile_t*, const char* ofile);
 err_t compile_c_to_obj_async(
   compiler_t* c, subprocs_t* sp, const char* wdir, const char* cfile, const char* ofile);
 err_t compile_c_to_asm_async(
   compiler_t* c, subprocs_t* sp, const char* wdir, const char* cfile, const char* ofile);
-bool compiler_fully_qualified_name(const compiler_t*, buf_t* dst, const node_t*);
-bool compiler_mangle(const compiler_t*, buf_t* dst, const node_t*);
-bool compiler_mangle_type(const compiler_t* c, buf_t* buf, const type_t* t);
+bool compiler_fully_qualified_name(const compiler_t*, const pkg_t*, buf_t* dst, const node_t*);
+bool compiler_mangle(const compiler_t*, const pkg_t*, buf_t* dst, const node_t*);
+bool compiler_mangle_type(const compiler_t* c, const pkg_t*, buf_t* buf, const type_t* t);
 
 // compiler_spawn_tool spawns a compiler subprocess in procs
 err_t compiler_spawn_tool(
-  compiler_t* c, subprocs_t* procs, strlist_t* args, const char* nullable cwd);
+  const compiler_t* c, subprocs_t* procs, strlist_t* args, const char* nullable cwd);
 
 // compiler_spawn_tool_p spawns a compiler subprocess at p
 err_t compiler_spawn_tool_p(
-  compiler_t* c, subproc_t* p, strlist_t* args, const char* nullable cwd);
+  const compiler_t* c, subproc_t* p, strlist_t* args, const char* nullable cwd);
 
 // compiler_run_tool_sync spawns a compiler subprocess and waits for it to complete
-err_t compiler_run_tool_sync(compiler_t* c, strlist_t* args, const char* nullable cwd);
+err_t compiler_run_tool_sync(
+  const compiler_t* c, strlist_t* args, const char* nullable cwd);
 
 // spawn_tool spawns a compiler subprocess
 // argv must be NULL terminated; argv[0] must be the name of a compis command, eg "cc"
@@ -720,20 +745,25 @@ slice_t scanner_strval(const scanner_t* s);
 // parser
 bool parser_init(parser_t* p, compiler_t* c);
 void parser_dispose(parser_t* p);
-unit_t* parser_parse(parser_t* p, memalloc_t ast_ma, srcfile_t*);
-void tfunmap_dispose(map_t* tfuns, memalloc_t ma);
+err_t parser_parse(parser_t* p, memalloc_t ast_ma, srcfile_t*, unit_t** result);
+inline static u32 parser_errcount(const parser_t* p) { return p->scanner.errcount; }
+
+// typefuntab
+err_t typefuntab_init(typefuntab_t* tfuns, memalloc_t ma);
+void typefuntab_dispose(typefuntab_t* tfuns, memalloc_t ma);
+fun_t* nullable typefuntab_lookup(typefuntab_t* tfuns, type_t* t, sym_t name);
 
 // post-parse passes
-err_t typecheck(compiler_t*, unit_t* unit, memalloc_t ast_ma);
-err_t analyze(compiler_t*, unit_t* unit, memalloc_t ir_ma);
+err_t typecheck(compiler_t*, memalloc_t ast_ma, pkg_t* pkg, unit_t** unitv, u32 unitc);
+err_t analyze(compiler_t* c, memalloc_t ast_ma, pkg_t* pkg, unit_t** unitv, u32 unitc);
 
 // ir
-bool irfmt(const compiler_t*, buf_t*, const irunit_t*);
-bool irfmt_dot(const compiler_t*, buf_t*, const irunit_t*);
-bool irfmt_fun(const compiler_t*, buf_t*, const irfun_t*);
+bool irfmt(compiler_t*, const pkg_t*, buf_t*, const irunit_t*);
+bool irfmt_dot(compiler_t*, const pkg_t*, buf_t*, const irunit_t*);
+bool irfmt_fun(compiler_t*, const pkg_t*, buf_t*, const irfun_t*);
 
 // C code generator
-bool cgen_init(cgen_t* g, compiler_t* c, memalloc_t out_ma);
+bool cgen_init(cgen_t* g, compiler_t* c, const pkg_t*, memalloc_t out_ma);
 void cgen_dispose(cgen_t* g);
 err_t cgen_generate(cgen_t* g, const unit_t* unit);
 
@@ -742,7 +772,7 @@ const char* nodekind_name(nodekind_t); // e.g. "EXPR_INTLIT"
 const char* nodekind_fmt(nodekind_t); // e.g. "variable"
 err_t node_fmt(buf_t* buf, const node_t* nullable n, u32 depth); // e.g. i32, x, "foo"
 err_t node_repr(buf_t* buf, const node_t* n); // S-expr AST tree
-origin_t node_origin(const locmap_t*, const node_t*); // compute source origin of node
+origin_t node_origin(locmap_t*, const node_t*); // compute source origin of node
 node_t* nullable ast_mknode(memalloc_t ast_ma, usize size, nodekind_t kind);
 node_t* clone_node(parser_t* p, const node_t* n);
 // T* CLONE_NODE(T* node)
@@ -753,6 +783,7 @@ node_t* clone_node(parser_t* p, const node_t* n);
     sizeof(*(nptr))) )
 local_t* nullable lookup_struct_field(structtype_t* st, sym_t name);
 fun_t* nullable lookup_method(parser_t* p, type_t* recv, sym_t name);
+const char* node_srcfilename(const node_t* n, locmap_t* lm);
 
 inline static void bubble_flags(void* parent, void* child) {
   ((node_t*)parent)->flags |= (((node_t*)child)->flags & NODEFLAGS_BUBBLE);
@@ -831,6 +862,10 @@ inline static const type_t* canonical_primtype(const compiler_t* c, const type_t
          t;
 }
 
+// type_unwrap_ptr unwraps optional, ref and ptr.
+// e.g. "?&T" => "&T" => "T"
+type_t* type_unwrap_ptr(type_t* t);
+
 // expr_no_side_effects returns true if materializing n has no side effects
 bool expr_no_side_effects(const expr_t* n);
 
@@ -885,11 +920,30 @@ void sym_init(memalloc_t);
 sym_t sym_intern(const void* key, usize keylen);
 sym_t sym_snprintf(char* buf, usize bufcap, const char* fmt, ...)ATTR_FORMAT(printf,3,4);
 inline static sym_t sym_cstr(const char* s) { return sym_intern(s, strlen(s)); }
+extern sym_t _primtype_nametab[(TYPE_F64 - TYPE_VOID) + 1];
+inline static sym_t primtype_name(nodekind_t kind) { // e.g. "i64"
+  assert(TYPE_VOID <= kind && kind <= TYPE_F64);
+  return _primtype_nametab[kind - TYPE_VOID];
+}
 extern sym_t sym__;    // "_"
 extern sym_t sym_this; // "this"
 extern sym_t sym_drop; // "drop"
 extern sym_t sym_main; // "main"
 extern sym_t sym_str;  // "str"
+extern sym_t sym_void;
+extern sym_t sym_bool;
+extern sym_t sym_int;
+extern sym_t sym_uint;
+extern sym_t sym_i8;
+extern sym_t sym_i16;
+extern sym_t sym_i32;
+extern sym_t sym_i64;
+extern sym_t sym_u8;
+extern sym_t sym_u16;
+extern sym_t sym_u32;
+extern sym_t sym_u64;
+extern sym_t sym_f32;
+extern sym_t sym_f64;
 
 // scope
 void scope_clear(scope_t* s);
@@ -910,17 +964,18 @@ buf_t* tmpbuf_get(u32 bufindex /* [0-2) */);
 
 // sysroot
 #define SYSROOT_ENABLE_CXX (1<<0) // enable libc++, libc++abi, libunwind
-err_t build_sysroot_if_needed(compiler_t* c, int flags); // build_sysroot.c
+err_t build_sysroot_if_needed(const compiler_t* c, int flags); // build_sysroot.c
 const char* syslib_filename(const target_t* target, syslib_t);
 
-// pos
-static void locmap_dispose(locmap_t* lm, memalloc_t ma);
-inline static void locmap_clear(locmap_t* lm) { lm->len = 0; }
+// loc
+err_t locmap_init(locmap_t* lm);
+void locmap_dispose(locmap_t* lm, memalloc_t);
+void locmap_clear(locmap_t* lm);
 u32 locmap_srcfileid(locmap_t* lm, srcfile_t*, memalloc_t); // get id for source file
 
 static loc_t loc_make(u32 inputid, u32 line, u32 col, u32 width);
 
-static srcfile_t* nullable loc_srcfile(loc_t p, const locmap_t*);
+srcfile_t* nullable loc_srcfile(loc_t p, locmap_t*);
 static u32 loc_line(loc_t p);
 static u32 loc_col(loc_t p);
 static u32 loc_width(loc_t p);
@@ -950,22 +1005,23 @@ inline static bool loc_isbefore(loc_t p, loc_t q) { return p < q; }
 inline static bool loc_isafter(loc_t p, loc_t q) { return p > q; }
 
 // loc_fmt appends "file:line:col" to buf (behaves like snprintf)
-usize loc_fmt(loc_t p, char* buf, usize bufcap, const locmap_t* lm);
+usize loc_fmt(loc_t p, char* buf, usize bufcap, locmap_t* lm);
 
 // origin_make creates a origin_t
-// 1. origin_make(const locmap_t*, loc_t)
-// 2. origin_make(const locmap_t*, loc_t, u32 focus_col)
+// 1. origin_make(locmap_t*, loc_t)
+// 2. origin_make(locmap_t*, loc_t, u32 focus_col)
 #define origin_make(...) __VARG_DISP(_origin_make,__VA_ARGS__)
 #define _origin_make1 _origin_make2 // catch "too few arguments to function call"
-origin_t _origin_make2(const locmap_t* m, loc_t loc);
-origin_t _origin_make3(const locmap_t* m, loc_t loc, u32 focus_col);
+origin_t _origin_make2(locmap_t* m, loc_t loc);
+origin_t _origin_make3(locmap_t* m, loc_t loc, u32 focus_col);
 
 origin_t origin_union(origin_t a, origin_t b);
+
 
 //—————————————————————————————————————————————————————
 // loc implementation
 
-// Limits: inputs: 1048575, lines: 1048575, columns: 4095, width: 4095
+// Limits: files: 1048575, lines: 1048575, columns: 4095, width: 4095
 // If this is too tight, we can either make lico 64b wide, or we can introduce a
 // tiered encoding where we remove column information as line numbers grow bigger.
 static const u64 _loc_widthBits     = 12;
@@ -1024,11 +1080,6 @@ inline static void loc_set_line(loc_t* p, u32 line) { *p = loc_with_line(*p, lin
 inline static void loc_set_col(loc_t* p, u32 col) { *p = loc_with_col(*p, col); }
 inline static void loc_set_width(loc_t* p, u32 width) { *p = loc_with_width(*p, width); }
 
-inline static srcfile_t* nullable loc_srcfile(loc_t p, const locmap_t* lm) {
-  u32 id = loc_srcfileid(p);
-  return lm->len > id ? lm->v[id] : NULL;
-}
-
 inline static loc_t loc_min(loc_t a, loc_t b) {
   // pos-1 causes (loc_t)0 to become the maximum value of loc_t,
   // effectively preferring >(loc_t)0 over (loc_t)0 here.
@@ -1036,10 +1087,6 @@ inline static loc_t loc_min(loc_t a, loc_t b) {
 }
 inline static loc_t loc_max(loc_t a, loc_t b) {
   return (b > a) ? b : a;
-}
-
-inline static void locmap_dispose(locmap_t* lm, memalloc_t ma) {
-  array_dispose(srcfile_t*, (array_t*)lm, ma);
 }
 
 

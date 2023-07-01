@@ -47,6 +47,8 @@ void scanner_begin(scanner_t* s, srcfile_t* srcfile) {
   u32 loc_srcfileid = locmap_srcfileid(&s->compiler->locmap, srcfile, s->compiler->ma);
   s->loc = loc_make(loc_srcfileid, 1, 1, 1);
   s->lineno = 1;
+  s->errcount = 0;
+  s->err = 0;
 }
 
 
@@ -95,6 +97,7 @@ static void error(scanner_t* s, const char* fmt, ...) {
   va_start(ap, fmt);
   report_diagv(s->compiler, origin, DIAG_ERR, fmt, ap);
   va_end(ap);
+  s->errcount++;
   stop_scanning(s);
 }
 
@@ -108,7 +111,15 @@ static void error_at(scanner_t* s, loc_t loc, const char* fmt, ...) {
   va_start(ap, fmt);
   report_diagv(s->compiler, origin, DIAG_ERR, fmt, ap);
   va_end(ap);
+  s->errcount++;
   stop_scanning(s);
+}
+
+
+static void out_of_mem(scanner_t* s) {
+  if (s->err == 0)
+    s->err = ErrNoMem;
+  error(s, "out of memory");
 }
 
 
@@ -122,7 +133,7 @@ static void newline(scanner_t* s) {
 static void prepare_litbuf(scanner_t* s, usize minlen) {
   buf_clear(&s->litbuf);
   if UNLIKELY(!buf_reserve(&s->litbuf, minlen))
-    error(s, "out of memory");
+    out_of_mem(s);
 }
 
 
@@ -171,7 +182,7 @@ static void floatnumber(scanner_t* s, int base) {
 end:
   ok &= buf_nullterm(&s->litbuf);
   if UNLIKELY(!ok)
-    return error(s, "out of memory");
+    return out_of_mem(s);
 }
 
 
@@ -318,7 +329,7 @@ static void string_buffered(scanner_t* s, usize extralen, bool ismultiline, loc_
   buf_clear(&s->litbuf);
   u8* dst = buf_alloc(&s->litbuf, len);
   if UNLIKELY(!dst)
-    return error(s, "out of memory");
+    return out_of_mem(s);
 
   const u8* chunkstart = src;
 

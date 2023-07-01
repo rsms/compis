@@ -97,6 +97,18 @@ err_t fs_writefile(const char* filename, u32 mode, slice_t data) {
 }
 
 
+err_t fs_writefile_mkdirs(const char* filename, u32 mode, slice_t data) {
+  err_t err = fs_writefile(filename, 0660, data);
+  if (err != ErrNotFound)
+    return err;
+  char* dir = path_dir_alloca(filename);
+  err = fs_mkdirs(dir, 0755, FS_VERBOSE);
+  if (!err)
+    err = fs_writefile(filename, 0660, data);
+  return err;
+}
+
+
 err_t fs_touch(const char* filename, u32 mode) {
   // dlog("%s '%s' 0%o", __FUNCTION__, filename, mode);
   int fd = open(filename, O_WRONLY|O_TRUNC|O_CREAT, (mode_t)mode);

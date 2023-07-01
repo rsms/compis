@@ -140,6 +140,11 @@ inline static origin_t curr_origin(parser_t* p) {
 }
 
 
+inline static pkg_t* currpkg(parser_t* p) {
+  return p->scanner.srcfile->pkg;
+}
+
+
 static void next(parser_t* p) {
   scanner_next(&p->scanner);
 }
@@ -208,46 +213,15 @@ static void fastforward_semi(parser_t* p) {
 
 // void diag(parser_t* p, T origin, diagkind_t diagkind, const char* fmt, ...)
 // where T is one of: origin_t | loc_t | node_t* | expr_t*
-#define diag(p, origin, diagkind, fmt, args...) \
-  report_diag((p)->scanner.compiler, to_origin((p), (origin)), (diagkind), (fmt), ##args)
+#define diag(p, origin, diagkind, fmt, args...) ( \
+  (p)->scanner.errcount += ((diagkind) == DIAG_ERR), \
+  report_diag( \
+    (p)->scanner.compiler, to_origin((p), (origin)), (diagkind), (fmt), ##args) \
+)
 
 #define error(p, origin, fmt, args...)    diag(p, origin, DIAG_ERR, (fmt), ##args)
 #define warning(p, origin, fmt, args...)  diag(p, origin, DIAG_WARN, (fmt), ##args)
 #define help(p, origin, fmt, args...)     diag(p, origin, DIAG_HELP, (fmt), ##args)
-
-
-// ATTR_FORMAT(printf,3,4)
-// static void error_loc(parser_t* p, loc_t loc, const char* fmt, ...) {
-//   if (p->scanner.inp == p->scanner.inend && p->scanner.tok == TEOF)
-//     return;
-//   origin_t origin = origin_make(locmap(p), loc);
-//   va_list ap;
-//   va_start(ap, fmt);
-//   report_diagv(p->scanner.compiler, origin, DIAG_ERR, fmt, ap);
-//   va_end(ap);
-// }
-
-
-// ATTR_FORMAT(printf,3,4)
-// static void error(parser_t* p, const void* nullable n, const char* fmt, ...) {
-//   if (p->scanner.inp == p->scanner.inend && p->scanner.tok == TEOF)
-//     return;
-//   origin_t origin = n ? node_origin(locmap(p), n) : curr_origin(p);
-//   va_list ap;
-//   va_start(ap, fmt);
-//   report_diagv(p->scanner.compiler, origin, DIAG_ERR, fmt, ap);
-//   va_end(ap);
-// }
-
-
-// ATTR_FORMAT(printf,3,4)
-// static void warning(parser_t* p, const void* nullable n, const char* fmt, ...) {
-//   origin_t origin = n ? node_origin(locmap(p), n) : curr_origin(p);
-//   va_list ap;
-//   va_start(ap, fmt);
-//   report_diagv(p->scanner.compiler, origin, DIAG_WARN, fmt, ap);
-//   va_end(ap);
-// }
 
 
 static void stop_parsing(parser_t* p) {
@@ -255,7 +229,14 @@ static void stop_parsing(parser_t* p) {
 }
 
 
+static void set_err(parser_t* p, err_t err) {
+  if (p->scanner.err == 0)
+    p->scanner.err = err;
+}
+
+
 static void out_of_mem(parser_t* p) {
+  set_err(p, ErrNoMem);
   error(p, NULL, "out of memory");
   stop_parsing(p); // end scanner, making sure we don't keep going
 }
@@ -416,13 +397,9 @@ static void leave_scope(parser_t* p) {
 
 static node_t* nullable lookup(parser_t* p, sym_t name) {
   node_t* n = scope_lookup(&p->scope, name, U32_MAX);
-  if (!n) {
-    // look in package scope and its parent universe scope
-    void** vp = map_lookup_ptr(&p->pkgdefs, name);
-    if (!vp)
-      return NULL;
-    n = *vp;
-  }
+  // if not found locally, look in package scope and its parent universe scope
+  if (!n)
+    n = pkg_def_get(currpkg(p), name);
   return n;
 }
 
@@ -431,13 +408,14 @@ static void define_replace(parser_t* p, sym_t name, node_t* n) {
   trace("redefine %s %s", name, nodekind_name(n->kind));
   assert(n->kind != EXPR_ID);
   assert(name != sym__);
+
   if UNLIKELY(!scope_define(&p->scope, p->ma, name, n))
     out_of_mem(p);
+
+  // define top-level statements in package
   if (scope_istoplevel(&p->scope)) {
-    void** vp = map_assign_ptr(&p->pkgdefs, p->ma, name);
-    if UNLIKELY(!vp)
+    if UNLIKELY(pkg_def_set(currpkg(p), p->ma, name, n))
       return out_of_mem(p);
-    *vp = n;
   }
 }
 
@@ -458,16 +436,16 @@ static void define(parser_t* p, sym_t name, node_t* n) {
   // top-level definitions also goes into package scope
   if (scope_istoplevel(&p->scope)) {
     // trace("define in pkg %s %s", name, nodekind_name(n->kind));
-    void** vp = map_assign_ptr(&p->pkgdefs, p->ma, name);
-    if (!vp)
+    existing = n;
+    err_t err = pkg_def_add(currpkg(p), p->ma, name, /*inout*/&existing);
+    if (err)
       return out_of_mem(p);
-    if (*vp) {
-      existing = *vp;
+    if (existing != n)
       goto err_duplicate;
-    }
-    *vp = n;
   }
+
   return;
+
 err_duplicate:
   error(p, n, "redefinition of \"%s\"", name);
   if (loc_line(existing->loc))
@@ -598,23 +576,9 @@ static type_t* type_array(parser_t* p) {
 }
 
 
-void tfunmap_dispose(map_t* tfuns, memalloc_t ma) {
-  for (const mapent_t* e = map_it(tfuns); map_itnext(tfuns, &e); )
-    map_dispose((map_t*)e->value, ma);
-  map_dispose(tfuns, ma);
-}
-
-
 fun_t* nullable lookup_typefun(parser_t* p, type_t* recv, sym_t name) {
   // find function map for recv
-  void** mmp = map_lookup_ptr(&p->tfuns, recv);
-  if (!mmp)
-    return NULL; // no functions on recv
-  map_t* mm = assertnotnull(*mmp);
-
-  // find function by name
-  void** mp = map_lookup_ptr(mm, name);
-  return mp ? assertnotnull(*mp) : NULL;
+  return typefuntab_lookup(&currpkg(p)->tfundefs, recv, name);
 }
 
 
@@ -1806,16 +1770,53 @@ static type_t* type_fun(parser_t* p) {
 }
 
 
-static map_t* nullable get_or_create_tfunmap(parser_t* p, const type_t* t) {
-  // get or create function map for type
-  void** mmp = map_assign_ptr(&p->tfuns, p->ma, t);
-  if UNLIKELY(!mmp)
-    return out_of_mem(p), NULL;
-  if (!*mmp) {
-    if (!(*mmp = mem_alloct(p->ma, map_t)) || !map_init(*mmp, p->ma, 8))
-      return out_of_mem(p), NULL;
+err_t typefuntab_add(
+  typefuntab_t* tfuns, memalloc_t ma, type_t* t, sym_t name, fun_t** fun_inout)
+{
+  err_t err = 0;
+  rwmutex_lock(&tfuns->mu);
+
+  map_t** namefunmp = (map_t**)map_assign_ptr(&tfuns->m, ma, t);
+  if UNLIKELY(!namefunmp) {
+    err = ErrNoMem;
+    goto end;
   }
-  return *mmp;
+
+  // load or create name-to-fun map {sym_t name => fun_t*}
+  map_t* namefunm = *namefunmp;
+  if (!namefunm) {
+    *namefunmp = namefunm = mem_alloct(ma, map_t);
+    if UNLIKELY(namefunm == NULL) {
+      map_del_ptr(&tfuns->m, t); // undo earlier map_assign_ptr
+      err = ErrNoMem;
+      goto end;
+    }
+    if UNLIKELY(!map_init(namefunm, ma, 8)) {
+      map_del_ptr(&tfuns->m, t);
+      mem_freet(ma, namefunm);
+      err = ErrNoMem;
+      goto end;
+    }
+  }
+
+  // lookup function for name in the type t's function map
+  fun_t** funp = (fun_t**)map_assign_ptr(namefunm, ma, name);
+  if UNLIKELY(!funp) {
+    err = ErrNoMem;
+    goto end;
+  }
+
+  // if there's an existing entry, "return" that in fun_inout,
+  // else set the map entry to *fun_inout.
+  if (*funp) {
+    *fun_inout = *funp;
+  } else {
+    *funp = assertnotnull(*fun_inout);
+  }
+
+end:
+  rwmutex_unlock(&tfuns->mu);
+  return err;
 }
 
 
@@ -1829,27 +1830,33 @@ static void typefun_add(parser_t* p, type_t* recvt, sym_t name, fun_t* fun, loc_
 
   fun->recvt = recvt;
 
-  map_t* mm = get_or_create_tfunmap(p, recvt);
-  if UNLIKELY(!mm)
-    return;
-  void** mp = map_assign_ptr(mm, p->ma, name);
-  if UNLIKELY(!mp)
-    return out_of_mem(p);
-
-  expr_t* existing = *mp;
-  if (!existing && recvt->kind == TYPE_STRUCT)
+  // first, search struct type for field named "name"
+  expr_t* existing = NULL;
+  if (recvt->kind == TYPE_STRUCT)
     existing = (expr_t*)lookup_struct_field((structtype_t*)recvt, name);
 
+  // next, add (or retrieve existing) function to the type-function table
+  if (!existing) {
+    fun_t* fun_inout = fun;
+    err_t err = typefuntab_add(&currpkg(p)->tfundefs, p->ma, recvt, name, &fun_inout);
+    if UNLIKELY(err) {
+      dlog("typefuntab_add: %s", err_str(err));
+      out_of_mem(p);
+      return;
+    }
+    if (fun_inout != fun)
+      existing = (expr_t*)fun_inout;
+  }
+
+  // report an error if the type function is already defined,
+  // or if there's a struct field with the same name on the recvt.
   if UNLIKELY(existing) {
     const char* s = fmtnode(p, 0, recvt);
     error(p, loc, "duplicate %s \"%s\" for type %s",
       (existing->kind == EXPR_FUN) ? "function" : "member", name, s);
     if (loc_line(existing->loc))
       help(p, existing, "\"%s\" previously defined here", name);
-    return;
   }
-
-  *mp = fun;
 }
 
 
@@ -2026,13 +2033,14 @@ static stmt_t* stmt_pub(parser_t* p) {
 }
 
 
-unit_t* parser_parse(parser_t* p, memalloc_t ast_ma, srcfile_t* srcfile) {
+err_t parser_parse(parser_t* p, memalloc_t ast_ma, srcfile_t* srcfile, unit_t** result) {
   p->ast_ma = ast_ma;
   scope_clear(&p->scope);
 
   scanner_begin(&p->scanner, srcfile);
 
   unit_t* unit = mknode(p, unit_t, NODE_UNIT);
+  unit->srcfile = srcfile;
   p->unit = unit;
   next(p);
 
@@ -2060,8 +2068,9 @@ unit_t* parser_parse(parser_t* p, memalloc_t ast_ma, srcfile_t* srcfile) {
   leave_scope(p);
 
   p->unit = NULL;
+  *result = unit;
 
-  return unit;
+  return p->scanner.err;
 }
 
 
@@ -2071,35 +2080,22 @@ bool parser_init(parser_t* p, compiler_t* c) {
   if (!scanner_init(&p->scanner, c))
     return false;
 
-  if (!map_init(&p->pkgdefs, c->ma, 32))
-    goto err1;
-  p->pkgdefs.parent = &c->builtins;
-
-  if (!map_init(&p->tmpmap, c->ma, 32))
-    goto err2;
-  if (!map_init(&p->tfuns, c->ma, 32))
-    goto err3;
+  if (!map_init(&p->tmpmap, c->ma, 32)) {
+    scanner_dispose(&p->scanner);
+    return false;
+  }
 
   p->ma = p->scanner.compiler->ma;
 
-  // note: dotctxstack is valid when zero initialized
+  // note: dotctxstack is valid when zero-initialized
   p->dotctx = NULL;
 
   return true;
-err3:
-  map_dispose(&p->tmpmap, c->ma);
-err2:
-  map_dispose(&p->pkgdefs, c->ma);
-err1:
-  scanner_dispose(&p->scanner);
-  return false;
 }
 
 
 void parser_dispose(parser_t* p) {
-  map_dispose(&p->pkgdefs, p->ma);
   map_dispose(&p->tmpmap, p->ma);
-  map_dispose(&p->tfuns, p->ma);
   ptrarray_dispose(&p->dotctxstack, p->ma);
   scanner_dispose(&p->scanner);
   scope_dispose(&p->scope, p->ma);

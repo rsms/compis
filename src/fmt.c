@@ -419,20 +419,22 @@ static void fmt(abuf_t* s, const node_t* nullable n, u32 indent, u32 maxdepth) {
     abuf_c(s, ']');
     break;
 
-  case TYPE_VOID: abuf_str(s, "void"); break;
-  case TYPE_BOOL: abuf_str(s, "bool"); break;
-  case TYPE_I8:   abuf_str(s, "i8"); break;
-  case TYPE_I16:  abuf_str(s, "i16"); break;
-  case TYPE_I32:  abuf_str(s, "i32"); break;
-  case TYPE_I64:  abuf_str(s, "i64"); break;
-  case TYPE_INT:  abuf_str(s, "int"); break;
-  case TYPE_U8:   abuf_str(s, "u8"); break;
-  case TYPE_U16:  abuf_str(s, "u16"); break;
-  case TYPE_U32:  abuf_str(s, "u32"); break;
-  case TYPE_U64:  abuf_str(s, "u64"); break;
-  case TYPE_UINT: abuf_str(s, "uint"); break;
-  case TYPE_F32:  abuf_str(s, "f32"); break;
-  case TYPE_F64:  abuf_str(s, "f64"); break;
+  case TYPE_VOID:
+  case TYPE_BOOL:
+  case TYPE_I8:
+  case TYPE_I16:
+  case TYPE_I32:
+  case TYPE_I64:
+  case TYPE_INT:
+  case TYPE_U8:
+  case TYPE_U16:
+  case TYPE_U32:
+  case TYPE_U64:
+  case TYPE_UINT:
+  case TYPE_F32:
+  case TYPE_F64:
+    abuf_str(s, primtype_name(n->kind));
+    break;
 
   case TYPE_STRUCT:
     return structtype(s, (const structtype_t*)n, indent, maxdepth);

@@ -14,7 +14,9 @@
 #define OBJ_DIR_PREFIX "tmp-"
 
 
-void cbuild_init(cbuild_t* b, compiler_t* c, const char* name, const char* builddir) {
+void cbuild_init(
+  cbuild_t* b, const compiler_t* c, const char* name, const char* builddir)
+{
   b->c = c;
   b->cc = strlist_make(c->ma, "cc");
   b->cxx = strlist_make(c->ma, "c++");
@@ -380,7 +382,7 @@ err_t cbuild_build(cbuild_t* b, const char* outfile, bgtask_t* nullable usertask
   // create task, unless provided by caller
   bgtask_t* task = usertask;
   if (!usertask)
-    task = bgtask_start(b->c->ma, b->name, cbuild_njobs(b), 0);
+    task = bgtask_open(b->c->ma, b->name, cbuild_njobs(b), 0);
 
   // compile objects
   err = cbuild_build_compile(b, task, &objfiles);
@@ -405,8 +407,10 @@ end:
   #else
     cbuild_clean_objdir(b);
   #endif
-  if (!usertask)
+  if (!usertask) {
     bgtask_end(task, "");
+    bgtask_close(task);
+  }
   strlist_dispose(&objfiles);
   return err;
 }

@@ -42,6 +42,10 @@ void strlist_restore(strlist_t* a, const strlist_t snapshot);
 // void strlist_add(memalloc_t ma, const char* arg...)
 #define strlist_add(...) __VARG_DISP(_strlist_add,__VA_ARGS__)
 
+// add one item with explicit byte length.
+// cstr[0:len] must not contain any NUL bytes or the behavior is undefined.
+void strlist_addlen(strlist_t* a, const char* cstr, usize len);
+
 // strlist_array returns an array of pointers to null-terminated strings.
 // The count of returned pointers is a->len.
 char* const* strlist_array(strlist_t* a);

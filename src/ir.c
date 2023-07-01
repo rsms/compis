@@ -11,6 +11,7 @@ DEF_ARRAY_TYPE_API(map_t, maparray)
 
 typedef struct {
   compiler_t* compiler;
+  pkg_t*      pkg;
   memalloc_t  ma;          // compiler->ma
   memalloc_t  ir_ma;       // allocator for ir data
   irunit_t*   unit;        // current unit
@@ -99,11 +100,11 @@ UNUSED static const char* fmtnode(u32 bufindex, const void* nullable n) {
 #endif
 
 
-static void debug_graphviz(const compiler_t* c, const irunit_t* u) {
+static void debug_graphviz(compiler_t* c, const pkg_t* pkg, const irunit_t* u) {
   buf_t buf = buf_make(c->ma);
 
   // generate graphviz "dot" text data
-  if UNLIKELY(!irfmt_dot(c, &buf, u)) {
+  if UNLIKELY(!irfmt_dot(c, pkg, &buf, u)) {
     fprintf(stderr, "(irfmt_dot failed)\n");
     buf_dispose(&buf);
     return;
@@ -132,9 +133,9 @@ end:
 }
 
 
-static bool dump_irunit(const compiler_t* c, const irunit_t* u) {
+static bool dump_irunit(compiler_t* c, const pkg_t* pkg, const irunit_t* u) {
   buf_t buf = buf_make(c->ma);
-  if (!irfmt(c, &buf, u)) {
+  if (!irfmt(c, pkg, &buf, u)) {
     fprintf(stderr, "(irfmt failed)\n");
     buf_dispose(&buf);
     return false;
@@ -2202,6 +2203,7 @@ static irunit_t* unit(ircons_t* c, unit_t* n) {
     return out_of_mem(c), &bad_irunit;
 
   assert(c->unit == &bad_irunit);
+  u->srcfile = n->srcfile;
   c->unit = u;
 
   for (u32 i = 0; i < n->children.len && c->compiler->errcount == 0; i++) {
@@ -2247,9 +2249,61 @@ static void dispose_maparray(memalloc_t ma, maparray_t* a) {
 }
 
 
-static err_t ircons(
-  compiler_t* compiler, memalloc_t ir_ma, unit_t* n, irunit_t** result)
+static void ircons_reset(ircons_t* c) {
+  // reset state, making c ready to process another unit
+  c->funqueue.len = 0;
+  c->dropstack.len = 0;
+
+  c->owners.base = 0;
+  c->owners.entries.len = 0;
+
+  map_clear(&c->vars);
+  map_clear(&c->funm);
+
+  bitset_clear(c->deadset);
+
+  // move maps in defvars and pendingphis to freemaps
+  u32 nmaps = 0;
+  for (u32 i = 0; i < c->defvars.len; i++)
+    nmaps += (u32)(c->defvars.v[i].cap != 0);
+  for (u32 i = 0; i < c->pendingphis.len; i++)
+    nmaps += (u32)(c->pendingphis.v[i].cap != 0);
+  if (nmaps > 0) {
+    map_t* mv = maparray_alloc(&c->freemaps, c->ma, nmaps);
+    if UNLIKELY(!mv) {
+      dispose_maparray(c->ma, &c->defvars);
+      dispose_maparray(c->ma, &c->pendingphis);
+      memset(&c->defvars, 0, sizeof(c->defvars));
+      memset(&c->pendingphis, 0, sizeof(c->pendingphis));
+    } else {
+      for (u32 i = 0; i < c->defvars.len; i++) {
+        if (c->defvars.v[i].cap > 0) {
+          *mv = c->defvars.v[i];
+          map_clear(mv);
+          mv++;
+        }
+      }
+      c->defvars.len = 0;
+      for (u32 i = 0; i < c->pendingphis.len; i++) {
+        if (c->pendingphis.v[i].cap > 0) {
+          *mv = c->pendingphis.v[i];
+          map_clear(mv);
+          mv++;
+        }
+      }
+      c->pendingphis.len = 0;
+    }
+  }
+}
+
+
+err_t analyze(
+  compiler_t* compiler, memalloc_t ir_ma, pkg_t* pkg, unit_t** unitv, u32 unitc)
 {
+  bad_irval.type = type_void;
+  bad_astfuntype.result = type_void;
+
+  // initialize ircons_t
   ircons_t c = {
     .compiler = compiler,
     .ma = compiler->ma,
@@ -2257,52 +2311,55 @@ static err_t ircons(
     .unit = &bad_irunit,
     .f = &bad_irfun,
     .b = &bad_irblock,
+    .deadset = assertnotnull( bitset_make(compiler->ma, BITSET_STACK_CAP) ),
   };
-
-  bad_irval.type = type_void;
-  bad_astfuntype.result = type_void;
-
-  c.deadset = assertnotnull( bitset_make(c.ma, BITSET_STACK_CAP) );
-
-  if (!map_init(&c.funm, c.ma, MAX(n->children.len,1)*2)) {
+  if (!map_init(&c.funm, c.ma, 64)) {
     c.err = ErrNoMem;
-    goto fail_funm;
+    goto end1;
   }
-
   if (!map_init(&c.vars, c.ma, 8)) {
     c.err = ErrNoMem;
-    goto fail_vars;
+    goto end2;
   }
 
-  irunit_t* u = unit(&c, n);
+  // visit unit by unit
+  for (u32 i = 0; i < unitc; i++) {
+    dlog("[ir] analyzing %s", node_srcfilename((node_t*)unitv[i], &compiler->locmap));
+
+    irunit_t* u = unit(&c, unitv[i]);
+    if (c.err)
+      break;
+
+    if (u != &bad_irunit) {
+      if (compiler->opt_printir)
+        dump_irunit(compiler, pkg, u);
+      if (compiler->opt_genirdot)
+        debug_graphviz(compiler, pkg, u);
+    }
+
+    // Note: For now, we just discard the irunit. We have no use for it anymore.
+    // It is allocated in ir_ma, which is expected to be a bump allocator,
+    // so no need to deallocate irunit here.
+
+    // reset state before parsing next unit
+    if (i + 1 < unitc)
+      ircons_reset(&c);
+  }
 
   // end
-  *result = (u == &bad_irunit) ? NULL : u;
-
   ptrarray_dispose(&c.funqueue, c.ma);
   ptrarray_dispose(&c.dropstack, c.ma);
   ptrarray_dispose(&c.owners.entries, c.ma);
-  bitset_dispose(c.deadset, c.ma);
 
   dispose_maparray(c.ma, &c.defvars);
   dispose_maparray(c.ma, &c.pendingphis);
   dispose_maparray(c.ma, &c.freemaps);
 
   map_dispose(&c.vars, c.ma);
-fail_vars:
+end2:
   map_dispose(&c.funm, c.ma);
-fail_funm:
+end1:
+  bitset_dispose(c.deadset, c.ma);
+
   return c.err;
-}
-
-
-err_t analyze(compiler_t* compiler, unit_t* unit, memalloc_t ir_ma) {
-  irunit_t* u;
-  err_t err = ircons(compiler, ir_ma, unit, &u);
-  assertnotnull(u);
-  if (compiler->opt_printir)
-    dump_irunit(compiler, u);
-  if (compiler->opt_genirdot)
-    debug_graphviz(compiler, u);
-  return err;
 }

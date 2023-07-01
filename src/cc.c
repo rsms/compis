@@ -62,10 +62,8 @@ static char* add_trailing_slash(memalloc_t ma, char* s) {
 
 
 int cc_main(int user_argc, char* user_argv[], bool iscxx) {
-  pkg_t pkg = { .name = str_make("main") }; // FIXME pkgname
-
   compiler_t c;
-  compiler_init(&c, memalloc_default(), &diaghandler, &pkg);
+  compiler_init(&c, memalloc_default(), &diaghandler);
 
   compiler_config_t config = {0};
   config.buildmode = BUILDMODE_OPT; // default to optimized build
@@ -102,10 +100,10 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
       // general options
       if (streq(arg, "-v") || streq(arg, "--verbose")) {
         config.verbose = true;
-        coverbose = true;
+        coverbose = MAX(coverbose, 1);
       } else if (streq(arg, "-###")) {
         config.verbose = true;
-        coverbose = true;
+        coverbose = MAX(coverbose, 2);
         print_only = true;
       } else if (streq(arg, "--help") || streq(arg, "-help")) {
         print_only = true;

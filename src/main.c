@@ -24,7 +24,7 @@ const char* coexefile;
 const char* coroot;
 const char* cocachedir;
 const char*const* copath;
-bool coverbose = false;
+u8 coverbose = 0;
 u32 comaxproc = 1;
 
 // externally-implemented tools

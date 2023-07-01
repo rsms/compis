@@ -2,6 +2,7 @@
 #include "colib.h"
 #include "compiler.h"
 #include "abuf.h"
+#include "path.h"
 
 
 typedef struct { usize v[2]; } sizetuple_t;
@@ -10,9 +11,10 @@ typedef struct { usize v[2]; } sizetuple_t;
 #define trace(fmt, va...)  _trace(opt_trace_cgen, 6, "cgen", fmt, ##va)
 
 
-bool cgen_init(cgen_t* g, compiler_t* c, memalloc_t out_ma) {
+bool cgen_init(cgen_t* g, compiler_t* c, const pkg_t* pkg, memalloc_t out_ma) {
   memset(g, 0, sizeof(*g));
   g->compiler = c;
+  g->pkg = pkg;
   g->ma = c->ma;
   buf_init(&g->outbuf, out_ma);
   buf_init(&g->headbuf, out_ma);
@@ -118,7 +120,10 @@ static bool startloc(cgen_t* g, loc_t loc) {
     if (!inputok) {
       srcfile_t* sf = assertnotnull(loc_srcfile(loc, locmap(g)));
       g->inputid = loc_srcfileid(loc);
-      PRINT(" \""), PRINTN(sf->name.p, sf->name.len), CHAR('"');
+      // ` "pkgdir/file.co"`
+      PRINT(" \"");
+      PRINTN(sf->pkg->dir.p, sf->pkg->dir.len), CHAR(PATH_SEP);
+      PRINTN(sf->name.p, sf->name.len), CHAR('"');
     }
   }
 
@@ -438,34 +443,16 @@ static sym_t gen_slice_typename(cgen_t* g, const type_t* tp) {
 
   // use familiar names for common types,
   // e.g. "__co_u8_slice_t" instead of "__co_h_slice_t" for &[u8]
-  const char* prefix = NULL;
-  switch (t->elem->kind) {
-    case TYPE_BOOL: prefix = "bool"; break;
-    case TYPE_I8:   prefix = "i8"; break;
-    case TYPE_I16:  prefix = "i16"; break;
-    case TYPE_I32:  prefix = "i32"; break;
-    case TYPE_I64:  prefix = "i64"; break;
-    case TYPE_INT:  prefix = "int"; break;
-    case TYPE_U8:   prefix = "u8"; break;
-    case TYPE_U16:  prefix = "u16"; break;
-    case TYPE_U32:  prefix = "u32"; break;
-    case TYPE_U64:  prefix = "u64"; break;
-    case TYPE_UINT: prefix = "uint"; break;
-    case TYPE_F32:  prefix = "f32"; break;
-    case TYPE_F64:  prefix = "f64"; break;
-    default: goto mangled_prefix;
-  }
-  PRINT(prefix);
-  goto fin;
-
-mangled_prefix:
-  if UNLIKELY(!compiler_mangle_type(g->compiler, &g->outbuf, t->elem)) {
-    dlog("compiler_mangle_type failed");
-    seterr(g, ErrNoMem);
-    return sym__;
+  if (nodekind_isprimtype(t->elem->kind)) {
+    PRINT(primtype_name(t->elem->kind));
+  } else {
+    if UNLIKELY(!compiler_mangle_type(g->compiler, g->pkg, &g->outbuf, t->elem)) {
+      dlog("compiler_mangle_type failed");
+      seterr(g, ErrNoMem);
+      return sym__;
+    }
   }
 
-fin:
   CHAR('_');
   PRINT(&"mutslice"[3lu*(usize)(t->kind == TYPE_SLICE)]);
   PRINT(CO_TYPE_SUFFIX);
@@ -497,7 +484,7 @@ static sym_t gen_darray_typename(cgen_t* g, const type_t* tp) {
   const arraytype_t* t = (const arraytype_t*)tp;
   usize len1 = g->outbuf.len;
   PRINT(CO_TYPE_PREFIX "array_");
-  if UNLIKELY(!compiler_mangle_type(g->compiler, &g->outbuf, t->elem)) {
+  if UNLIKELY(!compiler_mangle_type(g->compiler, g->pkg, &g->outbuf, t->elem)) {
     dlog("compiler_mangle_type failed");
     seterr(g, ErrNoMem);
     return sym__;
@@ -639,20 +626,22 @@ static void optzero(cgen_t* g, const type_t* elem, bool isshort) {
 
 static void type(cgen_t* g, const type_t* t) {
   switch (t->kind) {
-  case TYPE_VOID:     PRINT("void"); break;
-  case TYPE_BOOL:     PRINT("bool"); break;
-  case TYPE_I8:       PRINT("i8"); break;
-  case TYPE_I16:      PRINT("i16"); break;
-  case TYPE_I32:      PRINT("i32"); break;
-  case TYPE_I64:      PRINT("i64"); break;
+  case TYPE_VOID:
+  case TYPE_BOOL:
+  case TYPE_I8:
+  case TYPE_I16:
+  case TYPE_I32:
+  case TYPE_I64:
+  case TYPE_U8:
+  case TYPE_U16:
+  case TYPE_U32:
+  case TYPE_U64:
+  case TYPE_F32:
+  case TYPE_F64:
+    PRINT(primtype_name(t->kind));
+    break;
   case TYPE_INT:      return type(g, g->compiler->inttype);
-  case TYPE_U8:       PRINT("u8"); break;
-  case TYPE_U16:      PRINT("u16"); break;
-  case TYPE_U32:      PRINT("u32"); break;
-  case TYPE_U64:      PRINT("u64"); break;
   case TYPE_UINT:     return type(g, g->compiler->uinttype);
-  case TYPE_F32:      PRINT("f32"); break;
-  case TYPE_F64:      PRINT("f64"); break;
   case TYPE_FUN:      return funtype(g, (const funtype_t*)t, NULL);
   case TYPE_PTR:      return ptrtype(g, (const ptrtype_t*)t);
   case TYPE_REF:
@@ -2341,8 +2330,8 @@ static void unit(cgen_t* g, const unit_t* n) {
 
 
 static void gen_main(cgen_t* g) {
-  assertnotnull(g->compiler->mainfun);
-  assertnotnull(g->compiler->mainfun->mangledname);
+  assertnotnull(g->pkg->mainfun);
+  assertnotnull(g->pkg->mainfun->mangledname);
   PRINTF(
     "\n"
     "\n"
@@ -2350,7 +2339,7 @@ static void gen_main(cgen_t* g) {
     "int main(int argc, char* argv[]) {\n"
     "  return %s(), 0;\n"
     "}",
-    g->compiler->mainfun->mangledname
+    g->pkg->mainfun->mangledname
   );
 }
 
@@ -2387,7 +2376,7 @@ err_t cgen_generate(cgen_t* g, const unit_t* n) {
     return ErrInvalid;
   unit(g, n);
 
-  if (g->compiler->mainfun && !g->compiler->opt_nomain)
+  if (g->pkg->mainfun && !g->compiler->opt_nomain)
     gen_main(g);
 
   if (g->headbuf.len > 0) {

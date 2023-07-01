@@ -14,6 +14,7 @@ typedef struct {
 
 typedef struct {
   const compiler_t* c;
+  const pkg_t*      pkg;
   buf_t             buf;
   nsstack_t         nsstack;
   bool              ok;
@@ -122,7 +123,7 @@ escape:
 
 
 static void append_pkgname(encoder_t* e) {
-  append_escape(e, e->c->pkg->name);
+  append_escape(e, e->pkg->name);
 }
 
 
@@ -220,9 +221,10 @@ static bool nsstack_push(encoder_t* e, const node_t* n) {
 }
 
 
-static encoder_t mkencoder(const compiler_t* c, buf_t* buf) {
+static encoder_t mkencoder(const compiler_t* c, const pkg_t* pkg, buf_t* buf) {
   encoder_t e = {
     .c = c,
+    .pkg = pkg,
     .buf = *buf,
     .ok = true,
   };
@@ -244,15 +246,15 @@ static bool encoder_finalize(encoder_t* e, buf_t* buf) {
 }
 
 
-bool compiler_mangle_type(const compiler_t* c, buf_t* buf, const type_t* t) {
-  encoder_t e = mkencoder(c, buf);
+bool compiler_mangle_type(const compiler_t* c, const pkg_t* pkg, buf_t* buf, const type_t* t) {
+  encoder_t e = mkencoder(c, pkg, buf);
   buf_reserve(buf, 16);
   type(&e, t);
   return encoder_finalize(&e, buf);
 }
 
 
-bool compiler_mangle(const compiler_t* c, buf_t* buf, const node_t* n) {
+bool compiler_mangle(const compiler_t* c, const pkg_t* pkg, buf_t* buf, const node_t* n) {
   // package mypkg
   // namespace foo {
   //   fun bar() {}
@@ -275,7 +277,7 @@ bool compiler_mangle(const compiler_t* c, buf_t* buf, const node_t* n) {
   if (n->kind == EXPR_FUN && ((fun_t*)n)->abi == ABI_C)
     return buf_print(buf, ((fun_t*)n)->name);
 
-  encoder_t e = mkencoder(c, buf);
+  encoder_t e = mkencoder(c, pkg, buf);
 
   buf_reserve(buf, 64);
 
@@ -291,8 +293,24 @@ bool compiler_mangle(const compiler_t* c, buf_t* buf, const node_t* n) {
     switch (ns->kind) {
       case EXPR_FUN:    ns = assertnotnull(((fun_t*)ns)->nsparent); break;
       case TYPE_STRUCT: ns = assertnotnull(((structtype_t*)ns)->nsparent); break;
-      case NODE_UNIT:   goto endpath;
-      default:          assertf(0, "unexpected %s", nodekind_name(ns->kind));
+
+      case NODE_UNIT:
+      case TYPE_BOOL:
+      case TYPE_I8:
+      case TYPE_I16:
+      case TYPE_I32:
+      case TYPE_I64:
+      case TYPE_INT:
+      case TYPE_U8:
+      case TYPE_U16:
+      case TYPE_U32:
+      case TYPE_U64:
+      case TYPE_UINT:
+      case TYPE_F32:
+      case TYPE_F64:
+        goto endpath;
+      default:
+        assertf(0, "unexpected %s", nodekind_name(ns->kind));
     }
   }
 endpath:

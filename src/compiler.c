@@ -17,14 +17,15 @@
 #include <string.h> // XXX
 
 
-void compiler_init(compiler_t* c, memalloc_t ma, diaghandler_t dh, pkg_t* pkg) {
+void compiler_init(compiler_t* c, memalloc_t ma, diaghandler_t dh) {
   memset(c, 0, sizeof(*c));
   c->ma = ma;
-  c->pkg = pkg;
   c->diaghandler = dh;
   buf_init(&c->diagbuf, c->ma);
   if (!map_init(&c->typeidmap, c->ma, 16))
     panic("out of memory");
+  safecheckxf(rwmutex_init(&c->typeidmap_mu) == 0, "rwmutex_init");
+  safecheckxf(locmap_init(&c->locmap) == 0, "locmap_init");
 }
 
 
@@ -36,7 +37,8 @@ void compiler_dispose(compiler_t* c) {
   mem_freecstr(c->ma, c->buildroot);
   mem_freecstr(c->ma, c->builddir);
   mem_freecstr(c->ma, c->sysroot);
-  mem_freecstr(c->ma, c->pkgbuilddir);
+  rwmutex_dispose(&c->typeidmap_mu);
+  locmap_dispose(&c->locmap, c->ma);
 }
 
 
@@ -122,63 +124,6 @@ static const char* buildmode_name(buildmode_t m) {
     case BUILDMODE_OPT:   return "opt";
   }
   return "unknown";
-}
-
-
-static err_t configure_builddir(compiler_t* c, const compiler_config_t* config) {
-  // builddir    = {buildroot}/{mode}-{target}
-  // pkgbuilddir = {builddir}/{pkg.name}.pkg
-
-  mem_freecstr(c->ma, c->buildroot);
-  if (!( c->buildroot = path_abs(config->buildroot).p ))
-    return ErrNoMem;
-
-  char targetstr[TARGET_FMT_BUFCAP];
-  target_fmt(&c->target, targetstr, sizeof(targetstr));
-  slice_t target = slice_cstr(targetstr);
-
-  slice_t mode = slice_cstr(buildmode_name(c->buildmode));
-
-  usize len = strlen(c->buildroot) + 1 + mode.len;
-
-  bool isnativetarget = strcmp(llvm_host_triple(), c->target.triple) == 0;
-  if (!isnativetarget)
-    len += target.len + 1;
-
-  #define APPEND(slice)  memcpy(p, (slice).p, (slice).len), p += (slice.len)
-
-  mem_freecstr(c->ma, c->builddir);
-  c->builddir = mem_alloctv(c->ma, char, len + 1);
-  if (!c->builddir)
-    return ErrNoMem;
-  char* p = c->builddir;
-  APPEND(slice_cstr(c->buildroot));
-  *p++ = PATH_SEPARATOR;
-  APPEND(mode);
-  if (!isnativetarget) {
-    *p++ = '-';
-    APPEND(target);
-  }
-  *p = 0;
-
-  // pkgbuilddir
-  mem_freecstr(c->ma, c->pkgbuilddir);
-  slice_t suffix = slice_cstr(".copkg");
-  slice_t builddir = { .p = c->builddir, .len = len };
-  usize pkgbuilddir_len = len + 1 + c->pkg->name.len + suffix.len;
-  c->pkgbuilddir = mem_alloctv(c->ma, char, pkgbuilddir_len + 1);
-  if (!c->pkgbuilddir)
-    return ErrNoMem;
-  p = c->pkgbuilddir;
-  APPEND(builddir);
-  *p++ = PATH_SEPARATOR;
-  APPEND(c->pkg->name);
-  APPEND(suffix);
-  *p = 0;
-
-  return 0;
-
-  #undef APPEND
 }
 
 
@@ -346,21 +291,21 @@ static err_t configure_builtins(compiler_t* c) {
     const void* node;
   } entries[] = {
     // types
-    {sym_cstr("void"), type_void},
-    {sym_cstr("bool"), type_bool},
-    {sym_cstr("int"),  type_int},
-    {sym_cstr("uint"), type_uint},
-    {sym_cstr("i8"),   type_i8},
-    {sym_cstr("i16"),  type_i16},
-    {sym_cstr("i32"),  type_i32},
-    {sym_cstr("i64"),  type_i64},
-    {sym_cstr("u8"),   type_u8},
-    {sym_cstr("u16"),  type_u16},
-    {sym_cstr("u32"),  type_u32},
-    {sym_cstr("u64"),  type_u64},
-    {sym_cstr("f32"),  type_f32},
-    {sym_cstr("f64"),  type_f64},
-    {sym_str,          &c->strtype},
+    {sym_void, type_void},
+    {sym_bool, type_bool},
+    {sym_int,  type_int},
+    {sym_uint, type_uint},
+    {sym_i8,   type_i8},
+    {sym_i16,  type_i16},
+    {sym_i32,  type_i32},
+    {sym_i64,  type_i64},
+    {sym_u8,   type_u8},
+    {sym_u16,  type_u16},
+    {sym_u32,  type_u32},
+    {sym_u64,  type_u64},
+    {sym_f32,  type_f32},
+    {sym_f64,  type_f64},
+    {sym_str,  &c->strtype},
   };
 
   if UNLIKELY(!map_init(&c->builtins, c->ma, countof(entries)))
@@ -391,34 +336,99 @@ err_t configure_options(compiler_t* c, const compiler_config_t* config) {
 }
 
 
+err_t configure_buildroot(compiler_t* c, const compiler_config_t* config) {
+  mem_freecstr(c->ma, c->buildroot);
+  if (!( c->buildroot = path_abs(config->buildroot).p ))
+    return ErrNoMem;
+  return 0;
+}
+
+
+err_t configure_builddir(compiler_t* c, const compiler_config_t* config) {
+  // builddir = {buildroot}/{mode}-{target}
+
+  char targetstr[TARGET_FMT_BUFCAP];
+  target_fmt(&c->target, targetstr, sizeof(targetstr));
+  slice_t target = slice_cstr(targetstr);
+
+  slice_t mode = slice_cstr(buildmode_name(c->buildmode));
+
+  usize len = strlen(c->buildroot) + 1 + mode.len;
+
+  bool isnativetarget = strcmp(llvm_host_triple(), c->target.triple) == 0;
+  if (!isnativetarget)
+    len += target.len + 1;
+
+  #define APPEND(slice)  memcpy(p, (slice).p, (slice).len), p += (slice.len)
+
+  mem_freecstr(c->ma, c->builddir);
+
+  c->builddir = mem_alloctv(c->ma, char, len + 1);
+  if (!c->builddir)
+    return ErrNoMem;
+
+  char* p = c->builddir;
+  APPEND(slice_cstr(c->buildroot));
+  *p++ = PATH_SEPARATOR;
+  APPEND(mode);
+  if (!isnativetarget) {
+    *p++ = '-';
+    APPEND(target);
+  }
+  *p = 0;
+
+  return 0;
+
+  #undef APPEND
+}
+
+
 err_t compiler_configure(compiler_t* c, const compiler_config_t* config) {
   err_t err;
   err = configure_options(c, config);  if (err) return dlog("x"), err;
   err = configure_target(c, config);   if (err) return dlog("x"), err;
-  err = configure_builddir(c, config); if (err) return dlog("x"), err;
   err = configure_sysroot(c, config);  if (err) return dlog("x"), err;
+  err = configure_buildroot(c, config);if (err) return dlog("x"), err;
+  err = configure_builddir(c, config); if (err) return dlog("x"), err;
   err = configure_cflags(c, config);   if (err) return dlog("x"), err;
   err = configure_builtins(c);         if (err) return dlog("x"), err;
   return err;
 }
+
 
 //——————————————————————————————————————————————————————————————————————————————————————
 // name encoding
 
 
 static bool fqn_recv(const compiler_t* c, buf_t* buf, const type_t* recv) {
-  if (recv->kind == TYPE_STRUCT) {
-    if (((structtype_t*)recv)->name)
-      return buf_print(buf, ((structtype_t*)recv)->name);
+  switch (recv->kind) {
+    case TYPE_STRUCT:
+      if (((structtype_t*)recv)->name)
+        return buf_print(buf, ((structtype_t*)recv)->name);
+      break;
+    case TYPE_BOOL:
+    case TYPE_I8:
+    case TYPE_I16:
+    case TYPE_I32:
+    case TYPE_I64:
+    case TYPE_INT:
+    case TYPE_U8:
+    case TYPE_U16:
+    case TYPE_U32:
+    case TYPE_U64:
+    case TYPE_UINT:
+    case TYPE_F32:
+    case TYPE_F64:
+      return buf_print(buf, primtype_name(recv->kind));
   }
-  assertf(0,"TODO global variable %s", nodekind_name(recv->kind));
+  assertf(0,"TODO %s", nodekind_name(recv->kind));
   return buf_printf(buf, "TODO_%s_%s", __FUNCTION__, nodekind_name(recv->kind));
 }
 
 
-static bool fqn_fun(const compiler_t* c, buf_t* buf, const fun_t* fn) {
+static bool fqn_fun(const compiler_t* c, const pkg_t* pkg, buf_t* buf, const fun_t* fn) {
   if (fn->abi == ABI_CO) {
-    buf_append(buf, c->pkg->name.p, c->pkg->name.len);
+    buf_append(buf, pkg->name.p, pkg->name.len);
     buf_push(buf, '.');
     if (fn->recvt) {
       fqn_recv(c, buf, fn->recvt);
@@ -429,11 +439,13 @@ static bool fqn_fun(const compiler_t* c, buf_t* buf, const fun_t* fn) {
 }
 
 
-bool compiler_fully_qualified_name(const compiler_t* c, buf_t* buf, const node_t* n) {
+bool compiler_fully_qualified_name(
+  const compiler_t* c, const pkg_t* pkg, buf_t* buf, const node_t* n)
+{
   // TODO: use n->nsparent when available
   buf_reserve(buf, 32);
   if (n->kind == EXPR_FUN)
-    return fqn_fun(c, buf, (fun_t*)n);
+    return fqn_fun(c, pkg, buf, (fun_t*)n);
   assertf(0,"TODO global variable %s", nodekind_name(n->kind));
   return buf_printf(buf, "TODO_%s_%s", __FUNCTION__, nodekind_name(n->kind));
 }
@@ -491,7 +503,7 @@ err_t spawn_tool(
 
 
 err_t compiler_spawn_tool_p(
-  compiler_t* c, subproc_t* p, strlist_t* args, const char* nullable cwd)
+  const compiler_t* c, subproc_t* p, strlist_t* args, const char* nullable cwd)
 {
   char* const* argv = strlist_array(args);
   if (!args->ok)
@@ -502,7 +514,7 @@ err_t compiler_spawn_tool_p(
 
 
 err_t compiler_spawn_tool(
-  compiler_t* c, subprocs_t* procs, strlist_t* args, const char* nullable cwd)
+  const compiler_t* c, subprocs_t* procs, strlist_t* args, const char* nullable cwd)
 {
   subproc_t* p = subprocs_alloc(procs);
   if (!p)
@@ -511,7 +523,9 @@ err_t compiler_spawn_tool(
 }
 
 
-err_t compiler_run_tool_sync(compiler_t* c, strlist_t* args, const char* nullable cwd) {
+err_t compiler_run_tool_sync(
+  const compiler_t* c, strlist_t* args, const char* nullable cwd)
+{
   subproc_t p = {0};
   err_t err = compiler_spawn_tool_p(c, &p, args, cwd);
   if (err)
@@ -537,7 +551,7 @@ static err_t cc_to_asm_main(compiler_t* c, const char* cfile, const char* asmfil
 
   #if DEBUG
   dlog("cc %s -> %s", cfile, asmfile);
-  if (c->opt_verbose) {
+  if (c->opt_verbose > 1) {
     for (u32 i = 0; i < args.len; i++)
       fprintf(stderr, &" %s"[i==0], argv[i]);
     fprintf(stderr, "\n");
@@ -572,14 +586,14 @@ static err_t cc_to_obj_main(compiler_t* c, const char* cfile, const char* ofile)
   strlist_add(&args,
     "-c", "-xc", cfile,
     "-o", ofile,
-    c->opt_verbose ? "-v" : "");
+    c->opt_verbose > 1 ? "-v" : "");
 
   char* const* argv = strlist_array(&args);
   if (!args.ok)
     return ErrNoMem;
 
   // dlog("cc %s -> %s", relpath(cfile), relpath(ofile));
-  // if (c->opt_verbose) {
+  // if (c->opt_verbose > 1) {
   //   for (int i = 0; i < args.len; i++)
   //     fprintf(stderr, &" %s"[i==0], argv[i]);
   //   fprintf(stderr, "\n");
@@ -614,196 +628,4 @@ err_t compile_c_to_asm_async(
     return ErrNoMem;
 
   return subproc_fork(p, cc_to_asm_main, wdir, c, cfile, asmfile.chars);
-}
-
-
-static err_t dump_ast(const node_t* ast) {
-  buf_t buf = buf_make(memalloc_ctx());
-  err_t err = node_repr(&buf, ast);
-  if (!err) {
-    fwrite(buf.chars, buf.len, 1, stderr);
-    fputc('\n', stderr);
-  }
-  buf_dispose(&buf);
-  return err;
-}
-
-
-static err_t compile_co_to_c(compiler_t* c, srcfile_t* srcfile, const char* cfile) {
-  u32 errcount = c->errcount;
-  err_t err = 0;
-  bool printed_trace_ast = false;
-
-  // create parser
-  parser_t parser;
-  if (!parser_init(&parser, c)) {
-    err = ErrNoMem;
-    goto end1;
-  }
-
-  // open source file for reading
-  if (( err = srcfile_open(srcfile) )) {
-    elog("%s: %s", srcfile->name.p, err_str(err));
-    goto end2;
-  }
-
-  // allocate a slab of memory for AST and IR
-  usize ast_memsize = 1024*1024*8lu; // 8 MiB for AST & IR
-  memalloc_t ast_ma = memalloc_bump_in_zeroed(c->ma, ast_memsize, /*flags*/0);
-  if (ast_ma == memalloc_null()) {
-    elog("failed to allocate %zu MiB memory for AST", ast_memsize/(1024*1024lu));
-    err = ErrNoMem;
-    goto end3;
-  }
-
-  // parse
-  dlog_if(opt_trace_parse, "————————— parse —————————");
-  unit_t* unit = parser_parse(&parser, ast_ma, srcfile);
-  if (c->errcount > errcount) {
-    err = ErrCanceled;
-    goto end4;
-  }
-  if (opt_trace_parse && c->opt_printast) {
-    dlog("————————— AST after parse —————————");
-    printed_trace_ast = true;
-    dump_ast((node_t*)unit);
-  }
-
-  dlog("TODO: move parser.pkgdefs to c.pkg.defs");
-
-  // typecheck
-  dlog_if(opt_trace_typecheck, "————————— typecheck —————————");
-  if (( err = typecheck(c, unit, ast_ma) ))
-    goto end4;
-  if (c->errcount > errcount) {
-    err = ErrCanceled;
-    goto end4;
-  }
-  if (opt_trace_typecheck && c->opt_printast) {
-    dlog("————————— AST after typecheck —————————");
-    printed_trace_ast = true;
-    dump_ast((node_t*)unit);
-  }
-
-  // dlog("abort");abort(); // XXX
-
-  // analyze (ir)
-  dlog_if(opt_trace_ir, "————————— IR —————————");
-  memalloc_t ir_ma = ast_ma;
-  if (( err = analyze(c, unit, ir_ma) )) {
-    dlog("IR analyze: err=%s", err_str(err));
-    goto end4;
-  }
-  if (c->errcount > errcount) {
-    err = ErrCanceled;
-    goto end4;
-  }
-
-  // print AST, if requested
-  if (c->opt_printast) {
-    c->opt_printast = false;
-    if (printed_trace_ast)
-      dlog("————————— AST (final) —————————");
-    dump_ast((node_t*)unit);
-  }
-
-  // generate C code
-  dlog_if(opt_trace_cgen, "————————— cgen —————————");
-  cgen_t g;
-  if (!cgen_init(&g, c, c->ma))
-    goto end4;
-  err = cgen_generate(&g, unit);
-  if (!err) {
-    if (opt_trace_cgen) {
-      fprintf(stderr, "——————————\n%.*s\n——————————\n",
-        (int)g.outbuf.len, g.outbuf.chars);
-    }
-    dlog("cgen %s -> %s", srcfile->name.p, cfile);
-    err = fs_writefile(cfile, 0660, buf_slice(g.outbuf));
-  }
-  cgen_dispose(&g);
-
-
-end4:
-  memalloc_bump_in_dispose(ast_ma);
-end3:
-  srcfile_close(srcfile);
-  if (c->opt_printast) {
-    // in case an error occurred, print AST "what we have so far"
-    dump_ast((node_t*)unit);
-  }
-end2:
-  parser_dispose(&parser);
-end1:
-  if (c->errcount > errcount && !err)
-    err = ErrCanceled;
-  return err;
-}
-
-
-err_t compiler_compile(
-  compiler_t* c, promise_t* promise, srcfile_t* srcfile, const char* ofile)
-{
-  err_t err = 0;
-
-  // C source file path
-  buf_t cfile = buf_make(c->ma);
-
-  // do different things depending on the input type
-  switch (srcfile->type) {
-
-  case FILE_C: // C (cfile == srcfile->name)
-    if (!buf_append(&cfile, srcfile->name.p, srcfile->name.len + 1))
-      err = ErrNoMem;
-    break;
-
-  case FILE_CO: // co (co => cfile)
-    if (!buf_append(&cfile, ofile, strlen(ofile) + 1)) {
-      err = ErrNoMem;
-    } else {
-      cfile.chars[cfile.len - 2] = 'c'; // /foo/bar.o\0 -> /foo/bar.c\0
-      err = compile_co_to_c(c, srcfile, cfile.chars);
-    }
-    break;
-
-  // case FILE_O:
-  //   // TODO: hard link or copy input to ofile
-  //   break;
-
-  default:
-    log("%s: unrecognized file type", srcfile->name.p);
-    err = ErrNotSupported;
-  }
-
-  if (err)
-    goto end;
-
-  // create subprocs attached to promise
-  subprocs_t* subprocs = subprocs_create_promise(c->ma, promise);
-  if (!subprocs) {
-    err = ErrNoMem;
-    goto end;
-  }
-
-  // working directory for subprocesses
-  const char* wdir = srcfile->pkg->dir.p;
-
-  // compile C -> object
-  err = compile_c_to_obj_async(c, subprocs, wdir, cfile.chars, ofile);
-  if (err) {
-    subprocs_cancel(subprocs);
-    goto end;
-  }
-
-  if (c->opt_genasm) {
-    err = compile_c_to_asm_async(c, subprocs, wdir, cfile.chars, ofile);
-    if (err) {
-      subprocs_cancel(subprocs);
-      goto end;
-    }
-  }
-
-end:
-  buf_dispose(&cfile);
-  return err;
 }

@@ -1,5 +1,13 @@
 pub "c" fun panic(str) void
 
 fun main() {
-  panic("hi")
+  panic("hej")
 }
+
+// type Foo {
+//   lol int
+// }
+
+// fun Foo.lol() {}
+
+// fun int.lol() {}

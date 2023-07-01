@@ -1031,6 +1031,7 @@ err_t mmap_file_ro(const char* filename, usize size, void** resultp);
 err_t mmap_file(const char* filename, mem_t* data_out, struct stat* nullable stp); // D!
 err_t mmap_unmap(void* p, usize size);
 err_t fs_writefile(const char* filename, u32 mode, slice_t data);
+err_t fs_writefile_mkdirs(const char* filename, u32 mode, slice_t data);
 err_t fs_touch(const char* filename, u32 mode); // update {a,m}time, create if needed
 err_t fs_mkdirs(const char* path, int perms, int flags); // creates parent directories
 err_t fs_mkdirs_for_files(memalloc_t, const char*const* filev, u32 filec);
@@ -1093,8 +1094,8 @@ extern const char* cocachedir;
 // Can be overridden with env var COPATH
 extern const char*const* copath;
 
-// coverbose: set to true if -v was passed on the command line
-extern bool coverbose;
+// coverbose: set to 1 if -v was passed on the command line, 2 for -vv
+extern u8 coverbose;
 
 // comaxproc: max thread concurrency (defaults to sys_ncpu, can be set with -j)
 // Can be overridden with env var COMAXPROC

@@ -4,9 +4,10 @@
 
 
 typedef struct {
-  const compiler_t* c;
-  buf_t             out;
-  bool              ok;
+  compiler_t*  c;
+  const pkg_t* pkg;
+  buf_t        out;
+  bool         ok;
 } fmtctx_t;
 
 
@@ -124,7 +125,7 @@ static void val(fmtctx_t* ctx, const irval_t* v, bool isdot) {
 
 static void block(fmtctx_t* ctx, const irblock_t* b) {
   u32 start = ctx->out.len + 1;
-  PRINTF("\n  b%u:", b->id);
+  PRINTF("\n    b%u:", b->id);
 
   if (b->preds[1]) {
     PRINTF(" <- b%u b%u", assertnotnull(b->preds[0])->id, b->preds[1]->id);
@@ -143,9 +144,9 @@ static void block(fmtctx_t* ctx, const irblock_t* b) {
   switch (b->kind) {
     case IR_BLOCK_GOTO: {
       if (b->succs[0]) {
-        PRINTF("\n  goto -> b%u", b->succs[0]->id);
+        PRINTF("\n    goto -> b%u", b->succs[0]->id);
       } else {
-        PRINT("\n  goto -> ?");
+        PRINT("\n    goto -> ?");
       }
       break;
     }
@@ -153,15 +154,15 @@ static void block(fmtctx_t* ctx, const irblock_t* b) {
       assert(b->succs[0]); // thenb
       assert(b->succs[1]); // elseb
       assertf(b->control, "missing control value");
-      PRINTF("\n  switch v%u -> b%u b%u",
+      PRINTF("\n    switch v%u -> b%u b%u",
         b->control->id, b->succs[0]->id, b->succs[1]->id);
       break;
     }
     case IR_BLOCK_RET: {
       if (b->control) {
-        PRINTF("\n  ret v%u", b->control->id);
+        PRINTF("\n    ret v%u", b->control->id);
       } else {
-        PRINT("\n  ret");
+        PRINT("\n    ret");
       }
       break;
     }
@@ -173,10 +174,10 @@ static void fun(fmtctx_t* ctx, const irfun_t* f) {
   if (ctx->out.len)
     CHAR('\n');
 
-  PRINT("fun ");
+  PRINT("  fun ");
 
   if (f->ast) {
-    compiler_fully_qualified_name(ctx->c, &ctx->out, (node_t*)f->ast);
+    compiler_fully_qualified_name(ctx->c, ctx->pkg, &ctx->out, (node_t*)f->ast);
     CHAR('(');
     funtype_t* ft = (funtype_t*)f->ast->type;
     for (u32 i = 0; i < ft->params.len; i++) {
@@ -188,7 +189,7 @@ static void fun(fmtctx_t* ctx, const irfun_t* f) {
     node_fmt(&ctx->out, (node_t*)ft->result, 0);
   } else {
     // best effort; name will be wrong for type functions (missing recvt)
-    PRINTF("%s.%s(", ctx->c->pkg->name.p, f->name);
+    PRINTF("%s.%s(", ctx->pkg->name.p, f->name);
     if (f->blocks.len) {
       const irblock_t* b = f->blocks.v[0];
       for (u32 i = 0, n = 0; i < b->values.len; i++) {
@@ -216,7 +217,7 @@ static void fun(fmtctx_t* ctx, const irfun_t* f) {
     PRINT(" {");
     for (u32 i = 0; i < f->blocks.len; i++)
       block(ctx, f->blocks.v[i]);
-    PRINT("\n}");
+    PRINT("\n  }");
   }
 }
 
@@ -299,7 +300,7 @@ static void block_dot_edges(fmtctx_t* ctx, const char* ns, const irblock_t* b) {
 
 static void fun_dot(fmtctx_t* ctx, const irfun_t* f) {
   buf_t namebuf = buf_make(ctx->out.ma);
-  compiler_fully_qualified_name(ctx->c, &namebuf, (node_t*)f->ast);
+  compiler_fully_qualified_name(ctx->c, ctx->pkg, &namebuf, (node_t*)f->ast);
   buf_nullterm(&namebuf);
   const char* name = namebuf.chars;
   if (f->blocks.len == 0) {
@@ -316,41 +317,54 @@ static void fun_dot(fmtctx_t* ctx, const irfun_t* f) {
 
 
 static void unit(fmtctx_t* ctx, const irunit_t* u) {
+  if (ctx->out.len)
+    CHAR('\n');
+  if (u->srcfile) {
+    PRINTF("unit \"%s\" {", u->srcfile->name.p);
+  } else {
+    PRINT("unit {");
+  }
+
   for (u32 i = 0; i < u->functions.len; i++) {
     const irfun_t* f = u->functions.v[i];
     if (f->blocks.len > 0)
       fun(ctx, f);
   }
+
+  if (u->functions.len)
+    CHAR('\n');
+  CHAR('}');
 }
 
 
-static fmtctx_t fmtctx_make(const compiler_t* c, buf_t* out) {
+static fmtctx_t fmtctx_make(compiler_t* c, const pkg_t* pkg, buf_t* out) {
   return (fmtctx_t){
     .c = c,
     .ok = true,
     .out = *out,
+    .pkg = pkg,
   };
 }
 
 
-bool irfmt(const compiler_t* c, buf_t* out, const irunit_t* u) {
-  fmtctx_t ctx = fmtctx_make(c, out);
+bool irfmt(compiler_t* c, const pkg_t* pkg, buf_t* out, const irunit_t* u) {
+  fmtctx_t ctx = fmtctx_make(c, pkg, out);
   unit(&ctx, u);
   *out = ctx.out;
   return ctx.ok && buf_nullterm(out);
 }
 
 
-bool irfmt_fun(const compiler_t* c, buf_t* out, const irfun_t* f) {
-  fmtctx_t ctx = fmtctx_make(c, out);
+bool irfmt_fun(compiler_t* c, const pkg_t* pkg, buf_t* out, const irfun_t* f) {
+  fmtctx_t ctx = fmtctx_make(c, pkg, out);
   fun(&ctx, f);
   *out = ctx.out;
   return ctx.ok && buf_nullterm(out);
 }
 
 
-bool irfmt_dot(const compiler_t* c, buf_t* out, const irunit_t* u) {
-  fmtctx_t ctx = fmtctx_make(c, out);
+bool irfmt_dot(compiler_t* c, const pkg_t* pkg, buf_t* out, const irunit_t* u) {
+  fmtctx_t ctx = fmtctx_make(c, pkg, out);
 
   #define DOT_FONT "fontname=\"JetBrains Mono NL, Menlo, Courier, monospace\";"
   buf_print(&ctx.out,
@@ -388,7 +402,7 @@ bool irfmt_dot(const compiler_t* c, buf_t* out, const irunit_t* u) {
         "fontcolor=\"#ffffff77\"; " DOT_FONT " fontsize=14;\n"
         "labeljust=l; label=\""
         , f);
-      compiler_fully_qualified_name(ctx.c, &ctx.out, (node_t*)f->ast);
+      compiler_fully_qualified_name(ctx.c, pkg, &ctx.out, (node_t*)f->ast);
       buf_print(&ctx.out, "\"\n");
     }
     fun_dot(&ctx, f);

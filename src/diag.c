@@ -133,10 +133,16 @@ static void add_srcline(
 
 
 static void add_srclines(compiler_t* c, origin_t origin, abuf_t* s) {
-  const srcfile_t* srcfile = assertnotnull(origin.file);
+  srcfile_t* srcfile = assertnotnull(origin.file);
 
   if (abuf_avail(s) < 4 || origin.line == 0 || srcfile->size == 0)
     return;
+
+  err_t err = srcfile_open(srcfile);
+  if (err) {
+    dlog("srcfile_open(%s): %s", srcfile->name.p, err_str(err));
+    return;
+  }
 
   u32 nlinesbefore = 0; // TODO: make configurable
   u32 nlinesafter = 0; // TODO: make configurable

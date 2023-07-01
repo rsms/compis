@@ -14,20 +14,20 @@ static int srcfile_cmp(const srcfile_t* a, const srcfile_t* b, void* ctx) {
 
 
 err_t pkg_init(pkg_t* pkg, memalloc_t ma) {
-  // err_t err = rwmutex_init(&pkg->mu);
-  // if (err)
-  //   return err;
-  err_t err = 0;
-  if (( err = map_init(&pkg->defs, ma, 32) ? 0 : ErrNoMem )) {
-    // rwmutex_dispose(&pkg->mu);
+  err_t err = rwmutex_init(&pkg->defs_mu);
+  if (err)
     return err;
-  }
-  if (( err = map_init(&pkg->tfuns, ma, 32) ? 0 : ErrNoMem )) {
-    map_dispose(&pkg->defs, ma);
-    // rwmutex_dispose(&pkg->mu);
-    return err;
-  }
+  if (( err = map_init(&pkg->defs, ma, 32) ? 0 : ErrNoMem ))
+    goto end_err1;
+  if (( err = typefuntab_init(&pkg->tfundefs, ma) ))
+    goto end_err2;
   return 0;
+
+end_err2:
+  map_dispose(&pkg->defs, ma);
+end_err1:
+  rwmutex_dispose(&pkg->defs_mu);
+  return err;
 }
 
 
@@ -36,10 +36,10 @@ void pkg_dispose(pkg_t* pkg, memalloc_t ma) {
   str_free(pkg->dir);
   if (pkg->defs.cap == 0)
     return;
-  // rwmutex_dispose(&pkg->mu);
   array_dispose(srcfile_t, (array_t*)&pkg->files, ma);
   map_dispose(&pkg->defs, ma);
-  map_dispose(&pkg->tfuns, ma);
+  rwmutex_dispose(&pkg->defs_mu);
+  typefuntab_dispose(&pkg->tfundefs, ma);
 }
 
 
@@ -59,6 +59,10 @@ srcfile_t* pkg_add_srcfile(pkg_t* pkg, const char* name) {
   }
 
   // note: array_sortedset_assign returns new entries zero initialized
+
+  // assign ids
+  for (u32 i = 0; i < pkg->files.len; i++)
+    pkg->files.v[i].id = i;
 
   // dlog("%s: add %s", __FUNCTION__, name);
   f->pkg = pkg;
@@ -275,3 +279,78 @@ end:
   *pkgcp = pkgc;
   return err;
 }
+
+
+str_t pkg_builddir(const pkg_t* pkg, const compiler_t* c) {
+  // pkgbuilddir = {builddir}/pkg/{pkgname}
+
+  slice_t basedir = slice_cstr(c->builddir);
+  slice_t prefix = slice_cstr("pkg");
+
+  str_t s = str_makeempty(basedir.len + 1 + pkg->name.len + 1 + prefix.len);
+  safecheck(s.p != NULL);
+
+  str_appendlen(&s, basedir.p, basedir.len);
+  str_push(&s, PATH_SEP);
+  str_appendlen(&s, prefix.p, prefix.len);
+  str_push(&s, PATH_SEP);
+  str_appendlen(&s, pkg->name.p, pkg->name.len);
+
+  return s;
+}
+
+
+bool pkg_is_built(const pkg_t* pkg, const compiler_t* c) {
+  // str_t statusfile = path_join(c->pkgbuilddir, "status.toml");
+  // unixtime_t status_mtime = fs_mtime(statusfile.p);
+  // unixtime_t source_mtime = pkg_source_mtime(pkg);
+
+  // TODO: Read "default_outfile" from statusfile and check its mtime and existence
+  //       Use const char* opt_out if set.
+
+  dlog("TODO: pkg_is_built implementation");
+
+  return false;
+}
+
+
+node_t* nullable pkg_def_get(pkg_t* pkg, sym_t name) {
+  node_t* n = NULL;
+  rwmutex_rlock(&pkg->defs_mu);
+  void** vp = map_lookup_ptr(&pkg->defs, name);
+  if (vp)
+    n = *vp;
+  rwmutex_runlock(&pkg->defs_mu);
+  return n;
+}
+
+
+err_t pkg_def_set(pkg_t* pkg, memalloc_t ma, sym_t name, node_t* n) {
+  err_t err = 0;
+  rwmutex_lock(&pkg->defs_mu);
+  void** vp = map_assign_ptr(&pkg->defs, ma, name);
+  if UNLIKELY(!vp) {
+    err = ErrNoMem;
+  } else {
+    *vp = n;
+  }
+  rwmutex_unlock(&pkg->defs_mu);
+  return err;
+}
+
+
+err_t pkg_def_add(pkg_t* pkg, memalloc_t ma, sym_t name, node_t** np_inout) {
+  err_t err = 0;
+  rwmutex_lock(&pkg->defs_mu);
+  void** vp = map_assign_ptr(&pkg->defs, ma, name);
+  if UNLIKELY(!vp) {
+    err = ErrNoMem;
+  } else if (*vp) {
+    *np_inout = *vp;
+  } else {
+    *vp = assertnotnull(*np_inout);
+  }
+  rwmutex_unlock(&pkg->defs_mu);
+  return err;
+}
+

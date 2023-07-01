@@ -3,23 +3,67 @@
 #include "compiler.h"
 
 
+err_t locmap_init(locmap_t* lm) {
+  memset(lm, 0, sizeof(lm->m));
+  return rwmutex_init(&lm->mu);
+}
+
+
+void locmap_dispose(locmap_t* lm, memalloc_t ma) {
+  assert(!rwmutex_isrlocked(&lm->mu));
+  rwmutex_dispose(&lm->mu);
+  array_dispose(srcfile_t*, (array_t*)&lm->m, ma);
+}
+
+
+void locmap_clear(locmap_t* lm) {
+  rwmutex_lock(&lm->mu);
+  lm->m.len = 0;
+  rwmutex_unlock(&lm->mu);
+}
+
+
 u32 locmap_srcfileid(locmap_t* lm, srcfile_t* sf, memalloc_t ma) {
   assertnotnull(sf);
-  for (u32 i = 1; i < lm->len; i++) {
-    if (lm->v[i] == sf)
-      return i;
+  rwmutex_lock(&lm->mu);
+
+  u32 id = 1;
+  assert(lm->m.len == 0 || lm->m.v[0] == NULL);
+
+  for (; id < lm->m.len; id++) {
+    if (lm->m.v[id] == sf)
+      goto end;
   }
-  if (lm->len == 0) {
-    if UNLIKELY(!array_reserve(srcfile_t*, (array_t*)lm, ma, 8))
-      return 0;
-    lm->v[0] = NULL;
-    lm->v[1] = sf;
-    lm->len = 2;
-    return 1;
+
+  if (lm->m.len == 0) {
+    if UNLIKELY(!array_reserve(srcfile_t*, (array_t*)lm, ma, 8)) {
+      dlog("out of memory");
+      id = 0;
+    } else {
+      lm->m.v[0] = NULL;
+      lm->m.v[1] = sf;
+      lm->m.len = 2;
+      id = 1;
+    }
+  } else if UNLIKELY(!array_push(srcfile_t*, (array_t*)lm, ma, sf)) {
+    dlog("out of memory");
+    id = 0;
+  } else {
+    id = lm->m.len - 1;
   }
-  if UNLIKELY(!array_push(srcfile_t*, (array_t*)lm, ma, sf))
-    return 0;
-  return lm->len - 1;
+
+end:
+  rwmutex_unlock(&lm->mu);
+  return id;
+}
+
+
+srcfile_t* nullable loc_srcfile(loc_t p, locmap_t* lm) {
+  u32 id = loc_srcfileid(p);
+  rwmutex_rlock(&lm->mu);
+  srcfile_t* sf = lm->m.len > id ? lm->m.v[id] : NULL;
+  rwmutex_runlock(&lm->mu);
+  return sf;
 }
 
 
@@ -62,7 +106,7 @@ loc_t loc_union(loc_t a, loc_t b) {
 }
 
 
-usize loc_fmt(loc_t p, char* buf, usize bufcap, const locmap_t* lm) {
+usize loc_fmt(loc_t p, char* buf, usize bufcap, locmap_t* lm) {
   srcfile_t* sf = loc_srcfile(p, lm);
   if (sf && loc_line(p) == 0)
     return snprintf(buf, bufcap, "%s", sf->name.p);
@@ -71,18 +115,18 @@ usize loc_fmt(loc_t p, char* buf, usize bufcap, const locmap_t* lm) {
 }
 
 
-origin_t _origin_make2(const locmap_t* m, loc_t loc) {
+origin_t _origin_make2(locmap_t* lm, loc_t loc) {
   return (origin_t){
-    .file = loc_srcfile(loc, m),
+    .file = loc_srcfile(loc, lm),
     .line = loc_line(loc),
     .column = loc_col(loc),
     .width = loc_width(loc),
   };
 }
 
-origin_t _origin_make3(const locmap_t* m, loc_t loc, u32 focus_col) {
+origin_t _origin_make3(locmap_t* lm, loc_t loc, u32 focus_col) {
   return (origin_t){
-    .file = loc_srcfile(loc, m),
+    .file = loc_srcfile(loc, lm),
     .line = loc_line(loc),
     .column = loc_col(loc),
     .width = loc_width(loc),
