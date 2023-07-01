@@ -55,7 +55,7 @@ inline static slice_t _buf_slice1(const buf_t b) {
 }
 inline static slice_t _buf_slice3(const buf_t b, usize start, usize len) {
   assert(start + len <= b.len);
-  return (slice_t){ .p = (u8*)b.p + start, .len = b.len - len };
+  return (slice_t){ .p = (u8*)b.p + start, .len = len };
 }
 
 // Following functions returning bool returns false if buf_grow failed:

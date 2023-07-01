@@ -5,6 +5,13 @@
 #include "path.h"
 
 
+//#define INTERNAL_SEP    "·" // U+00B7 MIDDLE DOT (UTF8: "\xC2\xB7")
+#define CO_TYPE_PREFIX CO_INTERNAL_PREFIX
+#define CO_TYPE_SUFFIX "_t"
+#define ANON_PREFIX    CO_INTERNAL_PREFIX "v"
+#define ANON_FMT       ANON_PREFIX "%x"
+
+
 typedef struct { usize v[2]; } sizetuple_t;
 
 
@@ -44,6 +51,10 @@ inline static locmap_t* locmap(cgen_t* g) {
 
 
 static void seterr(cgen_t* g, err_t err) {
+  #if DEBUG
+  dlog("seterr \"%s\"", err_str(err));
+  fprint_stacktrace(stderr, /*frame_offset*/1);
+  #endif
   if (!g->err)
     g->err = err;
 }
@@ -83,12 +94,6 @@ UNUSED static const char* fmtnode(cgen_t* g, u32 bufindex, const void* nullable 
   #define debugdie(...) ((void)0)
 #endif
 
-
-//#define INTERNAL_SEP    "·" // U+00B7 MIDDLE DOT (UTF8: "\xC2\xB7")
-#define CO_TYPE_PREFIX CO_INTERNAL_PREFIX
-#define CO_TYPE_SUFFIX "_t"
-#define ANON_PREFIX    CO_INTERNAL_PREFIX "v"
-#define ANON_FMT       ANON_PREFIX "%x"
 
 #define CHAR(ch)             ( buf_push(&g->outbuf, (ch)), ((void)0) )
 #define PRINT(cstr)          ( buf_print(&g->outbuf, (cstr)), ((void)0) )
@@ -1208,10 +1213,10 @@ static void fun_name(cgen_t* g, const fun_t* fun) {
 static void fun_proto(cgen_t* g, const fun_t* fun) {
   funtype_t* ft = (funtype_t*)fun->type;
 
-  switch (fun->visibility) {
-    case VISIBILITY_PRIVATE: PRINT("static "); break;
-    case VISIBILITY_PKG:     PRINT(CO_INTERNAL_PREFIX "pkg "); break;
-    case VISIBILITY_PUBLIC:  PRINT(CO_INTERNAL_PREFIX "pub "); break;
+  switch (fun->flags & NF_VIS_MASK) {
+    case NF_VIS_UNIT: PRINT("static "); break;
+    case NF_VIS_PKG:  PRINT(CO_INTERNAL_PREFIX "pkg "); break;
+    case NF_VIS_PUB:  PRINT(CO_INTERNAL_PREFIX "pub "); break;
   }
 
   type(g, ft->result);
@@ -2266,13 +2271,15 @@ static void expr(cgen_t* g, const expr_t* n) {
 }
 
 
-static void unit(cgen_t* g, const unit_t* n) {
-  if (n->children.len == 0)
+static void unit_impl(cgen_t* g, const unit_t* unit) {
+  assert_nodekind(unit, NODE_UNIT);
+  if (unit->children.len == 0)
     return;
 
-  // external function prototypes
-  for (u32 i = 0; i < n->children.len; i++) {
-    const fun_t* fn = n->children.v[i];
+  // external function prototypes (pure declarations)
+  g->inputid = 0;
+  for (u32 i = 0; i < unit->children.len; i++) {
+    const fun_t* fn = unit->children.v[i];
     if (fn->kind == EXPR_FUN && !fn->body) {
       startline(g, fn->loc);
       fun_proto(g, fn);
@@ -2280,12 +2287,12 @@ static void unit(cgen_t* g, const unit_t* n) {
     }
   }
 
-  // local function prototypes
+  // unit-local function prototypes
   bool printed_head = false;
   g->inputid = 0;
-  for (u32 i = 0; i < n->children.len; i++) {
-    const fun_t* fn = n->children.v[i];
-    if (fn->kind == EXPR_FUN && fn->body) {
+  for (u32 i = 0; i < unit->children.len; i++) {
+    const fun_t* fn = unit->children.v[i];
+    if (fn->kind == EXPR_FUN && fn->body && (fn->flags & NF_VIS_MASK) == NF_VIS_UNIT) {
       if (!printed_head) {
         printed_head = true;
         PRINT("\n\n#line 1 \"<generated>\"");
@@ -2298,20 +2305,22 @@ static void unit(cgen_t* g, const unit_t* n) {
 
   // implementations (and typedefs, added to headbuf)
   g->inputid = 0;
-  for (u32 i = 0; i < n->children.len; i++) {
-    const node_t* cn = n->children.v[i];
-    switch (cn->kind) {
+  for (u32 i = 0; i < unit->children.len; i++) {
+    const node_t* n = unit->children.v[i];
+    switch (n->kind) {
       case STMT_TYPEDEF:
-        typedef_(g, (typedef_t*)cn);
+        if ((n->flags & NF_VIS_MASK) == NF_VIS_UNIT)
+          typedef_(g, (typedef_t*)n);
         break;
       case EXPR_FUN: {
-        const fun_t* fn = (fun_t*)cn;
-        if (fn->body == NULL) {
-          // declaration-only function already generated
-          continue;
-        }
+        const fun_t* fn = (fun_t*)n;
+        // skip declaration-only function (already generated)
+        if (!fn->body)
+          break;
         startline(g, fn->loc);
         fun(g, fn);
+        if (fn->name == sym_main)
+          g->mainfun = fn;
         // nested functions
         for (u32 i = 0; i < g->funqueue.len; i++) {
           const fun_t* fn = g->funqueue.v[i];
@@ -2329,9 +2338,49 @@ static void unit(cgen_t* g, const unit_t* n) {
 }
 
 
+static void unit_interface(cgen_t* g, const unit_t* unit, nodeflag_t visibility) {
+  assert_nodekind(unit, NODE_UNIT);
+  if (unit->children.len == 0)
+    return;
+
+  g->inputid = 0;
+
+  for (u32 i = 0; i < unit->children.len; i++) {
+    const node_t* n = unit->children.v[i];
+    if (!(n->flags & visibility)) {
+      dlog("skip %s (visibility %s)", nodekind_name(n->kind), visibility_str(n->flags));
+      continue;
+    }
+    switch (n->kind) {
+      case STMT_TYPEDEF:
+        typedef_(g, (typedef_t*)n);
+        break;
+      case EXPR_FUN: {
+        const fun_t* fn = (fun_t*)n;
+
+        // ignore pure declarations
+        if (!fn->body)
+          break;
+
+        if (fn->name == sym_main)
+          g->mainfun = fn;
+
+        startline(g, fn->loc);
+        // CHAR('\n'); g->lineno++;
+        fun_proto(g, fn);
+        CHAR(';');
+        break;
+      }
+      default:
+        debugdie(g, n, "unexpected unit-level node %s", nodekind_name(n->kind));
+    }
+  }
+}
+
+
 static void gen_main(cgen_t* g) {
-  assertnotnull(g->pkg->mainfun);
-  assertnotnull(g->pkg->mainfun->mangledname);
+  assertnotnull(g->mainfun);
+  assertnotnull(g->mainfun->mangledname);
   PRINTF(
     "\n"
     "\n"
@@ -2339,49 +2388,40 @@ static void gen_main(cgen_t* g) {
     "int main(int argc, char* argv[]) {\n"
     "  return %s(), 0;\n"
     "}",
-    g->pkg->mainfun->mangledname
+    g->mainfun->mangledname
   );
 }
 
 
-err_t cgen_generate(cgen_t* g, const unit_t* n) {
-  // reset generator state
-  g->err = 0;
+static void reset(cgen_t* g) {
   buf_clear(&g->outbuf);
-  map_clear(&g->typedefmap);
-  map_clear(&g->tmpmap);
-  g->anon_idgen = 1;
+  buf_clear(&g->headbuf);
+  g->headoffs = 0;
+  g->headnest = 0;
+  g->headlineno = 0;
+  g->headinputid = 0;
   g->inputid = 0;
   g->lineno = 0;
   g->scopenest = 0;
-  g->headnest = 0;
-
-  PRINT("#include <coprelude.h>\n");
-
-  // srcfile_t* sf = loc_srcfile(n->loc, locmap(g));
-  // if (sf) {
-  //   g->inputid = loc_srcfileid(n->loc);
-  //   g->lineno = 1;
-  //   g->headlineno = g->lineno;
-  //   g->headinputid = g->inputid;
-  //   PRINTF("\n#line 1 \"%s\"\n", sf->name);
-  // }
-
-  usize headstart = g->outbuf.len;
-
-  buf_clear(&g->headbuf);
+  g->err = 0;
+  g->anon_idgen = 0;
+  g->indent = 0;
+  map_clear(&g->typedefmap);
+  map_clear(&g->tmpmap);
   ptrarray_clear(&g->funqueue);
+  g->mainfun = NULL;
+}
 
-  if (n->kind != NODE_UNIT)
-    return ErrInvalid;
-  unit(g, n);
 
-  if (g->pkg->mainfun && !g->compiler->opt_nomain)
-    gen_main(g);
+static err_t finalize(cgen_t* g, usize headstart) {
+  if (g->err)
+    return g->err;
 
   if (g->headbuf.len > 0) {
-    if (!buf_insert(&g->outbuf, headstart, g->headbuf.p, g->headbuf.len))
+    if (!buf_insert(&g->outbuf, headstart, g->headbuf.p, g->headbuf.len)) {
+      dlog("buf_insert: %s", err_str(ErrNoMem));
       seterr(g, ErrNoMem);
+    }
   }
 
   // make sure outputs ends with LF
@@ -2389,8 +2429,106 @@ err_t cgen_generate(cgen_t* g, const unit_t* n) {
     CHAR('\n');
 
   // check if we ran out of memory by appending \0 without affecting len
-  if (!buf_nullterm(&g->outbuf))
+  if (!buf_nullterm(&g->outbuf)) {
+    dlog("buf_nullterm: %s", err_str(ErrNoMem));
     seterr(g, ErrNoMem);
+  }
 
   return g->err;
+}
+
+
+err_t cgen_unit_impl(cgen_t* g, const unit_t* u, const cgen_pkgapi_t* nullable pkgapi) {
+  // cgen_t* g, const unit_t* u, const map_t* nullable existing_typedefs, mem_t pkgapidata)
+  reset(g);
+
+  if (pkgapi) {
+    if (!map_update_replace_ptr(&g->typedefmap, g->ma, &pkgapi->pkg_typedefs))
+      return ErrNoMem;
+  }
+
+  PRINT("#include <coprelude.h>\n");
+
+  // Include pre-generated package API.
+  // This data is usually a copy of g->outbuf after callint cgen_pkg_api
+  if (pkgapi && pkgapi->pkg_header.size > 0) {
+    PRINT("\n// ------ begin package api ------\n");
+    buf_append(&g->outbuf, pkgapi->pkg_header.p, pkgapi->pkg_header.size);
+    if ( ((u8*)pkgapi->pkg_header.p)[pkgapi->pkg_header.size-1] != '\n' )
+      CHAR('\n');
+    PRINT("// ------ end package api ------\n");
+  }
+
+  usize headstart = g->outbuf.len;
+
+  unit_impl(g, u);
+
+  if (g->mainfun && !g->compiler->opt_nomain)
+    gen_main(g);
+
+  return finalize(g, headstart);
+}
+
+
+void cgen_pkgapi_dispose(cgen_t* g, cgen_pkgapi_t* pkgapi) {
+  if (pkgapi->pkg_header.p)
+    mem_free(g->ma, &pkgapi->pkg_header);
+  map_dispose(&pkgapi->pkg_typedefs, g->ma);
+}
+
+
+err_t cgen_pkgapi(cgen_t* g, const unit_t** unitv, u32 unitc, cgen_pkgapi_t* result) {
+  memset(result, 0, sizeof(*result));
+
+  reset(g);
+
+  PRINT("// package "), PRINTN(g->pkg->name.p, g->pkg->name.len), CHAR('\n');
+  PRINT("#pragma once\n");
+  usize headstart = g->outbuf.len;
+
+  for (u32 i = 0; i < unitc; i++)
+    unit_interface(g, unitv[i], NF_VIS_PUB);
+
+  CHAR('\n'); g->lineno++;
+  usize pub_header_len = g->outbuf.len;
+
+  PRINT("\n// internal API:"); g->lineno++;
+  for (u32 i = 0; i < unitc; i++)
+    unit_interface(g, unitv[i], NF_VIS_PKG);
+
+  err_t err = finalize(g, headstart);
+  pub_header_len += g->headbuf.len;
+
+  dlog("pub_outbuf_len %zu\n———————————\n%.*s———————————\n",
+    pub_header_len, (int)pub_header_len, g->outbuf.chars);
+
+  if (err)
+    return err;
+
+  // Create result map of package-level type definitions by moving g->typedefmap
+  // to results and creating a new small empty map for g->typedefmap.
+  map_t newtypedefmap;
+  if (!map_init(&newtypedefmap, g->ma, 8)) {
+    err = ErrNoMem;
+  } else {
+    result->pkg_typedefs = g->typedefmap;
+    g->typedefmap = newtypedefmap;
+  }
+
+  // Public API header is the first pub_header_len bytes of outbuf
+  result->pub_header = buf_slice(g->outbuf, 0, pub_header_len);
+
+  // Package-internal API is outbuf[headstart:]
+  // We must copy this since it will be reused with cgen_unit_impl,
+  // which in turn recycles outbuf.
+  result->pkg_header = mem_alloc(g->ma, g->outbuf.len - headstart);
+  if (!result->pkg_header.p) {
+    err = ErrNoMem;
+  } else {
+    memcpy(result->pkg_header.p, g->outbuf.p + headstart, result->pkg_header.size);
+  }
+
+  if (err)
+    cgen_pkgapi_dispose(g, result);
+  return err;
 }

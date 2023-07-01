@@ -151,9 +151,10 @@ bool buf_appendhex(buf_t* b, const void* src, usize len) {
 
 
 bool buf_insert(buf_t* b, usize index, const void* src, usize len) {
+  assertf(index <= b->len, "index(%zu) > buf.len(%zu)", index, b->len);
   if (len == 0)
     return true;
-  if UNLIKELY(!buf_reserve(b, len) || index > b->len)
+  if UNLIKELY(!buf_reserve(b, len))
     return false;
   void* dst = &b->bytes[index];
   if (index < b->len)

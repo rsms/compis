@@ -398,8 +398,11 @@ static void leave_scope(parser_t* p) {
 static node_t* nullable lookup(parser_t* p, sym_t name) {
   node_t* n = scope_lookup(&p->scope, name, U32_MAX);
   // if not found locally, look in package scope and its parent universe scope
-  if (!n)
-    n = pkg_def_get(currpkg(p), name);
+  if (!n) {
+    dlog("lookup in package: %s", name);
+    if ((n = pkg_def_get(currpkg(p), name)))
+      node_upgrade_visibility(n, NF_VIS_PKG);
+  }
   return n;
 }
 
@@ -1911,11 +1914,6 @@ static fun_t* fun(parser_t* p, nodeflag_t fl, type_t* nullable recvt, bool requi
   next(p);
   n->recvt = recvt;
 
-  if (p->fun) {
-    // nested functions are only visible within the same source file
-    n->visibility = VISIBILITY_PRIVATE;
-  }
-
   // name
   if (currtok(p) == TID) {
     n->name = p->scanner.sym;
@@ -2015,13 +2013,14 @@ static stmt_t* stmt_pub(parser_t* p) {
   }
 
   stmt_t* n = stmt(p);
+
+  node_set_visibility((node_t*)n, NF_VIS_PUB);
+
   switch (n->kind) {
     case EXPR_FUN:
-      ((fun_t*)n)->visibility = VISIBILITY_PUBLIC;
       ((fun_t*)n)->abi = abi;
       break;
     case STMT_TYPEDEF:
-      ((typedef_t*)n)->visibility = VISIBILITY_PUBLIC;
       break;
     case NODE_BAD:
       break;

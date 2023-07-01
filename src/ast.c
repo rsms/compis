@@ -135,6 +135,11 @@ static bool seen(repr_t* r, const void* n) {
 }
 
 
+static void repr_visibility(RPARAMS, const node_t* n) {
+  CHAR(' '), PRINT(visibility_str(n->flags));
+}
+
+
 static void repr_nodearray(RPARAMS, const ptrarray_t* nodes) {
   for (usize i = 0; i < nodes->len; i++) {
     CHAR(' ');
@@ -144,6 +149,7 @@ static void repr_nodearray(RPARAMS, const ptrarray_t* nodes) {
 
 
 static void repr_typedef(RPARAMS, const typedef_t* n) {
+  repr_visibility(RARGS, (node_t*)n);
   CHAR(' ');
   repr_type(RARGS, (type_t*)&n->type);
 }
@@ -167,6 +173,7 @@ static void repr_fun(RPARAMS, const fun_t* n) {
     repr_type(RARGSFL(fl | REPRFLAG_HEAD), n->recvt);
     REPR_END(')');
   }
+
   if (n->body)
     CHAR(' '), repr(RARGS, (node_t*)n->body);
 }
@@ -326,6 +333,7 @@ static void repr(RPARAMS, const node_t* nullable n) {
   if (node_isexpr(n)) {
     if (n->kind == EXPR_FUN && ((fun_t*)n)->name) {
       fun_t* fn = (fun_t*)n;
+      repr_visibility(RARGS, (node_t*)fn);
       CHAR(' ');
       if (fn->recvt) {
         if (fn->recvt->kind == TYPE_STRUCT) {
@@ -517,6 +525,14 @@ end:
 }
 
 
+static void repr_pkg(repr_t* r, const pkg_t* pkg, const unit_t*const* unitv, u32 unitc) {
+  PRINTF("(PKG \"%s\"", pkg->name.p);
+  for (u32 i = 0; i < unitc && !r->err; i++)
+    repr(r, INDENT, 0, (const node_t*)unitv[i]);
+  CHAR(')');
+}
+
+
 err_t node_repr(buf_t* buf, const node_t* n) {
   repr_t r = {
     .outbuf = *buf,
@@ -524,6 +540,21 @@ err_t node_repr(buf_t* buf, const node_t* n) {
   if (!map_init(&r.seen, buf->ma, 64))
     return ErrNoMem;
   repr(&r, INDENT, REPRFLAG_HEAD, n);
+  *buf = r.outbuf;
+  map_dispose(&r.seen, buf->ma);
+  return r.err;
+}
+
+
+err_t ast_fmt_pkg(buf_t* buf, const pkg_t* pkg, const unit_t*const* unitv, u32 unitc) {
+  repr_t r = {
+    .outbuf = *buf,
+  };
+  if (!map_init(&r.seen, buf->ma, 64))
+    return ErrNoMem;
+
+  repr_pkg(&r, pkg, unitv, unitc);
+
   *buf = r.outbuf;
   map_dispose(&r.seen, buf->ma);
   return r.err;

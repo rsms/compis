@@ -38,6 +38,11 @@ void** nullable map_assign_ptr(map_t* m, memalloc_t ma, const void* key);
 void** nullable map_lookup_ptr(const map_t* m, const void* key);
 bool map_del_ptr(map_t* m, const void* key);
 
+
+// map_update_replace_ptr adds entries from src to m,
+// replacing any existing entries with the same key.
+bool map_update_replace_ptr(map_t* m, memalloc_t ma, const map_t* src);
+
 // Iterator. Example with c-string keys
 // for (const mapent_t* e = map_it(m); map_itnext(m, &e); )
 //   dlog("%.*s => %zx", (int)e->keysize, (const char*)e->key, e->value);

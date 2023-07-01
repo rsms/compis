@@ -181,13 +181,6 @@ typedef struct {
 
 typedef const char* sym_t;
 
-typedef u8 visibility_t;
-enum visibility {
-  VISIBILITY_PRIVATE = 0, // visible within same source file
-  VISIBILITY_PKG     = 1, // visible within same package
-  VISIBILITY_PUBLIC  = 2, // visible to other packages
-};
-
 typedef u8 abi_t;
 enum abi {
   ABI_CO = 0,
@@ -214,7 +207,7 @@ enum nodekind {
   NODEKIND_COUNT,
 };
 
-typedef u8 nodeflag_t;
+typedef u16 nodeflag_t;
 #define NF_RVALUE      ((nodeflag_t)1<< 0) // expression is used as an rvalue
 #define NF_OPTIONAL    ((nodeflag_t)1<< 1) // type-narrowed from optional
 #define NF_CHECKED     ((nodeflag_t)1<< 2) // has been typecheck'ed (or doesn't need it)
@@ -224,6 +217,14 @@ typedef u8 nodeflag_t;
 #define NF_SUBOWNERS   ((nodeflag_t)1<< 6) // type has owning elements
 #define NF_EXIT        ((nodeflag_t)1<< 7) // block exits (i.e. "return" or "break")
 #define NF_CONST       ((nodeflag_t)1<< 7) // [anything but block] is a constant
+// visibility
+#define NF_VIS_MASK    ((nodeflag_t)0x300) // 0b1100000000
+#define NF_VIS_UNIT    ((nodeflag_t)0)     // visible within same source file
+#define NF_VIS_PKG     ((nodeflag_t)1<< 8) // visible within same package
+#define NF_VIS_PUB     ((nodeflag_t)1<< 9) // visible to other packages
+
+static_assert(0 < NF_VIS_PKG, "");
+static_assert(NF_VIS_PKG < NF_VIS_PUB, "");
 
 // NODEFLAGS_BUBBLE are flags that "bubble" (transfer) from children to parents
 #define NODEFLAGS_BUBBLE  NF_UNKNOWN
@@ -231,7 +232,7 @@ typedef u8 nodeflag_t;
 typedef struct {
   nodekind_t kind;
   nodeflag_t flags;
-  u8         _unused[2];
+  u8         _unused;
   u32        nuse; // number of uses (expr_t and usertype_t)
   loc_t      loc;
 } node_t;
@@ -322,7 +323,6 @@ typedef struct {
 
 typedef struct {
   stmt_t;
-  visibility_t visibility;
   union {
     type_t       type;
     aliastype_t  aliastype;
@@ -418,7 +418,6 @@ typedef struct fun_t { // fun is a declaration (stmt) or an expression depending
   type_t* nullable  recvt;        // non-NULL for type functions (type of "this")
   char* nullable    mangledname;  // mangled name, created in ast_ma by typecheck
   abi_t             abi;
-  visibility_t      visibility;
   node_t* nullable  nsparent;
 } fun_t;
 
@@ -576,7 +575,16 @@ typedef struct {
   map_t        typedefmap;
   map_t        tmpmap;
   ptrarray_t   funqueue;   // [fun_t*] queue of (nested) functions awaiting build
+  const fun_t* nullable mainfun;
 } cgen_t;
+
+typedef struct {
+  slice_t pub_header;   // .h file data of public statements (ref cgen_t.outbuf)
+  mem_t   pkg_header;   // statements for all units of the package
+  map_t   pkg_typedefs; // type definitions for all PKG- & PUB-visibility interfaces
+  // note: pkgapidata and pkgtypedefs are allocated in cgen_t.ma, it's the
+  // responsibility of the cgen_pkgapi caller to free these with cgen_pkgapi_dispose.
+} cgen_pkgapi_t;
 
 typedef struct compiler {
   memalloc_t  ma;            // memory allocator
@@ -690,7 +698,8 @@ srcfile_t* pkg_add_srcfile(pkg_t* pkg, const char* name);
 err_t pkg_find_files(pkg_t* pkg); // updates pkg->files, sets sf.mtime
 unixtime_t pkg_source_mtime(const pkg_t* pkg); // max(f.mtime for f in files)
 bool pkg_is_built(const pkg_t* pkg, const compiler_t* c);
-str_t pkg_builddir(const pkg_t* pkg, const compiler_t* c); // "{c.builddir}/{pkg.name}.copkg"
+str_t pkg_builddir(const pkg_t* pkg, const compiler_t* c);
+str_t pkg_buildfile(const pkg_t* pkg, const compiler_t* c, const char* filename);
 node_t* nullable pkg_def_get(pkg_t* pkg, sym_t name);
 err_t pkg_def_set(pkg_t* pkg, memalloc_t ma, sym_t name, node_t* n);
 err_t pkg_def_add(pkg_t* pkg, memalloc_t ma, sym_t name, node_t** np_inout);
@@ -765,13 +774,17 @@ bool irfmt_fun(compiler_t*, const pkg_t*, buf_t*, const irfun_t*);
 // C code generator
 bool cgen_init(cgen_t* g, compiler_t* c, const pkg_t*, memalloc_t out_ma);
 void cgen_dispose(cgen_t* g);
-err_t cgen_generate(cgen_t* g, const unit_t* unit);
+err_t cgen_unit_impl(
+  cgen_t* g, const unit_t* unit, const cgen_pkgapi_t* nullable pkgapi);
+err_t cgen_pkgapi(cgen_t* g, const unit_t** unitv, u32 unitc, cgen_pkgapi_t* result);
+void cgen_pkgapi_dispose(cgen_t* g, cgen_pkgapi_t* result);
 
 // AST
 const char* nodekind_name(nodekind_t); // e.g. "EXPR_INTLIT"
 const char* nodekind_fmt(nodekind_t); // e.g. "variable"
 err_t node_fmt(buf_t* buf, const node_t* nullable n, u32 depth); // e.g. i32, x, "foo"
 err_t node_repr(buf_t* buf, const node_t* n); // S-expr AST tree
+err_t ast_fmt_pkg(buf_t* buf, const pkg_t* pkg, const unit_t*const* unitv, u32 unitc);
 origin_t node_origin(locmap_t*, const node_t*); // compute source origin of node
 node_t* nullable ast_mknode(memalloc_t ast_ma, usize size, nodekind_t kind);
 node_t* clone_node(parser_t* p, const node_t* n);
@@ -787,6 +800,18 @@ const char* node_srcfilename(const node_t* n, locmap_t* lm);
 
 inline static void bubble_flags(void* parent, void* child) {
   ((node_t*)parent)->flags |= (((node_t*)child)->flags & NODEFLAGS_BUBBLE);
+}
+
+inline static void node_upgrade_visibility(node_t* n, nodeflag_t minvis) {
+  assertf(minvis == NF_VIS_UNIT ||
+          (NF_VIS_PKG <= minvis && minvis <= NF_VIS_PUB), "%x", minvis);
+  if ((n->flags & NF_VIS_MASK) < minvis)
+    n->flags = (n->flags & ~NF_VIS_MASK) | minvis;
+}
+
+inline static void node_set_visibility(node_t* n, nodeflag_t vis) {
+  assertf(vis == NF_VIS_UNIT || (NF_VIS_PKG <= vis && vis <= NF_VIS_PUB), "%x", vis);
+  n->flags = (n->flags & ~NF_VIS_MASK) | vis;
 }
 
 inline static bool nodekind_istype(nodekind_t kind) { return kind >= TYPE_VOID; }
@@ -956,6 +981,9 @@ bool scope_define(scope_t* s, memalloc_t ma, const void* key, void* value);
 bool scope_undefine(scope_t* s, memalloc_t ma, const void* key);
 void* nullable scope_lookup(scope_t* s, const void* key, u32 maxdepth);
 inline static bool scope_istoplevel(const scope_t* s) { return s->base == 0; }
+
+// visibility
+const char* visibility_str(nodeflag_t flags);
 
 // temporary buffers
 // get_tmpbuf returns a thread-local general-purpose temporary buffer

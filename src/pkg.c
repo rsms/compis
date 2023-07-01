@@ -281,13 +281,12 @@ end:
 }
 
 
-str_t pkg_builddir(const pkg_t* pkg, const compiler_t* c) {
+static str_t _pkg_builddir(const pkg_t* pkg, const compiler_t* c, usize extracap) {
   // pkgbuilddir = {builddir}/pkg/{pkgname}
-
   slice_t basedir = slice_cstr(c->builddir);
   slice_t prefix = slice_cstr("pkg");
 
-  str_t s = str_makeempty(basedir.len + 1 + pkg->name.len + 1 + prefix.len);
+  str_t s = str_makeempty(basedir.len + 1 + pkg->name.len + 1 + prefix.len + extracap);
   safecheck(s.p != NULL);
 
   str_appendlen(&s, basedir.p, basedir.len);
@@ -297,6 +296,20 @@ str_t pkg_builddir(const pkg_t* pkg, const compiler_t* c) {
   str_appendlen(&s, pkg->name.p, pkg->name.len);
 
   return s;
+}
+
+
+str_t pkg_builddir(const pkg_t* pkg, const compiler_t* c) {
+  return _pkg_builddir(pkg, c, 0);
+}
+
+
+str_t pkg_buildfile(const pkg_t* pkg, const compiler_t* c, const char* filename) {
+  usize filename_len = strlen(filename);
+  str_t apifile = _pkg_builddir(pkg, c, 1 + filename_len);
+  str_push(&apifile, PATH_SEP);
+  str_appendlen(&apifile, filename, filename_len);
+  return apifile;
 }
 
 

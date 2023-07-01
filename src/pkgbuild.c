@@ -16,7 +16,9 @@ err_t pkgbuild_init(pkgbuild_t* pb, pkg_t* pkg, compiler_t* c, u32 flags) {
   // configure a bgtask for communicating status to the user
   int taskflags = (c->opt_verbose > 0) ? BGTASK_NOFANCY : 0;
   dlog("taskflags: %d", taskflags);
-  u32 tasklen = 1 + (u32)!(flags & PKGBUILD_NOLINK); // typecheck + link
+  u32 tasklen = 1; // typecheck
+  tasklen += (u32)!!c->opt_verbose; // cgen "api header"
+  tasklen += (u32)!(flags & PKGBUILD_NOLINK); // link
   pb->bgt = bgtask_open(c->ma, pkg->name.p, tasklen, taskflags);
   // note: bgtask_open currently panics on OOM; change that, make it return NULL
 
@@ -81,9 +83,13 @@ static err_t dump_ast(const node_t* ast) {
 
 
 static err_t dump_pkg_ast(const pkg_t* pkg, unit_t*const* unitv, u32 unitc) {
-  err_t err = 0;
-  for (u32 i = 0; i < unitc && err == 0; i++)
-    err = dump_ast((node_t*)unitv[i]);
+  buf_t buf = buf_make(memalloc_ctx());
+  err_t err = ast_fmt_pkg(&buf, pkg, (const unit_t*const*)unitv, unitc);
+  if (!err) {
+    fwrite(buf.chars, buf.len, 1, stderr);
+    fputc('\n', stderr);
+  }
+  buf_dispose(&buf);
   return err;
 }
 
@@ -383,6 +389,35 @@ err_t pkgbuild_typecheck(pkgbuild_t* pb) {
 }
 
 
+static err_t cgen_api(pkgbuild_t* pb, cgen_t* g, cgen_pkgapi_t* pkgapi) {
+  err_t err;
+
+  str_t pubhfile = pkg_buildfile(pb->pkg, pb->c, "pub.h");
+  if UNLIKELY(pubhfile.len == 0)
+    return ErrNoMem;
+
+  if (pb->c->opt_verbose)
+    pkgbuild_begintask(pb, "cgen %s", relpath(pubhfile.p));
+
+  err = cgen_pkgapi(g, (const unit_t**)pb->unitv, pb->unitc, pkgapi);
+  if (err) {
+    dlog("cgen_pkgapi: %s", err_str(err));
+    goto end;
+  }
+
+  if (opt_trace_cgen) {
+    fprintf(stderr, "——————————\n%.*s\n——————————\n",
+      (int)g->outbuf.len, g->outbuf.chars);
+  }
+
+  err = fs_writefile_mkdirs(pubhfile.p, 0660, pkgapi->pub_header);
+
+end:
+  str_free(pubhfile);
+  return err;
+}
+
+
 err_t pkgbuild_cgen(pkgbuild_t* pb) {
   err_t err;
   compiler_t* c = pb->c;
@@ -393,15 +428,21 @@ err_t pkgbuild_cgen(pkgbuild_t* pb) {
   // create C code generator
   cgen_t g;
   if (!cgen_init(&g, c, pb->pkg, c->ma)) {
-    dlog("cgen_init");
+    dlog("cgen_init: %s", err_str(ErrNoMem));
     return ErrNoMem;
   }
 
-  // create output dir and build cfiles & ofiles
+  // create output dir and initialize cfiles & ofiles arrays
   err = prepare_builddir(pb);
+  if (err)
+    goto end;
+
+  // generate package C header
+  cgen_pkgapi_t pkgapi;
+  err = cgen_api(pb, &g, &pkgapi);
 
   // generate one C file for each unit
-  for (u32 i = 0; i < pb->unitc && err == 0; i++) {
+  for (u32 i = 0; i < pb->unitc && !err; i++) {
     unit_t* unit = pb->unitv[i];
     const char* cfile = cfile_of_unit(pb, unit);
 
@@ -409,7 +450,7 @@ err_t pkgbuild_cgen(pkgbuild_t* pb) {
     if (pb->c->opt_verbose)
       pkgbuild_begintask(pb, "cgen %s", node_srcfilename((node_t*)unit, &c->locmap));
 
-    if (( err = cgen_generate(&g, unit) ))
+    if (( err = cgen_unit_impl(&g, unit, &pkgapi) ))
       break;
 
     if (opt_trace_cgen) {
@@ -420,6 +461,8 @@ err_t pkgbuild_cgen(pkgbuild_t* pb) {
     err = fs_writefile_mkdirs(cfile, 0660, buf_slice(g.outbuf));
   }
 
+  cgen_pkgapi_dispose(&g, &pkgapi);
+end:
   cgen_dispose(&g);
   return err;
 }

@@ -250,3 +250,16 @@ bool map_itnext(const map_t* m, const mapent_t** ep) {
   }
   return false;
 }
+
+
+bool map_update_replace_ptr(map_t* m, memalloc_t ma, const map_t* src) {
+  if UNLIKELY(!map_reserve(m, ma, src->len))
+    return false;
+  for (const mapent_t* e = map_it(src); map_itnext(src, &e); ) {
+    void** vp = assertnotnull(map_assign_ptr(m, ma, e->key));
+    if (!vp)
+      return false;
+    *vp = e->value;
+  }
+  return true;
+}

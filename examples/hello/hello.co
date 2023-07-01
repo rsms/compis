@@ -1,5 +1,17 @@
 pub "c" fun panic(str) void
 
-fun hello() {
+type Foo {
+  x, y int
+}
+
+fun unit_local() {
   panic("hi")
+}
+
+fun package_local() {
+  unit_local()
+}
+
+pub fun public(f Foo) {
+  panic("hej")
 }

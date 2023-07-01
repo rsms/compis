@@ -19,6 +19,32 @@
 #endif
 
 
+void fprint_stacktrace(FILE* fp, int frame_offset) {
+  #ifdef HAS_BACKTRACE
+
+  void* buf[32];
+
+  frame_offset++; // skip this function
+  int framecount = backtrace(buf, countof(buf));
+  if (framecount <= frame_offset)
+    return;
+
+  char** strs = backtrace_symbols(buf, framecount);
+  if (strs != NULL) {
+    for (; frame_offset < framecount; frame_offset++) {
+      fwrite(strs[frame_offset], strlen(strs[frame_offset]), 1, fp);
+      fputc('\n', fp);
+    }
+    free(strs);
+  } else {
+    fflush(fp);
+    backtrace_symbols_fd(buf, framecount, fileno(fp));
+  }
+
+  #endif
+}
+
+
 void _panic(const char* file, int line, const char* fun, const char* fmt, ...) {
   FILE* fp = stderr;
   flockfile(fp);
@@ -32,23 +58,7 @@ void _panic(const char* file, int line, const char* fun, const char* fmt, ...) {
 
   fprintf(fp, " (%s at %s:%d)\n", fun, file, line);
 
-  #ifdef HAS_BACKTRACE
-    void* buf[32];
-    int framecount = backtrace(buf, countof(buf));
-    if (framecount > 1) {
-      char** strs = backtrace_symbols(buf, framecount);
-      if (strs != NULL) {
-        for (int i = 1; i < framecount; ++i) {
-          fwrite(strs[i], strlen(strs[i]), 1, fp);
-          fputc('\n', fp);
-        }
-        free(strs);
-      } else {
-        fflush(fp);
-        backtrace_symbols_fd(buf, framecount, fileno(fp));
-      }
-    }
-  #endif
+  fprint_stacktrace(fp, 1);
 
   funlockfile(fp);
   fflush(fp);

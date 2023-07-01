@@ -684,13 +684,20 @@ static void leave_ns(typecheck_t* a) {
 
 
 static node_t* nullable lookup(typecheck_t* a, sym_t name) {
+  assert(name != sym__);
+  dlog("lookup %s", name);
   node_t* n = scope_lookup(&a->scope, name, U32_MAX);
   if (!n) {
-    // look in package scope and its parent universe scope
-    void** vp = map_lookup_ptr(&a->pkg->defs, name);
-    if (!vp)
+    dlog("—— pkg lookup %s", name);
+    if (!( n = pkg_def_get(a->pkg, name) ))
       return NULL;
-    n = *vp;
+
+    // mark the node as being used across translations units of the same package
+    node_upgrade_visibility(n, NF_VIS_PKG);
+
+    // // define in current scope to reduce number of package lookups
+    // if (!scope_define(&a->scope, a->ma, name, n))
+    //   out_of_mem(a);
   }
   return use(n);
 }
@@ -1070,8 +1077,7 @@ static void main_fun(typecheck_t* a, fun_t* n) {
   }
 
   // make sure main function is at least visible to the package
-  if (n->visibility < VISIBILITY_PKG)
-    n->visibility = VISIBILITY_PKG;
+  node_upgrade_visibility((node_t*)n, NF_VIS_PKG);
 }
 
 
@@ -1173,8 +1179,7 @@ static void fun(typecheck_t* a, fun_t* n) {
       main_fun(a, n);
     }
   } else {
-    if (n->visibility == VISIBILITY_PRIVATE)
-      n->visibility = VISIBILITY_PKG;
+    node_upgrade_visibility((node_t*)n, NF_VIS_PKG);
   }
 
   if (n->recvt)
@@ -1255,10 +1260,6 @@ static void idexpr(typecheck_t* a, idexpr_t* n) {
       error(a, n, "unknown identifier \"%s\"", n->name);
       return;
     }
-    // if the target is a function, mark that function as being used across
-    // translations units of the same package
-    if (n->ref->kind == EXPR_FUN && ((fun_t*)n->ref)->visibility < VISIBILITY_PKG)
-      ((fun_t*)n->ref)->visibility = VISIBILITY_PKG;
   }
 
   expr(a, n->ref);

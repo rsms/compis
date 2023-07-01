@@ -558,6 +558,8 @@ EXTERN_C _Noreturn void _panic(
   const char* file, int line, const char* fun, const char* fmt, ...)
   ATTR_FORMAT(printf, 4, 5);
 
+void fprint_stacktrace(FILE* fp, int frame_offset);
+
 #ifdef DEBUG
   EXTERN_C void _dlog(
     int color, const char* nullable prefix,
