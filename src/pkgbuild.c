@@ -406,8 +406,9 @@ static err_t cgen_api(pkgbuild_t* pb, cgen_t* g, cgen_pkgapi_t* pkgapi) {
   }
 
   if (opt_trace_cgen) {
-    fprintf(stderr, "——————————\n%.*s\n——————————\n",
-      (int)g->outbuf.len, g->outbuf.chars);
+    fprintf(stderr, "—————————— cgen %s ——————————\n", relpath(pubhfile.p));
+    fwrite(g->outbuf.p, g->outbuf.len, 1, stderr);
+    fputs("\n——————————————————————————————————\n", stderr);
   }
 
   err = fs_writefile_mkdirs(pubhfile.p, 0660, pkgapi->pub_header);
@@ -446,7 +447,6 @@ err_t pkgbuild_cgen(pkgbuild_t* pb) {
     unit_t* unit = pb->unitv[i];
     const char* cfile = cfile_of_unit(pb, unit);
 
-    dlog("cgen %s -> %s", node_srcfilename((node_t*)unit, &c->locmap), relpath(cfile));
     if (pb->c->opt_verbose)
       pkgbuild_begintask(pb, "cgen %s", node_srcfilename((node_t*)unit, &c->locmap));
 
@@ -454,8 +454,9 @@ err_t pkgbuild_cgen(pkgbuild_t* pb) {
       break;
 
     if (opt_trace_cgen) {
-      fprintf(stderr, "——————————\n%.*s\n——————————\n",
-        (int)g.outbuf.len, g.outbuf.chars);
+      fprintf(stderr, "—————————— cgen %s ——————————\n", relpath(cfile));
+      fwrite(g.outbuf.p, g.outbuf.len, 1, stderr);
+      fputs("\n——————————————————————————————————\n", stderr);
     }
 
     err = fs_writefile_mkdirs(cfile, 0660, buf_slice(g.outbuf));
