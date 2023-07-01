@@ -443,7 +443,6 @@ bool compiler_fully_qualified_name(
   const compiler_t* c, const pkg_t* pkg, buf_t* buf, const node_t* n)
 {
   // TODO: use n->nsparent when available
-  buf_reserve(buf, 32);
   if (n->kind == EXPR_FUN)
     return fqn_fun(c, pkg, buf, (fun_t*)n);
   assertf(0,"TODO global variable %s", nodekind_name(n->kind));
