@@ -2348,7 +2348,7 @@ static void unit_interface(cgen_t* g, const unit_t* unit, nodeflag_t visibility)
   for (u32 i = 0; i < unit->children.len; i++) {
     const node_t* n = unit->children.v[i];
     if (!(n->flags & visibility)) {
-      dlog("skip %s (visibility %s)", nodekind_name(n->kind), visibility_str(n->flags));
+      //dlog("skip %s (%s)", nodekind_name(n->kind), visibility_str(n->flags));
       continue;
     }
     switch (n->kind) {
@@ -2498,9 +2498,6 @@ err_t cgen_pkgapi(cgen_t* g, const unit_t** unitv, u32 unitc, cgen_pkgapi_t* res
 
   err_t err = finalize(g, headstart);
   pub_header_len += g->headbuf.len;
-
-  dlog("pub_outbuf_len %zu\n———————————\n%.*s———————————\n",
-    pub_header_len, (int)pub_header_len, g->outbuf.chars);
 
   if (err)
     return err;
