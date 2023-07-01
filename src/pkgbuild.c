@@ -16,7 +16,7 @@ err_t pkgbuild_init(pkgbuild_t* pb, pkg_t* pkg, compiler_t* c, u32 flags) {
   // configure a bgtask for communicating status to the user
   int taskflags = (c->opt_verbose > 0) ? BGTASK_NOFANCY : 0;
   dlog("taskflags: %d", taskflags);
-  u32 tasklen = 2 + (u32)!(flags & PKGBUILD_NOLINK); // typecheck, cgen, link
+  u32 tasklen = 1 + (u32)!(flags & PKGBUILD_NOLINK); // typecheck + link
   pb->bgt = bgtask_open(c->ma, pkg->name.p, tasklen, taskflags);
   // note: bgtask_open currently panics on OOM; change that, make it return NULL
 
@@ -201,8 +201,10 @@ err_t pkgbuild_locate_sources(pkgbuild_t* pb) {
     ncosrc += (u32)(pkg->files.v[i].type == FILE_CO);
 
   // update bgtask
-  u32 n_late_compile = ncosrc;
-  pb->bgt->ntotal += pkg->files.len + n_late_compile;
+  pb->bgt->ntotal += pkg->files.len; // "parse foo.co"
+  pb->bgt->ntotal += ncosrc;         // "compile foo.co"
+  if (pb->c->opt_verbose)
+    pb->bgt->ntotal += ncosrc;       // "cgen foo.co"
 
   // allocate promise array
   if (pb->promisev) {
@@ -385,7 +387,6 @@ err_t pkgbuild_cgen(pkgbuild_t* pb) {
   err_t err;
   compiler_t* c = pb->c;
 
-  pkgbuild_begintask(pb, "cgen");
   dlog_if(opt_trace_cgen, "————————— cgen —————————");
   assert(pb->pkg->files.len > 0);
 
@@ -405,6 +406,8 @@ err_t pkgbuild_cgen(pkgbuild_t* pb) {
     const char* cfile = cfile_of_unit(pb, unit);
 
     dlog("cgen %s -> %s", node_srcfilename((node_t*)unit, &c->locmap), relpath(cfile));
+    if (pb->c->opt_verbose)
+      pkgbuild_begintask(pb, "cgen %s", node_srcfilename((node_t*)unit, &c->locmap));
 
     if (( err = cgen_generate(&g, unit) ))
       break;
@@ -430,11 +433,13 @@ err_t pkgbuild_begin_late_compilation(pkgbuild_t* pb) {
   assertf(pb->ofiles.len > 0, "prepare_builddir not called");
 
   for (u32 i = 0; i < pb->pkg->files.len && err == 0; i++) {
-    if (pb->pkg->files.v[i].type != FILE_CO)
+    srcfile_t* srcfile = &pb->pkg->files.v[i];
+    if (srcfile->type != FILE_CO)
       continue;
     const char* cfile = cfile_of_srcfile_id(pb, i);
     const char* ofile = ofile_of_srcfile_id(pb, i);
-    pkgbuild_begintask(pb, "compile %s", relpath(cfile));
+    pkgbuild_begintask(pb, "compile %s",
+      pb->c->opt_verbose ? relpath(cfile) : srcfile->name.p);
     err = compile_c_source(pb, &pb->promisev[i], cfile, ofile);
     if (err)
       dlog("compile_c_source: %s", err_str(err));

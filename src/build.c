@@ -18,8 +18,6 @@
 #include <errno.h>
 #include <getopt.h>
 
-#include "llvm/llvm.h"
-
 // cli options
 static bool opt_help = false;
 static const char* opt_out = "";
@@ -247,109 +245,6 @@ int main_build(int argc, char* argv[]) {
 }
 
 
-// static err_t build_dep_pkg(str_t pkgname, const compiler_config_t* parent_ccfg) {
-//   pkg_t pkg = {
-//     .name = pkgname,
-//   };
-//   if (!pkg_find_dir(&pkg)) {
-//     elog("package not found: %s", pkgname.p);
-//     return ErrNotFound;
-//   }
-//
-//   compiler_config_t ccfg = *parent_ccfg;
-//   ccfg.printast = false;
-//   ccfg.printir = false;
-//   ccfg.genirdot = false;
-//   ccfg.genasm = false;
-//   ccfg.nomain = false;
-//
-//   err_t err = build_pkg(&pkg, &ccfg, "", /*flags*/0);
-//   if (err)
-//     dlog("error while building pkg %s: %s", pkg.name.p, err_str(err));
-//
-//   return err;
-// }
-
-
-static err_t link_exe(
-  compiler_t* c, bgtask_t* task, const char* outfile, char*const* infilev, u32 infilec)
-{
-  // TODO: -Llibdir
-  // char libflag[PATH_MAX];
-  // snprintf(libflag, sizeof(libflag), "-L%s", c->libdir);
-
-  assert(*c->builddir != 0);
-  const char* libfiles[] = {
-    path_join_alloca(c->builddir, "std/runtime.a"),
-  };
-
-  CoLLVMLink link = {
-    .target_triple = c->target.triple,
-    .outfile = outfile,
-    .infilev = (const char*const*)infilev,
-    .infilec = infilec,
-    .libfilev = libfiles,
-    .libfilec = countof(libfiles),
-    .sysroot = c->sysroot,
-    .print_lld_args = (coverbose > 1) || opt_logld,
-    .lto_level = 0,
-    .lto_cachedir = "",
-  };
-
-  if (c->buildmode == BUILDMODE_OPT && !target_is_riscv(&c->target)) {
-    assert(*c->builddir != 0);
-    link.lto_level = 2;
-    link.lto_cachedir = path_join_alloca(c->builddir, "llvm");
-  }
-
-  err_t err = 0;
-
-  task->n++;
-  bgtask_setstatusf(task, "link %s", relpath(outfile));
-  err = llvm_link(&link);
-
-  return err;
-}
-
-
-static err_t archive_lib(
-  compiler_t* c, bgtask_t* task, const char* outfile, char*const* objv, u32 objc)
-{
-  err_t err = 0;
-  assert(objc <= (usize)U32_MAX);
-
-  task->n++;
-  bgtask_setstatusf(task, "create %s", relpath(outfile));
-
-  char* dir = path_dir_alloca(outfile);
-  if (( err = fs_mkdirs(dir, 0755, FS_VERBOSE) ))
-    return err;
-
-  CoLLVMArchiveKind arkind;
-  if (c->target.sys == SYS_none) {
-    arkind = llvm_sys_archive_kind(target_default()->sys);
-  } else {
-    arkind = llvm_sys_archive_kind(c->target.sys);
-  }
-
-  char* errmsg = "?";
-  err = llvm_write_archive(arkind, outfile, (const char*const*)objv, objc, &errmsg);
-
-  if (err) {
-    elog("llvm_write_archive: (err=%s) %s", err_str(err), errmsg);
-    if (err == ErrNotFound) {
-      for (u32 i = 0; i < objc; i++) {
-        if (!fs_isfile(objv[i]))
-          elog("%s: file not found", objv[i]);
-      }
-    }
-    LLVMDisposeMessage(errmsg);
-  }
-
-  return err;
-}
-
-
 static err_t build_pkg(
   pkg_t* pkg, compiler_t* c, const char* outfile, u32 pkgbuild_flags)
 {
@@ -402,16 +297,40 @@ static err_t build_pkg(
     goto end;
   }
 
-  // link exe or library (no-op if PKGBUILD_NOLINK flag is set)
+  // link exe or library (does nothing if PKGBUILD_NOLINK flag is set)
   if (( err = pkgbuild_link(&pb, outfile) )) {
     dlog("pkgbuild_link: %s", err_str(err));
     goto end;
   }
 
 end:
-  pkgbuild_dispose(&pb);
+  pkgbuild_dispose(&pb); // TODO: can skip this for top-level package
   return err;
 }
+
+
+// static err_t build_dep_pkg(str_t pkgname, const compiler_config_t* parent_ccfg) {
+//   pkg_t pkg = {
+//     .name = pkgname,
+//   };
+//   if (!pkg_find_dir(&pkg)) {
+//     elog("package not found: %s", pkgname.p);
+//     return ErrNotFound;
+//   }
+//
+//   compiler_config_t ccfg = *parent_ccfg;
+//   ccfg.printast = false;
+//   ccfg.printir = false;
+//   ccfg.genirdot = false;
+//   ccfg.genasm = false;
+//   ccfg.nomain = false;
+//
+//   err_t err = build_pkg(&pkg, &ccfg, "", /*flags*/0);
+//   if (err)
+//     dlog("error while building pkg %s: %s", pkg.name.p, err_str(err));
+//
+//   return err;
+// }
 
 
 /*
