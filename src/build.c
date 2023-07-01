@@ -142,7 +142,7 @@ int main_build(int argc, char* argv[]) {
   }
 
   if (optind == argc)
-    errx(1, "no input");
+    errx(1, "no input (see %s %s --help)", coprogname, argv[0]);
 
   if (*opt_maxproc)
     set_comaxproc();
