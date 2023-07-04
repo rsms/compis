@@ -10,24 +10,24 @@ fun indented(x int) int
         x--
   3
 
-// fun braces(x int) int {
-//   if true {
-//     if false {
-//       if false {
-//         // comment
-//         x++
-//       } else {
-//         x--
-//       }
-//     }
-//   }
-//   3
-// }
+fun braces(x int) int {
+  if true {
+    if false {
+      if false {
+        // comment
+        x++
+      } else {
+        x--
+      }
+    }
+  }
+  3
+}
 
-// fun mixed(x int) int {
-//   if true
-//     if false
-//       if false { x++ } else
-//         x--
-//   3
-// }
+fun mixed(x int) int {
+  if true
+    if false
+      if false { x++ } else
+        x--
+  3
+}
