@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "colib.h"
 #include "compiler.h"
+#include "path.h"
 
 filetype_t filetype_guess(const char* filename) {
+  filename = path_base(filename); // e.g. "foo.x/bar/cat" => "cat"
   isize dotpos = slastindexof(filename, '.');
   if (dotpos > -1) {
     const char* ext = &filename[dotpos + 1];

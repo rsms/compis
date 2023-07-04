@@ -4,10 +4,6 @@
 #include "abuf.h"
 
 
-// TRACE_TOKENS: define to trace each token scanned
-//#define TRACE_TOKENS
-
-
 static const struct { const char* s; u8 len; tok_t t; } keywordtab[] = {
   #define _(NAME, ...)
   #define KEYWORD(str, NAME) {str, (u8)strlen(str), NAME},
@@ -49,27 +45,36 @@ void scanner_begin(scanner_t* s, srcfile_t* srcfile) {
   s->lineno = 1;
   s->errcount = 0;
   s->err = 0;
+  s->tok = TEOF;
+
+  // s->indent = 0;
+  s->indentdst = 0;
+  s->indentstackv[0] = 0;
+  s->indentstack = s->indentstackv;
 }
 
 
 void stop_scanning(scanner_t* s) {
   // move cursor to end of source causes scanner_next to return TEOF
-  s->inp = s->inend;
   s->tok = TEOF;
-  s->tokstart = s->inp;
-  s->tokend = s->inp;
+  s->inp = s->inend;
+  s->tokstart = s->inend;
+  s->tokend = s->inend;
   s->insertsemi = false;
-  scanner_next(s);
 }
 
 
 static usize litlen(const scanner_t* s) {
+  assertf((uintptr)s->inp >= (uintptr)s->tokstart,
+    "inp offset (%zu) >= tokstart offset (%zu)",
+    (uintptr)(s->inp - (u8*)s->srcfile->data),
+    (uintptr)(s->tokstart - (u8*)s->srcfile->data));
+
   return (usize)(uintptr)(s->inp - s->tokstart);
 }
 
 
 slice_t scanner_lit(const scanner_t* s) {
-  assert((uintptr)s->inp >= (uintptr)s->tokstart);
   return (slice_t){
     .bytes = s->tokstart,
     .len = litlen(s),
@@ -123,7 +128,7 @@ static void out_of_mem(scanner_t* s) {
 }
 
 
-static void newline(scanner_t* s) {
+inline static void newline(scanner_t* s) {
   assert(*s->inp == '\n');
   s->lineno++;
   s->linestart = s->inp + 1;
@@ -634,56 +639,247 @@ static void scan1(scanner_t* s) {
 }
 
 
+static void indent_error(scanner_t* s, u32 indent, const char* errmsg) {
+  loc_set_width(&s->loc, indent);
+  loc_set_line(&s->loc, s->lineno);
+  loc_set_col(&s->loc, 1);
+  return error(s, "%s", errmsg);
+}
+
+
+static void indent_error_mixed(scanner_t* s, const u8* p) {
+  char want[4], got[4];
+
+  abuf_t a = abuf_make(want, sizeof(want));
+  abuf_repr(&a, s->linestart, 1);
+  abuf_terminate(&a);
+
+  a = abuf_make(got, sizeof(got));
+  abuf_repr(&a, p, 1);
+  abuf_terminate(&a);
+
+  u32 indent = (u32)(uintptr)(s->inp - s->linestart);
+  loc_set_width(&s->loc, indent);
+  loc_set_line(&s->loc, s->lineno);
+  loc_set_col(&s->loc, 1);
+
+  error(s, "mixed indentation of '%s' and '%s' characters", want, got);
+}
+
+
 static void scan0(scanner_t* s) {
+  // save for synthesize_token
+  u32 prev_lineno = s->lineno;
+  const u8* prev_linestart = s->linestart;
+
+  // unwind indentation (in the process of dropping more than one indentation level)
+  if (*s->indentstack > s->indentdst) {
+indent_unwind:
+    if (s->insertsemi) {
+      assert(s->indentstack > s->indentstackv);
+      s->indentstack--; // pop
+      s->tok = TSEMI;
+      s->insertsemi = false;
+    } else {
+      s->tok = TRBRACE;
+      s->insertsemi = true;
+    }
+    if (s->inp < s->inend)
+      s->inp = s->linestart;
+    goto synthesize_token;
+  }
+
+  // skip whitespace
+  bool is_linestart = s->inp == s->linestart;
+  while (s->inp < s->inend && isspace(*s->inp)) {
+    if (*s->inp == '\n') {
+      is_linestart = true;
+      newline(s);
+    }
+    s->inp++;
+  }
+
+  // layout algorithm, automatic insertion of ";" "{" and "}"
+  //
+  // We use a layout stack (s.indentstack) of increasing indentations.
+  // The top indentation on the stack holds the current layout indentation.
+  // The initial layout stack contains the single value 0 (never popped.)
+  if (is_linestart) {
+    u32 indent = (u32)(uintptr)(s->inp - s->linestart);
+    u32 currindent = *s->indentstack;
+
+    // debug log linestart
+    #if 0 && defined(DEBUG)
+    char tmpbuf[32];
+    string_repr(tmpbuf, sizeof(tmpbuf), s->linestart, (usize)indent);
+    dlog("linestart %s │\e[47;30;1m%s\e[0m│ (insertsemi=%s)",
+      (indent > currindent ? "→" : indent < currindent ? "←" : "—"), tmpbuf,
+      s->insertsemi ? "true" : "false");
+    #endif
+
+    // check for mixed-character indentation
+    for (const u8* p = &s->linestart[1]; p < s->inp; p++) {
+      if UNLIKELY(*s->linestart != *p) {
+        indent_error_mixed(s, p);
+        break;
+      }
+    }
+
+    // if indentation increased and s->tok is not an expression continuation, insert "{"
+    // │if x > 2 +
+    // │       3   // expression continuation from "+" (indentation ignored)
+    // │  y        // indentation increased, insert "{" before "y"
+    // │           // indentation decreased, insert ";" "}" and ";"
+    if (indent > currindent) {
+      // push indentation
+      if UNLIKELY(s->indentstack >= s->indentstackv + countof(s->indentstackv))
+        return indent_error(s, indent, "too many nested indented blocks");
+      *(++s->indentstack) = indent; // push
+      s->indentdst = indent;
+
+      // produce a "{" token, unless s->tok is an expression continuation
+      // Note: if s->insertsemi==false, then the token is an expression continuation
+      if (s->insertsemi) {
+        s->tok = TLBRACE;
+        s->insertsemi = false;
+        goto synthesize_token;
+      }
+    } else if (indent < currindent) {
+      // Indentation decreased and s->tok is not "}"; insert "}".
+      // set target indentation for indent_unwind
+      s->indentdst = indent;
+
+      // check for unbalanced "partial" indentation reduction
+      // e.g.
+      //│foo    // [0]
+      //│    x  // [4]
+      //│  y    // [2] error: unbalanced indentation
+      assert(s->indentstack > s->indentstackv);
+      if UNLIKELY(indent > *(s->indentstack - 1))
+        return indent_error(s, indent, "unbalanced indentation");
+
+      // if the first char on this line is an explicit '}', then pop its indentation
+      if (*s->inp == '}')
+        s->indentstack--;
+
+      // produce a ";" token if the previous token is not an expression continuation
+      if (s->insertsemi) {
+        s->tok = TSEMI;
+        s->insertsemi = false;
+        goto synthesize_token;
+      }
+
+      if (*s->inp != '}') {
+        // If we get here, it is going to be a syntax error since we don't support
+        // any syntax where an expression continuation terminates a block.
+        // E.g. "(\n}" is invalid.
+        // Produce a "}" anyhow to keep the scanner regular & sane:
+        goto indent_unwind;
+      }
+    } else {
+      if (s->insertsemi) {
+        if (*s->indentstack > indent && s->inp < s->inend)
+          s->inp = s->linestart;
+        s->tok = TSEMI;
+        s->insertsemi = false;
+        goto synthesize_token;
+      }
+    }
+  } else if (*s->inp == '}' && s->insertsemi) {
+    // Insert ";" before "}", e.g. "{ 23 }" => "{ 23; }"
+    // This guarantees that statements are _ended_ by semicolons (not _separated_ by.)
+    s->tok = TSEMI;
+    s->insertsemi = false;
+    goto synthesize_token;
+  }
+
+  if LIKELY(s->inp < s->inend)
+    MUSTTAIL return scan1(s);
+
+  // EOF
+  s->tokstart = s->inend;
+  s->inp = s->inend;
+  s->tok = TEOF;
+  loc_set_line(&s->loc, s->lineno);
+  loc_set_col(&s->loc, (u32)(uintptr)(s->tokstart - s->linestart) + 1);
+  if (s->insertsemi) {
+    s->tok = TSEMI;
+    s->insertsemi = false;
+  }
+  return;
+
+synthesize_token:
+  //dlog("synthesize_token %s", tok_name(s->tok));
+  s->tokstart = s->inp;
+  s->tokend = s->inp;
+  loc_set_line(&s->loc, prev_lineno);
+  loc_set_col(&s->loc, (usize)(uintptr)(s->tokend - prev_linestart) + 1);
+  return;
+}
+
+
+#if 0
+static void scan0_no_ws_indent(scanner_t* s) {
   // save for TSEMI
   u32 prev_lineno = s->lineno;
   const u8* prev_linestart = s->linestart;
 
   // skip whitespace
   while (s->inp < s->inend && isspace(*s->inp)) {
-    if (*s->inp == '\n')
+    if (*s->inp == '\n') {
       newline(s);
+    }
     s->inp++;
   }
 
-  // should we insert an implicit semicolon?
   if (prev_linestart != s->linestart && s->insertsemi) {
+    // insert a semicolon
     s->insertsemi = false;
-    s->tokstart = prev_linestart;
     s->tok = TSEMI;
     loc_set_line(&s->loc, prev_lineno);
     loc_set_col(&s->loc, (usize)(uintptr)(s->tokend - prev_linestart) + 1);
-    return;
-  }
-
-  // EOF?
-  if UNLIKELY(s->inp >= s->inend) {
-    s->tokstart = s->inend;
-    s->tok = TEOF;
-    loc_set_line(&s->loc, s->lineno);
-    loc_set_col(&s->loc, (u32)(uintptr)(s->tokstart - s->linestart) + 1);
-    if (s->insertsemi) {
-      s->tok = TSEMI;
-      s->insertsemi = false;
-    }
-    return;
+  } else if UNLIKELY(s->inp >= s->inend) {
+    goto eof;
   }
 
   MUSTTAIL return scan1(s);
+
+eof:
+  s->tokstart = s->inend;
+  s->tok = TEOF;
+  loc_set_line(&s->loc, s->lineno);
+  loc_set_col(&s->loc, (u32)(uintptr)(s->tokstart - s->linestart) + 1);
+  if (s->insertsemi) {
+    s->tok = TSEMI;
+    s->insertsemi = false;
+  }
 }
+#endif
+
+
+// FMTCOL e.g. printf("animal=" FMTCOL_FMT("%s"), FMTCOL_ARG(3, "cat"))
+#define FMTCOL_FMT(pat)    "\e[9%cm" pat "\e[39m"
+#define FMTCOL_ARG(n, val) ('1'+(char)((n)%6)), (val)
 
 
 void scanner_next(scanner_t* s) {
   s->tokend = s->inp;
   scan0(s);
 
-  #if defined(DEBUG) && defined(TRACE_TOKENS)
+  if (opt_trace_scan) {
     char locstr[128];
     loc_fmt(s->loc, locstr, sizeof(locstr), &s->compiler->locmap);
-    const char* name = tok_name(s->tok);
+
     slice_t lit = scanner_lit(s);
+    char litstr[128];
+    if (s->tok == TSEMI || s->tok == TLBRACE || s->tok == TRBRACE) {
+      *litstr = 0;
+    } else {
+      string_repr(litstr, sizeof(litstr), lit.chars, lit.len);
+    }
+
     _dlog(3, "S", __FILE__, __LINE__,
-      "%-12s \"%.*s\"\t%llu\t0x%llx\t%s",
-      name, (int)lit.len, lit.chars, s->litint, s->litint, locstr);
-  #endif
+      FMTCOL_FMT("%-12s") " \"%s\"\t%llu\t0x%llx\t%s",
+      FMTCOL_ARG(s->tok, tok_name(s->tok)), litstr, s->litint, s->litint, locstr);
+  }
 }

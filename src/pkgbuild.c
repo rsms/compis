@@ -352,6 +352,8 @@ err_t pkgbuild_typecheck(pkgbuild_t* pb) {
     return err;
   if (c->errcount > 0) {
     dlog("typecheck failed with %u diagnostic errors", c->errcount);
+    if (!opt_trace_parse && c->opt_printast)
+      dump_pkg_ast(pb->pkg, pb->unitv, pb->unitc);
     return ErrCanceled;
   }
 

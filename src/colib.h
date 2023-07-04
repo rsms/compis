@@ -536,6 +536,7 @@ typedef double             f64;
 
 // debug-build only CLI options (build.c)
 #if DEBUG
+  extern bool opt_trace_scan;
   extern bool opt_trace_parse;
   extern bool opt_trace_typecheck;
   extern bool opt_trace_comptime;
@@ -543,6 +544,7 @@ typedef double             f64;
   extern bool opt_trace_cgen;
   extern bool opt_trace_subproc;
 #else
+  #define opt_trace_scan      false
   #define opt_trace_parse     false
   #define opt_trace_typecheck false
   #define opt_trace_comptime  false
@@ -954,7 +956,8 @@ inline static void mem_freev(memalloc_t ma, void* nullable array, usize count, u
 
 isize sindexof(const char* s, char c);
 isize slastindexof(const char* s, char c);
-isize slastindexofn(const char* s, usize len, char c);
+isize string_indexof(const char* p, usize len, char c);
+isize string_lastindexof(const char* s, usize len, char c);
 
 // strim_begin returns offset into s past any leading trimc characters.
 // e.g. strim_begin("  hello", 7, ' ') => "hello"
@@ -969,6 +972,12 @@ bool string_startswith(const char* s, const char* prefix);
 
 // str_endswith returns true if null-terminated string s ends with suffix
 bool str_endswith(const char* s, const char* suffix);
+
+// string_repr writes srclen bytes of src to dst, escaping some bytes in Compis style,
+// i.e. what would need to be escaped to form a valid co string literal.
+// Returns the number of bytes that would be written to dst if dstcap was unlimited.
+usize string_repr(char* dst, usize dstcap, const void* src, usize srclen);
+
 
 usize sfmtu64(char* buf, u64 v, u32 base);
 

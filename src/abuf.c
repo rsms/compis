@@ -104,6 +104,7 @@ void abuf_repr(abuf_t* s, const void* srcp, usize len) {
   s->p = p;
 }
 
+
 void abuf_reprhex(abuf_t* s, const void* srcp, usize len, bool spaced) {
   char* p = s->p;
   char* lastp = s->lastp;

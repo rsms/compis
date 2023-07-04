@@ -6,6 +6,10 @@
 #include "path.h"
 
 
+#define TAB_STR    "    "
+#define TAB_WIDTH  strlen(TAB_STR)
+
+
 const char* tok_name(tok_t t) {
   assert(t < TOK_COUNT);
   static const char* names[TOK_COUNT] = {
@@ -76,22 +80,46 @@ end:
 }
 
 
-static void add_srcline_ctx(abuf_t* s, int lnw, u32 ln, const char* line, int linew) {
-  abuf_fmt(s, "%*u   │ %.*s", lnw,ln, linew,line);
+static slice_t replace_tabs(str_t* buf, const char* line, usize len, usize* ntabsp) {
+  // find first tab
+  u32 i = 0;
+  while (i < len && line[i] != '\t')
+    i++;
+
+  *ntabsp = 0;
+
+  // return a slice to line if no tabs were found
+  if (i == len)
+    return (slice_t){ .chars=line, .len=len };
+
+  str_appendlen(buf, line, len);
+  usize ntabs = str_replace(buf, slice_cstr("\t"), slice_cstr(TAB_STR), -1);
+  if (ntabs < 0) {
+    elog("ran out of memory while formatting diagnostic");
+  } else {
+    *ntabsp = (usize)ntabs;
+  }
+
+  return str_slice(*buf);
+}
+
+
+static void add_srcline_ctx(abuf_t* s, int lnw, u32 ln, slice_t line) {
+  abuf_fmt(s, "%*u   │ ", lnw,ln);
+  abuf_append(s, line.chars, line.len);
 }
 
 
 static void add_srcline(
-  abuf_t* s, int lnw, u32 ln, const char* line, int linew, origin_t origin)
+  abuf_t* s, int lnw, u32 ln, slice_t line, origin_t origin)
 {
   int indent = (int)origin.column - 1;
   if (origin.width == 0 && origin.focus_col > 0)
     indent = (int)origin.focus_col - 1;
 
-  abuf_fmt(s,
-    "%*u → │ %.*s\n"
-    "%*s   │ %*s",
-    lnw,ln, linew,line, lnw,"", indent,"");
+  abuf_fmt(s, "%*u → │ ", lnw,ln);
+  abuf_append(s, line.chars, line.len);
+  abuf_fmt(s, "\n%*s   │ %*s", lnw,"", indent,"");
 
   if (origin.width == 0) {
     abuf_str(s, "↑");
@@ -103,7 +131,7 @@ static void add_srcline(
     return;
   }
 
-  u32 endcol = origin.column + origin.width;
+  u32 endcol = MAX(origin.focus_col, origin.column + origin.width);
 
   if (origin.focus_col < origin.column) {
     // focus point is before the source span, e.g.
@@ -125,6 +153,7 @@ static void add_srcline(
     // focus point is after the source span, e.g.
     //   let foo = bar(1, 2, 3)
     //             ~~~    ↑
+    assert(endcol >= origin.focus_col);
     abuf_fill(s, '~', origin.width);
     abuf_fill(s, ' ', endcol - origin.focus_col);
     abuf_str(s, "↑");
@@ -170,13 +199,35 @@ static void add_srclines(compiler_t* c, origin_t origin, abuf_t* s) {
 
   c->diag.srclines = s->p;
   int lnw = u64log10((u64)endline);
+  str_t buf = {0};
 
   for (;;) {
-    int linew = (int)(end - p);
+    buf.len = 0;
+    usize line_rawlen = (usize)(uintptr)(end - p);
+    usize ntabs;
+    slice_t line = replace_tabs(&buf, p, line_rawlen, &ntabs);
+    if (ntabs > 0) {
+      // TODO: only increment columns for tabs in indentation.
+      // Currently we (incorrectly) assume that tabs are only found in line indetation.
+      // Doing this correctly will require knowledge of individual tab locations and
+      // their effective column values.
+      isize last_tab_idx = string_lastindexof(p, line_rawlen, '\t');
+      //  →→foo
+      //  ~~~^~
+      //  01234
+      //  ||
+      //  12345
+      if (origin.column > 1 && origin.column-1 <= last_tab_idx)
+        origin.column += ntabs * (TAB_WIDTH-1);
+      if (origin.column <= last_tab_idx+1 && origin.width > 1)
+        origin.width += ntabs * (TAB_WIDTH-1);
+      if (origin.focus_col > 1 && origin.focus_col-1 <= last_tab_idx)
+        origin.focus_col += ntabs * (TAB_WIDTH-1);
+    }
 
     if (ln != origin.line) {
       // context line
-      add_srcline_ctx(s, lnw, ln, p, linew);
+      add_srcline_ctx(s, lnw, ln, line);
       continue;
     }
 
@@ -184,7 +235,10 @@ static void add_srclines(compiler_t* c, origin_t origin, abuf_t* s) {
       break;
 
     // origin line
-    add_srcline(s, lnw, ln, p, linew, origin);
+    // (s, int lnw, u32 ln, slice_t line, origin_t origin)
+    assert(p < srcend);
+    assert(p + line_rawlen <= srcend);
+    add_srcline(s, lnw, ln, line, origin);
 
     // done?
     if (end == srcend || ++ln == endline)
@@ -200,6 +254,8 @@ static void add_srclines(compiler_t* c, origin_t origin, abuf_t* s) {
       end++;
     }
   }
+
+  str_free(buf);
 }
 
 
@@ -215,14 +271,18 @@ void report_diagv(
     c->diag.msg = s.p;
 
     if (origin.file) {
-      if (origin.line > 0) {
-        abuf_fmt(&s, "%s" PATH_SEP_STR "%s:%u:%u: ",
-          relpath(origin.file->pkg->dir.p), origin.file->name.p,
-          origin.line, origin.column);
-      } else if (origin.file->name.len > 0) {
-        abuf_fmt(&s, "%s" PATH_SEP_STR "%s: ",
-          relpath(origin.file->pkg->dir.p), origin.file->name.p);
+      str_t filepath;
+      if (origin.file->name.len > 0) {
+        filepath = path_join(relpath(origin.file->pkg->dir.p), origin.file->name.p);
+      } else {
+        filepath = str_make("<input>");
       }
+      if (origin.line > 0) {
+        abuf_fmt(&s, "%s:%u:%u: ", filepath.p, origin.line, origin.column);
+      } else if (origin.file->name.len > 0) {
+        abuf_fmt(&s, "%s: ", filepath.p);
+      }
+      str_free(filepath);
     }
 
     switch (kind) {

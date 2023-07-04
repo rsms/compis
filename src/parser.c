@@ -156,15 +156,15 @@ static bool slice_eq_cstri(slice_t s, const char* cstr) {
 }
 
 
-// static tok_t lookahead(parser_t* p, u32 distance) {
-//   assert(distance > 0);
-//   scanstate_t scanstate = save_scanstate(p);
-//   while (distance--)
-//     next(p);
-//   tok_t tok = currtok(p);
-//   restore_scanstate(p, scanstate);
-//   return tok;
-// }
+static tok_t lookahead(parser_t* p, u32 distance) {
+  assert(distance > 0);
+  scanstate_t scanstate = save_scanstate(p);
+  while (distance--)
+    next(p);
+  tok_t tok = currtok(p);
+  restore_scanstate(p, scanstate);
+  return tok;
+}
 
 
 static bool lookahead_issym(parser_t* p, sym_t sym) {
@@ -213,11 +213,21 @@ static void fastforward_semi(parser_t* p) {
 
 // void diag(parser_t* p, T origin, diagkind_t diagkind, const char* fmt, ...)
 // where T is one of: origin_t | loc_t | node_t* | expr_t*
-#define diag(p, origin, diagkind, fmt, args...) ( \
-  (p)->scanner.errcount += ((diagkind) == DIAG_ERR), \
-  report_diag( \
-    (p)->scanner.compiler, to_origin((p), (origin)), (diagkind), (fmt), ##args) \
-)
+#define diag(p, origin, diagkind, fmt, args...) \
+  _diag((p), to_origin((p), (origin)), (diagkind), (fmt), ##args)
+
+ATTR_FORMAT(printf,4,5)
+static void _diag(parser_t* p, origin_t origin, diagkind_t kind, const char* fmt, ...) {
+  // don't report extra errors after EOF
+  if (currtok(p) == TEOF && p->scanner.errcount > 0)
+    return;
+  va_list ap;
+  va_start(ap, fmt);
+  p->scanner.errcount += (kind == DIAG_ERR);
+  report_diagv(p->scanner.compiler, origin, kind, fmt, ap);
+  va_end(ap);
+}
+
 
 #define error(p, origin, fmt, args...)    diag(p, origin, DIAG_ERR, (fmt), ##args)
 #define warning(p, origin, fmt, args...)  diag(p, origin, DIAG_WARN, (fmt), ##args)
@@ -283,10 +293,10 @@ static void expect_fail(parser_t* p, tok_t expecttok, const char* errmsg) {
 
 
 static bool expect_token(parser_t* p, tok_t expecttok, const char* errmsg) {
-  bool ok = currtok(p) == expecttok;
-  if UNLIKELY(!ok)
-    expect_fail(p, expecttok, errmsg);
-  return ok;
+  if LIKELY(currtok(p) == expecttok)
+    return true;
+  expect_fail(p, expecttok, errmsg);
+  return false;
 }
 
 
@@ -399,7 +409,7 @@ static node_t* nullable lookup(parser_t* p, sym_t name) {
   node_t* n = scope_lookup(&p->scope, name, U32_MAX);
   // if not found locally, look in package scope and its parent universe scope
   if (!n) {
-    dlog("lookup in package: %s", name);
+    trace("lookup \"%s\" in package", name);
     if ((n = pkg_def_get(currpkg(p), name)))
       node_upgrade_visibility(n, NF_VIS_PKG);
   }
@@ -949,9 +959,7 @@ static block_t* block(parser_t* p, nodeflag_t fl) {
         exited = true;
       }
 
-      if (currtok(p) != TSEMI)
-        break;
-      next(p); // consume ";"
+      expect(p, TSEMI, "");
 
       if (currtok(p) == TRBRACE || currtok(p) == TEOF)
         break;
@@ -1053,14 +1061,27 @@ static expr_t* expr_if(parser_t* p, const parselet_t* pl, nodeflag_t fl) {
   leave_scope(p);
 
   // "else"
-  if (currtok(p) == TELSE) {
-    next(p);
-    enter_scope(p);
-    n->elseb = any_as_block(p, fl);
-    bubble_flags(n, n->elseb);
-    leave_scope(p);
+  // allow else to follow on a new line, i.e. both of these are accepted:
+  //
+  //   if {} else {}
+  //
+  //   if {}
+  //   else {}
+  //
+  if (currtok(p) != TELSE) {
+    if (currtok(p) == TSEMI && lookahead(p, 1) == TELSE) {
+      next(p);
+    } else {
+      goto end;
+    }
   }
+  next(p);
+  enter_scope(p);
+  n->elseb = any_as_block(p, fl);
+  bubble_flags(n, n->elseb);
+  leave_scope(p);
 
+end:
   // leave "cond" scope
   leave_scope(p);
 
@@ -1734,6 +1755,11 @@ error:
 }
 
 
+// funtype = "fun" "(" params? ")" result? ( ";" | "{" body "}")
+//                 ↑
+//               parsing starts here, after TFUN
+// result = params
+// body   = (stmt ";")*
 static funtype_t* funtype(parser_t* p, loc_t loc, type_t* nullable recvt) {
   funtype_t* ft = mknode(p, funtype_t, TYPE_FUN);
   ft->loc = loc;
@@ -1753,8 +1779,8 @@ static funtype_t* funtype(parser_t* p, loc_t loc, type_t* nullable recvt) {
   expect(p, TRPAREN, "to match '('");
 
   // result type
-  // no result type implies "void", e.g. "fun foo() {}" => "fun foo() void {}"
-  if (currtok(p) != TLBRACE) {
+  // no result type implies "void", e.g. "fun foo()" == "fun foo() void"
+  if (currtok(p) != TLBRACE && currtok(p) != TSEMI) {
     ft->resultloc = currloc(p);
     ft->result = type(p, PREC_MEMBER);
     if (loc_line(ft->result->loc) && ft->result->loc > ft->loc)
@@ -1906,7 +1932,7 @@ static void fun_body(parser_t* p, fun_t* n, nodeflag_t fl) {
 }
 
 
-// fundef = "fun" name "(" params? ")" result ( ";" | "{" body "}")
+// fundef = "fun" name "(" params? ")" result? ( ";" | "{" body "}")
 // result = params
 // body   = (stmt ";")*
 static fun_t* fun(parser_t* p, nodeflag_t fl, type_t* nullable recvt, bool requirename) {

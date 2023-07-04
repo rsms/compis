@@ -710,6 +710,7 @@ static void discard_block(ircons_t* c, irblock_t* b) {
 
 static irblock_t* entry_block(irfun_t* f) {
   assert(f->blocks.len > 0);
+  assertf(f->blocks.v[0], "null entry block in fun \"%s\"", f->name);
   return f->blocks.v[0];
 }
 
@@ -1793,6 +1794,14 @@ static irval_t* prefixop(ircons_t* c, unaryop_t* n) {
 }
 
 
+static irval_t* postfixop(ircons_t* c, unaryop_t* n) {
+  irval_t* expr = load_expr(c, n->expr);
+  irval_t* v = pushval(c, c->b, n->op, n->loc, n->type);
+  pusharg(v, expr);
+  return expr;
+}
+
+
 static irval_t* intlit(ircons_t* c, intlit_t* n) {
   return intconst(c, n->type, n->intval, n->loc);
 }
@@ -2119,6 +2128,7 @@ static irval_t* expr(ircons_t* c, void* expr_node) {
   case EXPR_ASSIGN:    return assign(c, (binop_t*)n);
   case EXPR_BINOP:     return binop(c, (binop_t*)n);
   case EXPR_PREFIXOP:  return prefixop(c, (unaryop_t*)n);
+  case EXPR_POSTFIXOP: return postfixop(c, (unaryop_t*)n);
   case EXPR_BLOCK:     return blockexpr(c, (block_t*)n);
   case EXPR_CALL:      return call(c, (call_t*)n);
   case EXPR_TYPECONS:  return typecons(c, (typecons_t*)n);
@@ -2151,7 +2161,6 @@ static irval_t* expr(ircons_t* c, void* expr_node) {
     return param(c, (local_t*)n);
 
   // TODO
-  case EXPR_POSTFIXOP: // return postfixop(c, (unaryop_t*)n);
   case EXPR_FOR:
     irval_t* v = push_TODO_val(c, c->b, type_void, "expr(%s)", nodekind_name(n->kind));
     seterr(c, ErrCanceled);

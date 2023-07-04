@@ -596,6 +596,14 @@ bool expr_no_side_effects(const expr_t* n) { switch (n->kind) {
     return no_side_effects;
   }
 
+  case EXPR_BLOCK: {
+    const block_t* block = (block_t*)n;
+    bool no_side_effects = true;
+    for (u32 i = 0; no_side_effects && i < block->children.len; i++)
+      no_side_effects &= expr_no_side_effects(block->children.v[i]);
+    return no_side_effects;
+  }
+
   case EXPR_BINOP:
     return expr_no_side_effects(((binop_t*)n)->right) &&
            expr_no_side_effects(((binop_t*)n)->left);
@@ -606,6 +614,13 @@ bool expr_no_side_effects(const expr_t* n) { switch (n->kind) {
     if (op->op == OP_INC || op->op == OP_DEC)
       return false;
     return expr_no_side_effects(op->expr);
+  }
+
+  case EXPR_IF: {
+    const ifexpr_t* ife = (ifexpr_t*)n;
+    return expr_no_side_effects(ife->cond) &&
+           expr_no_side_effects((expr_t*)ife->thenb) &&
+           (ife->elseb == NULL || expr_no_side_effects((expr_t*)ife->elseb));
   }
 
   case EXPR_CALL:

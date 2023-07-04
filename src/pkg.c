@@ -94,7 +94,7 @@ err_t pkg_find_files(pkg_t* pkg) {
 
     usize namelen = strlen(dw->name);
 
-    isize p = slastindexofn(dw->name, namelen, '.');
+    isize p = string_lastindexof(dw->name, namelen, '.');
     if (p <= 0 || (usize)p + 1 == namelen)
       continue; // ignore e.g. "a", ".a", "a."
 
@@ -179,8 +179,12 @@ err_t pkgs_for_argv(int argc, char* argv[], pkg_t** pkgvp, u32* pkgcp) {
   u8 input_type = 0;
   for (int i = 0; i < argc; i++) {
     if (stat(argv[i], &stv[i]) != 0 || S_ISDIR(stv[i].st_mode)) {
-      // directory or package name
-      input_type |= 2;
+      // directory or package name; guess from filename
+      if (filetype_guess(argv[i]) == FILE_OTHER) {
+        input_type |= 2;
+      } else {
+        input_type |= 1;
+      }
     } else if (S_ISREG(stv[i].st_mode)) {
       // files as input; build one ad-hoc package
       input_type |= 1;
@@ -214,7 +218,7 @@ err_t pkgs_for_argv(int argc, char* argv[], pkg_t** pkgvp, u32* pkgcp) {
   // ad-hoc main package?
   if (input_type == 1) {
     pkgv->name = str_make("main");
-    pkgv->dir = str_make("");
+    pkgv->dir = str_make(".");
     for (int i = 0; i < argc; i++) {
       srcfile_t* f = pkg_add_srcfile(pkgv, argv[i]);
       f->mtime = unixtime_of_stat_mtime(&stv[i]);

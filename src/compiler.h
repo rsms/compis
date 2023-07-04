@@ -506,12 +506,21 @@ typedef struct {
   const u8*  linestart;   // start of current line
   const u8*  tokstart;    // start of current token
   const u8*  tokend;      // end of previous token
-  tok_t      tok;         // recently parsed token (current token during scanning)
   loc_t      loc;         // recently parsed token's source location
+  tok_t      tok;         // recently parsed token (current token during scanning)
   bool       insertsemi;  // insert a semicolon before next newline
   u32        lineno;      // monotonic line number counter (!= tok.loc.line)
   u32        errcount;    // number of error diagnostics reported
   err_t      err;         // non-syntax error that occurred
+
+  // u16  indent;           // current level
+  u32  indentdst;        // unwind to level
+  u32  indentstackv[32]; // previous indentation levels
+  u32* indentstack;      // top of indentstackv
+
+  // bool insertsemi2;
+  // tok_t tokq[64];
+  // u8    tokqlen;
 } scanstate_t;
 
 typedef struct {

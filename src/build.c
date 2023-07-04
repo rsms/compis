@@ -38,6 +38,7 @@ static bool opt_version = false;
 static const char* opt_builddir = "build";
 #if DEBUG
   static bool opt_trace_all = false;
+  bool opt_trace_scan = false;
   bool opt_trace_parse = false;
   bool opt_trace_typecheck = false;
   bool opt_trace_comptime = false;
@@ -70,6 +71,7 @@ static const char* opt_builddir = "build";
   L( &opt_version,  "version",      "Print Compis version on stdout and exit")\
   /* debug-only options */\
   DEBUG_L( &opt_trace_all,       "trace",           "Trace everything")\
+  DEBUG_L( &opt_trace_scan,      "trace-scan",      "Trace lexical scanning")\
   DEBUG_L( &opt_trace_parse,     "trace-parse",     "Trace parsing")\
   DEBUG_L( &opt_trace_typecheck, "trace-typecheck", "Trace type checking")\
   DEBUG_L( &opt_trace_comptime,  "trace-comptime",  "Trace comptime eval")\
@@ -128,6 +130,7 @@ int main_build(int argc, char* argv[]) {
   coverbose = MAX(coverbose, (u8)opt_verbose + (u8)opt_vverbose);
   #if DEBUG
     // --co-trace turns on all trace flags
+    opt_trace_scan |= opt_trace_all;
     opt_trace_parse |= opt_trace_all;
     opt_trace_typecheck |= opt_trace_all;
     opt_trace_comptime |= opt_trace_all;
