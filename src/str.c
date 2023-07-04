@@ -59,11 +59,10 @@ bool str_push(str_t* s, char c) {
 }
 
 
-bool str_ensure_avail(str_t* s, usize minavail) {
-  usize mincap;
-  if (check_add_overflow(s->len + 1/*nullterm*/, minavail, &mincap))
-    return false;
-  return mincap <= s->cap || _str_grow(s, mincap - s->cap);
+bool str_ensure_avail(str_t* s, usize needavail) {
+  if UNLIKELY(needavail + 1/*nullterm*/ > s->cap - s->len)
+    return _str_grow(s, (needavail + 1) - (s->cap - s->len));
+  return true;
 }
 
 
@@ -124,4 +123,41 @@ bool str_prependlen(str_t* s, const char* src, usize len) {
   s->len += len;
   s->p[s->len] = 0;
   return true;
+}
+
+
+isize str_replace(str_t* s, slice_t olds, slice_t news, isize limit) {
+  isize nsubs = 0;
+
+  // first, calculate how much additional space we need
+  usize additional_space_needed = 0;
+  for (usize i = 0; i <= s->len - olds.len; i++) {
+    if (memcmp(&s->p[i], olds.p, olds.len) == 0) {
+      if (nsubs++ == limit)
+        break;
+      if (news.len > olds.len)
+        additional_space_needed += news.len - olds.len;
+      i += olds.len - 1;
+    }
+  }
+
+  // if we need more space than we have, expand the input buffer
+  if (!str_ensure_avail(s, additional_space_needed))
+    return -1;
+
+  // now we can replace the substrings
+  isize nsub_countdown = nsubs + 1;
+  for (usize i = 0; --nsub_countdown > 0 && i <= s->len - olds.len; i++) {
+    if (memcmp(&s->p[i], olds.p, olds.len) == 0) {
+      if (news.len != olds.len) {
+        // move the rest of the string to make room for the new substring
+        memmove(&s->p[i + news.len], &s->p[i + olds.len], s->len - i - olds.len + 1);
+        s->len = s->len - olds.len + news.len;
+      }
+      memcpy(&s->p[i], news.p, news.len);
+      i += news.len - 1;
+    }
+  }
+
+  return nsubs;
 }

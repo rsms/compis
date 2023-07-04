@@ -67,6 +67,11 @@ inline static slice_t _str_slice3(const str_t s, usize start, usize len) {
   return (slice_t){ .p = s.p + start, .len = s.len - len };
 }
 
+// str_replace replaces occurrances of oldsubstr with newsubstr in s.
+// Limit the number of substitutions with limit. Set to -1 for no limit.
+// Returns the number of substitutions made, or -1 if memory allocation failed.
+isize str_replace(str_t* s, slice_t oldsubstr, slice_t newsubstr, isize limit);
+
 //—————————————————————————————————————————————————————————————————————————————————————
 // implementation
 
