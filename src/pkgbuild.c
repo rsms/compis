@@ -529,7 +529,7 @@ err_t pkgbuild_import(pkgbuild_t* pb) {
 
   ptrarray_dispose(&pkgs, pb->c->ma);
 
-  dlog("TODO %s", __FUNCTION__); return ErrCanceled; // XXX
+  dlog("TODO %s: actually import packages", __FUNCTION__);
 
   return 0;
 }
