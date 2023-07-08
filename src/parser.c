@@ -2223,7 +2223,7 @@ static import_t* parse_import1(parser_t* p, import_t* im, import_t* nullable lis
   loc_set_width(&im->pathloc, (u32)strval.len);
   const char* errmsg;
   usize erroffs;
-  if UNLIKELY(!pkg_validate_path(path, &errmsg, &erroffs)) {
+  if UNLIKELY(!import_validate_path(path, &errmsg, &erroffs)) {
     origin_t origin = origin_make(locmap(p), im->pathloc);
     if (erroffs <= (usize)U32_MAX)
       origin.focus_col = origin.column + (u32)erroffs;

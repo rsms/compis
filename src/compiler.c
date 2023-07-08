@@ -24,6 +24,8 @@ void compiler_init(compiler_t* c, memalloc_t ma, diaghandler_t dh) {
   buf_init(&c->diagbuf, c->ma);
   safecheckxf(rwmutex_init(&c->diag_mu) == 0, "rwmutex_init");
   safecheckxf(locmap_init(&c->locmap) == 0, "locmap_init");
+  safecheckxf(rwmutex_init(&c->pkgindex_mu) == 0, "rwmutex_init");
+  safecheckxf(map_init(&c->pkgindex, c->ma, 32), "rwmutex_init");
 }
 
 
@@ -36,6 +38,8 @@ void compiler_dispose(compiler_t* c) {
   mem_freecstr(c->ma, c->sysroot);
   rwmutex_dispose(&c->diag_mu);
   locmap_dispose(&c->locmap, c->ma);
+  rwmutex_dispose(&c->pkgindex_mu);
+  map_dispose(&c->pkgindex, c->ma);
 }
 
 

@@ -207,7 +207,7 @@ bool ptrarray_sortedset_addcstr(ptrarray_t* a, memalloc_t ma, const char* str) {
 
 
 static int ptr_cmp(const void** a, const void** b, void* ctx) {
-  return *a == *b;
+  return *a == *b ? 0 : *a < *b ? -1 : 1;
 }
 
 

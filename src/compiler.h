@@ -666,6 +666,10 @@ typedef struct compiler {
   // data created during parsing & analysis
   // mutex must be locked when multiple threads share a compiler instance
   locmap_t locmap; // maps loc_t => srcfile_t*
+
+  // package index
+  rwmutex_t pkgindex_mu; // guards access to pkgindex
+  map_t     pkgindex;    // const char* abs_fspath -> pkg_t*
 } compiler_t;
 
 typedef struct { // compiler_config_t
@@ -738,15 +742,6 @@ node_t* nullable pkg_def_get(pkg_t* pkg, sym_t name);
 err_t pkg_def_set(pkg_t* pkg, memalloc_t ma, sym_t name, node_t* n);
 err_t pkg_def_add(pkg_t* pkg, memalloc_t ma, sym_t name, node_t** np_inout);
 str_t pkg_unit_srcdir(const pkg_t* pkg, const unit_t* unit);
-bool pkg_validate_path(const char* path, const char** errmsgp, usize* erroffsp);
-err_t pkg_clean_import_path(
-  const pkg_t* importer_pkg,
-  const char*  importer_dir, // usually pkg_unit_srcdir
-  str_t*       import_path_inout,
-  str_t*       import_fspath_out);
-str_t pkg_make_import_fspath(
-  const pkg_t* pkg, const char* importer_dir, const char* import_path);
-err_t pkg_resolve_fspath(str_t* fspath, usize* rootdirlen_out);
 
 // srcfile
 err_t srcfile_open(srcfile_t* sf);
@@ -819,6 +814,15 @@ fun_t* nullable typefuntab_lookup(typefuntab_t* tfuns, type_t* t, sym_t name);
 // post-parse passes
 err_t typecheck(compiler_t*, memalloc_t ast_ma, pkg_t* pkg, unit_t** unitv, u32 unitc);
 err_t analyze(compiler_t* c, memalloc_t ast_ma, pkg_t* pkg, unit_t** unitv, u32 unitc);
+
+// importing of packages
+bool import_validate_path(const char* path, const char** errmsgp, usize* erroffsp);
+err_t import_resolve_fspath(str_t* fspath, usize* rootdirlen_out);
+err_t import_find_pkgs(
+  compiler_t* c,
+  const pkg_t* importer_pkg,
+  const unit_t*const* unitv, u32 unitc,
+  ptrarray_t* pkgs_result /* pkg_t*[] */ );
 
 // ir
 bool irfmt(compiler_t*, const pkg_t*, buf_t*, const irunit_t*);
