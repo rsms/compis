@@ -1,0 +1,11 @@
+import
+  "examples/import2" as im2
+  "./import2" as im3
+  // "foo" as f
+  // x, y as why from "bar"
+  // * from "cat"
+  // "cat"
+
+// fun main() {
+//   im2.hello(3)
+// }

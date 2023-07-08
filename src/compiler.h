@@ -15,6 +15,7 @@
   _( NODE_COMMENT )\
   _( NODE_UNIT )\
   _( STMT_TYPEDEF )\
+  _( STMT_IMPORT )\
   _( EXPR_FUN )/* nodekind_isexpr assumes this is first expr kind */\
   _( EXPR_BLOCK )\
   _( EXPR_CALL )\
@@ -126,7 +127,7 @@ typedef struct {
 } locmap_t;
 
 // origin_t describes the origin of diagnostic message (usually derived from loc_t)
-typedef struct {
+typedef struct origin_t {
   srcfile_t* nullable file;
   u32 line;      // 0 if unknown (if so, other fields below are invalid)
   u32 column;
@@ -163,13 +164,17 @@ typedef struct srcfile_t {
 typedef array_type(srcfile_t) srcfilearray_t;
 
 typedef struct pkg_t {
-  str_t           name;     // e.g. "main" or "std/runtime"
-  str_t           dir;      // absolute path to source directory (empty for ad-hoc pkg)
+  str_t           path;     // import path, e.g. "main" or "std/runtime" (canonical)
+  str_t           dir;      // absolute path to source directory
+  slice_t         rootdir;  // rootdir+path=dir
+  bool            isadhoc;  // single-file package
   srcfilearray_t  files;    // source files
   map_t           defs;     // package-level definitions
   rwmutex_t       defs_mu;  // protects access to defs field
   typefuntab_t    tfundefs; // type functions defined by the package
   fun_t* nullable mainfun;  // fun main(), if any
+  promise_t       findpr;   // promise<err_t> resolved when package has been found
+  promise_t       loadpr;   // promise<err_t> resolved when package has been loaded
 } pkg_t;
 
 typedef struct {
@@ -231,8 +236,8 @@ static_assert(NF_VIS_PKG < NF_VIS_PUB, "");
 
 typedef struct {
   nodekind_t kind;
-  nodeflag_t flags;
   u8         _unused;
+  nodeflag_t flags;
   u32        nuse; // number of uses (expr_t and usertype_t)
   loc_t      loc;
 } node_t;
@@ -241,12 +246,16 @@ typedef struct {
   node_t;
 } stmt_t;
 
+typedef struct import_t import_t;
+typedef struct importid_t importid_t;
+
 typedef struct {
   node_t;
   ptrarray_t          children;
   scope_t             scope;
   srcfile_t* nullable srcfile;
-  typefuntab_t        tfuns;   // imported type functions
+  typefuntab_t        tfuns;      // imported type functions
+  import_t* nullable  importlist; // list head
 } unit_t;
 
 typedef struct {
@@ -260,6 +269,23 @@ typedef struct {
   stmt_t;
   type_t* nullable type;
 } expr_t;
+
+typedef struct import_t {
+  stmt_t;
+  char*                path;        // e.g. "foo/lolcat"
+  loc_t                pathloc;     // source location of path
+  importid_t* nullable idlist;      // imported identifiers (list head)
+  bool                 isfrom;      // true if idlist denotes items to import (not pkg)
+  import_t* nullable   next_import; // linked-list link
+} import_t;
+
+typedef struct importid_t {
+  // NOTE: importid_t is not an AST node!
+  loc_t                loc;
+  sym_t                name;     // e.g. x in "import x from a" (sym__ = "*")
+  sym_t nullable       origname; // e.g. y in "import y as x from a"
+  importid_t* nullable next_id;  // linked-list link
+} importid_t;
 
 typedef struct {
   type_t;
@@ -559,6 +585,7 @@ typedef struct {
   ptrarray_t      nspath;
   map_t           postanalyze; // set of nodes to analyze at the very end (keys only)
   map_t           tmpmap;
+  map_t           typeidmap;   // sym_t typeid => type_t*
   bool            reported_error; // true if an error diagnostic has been reported
   #if DEBUG
     int traceindent;
@@ -574,8 +601,8 @@ typedef struct {
   usize        headoffs;
   u32          headnest;
   u32          headlineno;
-  u32          headinputid;
-  u32          inputid;
+  u32          headsrcfileid;
+  u32          srcfileid;
   u32          lineno;
   u32          scopenest;
   err_t        err;
@@ -609,9 +636,10 @@ typedef struct compiler {
   int         lto;           // LTO level. 0 = disabled
 
   // diagnostics
+  rwmutex_t      diag_mu;     // must hold lock when accessing the following fields
   diaghandler_t  diaghandler; // called when errors are encountered
   void* nullable userdata;    // passed to diaghandler
-  u32            errcount;    // number of errors encountered
+  _Atomic(u32)   errcount;    // number of errors encountered
   diag_t         diag;        // most recent diagnostic message
   buf_t          diagbuf;     // for diag.msg (also used as tmpbuf)
 
@@ -637,9 +665,7 @@ typedef struct compiler {
 
   // data created during parsing & analysis
   // mutex must be locked when multiple threads share a compiler instance
-  map_t     typeidmap; // sym_t typeid => type_t*
-  rwmutex_t typeidmap_mu;
-  locmap_t  locmap;    // maps loc_t => srcfile_t*
+  locmap_t locmap; // maps loc_t => srcfile_t*
 } compiler_t;
 
 typedef struct { // compiler_config_t
@@ -701,7 +727,6 @@ extern type_t* type_f64;
 // pkg
 err_t pkg_init(pkg_t* pkg, memalloc_t ma);
 void pkg_dispose(pkg_t* pkg, memalloc_t ma);
-bool pkg_find_dir(pkg_t* pkg); // updates pkg->dir if successful
 err_t pkgs_for_argv(int argc, char* argv[], pkg_t** pkgvp, u32* pkgcp);
 srcfile_t* pkg_add_srcfile(pkg_t* pkg, const char* name);
 err_t pkg_find_files(pkg_t* pkg); // updates pkg->files, sets sf.mtime
@@ -712,6 +737,16 @@ str_t pkg_buildfile(const pkg_t* pkg, const compiler_t* c, const char* filename)
 node_t* nullable pkg_def_get(pkg_t* pkg, sym_t name);
 err_t pkg_def_set(pkg_t* pkg, memalloc_t ma, sym_t name, node_t* n);
 err_t pkg_def_add(pkg_t* pkg, memalloc_t ma, sym_t name, node_t** np_inout);
+str_t pkg_unit_srcdir(const pkg_t* pkg, const unit_t* unit);
+bool pkg_validate_path(const char* path, const char** errmsgp, usize* erroffsp);
+err_t pkg_clean_import_path(
+  const pkg_t* importer_pkg,
+  const char*  importer_dir, // usually pkg_unit_srcdir
+  str_t*       import_path_inout,
+  str_t*       import_fspath_out);
+str_t pkg_make_import_fspath(
+  const pkg_t* pkg, const char* importer_dir, const char* import_path);
+err_t pkg_resolve_fspath(str_t* fspath, usize* rootdirlen_out);
 
 // srcfile
 err_t srcfile_open(srcfile_t* sf);
@@ -732,6 +767,11 @@ bool compiler_fully_qualified_name(const compiler_t*, const pkg_t*, buf_t* dst, 
 bool compiler_mangle(const compiler_t*, const pkg_t*, buf_t* dst, const node_t*);
 bool compiler_mangle_type(const compiler_t* c, const pkg_t*, buf_t* buf, const type_t* t);
 
+// mangle_str writes str to buf, escaping any chars not in 0-9A-Za-z_
+// by "$XX" where XX is the hexadecimal encoding of the byte value,
+// or "·" (U+00B7, UTF-8 C2 B7) for '/' and '\'
+bool mangle_str(buf_t* buf, slice_t str);
+
 // compiler_spawn_tool spawns a compiler subprocess in procs
 err_t compiler_spawn_tool(
   const compiler_t* c, subprocs_t* procs, strlist_t* args, const char* nullable cwd);
@@ -743,6 +783,11 @@ err_t compiler_spawn_tool_p(
 // compiler_run_tool_sync spawns a compiler subprocess and waits for it to complete
 err_t compiler_run_tool_sync(
   const compiler_t* c, strlist_t* args, const char* nullable cwd);
+
+// compiler_errcount retrieves the number of DIAG_ERR diagnostics produced so far
+inline static u32 compiler_errcount(const compiler_t* c) {
+  return AtomicLoadAcq(&c->errcount);
+}
 
 // spawn_tool spawns a compiler subprocess
 // argv must be NULL terminated; argv[0] must be the name of a compis command, eg "cc"
@@ -797,12 +842,6 @@ err_t ast_fmt_pkg(buf_t* buf, const pkg_t* pkg, const unit_t*const* unitv, u32 u
 origin_t node_origin(locmap_t*, const node_t*); // compute source origin of node
 node_t* nullable ast_mknode(memalloc_t ast_ma, usize size, nodekind_t kind);
 node_t* clone_node(parser_t* p, const node_t* n);
-// T* CLONE_NODE(T* node)
-#define CLONE_NODE(p, nptr) ( \
-  (__typeof__(nptr))memcpy( \
-    _mknode((p), sizeof(__typeof__(*(nptr))), ((node_t*)(nptr))->kind), \
-    (nptr), \
-    sizeof(*(nptr))) )
 local_t* nullable lookup_struct_field(structtype_t* st, sym_t name);
 fun_t* nullable lookup_method(parser_t* p, type_t* recv, sym_t name);
 const char* node_srcfilename(const node_t* n, locmap_t* lm);
@@ -900,7 +939,8 @@ inline static const type_t* canonical_primtype(const compiler_t* c, const type_t
 // e.g. "?&T" => "&T" => "T"
 type_t* type_unwrap_ptr(type_t* t);
 
-// expr_no_side_effects returns true if materializing n has no side effects
+// expr_no_side_effects returns true if materializing n has no side effects.
+// I.e. if removing n has no effect on the semantic of any other code outside it.
 bool expr_no_side_effects(const expr_t* n);
 
 // void assert_nodekind(const node_t* n, nodekind_t kind)
@@ -964,6 +1004,8 @@ extern sym_t sym_this; // "this"
 extern sym_t sym_drop; // "drop"
 extern sym_t sym_main; // "main"
 extern sym_t sym_str;  // "str"
+extern sym_t sym_as;   // "as"
+extern sym_t sym_from; // "from"
 extern sym_t sym_void;
 extern sym_t sym_bool;
 extern sym_t sym_int;
@@ -1010,7 +1052,7 @@ void locmap_dispose(locmap_t* lm, memalloc_t);
 void locmap_clear(locmap_t* lm);
 u32 locmap_srcfileid(locmap_t* lm, srcfile_t*, memalloc_t); // get id for source file
 
-static loc_t loc_make(u32 inputid, u32 line, u32 col, u32 width);
+static loc_t loc_make(u32 srcfileid, u32 line, u32 col, u32 width);
 
 srcfile_t* nullable loc_srcfile(loc_t p, locmap_t*);
 static u32 loc_line(loc_t p);
@@ -1018,7 +1060,7 @@ static u32 loc_col(loc_t p);
 static u32 loc_width(loc_t p);
 static u32 loc_srcfileid(loc_t p); // key for locmap_t; 0 for pos without input
 
-static loc_t loc_with_inputid(loc_t p, u32 inputid); // copy of p with specific inputid
+static loc_t loc_with_srcfileid(loc_t p, u32 srcfileid); // copy of p with srcfileid
 static loc_t loc_with_line(loc_t p, u32 line);       // copy of p with specific line
 static loc_t loc_with_col(loc_t p, u32 col);         // copy of p with specific col
 static loc_t loc_with_width(loc_t p, u32 width);     // copy of p with specific width
@@ -1077,15 +1119,15 @@ static const u64 _loc_lineShift = _loc_colBits + _loc_widthBits;
 static const u64 _loc_colShift  = _loc_widthBits;
 
 
-inline static loc_t loc_make_unchecked(u32 inputid, u32 line, u32 col, u32 width) {
-  return (loc_t)( ((loc_t)inputid << _loc_srcfileidShift)
+inline static loc_t loc_make_unchecked(u32 srcfileid, u32 line, u32 col, u32 width) {
+  return (loc_t)( ((loc_t)srcfileid << _loc_srcfileidShift)
               | ((loc_t)line << _loc_lineShift)
               | ((loc_t)col << _loc_colShift)
               | width );
 }
-inline static loc_t loc_make(u32 inputid, u32 line, u32 col, u32 width) {
+inline static loc_t loc_make(u32 srcfileid, u32 line, u32 col, u32 width) {
   return loc_make_unchecked(
-    MIN(_loc_srcfileidMax, inputid),
+    MIN(_loc_srcfileidMax, srcfileid),
     MIN(_loc_lineMax, line),
     MIN(_loc_colMax, col),
     MIN(_loc_widthMax, width));
@@ -1096,9 +1138,9 @@ inline static u32 loc_col(loc_t p)     { return (p >> _loc_colShift) & _loc_colM
 inline static u32 loc_width(loc_t p)   { return p & _loc_widthMax; }
 
 // TODO: improve the efficiency of these
-inline static loc_t loc_with_inputid(loc_t p, u32 inputid) {
+inline static loc_t loc_with_srcfileid(loc_t p, u32 srcfileid) {
   return loc_make_unchecked(
-    MIN(_loc_srcfileidMax, inputid), loc_line(p), loc_col(p), loc_width(p));
+    MIN(_loc_srcfileidMax, srcfileid), loc_line(p), loc_col(p), loc_width(p));
 }
 inline static loc_t loc_with_line(loc_t p, u32 line) {
   return loc_make_unchecked(

@@ -210,6 +210,57 @@ static void repr_typecons(RPARAMS, const typecons_t* n) {
 }
 
 
+static void repr_importid(RPARAMS, const importid_t* id) {
+  if (id->origname)
+    PRINT(id->origname), PRINT(" as ");
+  if (id->name == sym__) {
+    CHAR('*');
+  } else {
+    PRINT(id->name);
+  }
+}
+
+
+static void repr_import(RPARAMS, const import_t* im) {
+  CHAR('"');
+  buf_appendrepr(&r->outbuf, im->path, strlen(im->path));
+  CHAR('"');
+  if (im->isfrom) {
+    PRINT(" (members");
+    for (const importid_t* id = im->idlist; id; id = id->next_id) {
+      REPR_BEGIN('(', "IMPORT ");
+      repr_importid(RARGS, id);
+      REPR_END(')');
+    }
+    CHAR(')');
+  } else if (im->idlist) {
+    PRINT(" as "), PRINT(im->idlist->name);
+  }
+}
+
+
+static void repr_unit(RPARAMS, const unit_t* n) {
+  CHAR(' ');
+  if (n->srcfile) {
+    PRINTN(n->srcfile->name.p, n->srcfile->name.len);
+  } else {
+    PRINT("<input>");
+  }
+
+  if (n->importlist) {
+    REPR_BEGIN('(', "import ");
+    for (const import_t* im = n->importlist; im; im = im->next_import) {
+      REPR_BEGIN('(', "");
+      repr_import(RARGS, im);
+      REPR_END(')');
+    }
+    REPR_END(')');
+  }
+
+  repr_nodearray(RARGS, &n->children);
+}
+
+
 static void flags(RPARAMS, const node_t* n) {
   // {flags}
   nodeflag_t flags = n->flags;
@@ -384,14 +435,7 @@ static void repr(RPARAMS, const node_t* nullable n) {
   case EXPR_FUN:      repr_fun(RARGS, (fun_t*)n); break;
   case EXPR_CALL:     repr_call(RARGS, (call_t*)n); break;
   case EXPR_TYPECONS: repr_typecons(RARGS, (typecons_t*)n); break;
-
-  case NODE_UNIT: {
-    const unit_t* unit = (unit_t*)n;
-    if (unit->srcfile)
-      CHAR(' '), PRINTN(unit->srcfile->name.p, unit->srcfile->name.len);
-    repr_nodearray(RARGS, &unit->children);
-    break;
-  }
+  case NODE_UNIT:     repr_unit(RARGS, (unit_t*)n); break;
 
   case EXPR_RETURN:
     if (((retexpr_t*)n)->value)
@@ -526,7 +570,7 @@ end:
 
 
 static void repr_pkg(repr_t* r, const pkg_t* pkg, const unit_t*const* unitv, u32 unitc) {
-  PRINTF("(PKG \"%s\"", pkg->name.p);
+  PRINTF("(PKG \"%s\"", pkg->path.p);
   for (u32 i = 0; i < unitc && !r->err; i++)
     repr(r, INDENT, 0, (const node_t*)unitv[i]);
   CHAR(')');

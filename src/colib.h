@@ -969,9 +969,14 @@ usize strim_end(const char* s, usize len, char trimc);
 
 // string_startswith returns true if null-terminated string s begins with prefix
 bool string_startswith(const char* s, const char* prefix);
+inline static bool string_startswithn(const char* s, usize len, const char* prefix) {
+  usize prefixlen = strlen(prefix);
+  return len >= prefixlen && memcmp(s, prefix, prefixlen) == 0;
+}
 
 // str_endswith returns true if null-terminated string s ends with suffix
 bool str_endswith(const char* s, const char* suffix);
+bool string_endswithn(const char* s, usize slen, const char* suffix, usize suffixlen);
 
 // string_repr writes srclen bytes of src to dst, escaping some bytes in Compis style,
 // i.e. what would need to be escaped to form a valid co string literal.
@@ -1064,7 +1069,7 @@ err_t fs_unlock(int fd);
 
 typedef err_t(*promise_await_t)(void* impl);
 typedef struct {
-  promise_await_t nullable await;
+  promise_await_t nullable await; // NULL if resolved
   void*                    impl;
   err_t                    result;
 } promise_t;

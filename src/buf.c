@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "colib.h"
 #include "buf.h"
-#include "abuf.h"
 
 
 // buf_t should be castable to mem_t
@@ -107,18 +106,31 @@ bool buf_append(buf_t* b, const void* src, usize len) {
 bool buf_appendrepr(buf_t* b, const void* src, usize len) {
   if (len == 0)
     return true;
-  usize cap = len * 1.2;
+
+  // estimate size needed to 150% of input size
+  usize cap; // cap = floor(len * 1.5)
+  if (check_mul_overflow(len, (usize)15, &cap)) {
+    cap = len;
+  } else {
+    cap = (cap / 10) + 1; // +1 for null terminator, needed by string_repr
+  }
+
+  usize n;
   for (;;) {
     if UNLIKELY(!buf_reserve(b, cap))
       return false;
-    abuf_t a = abuf_make(b->p + b->len, b->cap - b->len);
-    abuf_repr(&a, src, len);
-    if (a.len <= cap) {
-      b->len += a.len;
-      return true;
-    }
-    cap = a.len;
+    n = string_repr(b->p + b->len, b->cap - b->len, src, len);
+    if (n < cap)
+      break;
+    cap = n + 1;
   }
+
+  // note: string_repr writes a terminating NUL char
+  if (check_add_overflow(b->len, n, &n)) {
+    return false;
+  }
+  b->len = n;
+  return true;
 }
 
 

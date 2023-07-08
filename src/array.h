@@ -262,4 +262,8 @@ u32 ptrarray_rindexof(const ptrarray_t* a, const void* value); // U32_MAX if not
 // ptrarray_move_to_end is equivalent to ptrarray_move(a, a->len-1, index, index+1)
 void ptrarray_move_to_end(ptrarray_t* a, u32 index);
 
+// returns false if memory allocation failed
+bool ptrarray_sortedset_addcstr(ptrarray_t* a, memalloc_t ma, const char* str);
+bool ptrarray_sortedset_addptr(ptrarray_t* a, memalloc_t ma, const void* ptr);
+
 ASSUME_NONNULL_END

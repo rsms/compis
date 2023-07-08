@@ -49,8 +49,10 @@ usize tok_descr(char* buf, usize bufcap, tok_t t, slice_t lit) {
     case TFLOATLIT: typ = "number"; break;
     case TBYTELIT:  typ = "byte";   quote = '\''; break;
     case TSTRLIT:   typ = "string"; quote = '"';
-      lit.p++;
-      lit.len -= 2;
+      if (lit.len > 1) {
+        lit.p++;
+        lit.len -= 2;
+      }
       break;
     default:
       abuf_c(&s, '\'');
@@ -259,7 +261,7 @@ static void add_srclines(compiler_t* c, origin_t origin, abuf_t* s) {
 }
 
 
-void report_diagv(
+static void _report_diagv(
   compiler_t* c, origin_t origin, diagkind_t kind, const char* fmt, va_list ap)
 {
   va_list ap2;
@@ -320,8 +322,17 @@ void report_diagv(
     }
   }
 
-  c->errcount += (kind == DIAG_ERR);
+  AtomicAdd(&c->errcount, (kind == DIAG_ERR ? 1u : 0u), memory_order_relaxed);
   c->diag.kind = kind;
   c->diag.origin = origin;
   c->diaghandler(&c->diag, c->userdata);
+}
+
+
+void report_diagv(
+  compiler_t* c, origin_t origin, diagkind_t kind, const char* fmt, va_list ap)
+{
+  rwmutex_lock(&c->diag_mu);
+  _report_diagv(c, origin, kind, fmt, ap);
+  rwmutex_unlock(&c->diag_mu);
 }

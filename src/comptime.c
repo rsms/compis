@@ -20,6 +20,7 @@ typedef struct {
   u64array_t  stack;
   err_t       err;
   ctimeflag_t flags;
+  u32         errcount; // number of DIAG_ERR produced
 
   // call frame state
   expr_t* nullable   returnval;
@@ -65,8 +66,11 @@ static void seterr(ctx_t* ctx, err_t err) {
 // void diag(typecheck_t*, T origin, diagkind_t diagkind, const char* fmt, ...)
 // where T is one of: origin_t | loc_t | node_t* | expr_t*
 #define diag(ctx, origin, diagkind, fmt, args...) ( \
-  ((ctx)->flags & CTIME_NO_DIAG) ? ((void)0) : \
-  report_diag((ctx)->c, to_origin((ctx), (origin)), (diagkind), fmt, ##args) )
+  ((ctx)->flags & CTIME_NO_DIAG) ? ((void)0) : ( \
+    (ctx)->errcount++, \
+    report_diag((ctx)->c, to_origin((ctx), (origin)), (diagkind), fmt, ##args) \
+  ) \
+)
 
 #define error(ctx, origin, fmt, args...)   diag(ctx, origin, DIAG_ERR, fmt, ##args)
 #define warning(ctx, origin, fmt, args...) diag(ctx, origin, DIAG_WARN, fmt, ##args)
@@ -499,12 +503,12 @@ node_t* nullable comptime_eval(compiler_t* c, expr_t* expr, ctimeflag_t flags) {
   if (!map_init(&ctx.localm, ctx.ma, 16))
     return NULL;
 
-  u32 errcount = c->errcount;
-
   node_t* result = eval(&ctx, expr);
 
-  if UNLIKELY(c->errcount > errcount && !(flags & CTIME_NO_DIAG) && loc_line(expr->loc))
+  if UNLIKELY(ctx.errcount > 0 && loc_line(expr->loc)) {
+    assert((flags & CTIME_NO_DIAG) == 0);
     help(&ctx, expr, "comptime evaluation originated here");
+  }
 
   u64array_dispose(&ctx.stack, ctx.ma);
   map_dispose(&ctx.localm, ctx.ma);

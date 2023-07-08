@@ -123,14 +123,14 @@ const char* path_ext(const char* path) {
 }
 
 
-usize path_cleanx(char* buf, usize bufcap, const char* path, usize len) {
+usize _path_clean(char* buf, usize bufcap, const char* path, usize len, char pathsep) {
   usize r = 0;      // read offset
   usize w = 0;      // write offset
   usize wl = 0;     // logical bytes written
   usize dotdot = 0; // w offset of most recent ".."
 
   #define DST_APPEND(c) ( buf[w] = c, w += (usize)(w < (bufcap-1)), wl++ )
-  #define IS_SEP(c)     ((c) == PATH_SEPARATOR)
+  #define IS_SEP(c)     ((c) == pathsep)
 
   if (len == 0) {
     DST_APPEND('.');
@@ -139,7 +139,7 @@ usize path_cleanx(char* buf, usize bufcap, const char* path, usize len) {
 
   bool rooted = IS_SEP(path[0]);
   if (rooted) {
-    DST_APPEND(PATH_SEPARATOR);
+    DST_APPEND(pathsep);
     r = 1;
     dotdot++;
   }
@@ -154,12 +154,15 @@ usize path_cleanx(char* buf, usize bufcap, const char* path, usize len) {
       if (w > dotdot) {
         // can backtrack
         w--;
-        while (w > dotdot && !IS_SEP(buf[w]))
+        wl--;
+        while (w > dotdot && !IS_SEP(buf[w])) {
           w--;
+          wl--;
+        }
       } else if (!rooted) {
         // cannot backtrack, but not rooted, so append ".."
         if (w > 0)
-          DST_APPEND(PATH_SEPARATOR);
+          DST_APPEND(pathsep);
         DST_APPEND('.');
         DST_APPEND('.');
         dotdot = w;
@@ -167,7 +170,7 @@ usize path_cleanx(char* buf, usize bufcap, const char* path, usize len) {
     } else {
       // actual path component; add slash if needed
       if ((rooted && w != 1) || (!rooted && w != 0))
-        DST_APPEND(PATH_SEPARATOR);
+        DST_APPEND(pathsep);
       // copy
       for (; r < len && !IS_SEP(path[r]); r++)
         DST_APPEND(path[r]);
@@ -186,10 +189,28 @@ end:
 }
 
 
+usize path_cleanx(char* buf, usize bufcap, const char* path, usize len) {
+  return _path_clean(buf, bufcap, path, len, PATH_SEP);
+}
+
+
+usize path_cleanx_posix(char* buf, usize bufcap, const char* path, usize len) {
+  return _path_clean(buf, bufcap, path, len, '/');
+}
+
+
 bool path_clean(str_t* path) {
   if UNLIKELY(path->len == 0)
     return str_push(path, '.');
-  path->len = path_cleanx(path->p, path->cap, path->p, path->len);
+  path->len = _path_clean(path->p, path->cap, path->p, path->len, PATH_SEP);
+  return true;
+}
+
+
+bool path_clean_posix(str_t* path) {
+  if UNLIKELY(path->len == 0)
+    return str_push(path, '.');
+  path->len = _path_clean(path->p, path->cap, path->p, path->len, '/');
   return true;
 }
 
@@ -200,9 +221,7 @@ str_t path_joinv(usize count, va_list ap) {
     s.len = path_cleanx(s.p, s.cap, s.p, s.len);
     if UNLIKELY(s.len >= s.cap) {
       str_free(s);
-      s.p = NULL;
-      s.cap = 0;
-      s.len = 0;
+      s = (str_t){0};
     }
   }
   return s;
@@ -254,7 +273,7 @@ char** nullable path_parselist(memalloc_t ma, const char* pathlist) {
       continue;
     if (end - start) {
       // dlog(">> '%.*s'", (int)(end - start), &pathlist[start]);
-      strcap += (end - start) + 1;
+      strcap += (end - start) + 1; // +1 for NUL
       count++;
     }
     if (end == len)
@@ -277,10 +296,13 @@ char** nullable path_parselist(memalloc_t ma, const char* pathlist) {
   for (usize start = 0, end = 0; ; end++) {
     if (end != len && pathlist[end] != PATH_DELIMITER)
       continue;
-    if (end - start) {
+    usize slen = end - start;
+    if (slen) {
       *slistp++ = strp;
-      memcpy(strp, &pathlist[start], end - start);
-      strp += end - start;
+      memcpy(strp, &pathlist[start], slen);
+      usize n = path_cleanx(strp, slen, strp, slen);
+      assert(n <= slen);
+      strp += slen;
       *strp++ = 0;
     }
     if (end == len)
@@ -290,4 +312,17 @@ char** nullable path_parselist(memalloc_t ma, const char* pathlist) {
 
   *slistp = NULL;
   return slist;
+}
+
+
+bool path_isrooted(slice_t path, slice_t dir) {
+  if (
+    path.len == 0 || // e.g. ("", "/foo/bar")
+    dir.len == 0 ||  // e.g. ("/foo/bar", "")
+    path.len < dir.len || // e.g. ("/foo/ba", "/foo/bar")
+    (path.len > dir.len && path.chars[dir.len] != PATH_SEP) // e.g. ("/a/bc", "/a/b")
+  ) {
+    return false;
+  }
+  return memcmp(path.p, dir.p, dir.len) == 0;
 }

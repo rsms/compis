@@ -166,22 +166,6 @@ static const char* cbuild_objfile(cbuild_t* b, const cobj_t* obj) {
 }
 
 
-static int str_cmp(const char** a, const char** b, void* ctx) {
-  return strcmp(*a, *b);
-}
-
-
-static bool array_sortedset_addcstr(ptrarray_t* a, memalloc_t ma, const char* str) {
-  const char** vp = array_sortedset_assign(
-    const char*, a, ma, &str, (array_sorted_cmp_t)str_cmp, NULL);
-  if UNLIKELY(!vp)
-    return false;
-  if (*vp)
-    return true;
-  return (*vp = mem_strdup(ma, slice_cstr(str), 0)) != NULL;
-}
-
-
 static err_t cbuild_mkdirs(cbuild_t* b) {
   err_t err = 0;
   char dir[PATH_MAX];
@@ -193,7 +177,7 @@ static err_t cbuild_mkdirs(cbuild_t* b) {
       err = ErrOverflow;
       break;
     }
-    if UNLIKELY(!array_sortedset_addcstr(&dirs, b->c->ma, dir)) {
+    if UNLIKELY(!ptrarray_sortedset_addcstr(&dirs, b->c->ma, dir)) {
       err = ErrNoMem;
       break;
     }

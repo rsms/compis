@@ -18,6 +18,7 @@ typedef struct {
   irfun_t*    f;           // current function
   irblock_t*  b;           // current block
   err_t       err;         // result of build process
+  u32         errcount;    // number of DIAG_ERR produced
   u32         condnest;    // >0 when inside conditional ("if", "for", etc)
   ptrarray_t  funqueue;    // [fun_t*] queue of functions awaiting build
   map_t       funm;        // {fun_t* => irfun_t*} for breaking cycles
@@ -191,8 +192,10 @@ inline static locmap_t* locmap(ircons_t* c) {
 
 // void diag(ircons_t*, T origin, diagkind_t diagkind, const char* fmt, ...)
 // where T is one of: origin_t | loc_t | irval_t* | node_t* | expr_t*
-#define diag(c, origin, diagkind, fmt, args...) \
-  report_diag((c)->compiler, to_origin((c), (origin)), (diagkind), (fmt), ##args)
+#define diag(c, origin, diagkind, fmt, args...) ( \
+  (c)->errcount++, \
+  report_diag((c)->compiler, to_origin((c), (origin)), (diagkind), (fmt), ##args) \
+)
 
 #define error(c, origin, fmt, args...)    diag(c, origin, DIAG_ERR, (fmt), ##args)
 #define warning(c, origin, fmt, args...)  diag(c, origin, DIAG_WARN, (fmt), ##args)
@@ -2215,7 +2218,7 @@ static irunit_t* unit(ircons_t* c, unit_t* n) {
   u->srcfile = n->srcfile;
   c->unit = u;
 
-  for (u32 i = 0; i < n->children.len && c->compiler->errcount == 0; i++) {
+  for (u32 i = 0; i < n->children.len && c->errcount == 0; i++) {
     stmt_t* cn = n->children.v[i];
     {
       TRACE_NODE("stmt ", cn);

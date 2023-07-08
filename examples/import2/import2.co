@@ -1,0 +1,3 @@
+pub fun hello(x int) int {
+  x * x
+}

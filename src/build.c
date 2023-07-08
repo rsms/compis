@@ -180,7 +180,7 @@ int main_build(int argc, char* argv[]) {
   #if DEBUG
     printf("[D] building %u package%s:", pkgc, pkgc != 1 ? "s" : "");
     for (u32 i = 0; i < pkgc; i++)
-      printf(&", %s (\"%s\")"[((u32)!i)], pkgv[i].name.p, pkgv[i].dir.p);
+      printf(&", %s (\"%s\")"[((u32)!i)], pkgv[i].path.p, pkgv[i].dir.p);
     printf("\n");
   #endif
   assert(pkgc > 0);
@@ -233,82 +233,18 @@ int main_build(int argc, char* argv[]) {
     pkg_t* pkg = &pkgv[i];
 
     if (pkg_is_built(pkg, &c)) {
-      log("[%s] up to date", pkg->name.p); // in lieu of bgtask
+      log("[%s] up to date", pkg->path.p); // in lieu of bgtask
       continue;
     }
 
     if (( err = build_pkg(pkg, &c, opt_out, pkgbuild_flags) )) {
-      dlog("error while building pkg %s: %s", pkg->name.p, err_str(err));
+      dlog("error while building pkg %s: %s", pkg->path.p, err_str(err));
       break;
     }
   }
 
   // compiler_dispose(&c); // would need to do this if we didn't just exit
   return (int)!!err;
-}
-
-
-static err_t build_pkg(
-  pkg_t* pkg, compiler_t* c, const char* outfile, u32 pkgbuild_flags)
-{
-  err_t err;
-  c->errcount = 0;
-
-  pkgbuild_t pb;
-  if (( err = pkgbuild_init(&pb, pkg, c, pkgbuild_flags) ))
-    return err;
-
-  // locate source files
-  if (( err = pkgbuild_locate_sources(&pb) )) {
-    dlog("pkgbuild_locate_sources: %s", err_str(err));
-    goto end;
-  }
-
-  // begin compilation of C source files
-  if (( err = pkgbuild_begin_early_compilation(&pb) )) {
-    dlog("pkgbuild_begin_early_compilation: %s", err_str(err));
-    goto end;
-  }
-
-  // parse source files
-  if (( err = pkgbuild_parse(&pb) )) {
-    dlog("pkgbuild_parse: %s", err_str(err));
-    goto end;
-  }
-
-  // typecheck package
-  if (( err = pkgbuild_typecheck(&pb) )) {
-    dlog("pkgbuild_typecheck: %s", err_str(err));
-    goto end;
-  }
-
-  // generate C code for package
-  if (( err = pkgbuild_cgen(&pb) )) {
-    dlog("pkgbuild_cgen: %s", err_str(err));
-    goto end;
-  }
-
-  // begin compilation of C source files generated from compis sources
-  if (( err = pkgbuild_begin_late_compilation(&pb) )) {
-    dlog("pkgbuild_begin_late_compilation: %s", err_str(err));
-    goto end;
-  }
-
-  // wait for compilation tasks to finish
-  if (( err = pkgbuild_await_compilation(&pb) )) {
-    dlog("pkgbuild_await_compilation: %s", err_str(err));
-    goto end;
-  }
-
-  // link exe or library (does nothing if PKGBUILD_NOLINK flag is set)
-  if (( err = pkgbuild_link(&pb, outfile) )) {
-    dlog("pkgbuild_link: %s", err_str(err));
-    goto end;
-  }
-
-end:
-  pkgbuild_dispose(&pb); // TODO: can skip this for top-level package
-  return err;
 }
 
 

@@ -161,3 +161,20 @@ isize str_replace(str_t* s, slice_t olds, slice_t news, isize limit) {
 
   return nsubs;
 }
+
+
+usize str_replacec(str_t* s, u8 oldc, u8 newc, isize limit) {
+  usize sublimit = limit >= 0 ? (usize)limit : s->len;
+  usize nsub = 0;
+  u8* p = (u8*)s->p;
+  u8* end = p + s->len;
+  for (; p < end; p++) {
+    if (*p != oldc)
+      continue;
+    if (nsub == sublimit)
+      break;
+    nsub++;
+    *p = newc;
+  }
+  return nsub;
+}

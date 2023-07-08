@@ -108,7 +108,7 @@ static char lastchar(cgen_t* g) {
 
 
 static bool startloc(cgen_t* g, loc_t loc) {
-  bool inputok = loc_srcfileid(loc) == 0 || g->inputid == loc_srcfileid(loc);
+  bool inputok = loc_srcfileid(loc) == 0 || g->srcfileid == loc_srcfileid(loc);
   u32 lineno = loc_line(loc);
 
   if (lineno == 0 || (g->lineno == lineno && inputok))
@@ -124,7 +124,7 @@ static bool startloc(cgen_t* g, loc_t loc) {
     PRINTF("#line %u", lineno);
     if (!inputok) {
       srcfile_t* sf = assertnotnull(loc_srcfile(loc, locmap(g)));
-      g->inputid = loc_srcfileid(loc);
+      g->srcfileid = loc_srcfileid(loc);
       // ` "pkgdir/file.co"`
       PRINT(" \"");
       PRINTN(sf->pkg->dir.p, sf->pkg->dir.len), CHAR(PATH_SEP);
@@ -306,7 +306,7 @@ static sym_t intern_typedef(
     (int)g->headnest*2, "", __FUNCTION__, nodekind_name(t->kind), fmtnode(g, 0, t));
 
   // saved values
-  u32 lineno, inputid, indent;
+  u32 lineno, srcfileid, indent;
 
   // save & replace outbuf
   buf_t outbuf = g->outbuf;
@@ -317,10 +317,10 @@ static sym_t intern_typedef(
     g->outbuf = g->headbuf;
     indent = g->indent;
     lineno = g->lineno;
-    inputid = g->inputid;
+    srcfileid = g->srcfileid;
     g->indent = 0;
     g->lineno = g->headlineno;
-    g->inputid = g->headinputid;
+    g->srcfileid = g->headsrcfileid;
   }
 
   g->headnest++;
@@ -344,9 +344,9 @@ static sym_t intern_typedef(
   } else {
     g->headbuf = buf;
     g->headlineno = g->lineno;
-    g->headinputid = g->inputid;
+    g->headsrcfileid = g->srcfileid;
     g->lineno = lineno;
-    g->inputid = inputid;
+    g->srcfileid = srcfileid;
     g->indent = indent;
   }
 
@@ -2277,7 +2277,7 @@ static void unit_impl(cgen_t* g, const unit_t* unit) {
     return;
 
   // external function prototypes (pure declarations)
-  g->inputid = 0;
+  g->srcfileid = 0;
   for (u32 i = 0; i < unit->children.len; i++) {
     const fun_t* fn = unit->children.v[i];
     if (fn->kind == EXPR_FUN && !fn->body) {
@@ -2289,7 +2289,7 @@ static void unit_impl(cgen_t* g, const unit_t* unit) {
 
   // unit-local function prototypes
   bool printed_head = false;
-  g->inputid = 0;
+  g->srcfileid = 0;
   for (u32 i = 0; i < unit->children.len; i++) {
     const fun_t* fn = unit->children.v[i];
     if (fn->kind == EXPR_FUN && fn->body && (fn->flags & NF_VIS_MASK) == NF_VIS_UNIT) {
@@ -2304,7 +2304,7 @@ static void unit_impl(cgen_t* g, const unit_t* unit) {
   }
 
   // implementations (and typedefs, added to headbuf)
-  g->inputid = 0;
+  g->srcfileid = 0;
   for (u32 i = 0; i < unit->children.len; i++) {
     const node_t* n = unit->children.v[i];
     switch (n->kind) {
@@ -2343,7 +2343,7 @@ static void unit_interface(cgen_t* g, const unit_t* unit, nodeflag_t visibility)
   if (unit->children.len == 0)
     return;
 
-  g->inputid = 0;
+  g->srcfileid = 0;
 
   for (u32 i = 0; i < unit->children.len; i++) {
     const node_t* n = unit->children.v[i];
@@ -2399,8 +2399,8 @@ static void reset(cgen_t* g) {
   g->headoffs = 0;
   g->headnest = 0;
   g->headlineno = 0;
-  g->headinputid = 0;
-  g->inputid = 0;
+  g->headsrcfileid = 0;
+  g->srcfileid = 0;
   g->lineno = 0;
   g->scopenest = 0;
   g->err = 0;
@@ -2482,7 +2482,7 @@ err_t cgen_pkgapi(cgen_t* g, const unit_t** unitv, u32 unitc, cgen_pkgapi_t* res
 
   reset(g);
 
-  PRINT("// package "), PRINTN(g->pkg->name.p, g->pkg->name.len), CHAR('\n');
+  PRINT("// package "), PRINTN(g->pkg->path.p, g->pkg->path.len), CHAR('\n');
   PRINT("#pragma once\n");
   usize headstart = g->outbuf.len;
 

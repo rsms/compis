@@ -42,13 +42,16 @@ const char* path_ext(const char* path);
 // path_clean resolves parent paths ("..") and eliminates redundant "/" and "./",
 // reducing 'path' to a clean, canonical form. E.g. "a/b/../c//./d" => "a/c/d"
 usize path_cleanx(char* buf, usize bufcap, const char* path, usize pathlen);
-bool path_clean(str_t* path);
+usize path_cleanx_posix(char* buf, usize bufcap, const char* path, usize pathlen);
+bool path_clean(str_t* path); // uses system PATH_SEP
+bool path_clean_posix(str_t* path); // uses '/'
 inline static char* path_clean_cstr(char* path) {
   usize len = strlen(path);
   return path_cleanx(path, len + 1, path, len), path;
 }
 
-// path_parselist parses a PATH_DELIMITER separated list.
+// path_parselist parses a PATH_DELIMITER separated list. Each path is path_clean'ed.
+// Ignores empty entries, e.g. "a:b::c" yields ["a","b","c"] (not ["a","b","","c"]).
 // Returns a NULL-terminated array (or NULL if memory allocation failed.)
 char** nullable path_parselist(memalloc_t ma, const char* pathlist);
 
@@ -74,7 +77,8 @@ inline static bool path_isabs(const char* path) { return *path == PATH_SEPARATOR
 // Note: It does NOT resolve symlinks (use realpath for that); path need no exist.
 str_t path_abs(const char* path) WARN_UNUSED_RESULT;
 
-// path_makeabs works like path_abs, but updates the string in place
+// path_makeabs works like path_abs, but updates the string in place.
+// Returns false if memory allocation failed.
 bool path_makeabs(str_t* path);
 
 // path_cwd returns the current working directory
@@ -83,6 +87,13 @@ str_t path_cwd() WARN_UNUSED_RESULT;
 // relpath returns the path relative to the initial current working directory
 const char* relpath(const char* path);
 void relpath_init();
+
+// path_isrooted returns true if path is or equal to or under dir.
+// E.g. ("/foo/bar/cat", "/foo/bar") => true
+// E.g. ("/foo/bar",     "/foo/bar") => true
+// E.g. ("/foo",         "/foo/bar") => false
+// E.g. ("/foo/bars",    "/foo/bar") => false
+bool path_isrooted(slice_t path, slice_t dir);
 
 // path_dir_alloca allocates space on stack and calls path_dir.
 // char* path_dir_alloca(const char* path)

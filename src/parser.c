@@ -195,6 +195,10 @@ static void fastforward_semi(parser_t* p) {
 }
 
 
+struct no_origin { int x; };
+#define CURR_ORIGIN ((struct no_origin){0})
+
+
 // const origin_t to_origin(parser_t* p, T origin)
 // where T is one of: origin_t | loc_t | node_t* (default)
 #define to_origin(p, origin) ({ \
@@ -228,10 +232,13 @@ static void _diag(parser_t* p, origin_t origin, diagkind_t kind, const char* fmt
   va_end(ap);
 }
 
+#define error(p, fmt, args...)   _diag(p, curr_origin(p), DIAG_ERR, (fmt), ##args)
+#define warning(p, fmt, args...) _diag(p, curr_origin(p), DIAG_WARN, (fmt), ##args)
+#define help(p, fmt, args...)    _diag(p, curr_origin(p), DIAG_HELP, (fmt), ##args)
 
-#define error(p, origin, fmt, args...)    diag(p, origin, DIAG_ERR, (fmt), ##args)
-#define warning(p, origin, fmt, args...)  diag(p, origin, DIAG_WARN, (fmt), ##args)
-#define help(p, origin, fmt, args...)     diag(p, origin, DIAG_HELP, (fmt), ##args)
+#define error_at(p, origin, fmt, args...)   diag(p, origin, DIAG_ERR, (fmt), ##args)
+#define warning_at(p, origin, fmt, args...) diag(p, origin, DIAG_WARN, (fmt), ##args)
+#define help_at(p, origin, fmt, args...)    diag(p, origin, DIAG_HELP, (fmt), ##args)
 
 
 static void stop_parsing(parser_t* p) {
@@ -247,7 +254,7 @@ static void set_err(parser_t* p, err_t err) {
 
 static void out_of_mem(parser_t* p) {
   set_err(p, ErrNoMem);
-  error(p, NULL, "out of memory");
+  error(p, "out of memory");
   stop_parsing(p); // end scanner, making sure we don't keep going
 }
 
@@ -272,13 +279,15 @@ static const char* fmtnode(parser_t* p, u32 bufindex, const void* n) {
 
 
 static void unexpected(parser_t* p, const char* errmsg) {
-  if (currtok(p) == TEOF && p->scanner.compiler->errcount > 0)
+  if (currtok(p) == TEOF && p->scanner.errcount > 0)
     return;
   const char* tokstr = fmttok(p, 0, currtok(p), scanner_lit(&p->scanner));
   int msglen = (int)strlen(errmsg);
-  if (msglen && *errmsg != ',' && *errmsg != ';')
-    msglen++;
-  error(p, NULL, "unexpected %s%*s", tokstr, msglen, errmsg);
+  const char* msgsep =
+    (msglen && *errmsg != ',' && *errmsg != ';') ? ", " :
+    msglen > 0 ?                                   " " :
+                                                   "";
+  error(p, "unexpected %s%s%*s", tokstr, msgsep, msglen, errmsg);
 }
 
 
@@ -288,7 +297,7 @@ static void expect_fail(parser_t* p, tok_t expecttok, const char* errmsg) {
   int msglen = (int)strlen(errmsg);
   if (msglen && *errmsg != ',' && *errmsg != ';')
     msglen++;
-  error(p, NULL, "expected %s%*s, got %s", want, msglen, errmsg, got);
+  error(p, "expected %s%*s, got %s", want, msglen, errmsg, got);
 }
 
 
@@ -328,15 +337,22 @@ node_t* nullable ast_mknode(memalloc_t ast_ma, usize size, nodekind_t kind) {
 }
 
 
+// T* CLONE_NODE(parser_t* p, T* node)
+#define CLONE_NODE(p, nptr) ( \
+  (__typeof__(nptr))memcpy( \
+    _mknode((p), sizeof(__typeof__(*(nptr))), ((node_t*)(nptr))->kind), \
+    (nptr), \
+    sizeof(*(nptr))) )
+
+
 #define mknode(p, TYPE, kind)      ( (TYPE*)_mknode((p), sizeof(TYPE), (kind)) )
 #define mkexpr(p, TYPE, kind, fl)  ( (TYPE*)_mkexpr((p), sizeof(TYPE), (kind), (fl)) )
 
 
 static node_t* _mknode(parser_t* p, usize size, nodekind_t kind) {
   mem_t m = mem_alloc_zeroed(p->ast_ma, size);
-  if UNLIKELY(m.p == NULL) {
+  if UNLIKELY(m.p == NULL)
     return out_of_mem(p), last_resort_node;
-  }
   node_t* n = m.p;
   n->kind = kind;
   n->loc = currloc(p);
@@ -460,9 +476,9 @@ static void define(parser_t* p, sym_t name, node_t* n) {
   return;
 
 err_duplicate:
-  error(p, n, "redefinition of \"%s\"", name);
+  error_at(p, n, "redefinition of \"%s\"", name);
   if (loc_line(existing->loc))
-    help(p, existing, "\"%s\" previously defined here", name);
+    help_at(p, existing, "\"%s\" previously defined here", name);
 }
 
 
@@ -623,10 +639,10 @@ static bool struct_fieldset(parser_t* p, structtype_t* st) {
       existing = (node_t*)lookup_typefun(p, (type_t*)st, f->name);
     if UNLIKELY(existing) {
       const char* s = fmtnode(p, 0, st);
-      error(p, f, "duplicate %s \"%s\" for type %s",
+      error_at(p, f, "duplicate %s \"%s\" for type %s",
         (existing->kind == EXPR_FIELD) ? "field" : "member", f->name, s);
       if (loc_line(existing->loc))
-        warning(p, (node_t*)existing, "previously defined here");
+        warning_at(p, (node_t*)existing, "previously defined here");
     }
 
     push_child(p, &st->fields, f);
@@ -650,7 +666,7 @@ static bool struct_fieldset(parser_t* p, structtype_t* st) {
   u32 i = fields_start;
   for (;;) {
     if (i == st->fields.len) {
-      error(p, NULL, "excess field initializer");
+      error(p, "excess field initializer");
       expr(p, PREC_COMMA, NF_RVALUE);
       break;
     }
@@ -663,7 +679,7 @@ static bool struct_fieldset(parser_t* p, structtype_t* st) {
     next(p);
   }
   if (i < st->fields.len)
-    error(p, NULL, "missing field initializer");
+    error(p, "missing field initializer");
   return true;
 }
 
@@ -698,12 +714,12 @@ static fun_t* fun(parser_t*, nodeflag_t, type_t* nullable recvt, bool requirenam
 //       if (currtok(p) != TID)
 //         break;
 //       fun_t* fn1 = p->unit->children.v[first_fn_index];
-//       error(p, NULL, "fields cannot be defined after type functions");
+//       error(p, "fields cannot be defined after type functions");
 //       if (loc_line(fn1->loc)) {
-//         help(p, fn1->loc, "define the field \"%s\" before this function",
+//         help_at(p, fn1->loc, "define the field \"%s\" before this function",
 //           p->scanner.sym);
 //       } else if (loc_line(fn->loc)) {
-//         help(p, fn->loc, "a function was defined here");
+//         help_at(p, fn->loc, "a function was defined here");
 //       }
 //       fastforward(p, (const tok_t[]){ TRBRACE, 0 });
 //       break;
@@ -729,7 +745,7 @@ static type_t* type_struct1(parser_t* p, structtype_t* st) {
     if UNLIKELY(currtok(p) == TFUN) {
       if (!reported_fun) {
         reported_fun = true;
-        error(p, NULL, "functions are not allowed in struct definitions");
+        error(p, "functions are not allowed in struct definitions");
       }
       fun(p, 0, /*recvt*/(type_t*)st, /*requirename*/false);
       if (!expect(p, TSEMI, ""))
@@ -845,7 +861,7 @@ static stmt_t* stmt_typedef(parser_t* p) {
     n->aliastype.elem = type(p, PREC_COMMA);
     bubble_flags(n, n->aliastype.elem);
     if UNLIKELY(type_isopt(n->aliastype.elem)) {
-      error(p, n->aliastype.elem,
+      error_at(p, n->aliastype.elem,
         "cannot define optional aliased type;"
         " instead, mark as optional at use sites with ?%s", name);
     }
@@ -867,7 +883,7 @@ static bool resolve_id(parser_t* p, idexpr_t* n) {
   } else if (nodekind_istype(n->ref->kind)) {
     n->type = (type_t*)n->ref;
   } else {
-    error(p, n, "cannot use %s \"%s\" as an expression",
+    error_at(p, n, "cannot use %s \"%s\" as an expression",
       nodekind_fmt(n->ref->kind), n->name);
     return false;
   }
@@ -917,11 +933,11 @@ static expr_t* expr_var(parser_t* p, const parselet_t* pl, nodeflag_t fl) {
   // check for required initializer expression
   if (!n->init && ok) {
     // if UNLIKELY(n->kind == EXPR_LET) {
-    //   error(p, NULL, "missing value for let binding, expecting '='");
+    //   error(p, "missing value for let binding, expecting '='");
     //   ok = false;
     // } else
     if UNLIKELY(n->type->kind == TYPE_REF) {
-      error(p, NULL, "missing initial value for reference variable, expecting '='");
+      error(p, "missing initial value for reference variable, expecting '='");
       ok = false;
     }
   }
@@ -953,7 +969,7 @@ static block_t* block(parser_t* p, nodeflag_t fl) {
       if (exited) {
         if (!reported_unreachable) {
           reported_unreachable = true;
-          warning(p, (node_t*)cn, "unreachable code");
+          warning_at(p, (node_t*)cn, "unreachable code");
         }
       } else if (cn->kind == EXPR_RETURN) {
         exited = true;
@@ -1001,7 +1017,7 @@ static void narrow_optional_check(parser_t* p, expr_t* cond) {
   while (cond->kind == EXPR_PREFIXOP) {
     unaryop_t* op = (unaryop_t*)cond;
     if UNLIKELY(op->op != OP_NOT) {
-      error(p, cond, "invalid operation %s on optional type", fmtnode(p, 0, cond));
+      error_at(p, cond, "invalid operation %s on optional type", fmtnode(p, 0, cond));
       return;
     }
     neg = !neg;
@@ -1019,7 +1035,7 @@ static void narrow_optional_check(parser_t* p, expr_t* cond) {
       // e.g. "if x { ... }"
       idexpr_t* id = (idexpr_t*)cond;
       if (!node_isexpr(id->ref))
-        return error(p, cond, "conditional is not an expression");
+        return error_at(p, cond, "conditional is not an expression");
 
       idexpr_t* id2 = CLONE_NODE(p, id);
       id2->type = effective_type;
@@ -1162,7 +1178,7 @@ static expr_t* floatlit(parser_t* p, nodeflag_t fl, bool isneg) {
 
   n->f64val = strtod(p->scanner.litbuf.chars, &endptr);
   if UNLIKELY(endptr != p->scanner.litbuf.chars + p->scanner.litbuf.len) {
-    error(p, n, "invalid floating-point constant");
+    error_at(p, n, "invalid floating-point constant");
   }
   // note: typecheck checks for overflow (HUGE_VAL)
 
@@ -1371,16 +1387,16 @@ static expr_t* expr_ref1(parser_t* p, nodeflag_t fl, bool ismut) {
 
   if UNLIKELY(n->expr->type->kind == TYPE_REF) {
     const char* ts = fmtnode(p, 0, n->expr->type);
-    error(p, n, "referencing reference type %s", ts);
+    error_at(p, n, "referencing reference type %s", ts);
   } else if UNLIKELY(!expr_isstorage(n->expr)) {
     const char* ts = fmtnode(p, 0, n->expr->type);
-    error(p, n, "referencing ephemeral value of type %s", ts);
+    error_at(p, n, "referencing ephemeral value of type %s", ts);
   } else if UNLIKELY(ismut && !expr_ismut(n->expr)) {
     const char* s = fmtnode(p, 0, n->expr);
     nodekind_t k = n->expr->kind;
     if (k == EXPR_ID)
       k = ((idexpr_t*)n->expr)->ref->kind;
-    error(p, n, "mutable reference to immutable %s %s", nodekind_fmt(k), s);
+    error_at(p, n, "mutable reference to immutable %s %s", nodekind_fmt(k), s);
   }
 
   // // note: set type now, even though n->expr->type might be unknown,
@@ -1515,7 +1531,7 @@ static expr_t* prim_typecons(parser_t* p, type_t* t, nodeflag_t fl) {
       restore_scanstate(p, scanstate);
       expect_fail(p, TRPAREN, "to end type cast");
     } else {
-      error(p, NULL, "unexpected extra value in type cast");
+      error(p, "unexpected extra value in type cast");
     }
   } else {
     expect_fail(p, TRPAREN, "to end type cast");
@@ -1549,7 +1565,7 @@ static expr_t* expr_postfix_call(
     n->type = recv->type;
     recvtype = recv->type;
   } else {
-    error(p, n, "calling %s; expected function or type",
+    error_at(p, n, "calling %s; expected function or type",
       recv->type ? nodekind_fmt(recv->type->kind) : nodekind_fmt(recv->kind));
   }
 
@@ -1602,7 +1618,7 @@ static expr_t* expr_postfix_member(
 // dotmember = "." id
 static expr_t* expr_dotmember(parser_t* p, const parselet_t* pl, nodeflag_t fl) {
   if UNLIKELY(!p->dotctx) {
-    error(p, NULL, "\"this\" selector in regular function");
+    error(p, "\"this\" selector in regular function");
     expr_t* n = mkbad(p);
     fastforward_semi(p);
     return n;
@@ -1723,7 +1739,7 @@ finish:
     // name-and-type form; e.g. "(x, y T, z Y)".
     // Error if at least one param has type, but last one doesn't, e.g. "(x, y int, z)"
     if UNLIKELY(typeq.len > 0) {
-      error(p, NULL, "expecting type");
+      error(p, "expecting type");
       for (u32 i = 0; i < ft->params.len; i++) {
         local_t* param = (local_t*)ft->params.v[i];
         if (!param->type)
@@ -1881,10 +1897,10 @@ static void typefun_add(parser_t* p, type_t* recvt, sym_t name, fun_t* fun, loc_
   // or if there's a struct field with the same name on the recvt.
   if UNLIKELY(existing) {
     const char* s = fmtnode(p, 0, recvt);
-    error(p, loc, "duplicate %s \"%s\" for type %s",
+    error_at(p, loc, "duplicate %s \"%s\" for type %s",
       (existing->kind == EXPR_FUN) ? "function" : "member", name, s);
     if (loc_line(existing->loc))
-      help(p, existing, "\"%s\" previously defined here", name);
+      help_at(p, existing, "\"%s\" previously defined here", name);
   }
 }
 
@@ -1962,16 +1978,16 @@ static fun_t* fun(parser_t* p, nodeflag_t fl, type_t* nullable recvt, bool requi
       } else {
         n->recvt = mkunresolvedtype(p, recv_name, recv_nameloc);
         if (!t) {
-          error(p, recv_nameloc, "no such type \"%s\"", recv_name);
+          error_at(p, recv_nameloc, "no such type \"%s\"", recv_name);
         } else {
-          error(p, recv_nameloc, "%s is not a type", recv_name);
+          error_at(p, recv_nameloc, "%s is not a type", recv_name);
         }
       }
     }
     if (n->recvt)
       typefun_add(p, n->recvt, n->name, n, n->nameloc);
   } else if (requirename) {
-    error(p, NULL, "missing function name");
+    error(p, "missing function name");
   }
 
   // parameters and result type
@@ -1993,8 +2009,8 @@ static fun_t* fun(parser_t* p, nodeflag_t fl, type_t* nullable recvt, bool requi
     for (u32 i = 0; i < ft->params.len; i++)
       define(p, ((local_t*)ft->params.v[i])->name, ft->params.v[i]);
   } else if UNLIKELY(ft->params.len > 0) {
-    error(p, NULL, "function without named parameters can't have a body");
-    help(p, ft->paramsloc, "name parameter%s \"_\"", ft->params.len > 1 ? "s" : "");
+    error(p, "function without named parameters can't have a body");
+    help_at(p, ft->paramsloc, "name parameter%s \"_\"", ft->params.len > 1 ? "s" : "");
   }
 
   fun_body(p, n, fl);
@@ -2031,7 +2047,7 @@ static stmt_t* stmt_pub(parser_t* p) {
       if (!buf_appendrepr(buf, str.bytes, str.len)) {
         out_of_mem(p);
       } else {
-        error(p, pub_loc, "invalid ABI: \"%.*s\"; expected \"C\" or \"co\"",
+        error_at(p, pub_loc, "invalid ABI: \"%.*s\"; expected \"C\" or \"co\"",
           (int)buf->len, buf->chars);
       }
     }
@@ -2051,10 +2067,248 @@ static stmt_t* stmt_pub(parser_t* p) {
     case NODE_BAD:
       break;
     default:
-      error(p, pub_loc, "unexpected pub qualifier on %s", nodekind_fmt(n->kind));
+      error_at(p, pub_loc, "unexpected pub qualifier on %s", nodekind_fmt(n->kind));
   }
 
   return n;
+}
+
+
+// infer_import_name sets im->name based on im->path
+//   "foo"         => "foo"
+//   "foo/lol-cat" => "cat"
+//   "foo!"        error: cannot infer imported name from path
+static void infer_import_name(parser_t* p, import_t* im, importid_t* id) {
+  usize len = strlen(im->path);
+  usize start = len;
+
+  if UNLIKELY(len == 0)
+    return error_at(p, im->pathloc, "empty import path");
+
+  while (start > 0) {
+    char c = im->path[start - 1];
+    if (!isalnum(c) && c != '_')
+      break;
+    start--;
+  }
+
+  if UNLIKELY(start == len) {
+    id->name = sym__;
+    error_at(p, im->pathloc,
+      "cannot infer imported name from path; specify by appending `as name`");
+  }
+
+  id->name = sym_intern(&im->path[start], len - start);
+  id->loc = im->pathloc;
+  if (len <= U32_MAX) {
+    loc_set_col(&id->loc, loc_col(id->loc) + 1 + (u32)start);
+    loc_set_width(&id->loc, (u32)(len - start));
+  }
+}
+
+
+// parse_imports
+//
+// import  = "import" (importm | import1) ";"
+// importm = "{" (import1 ";")+ "}"
+// import1 = (path "as" id | members? path)
+// members = ("*" | names) "from"
+// names   = name ("," name)*
+// name    = id ("as" id)?
+//
+// e.g.
+//   import "foo/cat"
+//   import "foo/cat" as c
+//   import x from "foo/cat"
+//   import x as ex, y from "foo/cat"
+//   import * from "foo/cat"
+//   import {
+//     "foo/cat"
+//     "foo/cat" as c
+//     x from "foo/cat"
+//     x as ex, y from "foo/cat"
+//     * from "foo/cat"
+//   }
+//
+// token examples:
+//   import "foo/cat"             | TIMPORT TSTRLIT
+//   import "foo/cat" as c        | TIMPORT TSTRLIT (TID as) (TID c)
+//   import x from "foo/cat"      | TIMPORT (TID x) (TID from) TSTRLIT
+//   import x as y from "foo/cat" | TIMPORT (TID x) (TID as) (TID y) (TID from) TSTRLIT
+//   import * from "foo/cat"      | TIMPORT TSTAR (TID from) TSTRLIT
+//   import { "foo" }             | TIMPORT TLBRACK TSTRLIT TSEMI TRBRACK
+//                                + TSEMI
+//
+
+static bool parse_import_members(parser_t* p, import_t* im) {
+  // "name1, name2 as alias, *"
+  importid_t* id_tail = NULL;
+  for (;;) {
+    importid_t* id = mem_alloc_zeroed(p->ast_ma, sizeof(importid_t)).p;
+    if UNLIKELY(id == NULL)
+      return out_of_mem(p), false;
+    id->loc = currloc(p);
+
+    if (currtok(p) == TSTAR) {
+      id->name = sym__;
+    } else {
+      id->name = p->scanner.sym;
+      if (id->name == sym__)
+        error(p, "invalid member \"_\" in import statement");
+    }
+    next(p); // consume TID or TSTAR
+
+    // add to list
+    if (id_tail) {
+      id_tail->next_id = id;
+    } else {
+      im->idlist = id;
+    }
+
+    // alias ("origname as name")
+    if (currtok(p) == TID && p->scanner.sym == sym_as) {
+      next(p); // consume (ID as)
+      expect_token(p, TID, "");
+      id->origname = id->name;
+      id->name = p->scanner.sym;
+      id->loc = currloc(p);
+      next(p); // consume name
+    }
+
+    // are we done?
+    if (currtok(p) != TCOMMA)
+      break;
+
+    // expect to parse one more
+    next(p); // consume ","
+    if (currtok(p) != TID && currtok(p) != TSTAR) {
+      unexpected(p, "expected identifier or '*'");
+      fastforward_semi(p);
+      return false;
+    }
+    id_tail = id;
+  }
+
+  return true;
+}
+
+
+static import_t* parse_import1(parser_t* p, import_t* im, import_t* nullable list_tail) {
+  // parse anything after the "import" keyword
+
+  if (currtok(p) == TID || currtok(p) == TSTAR) {
+    // "x, y as z from"
+    im->isfrom = true;
+    if (!parse_import_members(p, im))
+      return im;
+    // expect (ID "from")
+    if UNLIKELY(currtok(p) != TID || p->scanner.sym != sym_from) {
+      unexpected(p, "expected keyword 'from'");
+      fastforward_semi(p);
+      return im;
+    }
+    next(p);
+  }
+
+  // path e.g. "foo/cat" in "import foo/cat"
+  if (!expect_token(p, TSTRLIT, ""))
+    return im;
+  slice_t strval = scanner_strval(&p->scanner);
+  char* path = mem_strdup(p->ast_ma, strval, 0);
+  if UNLIKELY(!path)
+    return out_of_mem(p), im;
+  im->path = path;
+  im->pathloc = currloc(p);
+  loc_set_col(&im->pathloc, loc_col(im->pathloc) + 1); // without '"'
+  loc_set_width(&im->pathloc, (u32)strval.len);
+  const char* errmsg;
+  usize erroffs;
+  if UNLIKELY(!pkg_validate_path(path, &errmsg, &erroffs)) {
+    origin_t origin = origin_make(locmap(p), im->pathloc);
+    if (erroffs <= (usize)U32_MAX)
+      origin.focus_col = origin.column + (u32)erroffs;
+    _diag(p, origin, DIAG_ERR, "invalid import path (%s)", errmsg);
+  }
+  next(p);
+
+  // package name
+  if (im->idlist == NULL) {
+    // "import path as name"
+    // "import path"
+    importid_t* id = mem_alloc_zeroed(p->ast_ma, sizeof(importid_t)).p;
+    if UNLIKELY(id == NULL)
+      return out_of_mem(p), im;
+    id->loc = currloc(p);
+    im->idlist = id;
+    if (currtok(p) == TID && p->scanner.sym == sym_as) {
+      // "import path as name"
+      next(p); // consume "as"
+      if (!expect_token(p, TID, ""))
+        return im;
+      id->name = p->scanner.sym;
+      id->loc = currloc(p);
+      loc_set_width(&id->loc, (u32)strlen(id->name));
+      next(p); // consume identifier
+    } else {
+      // "import path"
+      infer_import_name(p, im, id);
+    }
+  } else if UNLIKELY(currtok(p) == TID && p->scanner.sym == sym_as) {
+    // show help for "import x from path as c" -> "import { x from path; path as c }"
+    unexpected(p, "expected ';'");
+    loc_t helploc = loc_make(loc_srcfileid(currloc(p)), loc_line(currloc(p)), 1, 0);
+    next(p);
+    if (currtok(p) == TID) {
+      buf_t* pathlit = tmpbuf_get(0);
+      buf_appendrepr(pathlit, im->path, strlen(im->path));
+      buf_nullterm(pathlit);
+      help_at(p, helploc, "add a separate package import: `import \"%s\" as %s`",
+        pathlit->chars, p->scanner.sym);
+      next(p);
+    }
+    fastforward_semi(p);
+  }
+
+  // append to list
+  if (list_tail == NULL) {
+    p->unit->importlist = im;
+  } else {
+    list_tail->next_import = im;
+  }
+  return im;
+}
+
+static import_t* parse_import(parser_t* p, import_t* nullable list_tail) {
+  import_t* im = mknode(p, import_t, STMT_IMPORT);
+  next(p);
+
+  if (currtok(p) != TLBRACE)
+    return parse_import1(p, im, list_tail);
+
+  // import { import1; ... import1; }
+  next(p); // consume opening "{"
+  if (currtok(p) != TRBRACE) for (;;) {
+    list_tail = parse_import1(p, im, list_tail);
+    expect2(p, TSEMI, "");
+    if (currtok(p) == TRBRACE) {
+      next(p); // consume closing "{"
+      break;
+    }
+    // we are going to parse another import1; allocate memory for it
+    import_t* im2 = mknode(p, import_t, STMT_IMPORT);
+    im2->loc = im->loc;
+    im = im2;
+  }
+  return im;
+}
+
+
+static void parse_imports(parser_t* p) {
+  import_t* tail = NULL;
+  while (currtok(p) == TIMPORT) {
+    tail = parse_import(p, tail);
+    expect2(p, TSEMI, "");
+  }
 }
 
 
@@ -2071,23 +2325,19 @@ err_t parser_parse(parser_t* p, memalloc_t ast_ma, srcfile_t* srcfile, unit_t** 
 
   enter_scope(p);
 
+  // first, parse any import statements
+  parse_imports(p);
+
+  // next, parse rest of file
   while (currtok(p) != TEOF) {
     void** np = ptrarray_alloc(&unit->children, p->ast_ma, 1);
     if UNLIKELY(!np) {
       out_of_mem(p);
       break;
     }
-
     *np = stmt(p);
     bubble_flags(unit, *np);
-
-    if UNLIKELY(currtok(p) != TSEMI) {
-      if (currtok(p) != TEOF)
-        expect_fail(p, TSEMI, "");
-      break;
-    }
-
-    next(p); // consume ";"
+    expect2(p, TSEMI, "");
   }
 
   leave_scope(p);
@@ -2132,6 +2382,7 @@ void parser_dispose(parser_t* p) {
 
 static const parselet_t expr_parsetab[TOK_COUNT] = {
   // infix ops (in order of precedence from weakest to strongest)
+  // {prefix, infix, prec, op}
   [TASSIGN]    = {NULL, expr_assign_op,          PREC_ASSIGN, OP_ASSIGN},     // =
   [TADDASSIGN] = {NULL, expr_assign_op,          PREC_ASSIGN, OP_ADD_ASSIGN}, // +=
   [TSUBASSIGN] = {NULL, expr_assign_op,          PREC_ASSIGN, OP_SUB_ASSIGN}, // -=
@@ -2193,6 +2444,7 @@ static const parselet_t expr_parsetab[TOK_COUNT] = {
 
 // type
 static const type_parselet_t type_parsetab[TOK_COUNT] = {
+  // {prefix, infix, prec}
   [TID]       = {type_id, NULL, 0},       // T
   [TLBRACK]   = {type_array, NULL, 0},    // [T N], [T]
   [TLBRACE]   = {type_struct, NULL, 0},   // {...}
@@ -2206,6 +2458,7 @@ static const type_parselet_t type_parsetab[TOK_COUNT] = {
 
 // statement
 static const stmt_parselet_t stmt_parsetab[TOK_COUNT] = {
+  // {prefix, infix, prec}
   [TPUB]  = {stmt_pub, NULL, 0},
   [TFUN]  = {stmt_fun, NULL, 0},
   [TTYPE] = {stmt_typedef, NULL, 0},

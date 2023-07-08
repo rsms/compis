@@ -189,7 +189,7 @@ static void fun(fmtctx_t* ctx, const irfun_t* f) {
     node_fmt(&ctx->out, (node_t*)ft->result, 0);
   } else {
     // best effort; name will be wrong for type functions (missing recvt)
-    PRINTF("%s.%s(", ctx->pkg->name.p, f->name);
+    PRINTF("%s.%s(", ctx->pkg->path.p, f->name);
     if (f->blocks.len) {
       const irblock_t* b = f->blocks.v[0];
       for (u32 i = 0, n = 0; i < b->values.len; i++) {

@@ -15,6 +15,8 @@ sym_t sym_this; // "this"
 sym_t sym_drop; // "drop"
 sym_t sym_main; // "main"
 sym_t sym_str;  // "str"
+sym_t sym_as;   // "as"
+sym_t sym_from; // "from"
 
 // primitive types
 sym_t sym_void;
@@ -54,6 +56,8 @@ void sym_init(memalloc_t ma) {
   sym_drop = defsym("drop");
   sym_main = defsym("main");
   sym_str  = defsym("str");
+  sym_as   = defsym("as");
+  sym_from = defsym("from");
 
   sym_void = defsym("void");
   sym_bool = defsym("bool");

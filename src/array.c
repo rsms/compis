@@ -188,3 +188,34 @@ void* nullable _array_sortedset_assign(
     memset(p, 0, elemsize);
   return p;
 }
+
+
+static int str_cmp(const char** a, const char** b, void* ctx) {
+  return strcmp(*a, *b);
+}
+
+
+bool ptrarray_sortedset_addcstr(ptrarray_t* a, memalloc_t ma, const char* str) {
+  const char** vp = array_sortedset_assign(
+    const char*, a, ma, &str, (array_sorted_cmp_t)str_cmp, NULL);
+  if UNLIKELY(!vp)
+    return false;
+  if (*vp)
+    return true;
+  return (*vp = mem_strdup(ma, slice_cstr(str), 0)) != NULL;
+}
+
+
+static int ptr_cmp(const void** a, const void** b, void* ctx) {
+  return *a == *b;
+}
+
+
+bool ptrarray_sortedset_addptr(ptrarray_t* a, memalloc_t ma, const void* ptr) {
+  const void** vp = array_sortedset_assign(
+    const void*, a, ma, &ptr, (array_sorted_cmp_t)ptr_cmp, NULL);
+  if UNLIKELY(!vp)
+    return false;
+  *vp = ptr;
+  return true;
+}

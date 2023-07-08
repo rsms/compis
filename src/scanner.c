@@ -603,7 +603,6 @@ static void scan1(scanner_t* s) {
     case '=':
       ++s->inp, s->tok = TDIVASSIGN; break;
   } break;
-  case '0': MUSTTAIL return zeronumber(s);
   case '"': MUSTTAIL return string(s);
   case '.': switch (nextc) {
     case '0' ... '9':
@@ -619,6 +618,7 @@ static void scan1(scanner_t* s) {
     default:
       s->tok = TDOT;
   } break;
+  case '0': MUSTTAIL return zeronumber(s);
   default:
     if (isdigit(c)) {
       s->inp--;
@@ -676,11 +676,11 @@ static void scan0(scanner_t* s) {
   if (*s->indentstack > s->indentdst) {
 indent_unwind:
     if (s->insertsemi) {
-      assert(s->indentstack > s->indentstackv);
-      s->indentstack--; // pop
       s->tok = TSEMI;
       s->insertsemi = false;
     } else {
+      assert(s->indentstack > s->indentstackv);
+      s->indentstack--; // pop
       s->tok = TRBRACE;
       s->insertsemi = true;
     }
@@ -797,6 +797,11 @@ indent_unwind:
     MUSTTAIL return scan1(s);
 
   // EOF
+  if (s->indentstack != s->indentstackv) {
+    dlog("EOF: has indentation");
+    s->indentdst = s->indentstackv[0];
+    goto indent_unwind;
+  }
   s->tokstart = s->inend;
   s->inp = s->inend;
   s->tok = TEOF;

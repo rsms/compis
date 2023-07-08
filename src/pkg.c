@@ -6,6 +6,7 @@
 
 #include <sys/stat.h>
 #include <err.h>
+#include <string.h>
 
 
 static int srcfile_cmp(const srcfile_t* a, const srcfile_t* b, void* ctx) {
@@ -32,7 +33,7 @@ end_err1:
 
 
 void pkg_dispose(pkg_t* pkg, memalloc_t ma) {
-  str_free(pkg->name);
+  str_free(pkg->path);
   str_free(pkg->dir);
   if (pkg->defs.cap == 0)
     return;
@@ -126,41 +127,501 @@ unixtime_t pkg_source_mtime(const pkg_t* pkg) {
 }
 
 
-bool pkg_find_dir(pkg_t* pkg) {
-  str_t dir = {0};
+// pkg_unit_srcdir returns the absolute path to a unit's source directory.
+// I.e. "/a/b/foo" for srcfile "foo/bar.co" in pkg "/a/b"
+str_t pkg_unit_srcdir(const pkg_t* pkg, const unit_t* unit) {
+  assertf(path_isabs(pkg->dir.p), "pkg.dir \"%s\" is not absolute", pkg->dir.p);
+  assertf(({
+    str_t pkgdir = str_makelen(pkg->dir.p, pkg->dir.len);
+    assert(pkgdir.len > 0);
+    path_clean(&pkgdir);
+    int d = strcmp(pkgdir.p, pkg->dir.p);
+    str_free(pkgdir);
+    d == 0;
+  }), "pkg.dir \"%s\" is not clean", pkg->dir.p);
 
-  if (str_startswith(pkg->name, "std/")) {
-    dir = path_join(coroot, "..", pkg->name.p);
-    vlog("looking for pkg \"%s\" at \"%s\"", pkg->name.p, dir.p);
-    if (fs_isdir(dir.p))
-      goto found;
-  }
-
-  // try COPATH
-  for (const char*const* copathp = copath; *copathp; copathp++) {
-    dir.len = 0;
-    str_append(&dir, *copathp);
-    str_push(&dir, PATH_SEPARATOR);
-    str_appendlen(&dir, pkg->name.p, pkg->name.len);
-    if ((*copathp)[0] != '.') {
-      safecheckx(path_makeabs(&dir));
+  str_t dir = path_join(pkg->dir.p, unit->srcfile->name.p, "..");
+  if LIKELY(dir.len > 0) {
+    isize i = string_lastindexof(dir.p, dir.len, PATH_SEP);
+    if (i == 0) {
+      dir.len = 1;
     } else {
-      path_clean(&dir);
+      assert(i > 0); // pkg->dir is always an absolute path
+      dir.len = (usize)i;
     }
-    vlog("looking for pkg \"%s\" at \"%s\"", pkg->name.p, dir.p);
-    if (fs_isdir(dir.p))
-      goto found;
+  }
+  return dir;
+}
+
+
+bool pkg_validate_path(const char* path, const char** errmsgp, usize* erroffsp) {
+  *errmsgp = NULL;
+  *erroffsp = 0;
+
+  if (*path == 0) {
+    *errmsgp = "empty path";
+    return false;
   }
 
-  // not found
-  str_free(dir);
-  return false;
+  if (*path == ' ') {
+    *errmsgp = "leading whitespace";
+    return false;
+  }
 
-found:
-  if (pkg->dir.p)
-    str_free(pkg->dir);
-  pkg->dir = dir;
+  if (*path == '/') {
+    *errmsgp = "absolute path";
+    return false;
+  }
+
+  // if path starts with "." it must be "./" or "../"
+  if UNLIKELY(*path == '.' && (path[1] != '/' && (path[1] != '.' || path[2] != '/'))) {
+    if (path[1] == 0) {
+      // "."
+      *errmsgp = "cannot import a package into itself";
+    } else {
+      *errmsgp = "must start with \"./\" or \"../\" when first character is '.'";
+      *erroffsp = 1;
+    }
+    return false;
+  }
+
+  // check for invalid or reserved characters
+  for (const u8* p = (u8*)path; *p; p++) {
+    u8 c = *p;
+    if UNLIKELY(c <= ' ' || c == ':' || c == '\\' || c == '@') {
+      if (*p == ' ') {
+        // permit space U+0020 anywhere but at the beginning or end of path
+        if (p[1]) // not the end
+          continue;
+        *erroffsp = (usize)(uintptr)(p - (u8*)path);
+        *errmsgp = "trailing whitespace";
+        return false;
+      }
+      *erroffsp = (usize)(uintptr)(p - (u8*)path);
+      switch (c) {
+        case '@':  *errmsgp = "'@' is a reserved character"; break;
+        case '\\': *errmsgp = "use '/' as path separator, not '\\'"; break;
+        default:   *errmsgp = "invalid character"; break;
+      }
+      return false;
+    }
+  }
+
+  if (*path != '.') {
+    // symbolic paths must not contain "../" or end with "/.."
+    const char* p = strstr(path, "/../");
+    if (!p) {
+      usize pathlen = strlen(path);
+      if (string_endswithn(path, pathlen, "/..", 3))
+        p = path - 3;
+    }
+    if UNLIKELY(p) {
+      *erroffsp = (usize)(uintptr)(p - path) + 1;
+      *errmsgp = "parent-directory reference";
+      return false;
+    }
+  }
+
   return true;
+}
+
+
+
+// examples of pkg_clean_import_path
+//   import from NON-ad-hoc package "foo/bar":
+//     input, symbolic "a/b":
+//       importer_pkg.path    = "foo/bar"
+//       importer_pkg.rootdir = "C:\src\lolcat"
+//       importer_pkg.dir     = "C:\src\lolcat\foo\bar"
+//       importer_fsdir       = "C:\src\lolcat\foo\bar"
+//       import_path          = "a/b"
+//       >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+//       import_path          = "a/b"
+//       import_fspath        = "a\b"  <—— to be resolved by searching copath
+//
+//     input, relative "./a/b":
+//       importer_pkg.path    = "foo/bar"
+//       importer_pkg.rootdir = "C:\src\lolcat"
+//       importer_pkg.dir     = "C:\src\lolcat\foo\bar"
+//       importer_fsdir       = "C:\src\lolcat\foo\bar"
+//       import_path          = "./a/b"
+//       >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+//       import_path          = "foo/bar/a/b"
+//       import_fspath        = "C:\src\lolcat\foo\bar\a\b"
+//
+//     input, relative "../a/b":
+//       importer_pkg.path    = "foo/bar"
+//       importer_pkg.rootdir = "C:\src\lolcat"
+//       importer_pkg.dir     = "C:\src\lolcat\foo\bar"
+//       importer_fsdir       = "C:\src\lolcat\foo\bar"
+//       import_path          = "../a/b"
+//       >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+//       import_path          = "foo/a/b"
+//       import_fspath        = "C:\src\lolcat\foo\a\b"
+//
+//   import from AD-HOC package "foo/bar": (e.g. from "co build C:\other\dir\file.co")
+//     input, symbolic "a/b":
+//       importer_pkg.path    = "lolcat"
+//       importer_pkg.rootdir = "C:\src"
+//       importer_pkg.dir     = "C:\src\lolcat"  <——— $PWD of compis process
+//       importer_fsdir       = "C:\other\dir"
+//       import_path          = "a/b"
+//       >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+//       import_path          = "a/b"
+//       import_fspath        = "a\b"  <—— to be resolved by searching copath
+//
+//     input, relative "./a/b":
+//       importer_pkg.path    = "lolcat"
+//       importer_pkg.rootdir = "C:\src"
+//       importer_pkg.dir     = "C:\src\lolcat"
+//       importer_fsdir       = "C:\other\dir"  <——— note! dir of srcfile, not pkg
+//       import_path          = "./a/b"
+//       >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+//       import_path          = "lolcat/a/b"
+//       import_fspath        = "C:\other\dir\a\b"
+//
+//     input, relative "../a/b":
+//       importer_pkg.path    = "lolcat"
+//       importer_pkg.rootdir = "C:\src"
+//       importer_pkg.dir     = "C:\src\lolcat"
+//       importer_fsdir       = "C:\other\dir"
+//       import_path          = "../a/b"
+//       >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+//       error: invalid (goes above "lolcat")
+//
+err_t pkg_clean_import_path(
+  const pkg_t* importer_pkg,
+  const char*  importer_fsdir, // absolute fs directory of the unit importing `path`
+  str_t*       path,
+  str_t*       fspath_out)
+{
+  assert(path->len > 0);
+  assertf(*path->p != '/', "%s", path->p);
+  assertf(path_isabs(importer_fsdir), "%s", importer_fsdir);
+  assertf(path_isabs(importer_pkg->dir.p), "%s", importer_pkg->dir.p);
+
+  // dlog("——————————————————————————");
+  // dlog("importer_pkg.path    = \"%s\"", importer_pkg->path.p);
+  // dlog("importer_pkg.rootdir = \"%.*s\"",
+  //   (int)importer_pkg->rootdir.len, importer_pkg->rootdir.chars);
+  // dlog("importer_pkg.dir     = \"%s\"", importer_pkg->dir.p);
+  // dlog("importer_fsdir       = \"%s\"", importer_fsdir);
+  // dlog("import_path          = \"%s\"", path->p);
+
+  // fspath starts out as a copy of the import path
+  str_t fspath = str_makelen(path->p, path->len);
+
+  // on Windows, transpose '/' to '\', e.g. "foo/bar" => "foo\bar"
+  #ifdef WIN32
+  str_replacec(&fspath, '/', '\\', -1);
+  #endif
+
+  err_t err = 0;
+
+  // if the path is not relative, we are done (e.g. "foo/bar")
+  if (path->p[0] != '.') {
+    *fspath_out = fspath;
+    goto end;
+  }
+
+  // Relative import is relative to the importing srcfile's directory.
+  // (Relative import as in e.g. "../foo/bar" or "./foo/bar")
+  *fspath_out = path_join(importer_fsdir, fspath.p);
+  if (fspath_out->cap == 0) {
+    err = ErrNoMem;
+    goto end;
+  }
+
+  // check if path goes above pkg.rootdir
+  if UNLIKELY(!path_isrooted(str_slice(*fspath_out), importer_pkg->rootdir)) {
+    dlog("error: import path \"%s\" would escape pkg.rootdir=\"%.*s\"",
+      path->p, (int)importer_pkg->rootdir.len, importer_pkg->rootdir.chars);
+    err = ErrInvalid;
+    goto end;
+  }
+
+  // Now we know that fspath_out has prefix importer_pkg->rootdir.
+  // This gives us the symbolic package path:
+  usize rootdir_len = importer_pkg->rootdir.len + 1; // +1 for ending PATH_SEP
+  path->len = 0;
+  if (!str_appendlen(path, fspath_out->p + rootdir_len, fspath_out->len - rootdir_len)) {
+    err = ErrNoMem;
+    goto end;
+  }
+
+  // on Windows, transpose '\' to '/', e.g. "foo\bar" => "foo/bar"
+  #ifdef WIN32
+  str_replacec(&path, '\\', '/', -1);
+  #endif
+
+end:
+  // dlog(">>> import_path   = \"%s\"", path->p);
+  // dlog(">>> import_fspath = \"%s\"", fspath_out->p);
+  if (err) {
+    str_free(*fspath_out);
+    *fspath_out = (str_t){0};
+  }
+  return err;
+}
+
+
+#ifdef DEBUG
+  static void assert_path_is_clean(const char* path) {
+    str_t s = str_make(path);
+    assert(s.len > 0);
+    assert(path_clean(&s));
+    assertf(strcmp(s.p, path) == 0,
+      "path \"%s\" is not clean (expected \"%s\")", path, s.p);
+    str_free(s);
+  }
+#else
+  #define assert_path_is_clean(path) ((void)0)
+#endif
+
+
+err_t pkg_resolve_fspath(str_t* fspath, usize* rootdirlen_out) {
+  assert(fspath->len > 0);
+
+  // fspath must be either "/ab/so/lute" or "sym/bol/ic", not "./rel/a/tive"
+  assertf(fspath->p[0] != '.', "relative fspath \"%s\"", fspath->p);
+
+  // fspath is assumed to have been path_clean'ed
+  assert_path_is_clean(fspath->p);
+  #ifdef DEBUG
+  {
+    assert(strlen(fspath->p) == fspath->len);
+    str_t s = str_makelen(fspath->p, fspath->len);
+    assert(s.len > 0);
+    assert(path_clean(&s));
+    assertf(strcmp(s.p, fspath->p) == 0,
+      "fspath \"%s\" is not clean (expected \"%s\")", fspath->p, s.p);
+    str_free(s);
+  }
+  #endif
+
+  str_t tmpstr = {0};
+  err_t err = 0;
+  *rootdirlen_out = 0;
+
+  // If path is absolute, e.g. "/ab/so/lute", we just check that the directory
+  // exists and then we are done. Otherwise fspath is symbolic, e.g. "sym/bol/ic"
+  if (path_isabs(fspath->p))
+    goto checked_return;
+
+  // special "std/" prefix
+  if (str_startswith(*fspath, "std/")) {
+    // note: coroot is guaranteed to be absolute and path_clean'ed (coroot_init)
+    int fspathlen = (int)MIN(fspath->len, (usize)I32_MAX); // for vlog
+    usize corootlen = strlen(coroot);
+    isize i = string_lastindexof(coroot, corootlen, PATH_SEP);
+    assert(i > -1);
+    if (i != 0)
+      corootlen = (usize)i;
+    if UNLIKELY(!str_prependlen(fspath, coroot, corootlen + 1/*include NUL*/)) {
+      // restore altered fspath
+      memmove(fspath->p, fspath->p + (corootlen + 1), fspath->len - (corootlen + 1));
+      err = ErrNoMem;
+      goto end;
+    }
+    fspath->p[corootlen] = PATH_SEP;
+    *rootdirlen_out = corootlen;
+    vlog("looking for package \"%.*s\" at \"%s\"", fspathlen, fspath->p, fspath->p);
+    goto checked_return;
+  }
+
+  // search COPATH
+  // note: copath entries have been path_clean'ed and are never empty.
+  for (const char*const* dirp = copath; *dirp;) {
+    str_free(tmpstr);
+    if (( tmpstr = path_join(*dirp, fspath->p) ).cap == 0 || !path_makeabs(&tmpstr)) {
+      err = ErrNoMem;
+      goto end;
+    }
+    vlog("looking for package \"%s\" at \"%s\"", fspath->p, tmpstr.p);
+    if (fs_isdir(tmpstr.p)) {
+      // note: fspath is symbolic and guaranteed by pkg_validate_path to not contain ".."
+      *rootdirlen_out = tmpstr.len - fspath->len - 1;
+      str_t tmp = *fspath;
+      *fspath = tmpstr;
+      str_free(tmp);
+      return 0;
+    }
+    // try next or end now as "not found"
+    if (++dirp == NULL)
+      return ErrNotFound;
+  }
+  // note: for loop never breaks; we never get here
+
+checked_return:
+  err = ErrNotFound * (err_t)!fs_isdir(fspath->p);
+end:
+  str_free(tmpstr);
+  return err;
+}
+
+
+str_t pkg_make_import_fspath(
+  const pkg_t* pkg, const char* importer_dir, const char* import_path)
+{
+  str_t path = str_make(import_path);
+  if (path.cap == 0)
+    return path;
+  assertf(path.len > 0, "empty import_path");
+
+  // on Windows, transpose '/' to '\', e.g. "foo/bar" => "foo\bar"
+  #ifdef WIN32
+  str_replacec(&path, '/', '\\'/*PATH_SEP*/, -1);
+  #endif
+
+  if (path.p[0] != '.') {
+    // e.g. "foo/bar"
+    return path;
+  }
+
+  // e.g. "./bar" => "/abs/path/to/current/pkg/foo/bar"
+  usize importer_dir_len = strlen(importer_dir);
+  if (!str_prependlen(&path, importer_dir, importer_dir_len + 1/*include NUL*/)) {
+    str_free(path);
+    return (str_t){0};
+  }
+  path.p[importer_dir_len] = PATH_SEP;
+  path_clean(&path);
+  return path;
+}
+
+
+// pkg_resolve_dir updates pkg->dir
+static err_t pkg_resolve_dir(pkg_t* pkg, const char* parentdir) {
+  str_t fspath;
+
+  #ifdef WIN32
+    str_t path = str_makelen(pkg->path.p, pkg->path.len);
+    if (path.cap == 0)
+      return ErrNoMem;
+    str_replacec(&path, '/', '\\'/*PATH_SEP*/, -1);
+    if (pkg->path.p[0] != '.') {
+      // e.g. "foo/bar"
+      fspath = path;
+    } else {
+      fspath = path_join(parentdir, path.p);
+      str_free(path);
+    }
+  #else
+    if (pkg->path.p[0] != '.') {
+      // e.g. "foo/bar"
+      fspath = str_makelen(pkg->path.p, pkg->path.len);
+    } else {
+      fspath = path_join(parentdir, pkg->path.p);
+    }
+  #endif
+
+  if (fspath.cap == 0)
+    return ErrNoMem;
+
+  usize rootdirlen;
+  err_t err = pkg_resolve_fspath(&fspath, &rootdirlen);
+  if UNLIKELY(err) {
+    str_free(fspath);
+    return err;
+  }
+
+  if (rootdirlen == 0)
+    rootdirlen = strlen(parentdir);
+
+  pkg->dir = fspath;
+  pkg->rootdir = str_slice(fspath, 0, rootdirlen);
+
+  return 0;
+}
+
+
+static err_t pkg_set_path_from_dir(pkg_t* pkg) {
+  assert(pkg->dir.len > 0);
+  assert(path_isabs(pkg->dir.p));
+
+  // set path to basename of dir, e.g. dir="/a/b/c" -> rootdir="/a/b" path="c"
+  pkg->path.len = 0;
+  bool ok;
+  const char* base = path_base(pkg->dir.p); // e.g. "c" in "/a/b/c"
+  if (path_isabs(base)) {
+    // pkg->dir is file system root, e.g. "/" or "C:"
+    // e.g. dir="/" -> rootdir="/" path="main"
+    pkg->rootdir = str_slice(pkg->dir);
+    ok = str_append(&pkg->path, "main");
+  } else {
+    // e.g. dir="/a/b/c" -> rootdir="/a/b" path="c"
+    usize dirnamelen = (usize)(uintptr)(base - pkg->dir.p) - 1;
+    pkg->rootdir = str_slice(pkg->dir, 0, dirnamelen);
+    ok = str_append(&pkg->path, base);
+  }
+
+  if LIKELY(ok)
+    return 0;
+
+  str_free(pkg->path);
+  str_free(pkg->dir);
+  pkg->dir = (str_t){0};
+  pkg->path = (str_t){0};
+  pkg->rootdir = (slice_t){0};
+  return ErrNoMem;
+}
+
+
+static err_t pkg_resolve_toplevel_cwd(pkg_t* pkg) {
+  pkg->dir = path_cwd();
+  if (pkg->dir.cap == 0)
+    return ErrNoMem;
+  return pkg_set_path_from_dir(pkg);
+}
+
+
+static err_t pkg_resolve_toplevel(pkg_t* pkg, const char* import_path, mode_t st_mode) {
+  assertf(*import_path != 0, "empty path");
+  pkg->path = str_make(import_path);
+  safecheckx(path_clean(&pkg->path)); // e.g. "./my//package" => "my/package"
+
+  // current directory (".")
+  if (pkg->path.p[0] == '.' && pkg->path.p[1] == 0) {
+    assert(pkg->path.len == 1); // path_clean only results in "." (never e.g. "./x")
+    return pkg_resolve_toplevel_cwd(pkg);
+  }
+
+  err_t err = 0;
+
+  // absolute path, e.g. "/foo/bar"
+  if (path_isabs(pkg->path.p)) {
+    pkg->dir = pkg->path;
+    pkg->path = (str_t){0};
+    return pkg_set_path_from_dir(pkg);
+  }
+
+  // parent-relative path, e.g. "../bar"
+  if (pkg->path.p[0] == '.') {
+    // note: path_clean ensures that "./foo/bar" => "foo/bar"
+    assert(pkg->path.p[0] != '.' || pkg->path.p[1] == '.');
+    // TODO
+  }
+
+  if (S_ISDIR(st_mode)) {
+    pkg->dir = str_makelen(pkg->path.p, pkg->path.len);
+    return 0;
+  }
+
+  // symbolic, to be found in copath, e.g. "foo/bar"
+  str_t cwd = path_cwd();
+  err = pkg_resolve_dir(pkg, cwd.p);
+  str_free(cwd);
+  if (!err)
+    return 0;
+  elog("%s: cannot find package %s", coprogname, pkg->path.p);
+
+error:
+  str_free(pkg->path);
+  str_free(pkg->dir);
+  pkg->path = (str_t){0};
+  pkg->dir = (str_t){0};
+  pkg->rootdir = (slice_t){0};
+  return ErrNoMem;
 }
 
 
@@ -215,10 +676,11 @@ err_t pkgs_for_argv(int argc, char* argv[], pkg_t** pkgvp, u32* pkgcp) {
     }
   }
 
-  // ad-hoc main package?
+  // ad-hoc main package of one or more files
   if (input_type == 1) {
-    pkgv->name = str_make("main");
-    pkgv->dir = str_make(".");
+    if (( err = pkg_resolve_toplevel_cwd(pkgv) ))
+      goto end;
+    pkgv->isadhoc = true;
     for (int i = 0; i < argc; i++) {
       srcfile_t* f = pkg_add_srcfile(pkgv, argv[i]);
       f->mtime = unixtime_of_stat_mtime(&stv[i]);
@@ -229,46 +691,13 @@ err_t pkgs_for_argv(int argc, char* argv[], pkg_t** pkgvp, u32* pkgcp) {
 
   // multiple packages
   str_t cwd = {0};
-  for (int i = 0; i < argc; i++) {
-    pkg_t* pkg = &pkgv[i];
-
-    pkg->name = str_make(argv[i]);
-    safecheckx(path_clean(&pkg->name)); // e.g. "./my//package" => "my/package"
-    // note: path_clean results in "." if the input is empty ("").
-    // We check anyhow to avoid crash in case path_clean impl would change.
-    if (pkg->name.len == 0) {
+  for (int i = 0; !err && i < argc; i++) {
+    if UNLIKELY(*argv[i] == 0) {
       elog("%s: argument %d: empty package name", coprogname, i);
       err = ErrInvalid;
-      break;
-    }
-
-    if (pkg->name.p[0] == '.' && pkg->name.p[1] == 0) {
-      // current directory; use the basename of cwd
-      assert(pkg->name.len == 1); // path_clean only results in "." (never e.g. "./x")
-      if (cwd.p == NULL)
-        cwd = path_cwd();
-      pkg->dir = pkg->name; // move ownership (replace pkg.name next...)
-      const char* base = path_base(cwd.p);
-      pkg->name = path_isabs(base) ? str_make("main") : str_make(base);
-    } else if (path_isabs(pkg->name.p) || pkg->name.p[0] == '.') {
-      // e.g. "/my/package" => "package"
-      //      "../package"  => "package"
-      //      "/"           => "main"
-      if (pkg->name.p[0] == '.')
-        assert(pkg->name.p[1] == '.'); // e.g. "../foo"
-      pkg->dir = str_makelen(pkg->name.p, pkg->name.len);
-      const char* base = path_base(pkg->name.p);
-      pkg->name = path_isabs(base) ? str_make("main") : str_make(base);
-    } else if (S_ISDIR(stv[i].st_mode)) {
-      // e.g. "./my/package" => "my/package"
-      pkg->dir = str_makelen(pkg->name.p, pkg->name.len);
     } else {
-      // e.g. "std/runtime"
-      if (!pkg_find_dir(pkg)) {
-        elog("%s: cannot find package %s", coprogname, pkg->name.p);
-        err = ErrNotFound;
-        break;
-      }
+      pkg_t* pkg = &pkgv[i];
+      err = pkg_resolve_toplevel(pkg, argv[i], stv[i].st_mode);
     }
   }
 
@@ -290,14 +719,14 @@ static str_t _pkg_builddir(const pkg_t* pkg, const compiler_t* c, usize extracap
   slice_t basedir = slice_cstr(c->builddir);
   slice_t prefix = slice_cstr("pkg");
 
-  str_t s = str_makeempty(basedir.len + 1 + pkg->name.len + 1 + prefix.len + extracap);
+  str_t s = str_makeempty(basedir.len + 1 + pkg->path.len + 1 + prefix.len + extracap);
   safecheck(s.p != NULL);
 
   str_appendlen(&s, basedir.p, basedir.len);
   str_push(&s, PATH_SEP);
   str_appendlen(&s, prefix.p, prefix.len);
   str_push(&s, PATH_SEP);
-  str_appendlen(&s, pkg->name.p, pkg->name.len);
+  str_appendlen(&s, pkg->path.p, pkg->path.len);
 
   return s;
 }

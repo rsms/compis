@@ -65,45 +65,46 @@ static void start_path(encoder_t* e, const node_t* n) {
 }
 
 
-// append_escape writes src string, escaping any chars not in 0-9A-Za-z_
+// mangle_str writes name to buf, escaping any chars not in 0-9A-Za-z_
 // by "$XX" where XX is the hexadecimal encoding of the byte value,
 // or "·" (U+00B7, UTF-8 C2 B7) for '/' and '\'
-static void append_escape(encoder_t* e, str_t src) {
+bool mangle_str(buf_t* buf, slice_t name) {
   usize i = 0, dstlen;
+  bool ok = true;
 
-  for (; i < src.len; i++) {
-    u8 c = (u8)src.p[i];
+  for (; i < name.len; i++) {
+    u8 c = name.bytes[i];
     if (!isalnum(c) && c != '_')
       goto escape;
   }
 
   // only 0-9A-Za-z_
-  e->ok &= buf_print_u32(&e->buf, src.len, 10);
-  e->ok &= buf_append(&e->buf, src.p, src.len);
-  return;
+  ok &= buf_print_u32(buf, name.len, 10);
+  ok &= buf_append(buf, name.p, name.len);
+  return ok;
 
 escape:
   dstlen = i;
-  for (usize j = i; j < src.len; j++) {
-    u8 c = (u8)src.p[j];
+  for (usize j = i; j < name.len; j++) {
+    u8 c = name.bytes[j];
     usize isslash = (1llu * (usize)(c == '/' || c == '\\'));
     usize isspecial = (2llu * (usize)(!isalnum(c) && c != '_'));
     dstlen += 1llu + isspecial*(usize)!isslash + isslash;
   }
 
-  e->ok &= buf_print_u32(&e->buf, dstlen, 10);
-  e->ok &= buf_reserve(&e->buf, dstlen);
-  if (!e->ok)
-    return;
+  ok &= buf_print_u32(buf, dstlen, 10);
+  ok &= buf_reserve(buf, dstlen);
+  if (!ok)
+    return ok;
 
-  char* dst = e->buf.chars + e->buf.len;
-  memcpy(dst, src.p, i);
+  char* dst = buf->chars + buf->len;
+  memcpy(dst, name.p, i);
   dst += i;
 
   static const char* kHexchars = "0123456789ABCDEF";
 
-  for (; i < src.len; i++) {
-    u8 c = (u8)src.p[i];
+  for (; i < name.len; i++) {
+    u8 c = name.bytes[i];
     if (isalnum(c) || c == '_') {
       *dst++ = c;
     } else if (c == '/' || c == '\\') {
@@ -117,13 +118,15 @@ escape:
     }
   }
 
-  usize wlen = (usize)(uintptr)(dst - (e->buf.chars + e->buf.len));
-  e->buf.len += wlen;
+  usize wlen = (usize)(uintptr)(dst - (buf->chars + buf->len));
+  buf->len += wlen;
+
+  return ok;
 }
 
 
 static void append_pkgname(encoder_t* e) {
-  append_escape(e, e->pkg->name);
+  e->ok &= mangle_str(&e->buf, str_slice(e->pkg->path));
 }
 
 

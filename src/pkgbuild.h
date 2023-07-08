@@ -27,10 +27,14 @@ void pkgbuild_dispose(pkgbuild_t* pb);
 err_t pkgbuild_locate_sources(pkgbuild_t* pb);
 err_t pkgbuild_begin_early_compilation(pkgbuild_t* pb);
 err_t pkgbuild_parse(pkgbuild_t* pb);
+err_t pkgbuild_import(pkgbuild_t* pb);
 err_t pkgbuild_typecheck(pkgbuild_t* pb);
 err_t pkgbuild_cgen(pkgbuild_t* pb);
 err_t pkgbuild_begin_late_compilation(pkgbuild_t* pb);
 err_t pkgbuild_await_compilation(pkgbuild_t* pb);
 err_t pkgbuild_link(pkgbuild_t* pb, const char* outfile/*can be empty*/);
+
+// higher-level functionality
+err_t build_pkg(pkg_t* pkg, compiler_t* c, const char* outfile, u32 pkgbuild_flags);
 
 ASSUME_NONNULL_END

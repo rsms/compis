@@ -19,7 +19,7 @@ err_t pkgbuild_init(pkgbuild_t* pb, pkg_t* pkg, compiler_t* c, u32 flags) {
   u32 tasklen = 1; // typecheck
   tasklen += (u32)!!c->opt_verbose; // cgen "api header"
   tasklen += (u32)!(flags & PKGBUILD_NOLINK); // link
-  pb->bgt = bgtask_open(c->ma, pkg->name.p, tasklen, taskflags);
+  pb->bgt = bgtask_open(c->ma, pkg->path.p, tasklen, taskflags);
   // note: bgtask_open currently panics on OOM; change that, make it return NULL
 
   // create AST allocator
@@ -197,7 +197,7 @@ err_t pkgbuild_locate_sources(pkgbuild_t* pb) {
     pkg_find_files(pkg);
 
   if (pkg->files.len == 0) {
-    elog("[%s] no source files in %s", pkg->name.p, relpath(pkg->dir.p));
+    elog("[%s] no source files in %s", pkg->path.p, relpath(pkg->dir.p));
     return ErrNotFound;
   }
 
@@ -334,6 +334,207 @@ static err_t pkgbuild_parse(pkgbuild_t* pb) {
 }
 
 
+static struct {
+  bool init;
+
+  rwmutex_t mu;
+  map_t     pkgm; // const char* path -> pkg_t*
+} g_pkgset;
+
+
+static err_t pkgset_init(compiler_t* c) {
+  err_t err = rwmutex_init(&g_pkgset.mu);
+  if (err)
+    return err;
+  if (!map_init(&g_pkgset.pkgm, c->ma, 32)) {
+    rwmutex_dispose(&g_pkgset.mu);
+    err = ErrNoMem;
+  }
+  return err;
+}
+
+
+static err_t resolve_pkg(
+  compiler_t* c, const pkg_t* importer_pkg, slice_t path, str_t* fspath, pkg_t** result)
+{
+  if (!g_pkgset.init)
+    safecheckx(pkgset_init(c) == 0);
+
+  // resolve absolute filesystem directory path, or return "not found"
+  usize rootdirlen;
+  err_t err = pkg_resolve_fspath(fspath, &rootdirlen);
+  if (err) {
+    *result = NULL;
+    return err;
+  }
+
+  rwmutex_lock(&g_pkgset.mu);
+
+  // lookup or allocate in map
+  pkg_t* pkg = NULL;
+  pkg_t** pkgp = (pkg_t**)map_assign(&g_pkgset.pkgm, c->ma, fspath->p, fspath->len);
+  if UNLIKELY(!pkgp) {
+    err = ErrNoMem;
+    goto end;
+  }
+
+  // if package is already resolved, we are done
+  if ((pkg = *pkgp) != NULL)
+    goto end;
+
+  // add package
+  if UNLIKELY((pkg = mem_alloct(c->ma, pkg_t)) == NULL) {
+    err = ErrNoMem;
+    goto end;
+  }
+  if UNLIKELY(pkg_init(pkg, c->ma) != 0) {
+    mem_freet(c->ma, pkg);
+    err = ErrNoMem;
+    goto end;
+  }
+  if (rootdirlen == 0)
+    rootdirlen = importer_pkg->rootdir.len;
+  pkg->path = str_makelen(path.p, path.len);
+  pkg->dir = str_makelen(fspath->p, fspath->len);
+  pkg->rootdir = str_slice(pkg->dir, 0, rootdirlen);
+  // dlog("adding pkg");
+  // dlog("  .path    = \"%s\"", pkg->path.p);
+  // dlog("  .dir     = \"%s\"", pkg->dir.p);
+  // dlog("  .rootdir = \"%.*s\"", (int)pkg->rootdir.len, pkg->rootdir.chars);
+  *pkgp = pkg;
+
+end:
+  *result = pkg;
+  rwmutex_unlock(&g_pkgset.mu);
+  return err;
+}
+
+
+typedef struct {
+  str_t     path;
+  str_t     fspath;
+  import_t* im;
+} pkgimp_t;
+
+
+static int pkgimp_cmp(const pkgimp_t* a, const pkgimp_t* b, void* ctx) {
+  return strcmp(a->fspath.p, b->fspath.p);
+}
+
+
+static err_t find_pkgs_to_import(pkgbuild_t* pb, ptrarray_t* pkgs) {
+  err_t err = 0;
+  str_t importer_dir = {0};
+
+  array_type(pkgimp_t) unique_imports = {0};
+
+  // Build a list of package to import, sorted uniquely on path.
+  // This serves multiple purposes:
+  // - Reduce obviously-duplicate package paths imported by many
+  //   source files of a package.
+  // - Make import resolution deterministic by sorting the imports.
+  //   This makes debugging easier and produces consistent error messages.
+  //   Note that pb->unitv is sorted by srcfile path, (virtue of pkg->files
+  //   being sorted by srcfile path.) However, we still want to sort
+  //   imports to remove the effects of source import-declaration order.
+  //
+  for (u32 i = 0; i < pb->unitc; i++) {
+    unit_t* unit = pb->unitv[i];
+
+    str_free(importer_dir);
+    importer_dir = pkg_unit_srcdir(pb->pkg, unit);
+    if (importer_dir.len == 0)
+      goto end_err_nomem;
+
+    for (import_t* im = unit->importlist; im; im = im->next_import) {
+      // Import path is either "/ab/so/lute" or "sym/bol/ic", not "./rel/a/tive"
+
+      str_t path = str_make(im->path);
+      str_t fspath;
+      err = pkg_clean_import_path(pb->pkg, importer_dir.p, &path, &fspath);
+      if (err) {
+        str_free(path);
+        goto end;
+      }
+
+      // dlog("import \"%s\" from cwd \"%s\"", path.p, importer_dir.p);
+
+      // insert into sorted, unique list
+      pkgimp_t keyip = { .fspath=fspath, .im=im };
+      pkgimp_t* ip = array_sortedset_assign(pkgimp_t,
+        &unique_imports, pb->c->ma, &keyip, (array_sorted_cmp_t)pkgimp_cmp, NULL);
+      if (!ip) {
+        str_free(path);
+        str_free(fspath);
+        goto end_err_nomem;
+      }
+      if (!ip->im) {
+        ip->path = path;
+        ip->fspath = fspath;
+        ip->im = im;
+      } else {
+        str_free(path);
+        str_free(fspath);
+      }
+    }
+  }
+
+  // dlog("unique_imports:");
+  // for (u32 i = 0; i < unique_imports.len; i++)
+  //   dlog("  %s", unique_imports.v[i].fspath.p);
+
+  // resolve imports
+  for (u32 i = 0; i < unique_imports.len; i++) {
+    pkgimp_t* ip = &unique_imports.v[i];
+    pkg_t* pkg;
+    err_t err1 = resolve_pkg(pb->c, pb->pkg, str_slice(ip->path), &ip->fspath, &pkg);
+    if UNLIKELY(err1) {
+      if (err == 0) err = err1;
+      if (err1 != ErrNotFound)
+        break;
+      origin_t origin = origin_make(&pb->c->locmap, ip->im->pathloc);
+      report_diag(pb->c, origin, DIAG_ERR, "package \"%s\" not found", ip->im->path);
+      // keep going so we can report all missing packages, if there is more than one
+    } else if (!ptrarray_sortedset_addptr(pkgs, pb->c->ma, pkg)) {
+      goto end_err_nomem;
+    }
+  }
+
+  goto end;
+
+end_err_nomem:
+  err = ErrNoMem;
+
+end:
+  str_free(importer_dir);
+  for (u32 i = 0; i < unique_imports.len; i++)
+    str_free(unique_imports.v[i].fspath);
+  array_dispose(pkgimp_t, (array_t*)&unique_imports, pb->c->ma);
+
+  return err;
+}
+
+
+err_t pkgbuild_import(pkgbuild_t* pb) {
+  ptrarray_t pkgs = {0};
+  err_t err = find_pkgs_to_import(pb, &pkgs);
+  if (err) {
+    ptrarray_dispose(&pkgs, pb->c->ma);
+    return err;
+  }
+
+  dlog("imported packages:");
+  for (u32 i = 0; i < pkgs.len; i++)
+    dlog("  %s", ((pkg_t*)pkgs.v[i])->dir.p);
+
+  ptrarray_dispose(&pkgs, pb->c->ma);
+
+  dlog("TODO %s", __FUNCTION__); return ErrCanceled; // XXX
+
+  return 0;
+}
+
+
 err_t pkgbuild_typecheck(pkgbuild_t* pb) {
   compiler_t* c = pb->c;
 
@@ -341,7 +542,7 @@ err_t pkgbuild_typecheck(pkgbuild_t* pb) {
   dlog_if(opt_trace_typecheck, "————————— typecheck —————————");
 
   // make sure there are no parse errors
-  if (c->errcount > 0) {
+  if (compiler_errcount(c) > 0) {
     dlog("%s called with pre-existing parse errors", __FUNCTION__);
     return ErrCanceled;
   }
@@ -350,8 +551,8 @@ err_t pkgbuild_typecheck(pkgbuild_t* pb) {
   err_t err = typecheck(c, pb->ast_ma, pb->pkg, pb->unitv, pb->unitc);
   if (err)
     return err;
-  if (c->errcount > 0) {
-    dlog("typecheck failed with %u diagnostic errors", c->errcount);
+  if (compiler_errcount(c) > 0) {
+    dlog("typecheck failed with %u diagnostic errors", compiler_errcount(c));
     if (!opt_trace_parse && c->opt_printast)
       dump_pkg_ast(pb->pkg, pb->unitv, pb->unitc);
     return ErrCanceled;
@@ -372,8 +573,8 @@ err_t pkgbuild_typecheck(pkgbuild_t* pb) {
     dlog("IR analyze: err=%s", err_str(err));
     return err;
   }
-  if (c->errcount > 0) {
-    dlog("analyze failed with %u diagnostic errors", c->errcount);
+  if (compiler_errcount(c) > 0) {
+    dlog("analyze failed with %u diagnostic errors", compiler_errcount(c));
     return ErrCanceled;
   }
 
@@ -617,11 +818,11 @@ err_t pkgbuild_link(pkgbuild_t* pb, const char* outfile) {
     if (is_exe) {
       ofstr = str_make(pb->c->builddir);
       ok &= str_append(&ofstr, PATH_SEP_STR "bin" PATH_SEP_STR);
-      ok &= str_append(&ofstr, path_base(pb->pkg->name.p));
+      ok &= str_append(&ofstr, path_base(pb->pkg->path.p));
     } else {
       ofstr = pkg_builddir(pb->pkg, pb->c);
       ok &= str_append(&ofstr, PATH_SEP_STR "lib");
-      ok &= str_append(&ofstr, path_base(pb->pkg->name.p));
+      ok &= str_append(&ofstr, path_base(pb->pkg->path.p));
       ok &= str_append(&ofstr, ".a");
     }
     if (!ok) {
@@ -648,5 +849,59 @@ err_t pkgbuild_link(pkgbuild_t* pb, const char* outfile) {
     relpath(outfile));
 
   str_free(ofstr);
+  return err;
+}
+
+
+err_t build_pkg(
+  pkg_t* pkg, compiler_t* c, const char* outfile, u32 pkgbuild_flags)
+{
+  err_t err;
+
+  if (compiler_errcount(c) > 0) {
+    // TODO: consider returning ErrCanceled in this case
+    dlog("-- WARNING -- build_pkg with a compiler that has encountered hard errors");
+  }
+
+  pkgbuild_t pb;
+  if (( err = pkgbuild_init(&pb, pkg, c, pkgbuild_flags) ))
+    return err;
+
+  #define DO_STEP(fn, args...) \
+    if (( err = fn(&pb, ##args) )) { \
+      dlog("%s: %s", #fn, err_str(err)); \
+      goto end; \
+    }
+
+  // locate source files
+  DO_STEP(pkgbuild_locate_sources);
+
+  // begin compilation of C source files
+  DO_STEP(pkgbuild_begin_early_compilation);
+
+  // parse source files
+  DO_STEP(pkgbuild_parse);
+
+  // resolve and import dependencies
+  DO_STEP(pkgbuild_import);
+
+  // typecheck package
+  DO_STEP(pkgbuild_typecheck);
+
+  // generate C code for package
+  DO_STEP(pkgbuild_cgen);
+
+  // begin compilation of C source files generated from compis sources
+  DO_STEP(pkgbuild_begin_late_compilation);
+
+  // wait for compilation tasks to finish
+  DO_STEP(pkgbuild_await_compilation);
+
+  // link exe or library (does nothing if PKGBUILD_NOLINK flag is set)
+  DO_STEP(pkgbuild_link, outfile);
+
+end:
+  pkgbuild_dispose(&pb); // TODO: can skip this for top-level package
+  #undef DO_STEP
   return err;
 }

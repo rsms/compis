@@ -79,10 +79,13 @@ bool string_startswith(const char* s, const char* prefix) {
 }
 
 
-bool str_endswith(const char* s, const char* suffix) {
-  usize slen = strlen(s);
-  usize suffixlen = strlen(suffix);
+bool string_endswithn(const char* s, usize slen, const char* suffix, usize suffixlen) {
   return slen >= suffixlen && memcmp(s + (slen - suffixlen), suffix, suffixlen) == 0;
+}
+
+
+bool str_endswith(const char* s, const char* suffix) {
+  return string_endswithn(s, strlen(s), suffix, strlen(suffix));
 }
 
 

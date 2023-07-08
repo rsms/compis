@@ -360,38 +360,6 @@ bool type_isconvertible(const type_t* dst, const type_t* src) {
 }
 
 
-// intern_usertype interns *tp in c->typeidmap.
-// returns true if *tp was replaced by existing type, false if added to c->typeidmap.
-static bool intern_usertype(compiler_t* c, usertype_t** tp) {
-  assert(nodekind_isusertype((*tp)->kind));
-
-  bool did_replace = false;
-  sym_t tid = typeid((type_t*)*tp);
-
-  rwmutex_lock(&c->typeidmap_mu);
-
-  usertype_t** p = (usertype_t**)map_assign_ptr(&c->typeidmap, c->ma, tid);
-
-  if UNLIKELY(!p) {
-    report_diag(c, (origin_t){0}, DIAG_ERR, "out of memory (%s)", __FUNCTION__);
-    goto end;
-  }
-
-  if (*p && *tp != *p) {
-    //dlog("%s replace %p with existing %p", __FUNCTION__, *tp, *p);
-    assert((*p)->kind == (*tp)->kind);
-    *tp = *p;
-    did_replace = true;
-  } else {
-    *p = *tp;
-  }
-
-end:
-  rwmutex_unlock(&c->typeidmap_mu);
-  return did_replace;
-}
-
-
 static void seterr(typecheck_t* a, err_t err) {
   if (!a->err)
     a->err = err;
@@ -399,7 +367,7 @@ static void seterr(typecheck_t* a, err_t err) {
 
 
 static bool noerror(typecheck_t* a) {
-  return (!a->err) & (a->compiler->errcount == 0);
+  return (!a->err) & (compiler_errcount(a->compiler) == 0);
 }
 
 
@@ -529,6 +497,32 @@ static char* mangle(typecheck_t* a, const node_t* n) {
 }
 
 
+// intern_usertype interns *tp in c->typeidmap.
+// returns true if *tp was replaced by existing type, false if added to c->typeidmap.
+static bool intern_usertype(typecheck_t* a, usertype_t** tp) {
+  assert(nodekind_isusertype((*tp)->kind));
+
+  sym_t tid = typeid((type_t*)*tp);
+
+  usertype_t** p = (usertype_t**)map_assign_ptr(&a->typeidmap, a->ma, tid);
+  if UNLIKELY(!p) {
+    error(a, (origin_t){0}, "out of memory (%s)", __FUNCTION__);
+    return false;
+  }
+
+  if (*p && *tp != *p) {
+    // replace existing type
+    assert((*p)->kind == (*tp)->kind);
+    *tp = *p;
+    return true;
+  }
+
+  // add type (or no-op, if *tp==*p)
+  *p = *tp;
+  return false;
+}
+
+
 // true if constructing a type t has no side effects
 static bool type_cons_no_side_effects(const type_t* t) { switch (t->kind) {
   case TYPE_VOID:
@@ -567,6 +561,15 @@ static bool type_cons_no_side_effects(const type_t* t) { switch (t->kind) {
 }}
 
 
+// expr_no_side_effects returns true if materializing n has no side effects.
+// I.e. if removing n has no effect on the semantic of any other code outside it.
+//
+// TODO: consider using a cached nodeflag for this.
+// It can be a pretty expensive operation when n is a block, "if" or similar
+// arbitrarily nested AST.
+// Note that we only use this function during and after (cgen) typecheck,
+// so caching should be safe. (Caching nodeflags during parsing is risky.)
+//
 bool expr_no_side_effects(const expr_t* n) { switch (n->kind) {
   case EXPR_ID:
   case EXPR_BOOLLIT:
@@ -617,6 +620,14 @@ bool expr_no_side_effects(const expr_t* n) { switch (n->kind) {
   }
 
   case EXPR_IF: {
+    // TODO: consider thenb to have no side effects when cond is a constant
+    // expression evaluating to "false".
+    //   E.g. here "x++" has side effects but is never evaluated,
+    //   thus the "thenb" has no side effects (since it's never visited):
+    //     if 3 > 5 { x++ }
+    //   However, note that in this example the "if" does have side effects,
+    //   because "thenb" cause side effects:
+    //     if 3 > 5 { x++ } else { x-- }
     const ifexpr_t* ife = (ifexpr_t*)n;
     return expr_no_side_effects(ife->cond) &&
            expr_no_side_effects((expr_t*)ife->thenb) &&
@@ -964,7 +975,7 @@ static void structtype(typecheck_t* a, structtype_t** tp) {
   st->align = align;
   st->size = ALIGN2(size, (u64)align);
 
-  // if (intern_usertype(a->compiler, (usertype_t**)tp))
+  // if (intern_usertype(a, (usertype_t**)tp))
   //   return;
 
   if (!(st->flags & NF_SUBOWNERS)) {
@@ -1000,20 +1011,20 @@ static void arraytype(typecheck_t* a, arraytype_t** tp) {
     expr(a, at->lenexpr);
     typectx_pop(a);
 
-    if (a->compiler->errcount > 0)
+    if (compiler_errcount(a->compiler) > 0)
       return;
 
     // note: comptime_eval_uint has already reported the error when returning false
     if (!comptime_eval_uint(a->compiler, at->lenexpr, /*flags*/0, &at->len))
       return;
 
-    if UNLIKELY(at->len == 0 && a->compiler->errcount == 0)
+    if UNLIKELY(at->len == 0 && compiler_errcount(a->compiler) == 0)
       error(a, at, "zero length array");
   }
 
   assert(at->tid == NULL);
   arraytype_calc_size(a, at);
-  intern_usertype(a->compiler, (usertype_t**)tp);
+  intern_usertype(a, (usertype_t**)tp);
 }
 
 
@@ -1025,7 +1036,7 @@ static void funtype1(typecheck_t* a, funtype_t** np, type_t* thistype) {
   type(a, &ft->result);
   typectx_pop(a);
   // TODO: consider NOT interning function types with parameters that have initializers
-  intern_usertype(a->compiler, (usertype_t**)np);
+  intern_usertype(a, (usertype_t**)np);
 }
 
 
@@ -2145,7 +2156,7 @@ static void call_type(typecheck_t* a, call_t** np, type_t* t) {
 
   case TYPE_UNRESOLVED:
     // this only happens when there was a type error
-    assert(a->compiler->errcount > 0);
+    assert(compiler_errcount(a->compiler) > 0);
     return;
 
   default:
@@ -2526,6 +2537,29 @@ again:
 }
 
 
+static void import_pkg(typecheck_t* a, import_t* im) {
+  // import package itself
+  if (im->idlist == NULL) // just for the side effects
+    return;
+  assertnull(im->idlist->next_id); // must only be one name
+
+  // TODO FIXME
+  dlog("TODO define imported package's namespace in unit");
+  // namespace_t* ns = mknode(a, namespace_t, NODE_NAMESPACE);
+  local_t* ns = mknode(a, local_t, EXPR_LET);
+  ns->type = type_unknown;
+  ns->name = im->idlist->name;
+  define(a, im->idlist->name, ns);
+}
+
+
+static void import(typecheck_t* a, import_t* im) {
+  if (!im->isfrom)
+    return import_pkg(a, im);
+  panic("TODO import package members");
+}
+
+
 err_t typecheck(
   compiler_t* c, memalloc_t ast_ma, pkg_t* pkg, unit_t** unitv, u32 unitc)
 {
@@ -2543,6 +2577,10 @@ err_t typecheck(
     a.err = ErrNoMem;
     goto end1;
   }
+  if (!map_init(&a.typeidmap, a.ma, 32)) {
+    a.err = ErrNoMem;
+    goto end2;
+  }
 
   enter_scope(&a); // package
 
@@ -2551,6 +2589,9 @@ err_t typecheck(
 
     enter_scope(&a);
     enter_ns(&a, unit);
+
+    for (import_t* im = unit->importlist; im; im = im->next_import)
+      import(&a, im);
 
     for (u32 i = 0; i < unit->children.len; i++)
       stmt(&a, unit->children.v[i]);
@@ -2566,6 +2607,8 @@ err_t typecheck(
 
   ptrarray_dispose(&a.nspath, a.ma);
   ptrarray_dispose(&a.typectxstack, a.ma);
+  map_dispose(&a.typeidmap, a.ma);
+end2:
   map_dispose(&a.tmpmap, a.ma);
 end1:
   map_dispose(&a.postanalyze, a.ma);

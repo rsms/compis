@@ -22,22 +22,19 @@ void compiler_init(compiler_t* c, memalloc_t ma, diaghandler_t dh) {
   c->ma = ma;
   c->diaghandler = dh;
   buf_init(&c->diagbuf, c->ma);
-  if (!map_init(&c->typeidmap, c->ma, 16))
-    panic("out of memory");
-  safecheckxf(rwmutex_init(&c->typeidmap_mu) == 0, "rwmutex_init");
+  safecheckxf(rwmutex_init(&c->diag_mu) == 0, "rwmutex_init");
   safecheckxf(locmap_init(&c->locmap) == 0, "locmap_init");
 }
 
 
 void compiler_dispose(compiler_t* c) {
   buf_dispose(&c->diagbuf);
-  map_dispose(&c->typeidmap, c->ma);
   locmap_dispose(&c->locmap, c->ma);
   strlist_dispose(&c->cflags);
   mem_freecstr(c->ma, c->buildroot);
   mem_freecstr(c->ma, c->builddir);
   mem_freecstr(c->ma, c->sysroot);
-  rwmutex_dispose(&c->typeidmap_mu);
+  rwmutex_dispose(&c->diag_mu);
   locmap_dispose(&c->locmap, c->ma);
 }
 
@@ -428,7 +425,9 @@ static bool fqn_recv(const compiler_t* c, buf_t* buf, const type_t* recv) {
 
 static bool fqn_fun(const compiler_t* c, const pkg_t* pkg, buf_t* buf, const fun_t* fn) {
   if (fn->abi == ABI_CO) {
-    buf_append(buf, pkg->name.p, pkg->name.len);
+    // mangle_str(buf, str_slice(pkg->path));
+    // TODO: append name package was imported as, not its path
+    buf_append(buf, pkg->path.p, pkg->path.len);
     buf_push(buf, '.');
     if (fn->recvt) {
       fqn_recv(c, buf, fn->recvt);
