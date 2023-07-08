@@ -49,9 +49,23 @@ bool _array_grow(array_t* a, memalloc_t ma, u32 elemsize, u32 extracap) {
     return false;
 
   a->ptr = m.p;
-  a->cap = m.size / elemsize;
+  a->cap = (u32)(m.size / elemsize);
 
   return true;
+}
+
+
+bool _array_shrinkwrap(array_t* a, memalloc_t ma, usize elemsize) {
+  usize oldsize = (usize)a->cap * elemsize;
+  usize newsize = (usize)a->len * elemsize;
+  if (newsize == oldsize)
+    return true;
+  mem_t m = { .p = a->ptr, .size = oldsize };
+  if (!mem_resize(ma, &m, newsize))
+    return false;
+  a->ptr = m.p;
+  a->cap = (u32)(m.size / elemsize);
+  return m.size < oldsize;
 }
 
 

@@ -38,6 +38,7 @@ T* nullable array_allocat(T, array_t*, memalloc_t, u32 index, u32 len);
 bool array_push(T, array_t*, memalloc_t, T value);
 T array_pop(T, array_t*);
 bool array_reserve(T, array_t*, memalloc_t, u32 minavail);
+bool array_shrinkwrap(T, array_t* a, memalloc_t ma); // reduce memory, set cap=len
 void array_remove(T, array_t*, u32 start, u32 len);
 slice_t array_slice(const array_t a);
 slice_t array_slice(const array_t a, usize start, usize len);
@@ -87,8 +88,8 @@ inline static array_t array_make() { return (array_t){ 0 }; }
 #define array_pop(T, a) ( ((T*)(a)->ptr)[--a->len] )
 #define array_reserve(T, a, ma, minavail) \
   _array_reserve((a), (ma), sizeof(T), (minavail))
-#define array_remove(T, a, start, len) \
-  _array_remove((a), sizeof(T), (start), (len))
+#define array_shrinkwrap(T, a, ma)     _array_shrinkwrap((a), (ma), sizeof(T));
+#define array_remove(T, a, start, len) _array_remove((a), sizeof(T), (start), (len))
 #define array_move(T, a, dst, start, end) \
   _ARRAY_MOVE(sizeof(T), (void*)(a)->ptr, (usize)(dst), (usize)(start), (usize)(end))
 
@@ -108,6 +109,7 @@ inline static array_t array_make() { return (array_t){ 0 }; }
 
 
 bool _array_grow(array_t* a, memalloc_t ma, u32 elemsize, u32 extracap);
+bool _array_shrinkwrap(array_t* a, memalloc_t ma, usize elemsize);
 void _array_dispose(array_t* a, memalloc_t ma, u32 elemsize);
 void _array_remove(array_t* a, u32 elemsize, u32 start, u32 len);
 void* nullable _array_alloc(array_t* a, memalloc_t ma, u32 elemsize, u32 len);
@@ -173,6 +175,7 @@ static bool        NAME_insert(NAME_t* a, memalloc_t ma, u32 at_index, T val)
 static T* nullable NAME_alloc(NAME_t* a, memalloc_t ma, u32 len)
 static T* nullable NAME_allocat(NAME_t*, memalloc_t ma, u32 index, u32 len);
 static bool        NAME_reserve(NAME_t* a, memalloc_t ma, u32 minavail)
+static bool        NAME_shrinkwrap(NAME_t* a, memalloc_t ma)
 static void        NAME_remove(NAME_t* a, u32 start, u32 len)
 static void        NAME_move(NAME_t* a, u32 dst, u32 start, u32 end)
 #endif//__documentation__
@@ -217,6 +220,8 @@ static void        NAME_move(NAME_t* a, u32 dst, u32 start, u32 end)
       return LIKELY(vp) ? (*vp = val, true) : false; } \
   UNUSED inline static bool NAME##_reserve(NAME##_t* a, memalloc_t ma, u32 minavail){\
     return array_reserve(T, (array_t*)(a), ma, minavail); } \
+  UNUSED inline static bool NAME##_shrinkwrap(NAME##_t* a, memalloc_t ma){\
+    return array_shrinkwrap(T, (array_t*)(a), ma); } \
   UNUSED inline static void NAME##_remove(NAME##_t* a, u32 start, u32 len) { \
     array_remove(T, (array_t*)(a), start, len); } \
   UNUSED inline static void NAME##_move(NAME##_t* a, u32 dst, u32 start, u32 end){\
@@ -248,6 +253,8 @@ static void        NAME_move(NAME_t* a, u32 dst, u32 start, u32 end)
       return LIKELY(vp) ? (*vp = val, true) : false; } \
   UNUSED inline static bool NAME##_reserve(NAME##_t* a, memalloc_t ma, u32 minavail){\
     return array_reserve(T, (array_t*)(a), ma, minavail); } \
+  UNUSED inline static bool NAME##_shrinkwrap(NAME##_t* a, memalloc_t ma){\
+    return array_shrinkwrap(T, (array_t*)(a), ma); } \
   UNUSED inline static void NAME##_remove(NAME##_t* a, u32 start, u32 len) { \
     array_remove(T, (array_t*)(a), start, len); } \
   UNUSED inline static void NAME##_move(NAME##_t* a, u32 dst, u32 start, u32 end){\
