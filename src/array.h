@@ -261,6 +261,9 @@ static void        NAME_move(NAME_t* a, u32 dst, u32 start, u32 end)
     array_move(T, (array_t*)(a), dst, start, end); }
 
 
+typedef array_type(u32) u32array_t;
+DEF_ARRAY_TYPE_API(u32, u32array)
+
 typedef array_type(void*) ptrarray_t;
 
 DEF_ARRAY_TYPE_NULLABLEPTR_API(void*, ptrarray)

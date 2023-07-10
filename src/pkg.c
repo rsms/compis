@@ -14,6 +14,8 @@ static int srcfile_cmp(const srcfile_t* a, const srcfile_t* b, void* ctx) {
 
 
 err_t pkg_init(pkg_t* pkg, memalloc_t ma) {
+  // *pkg is assumed to be zeroed
+  assertf(memcmp(pkg, &(pkg_t){0}, sizeof(*pkg)) == 0, "pkg not zeroed");
   err_t err = rwmutex_init(&pkg->defs_mu);
   if (err)
     return err;
@@ -37,6 +39,7 @@ void pkg_dispose(pkg_t* pkg, memalloc_t ma) {
   if (pkg->defs.cap == 0)
     return;
   array_dispose(srcfile_t, (array_t*)&pkg->files, ma);
+  ptrarray_dispose(&pkg->imports, ma);
   map_dispose(&pkg->defs, ma);
   rwmutex_dispose(&pkg->defs_mu);
   typefuntab_dispose(&pkg->tfundefs, ma);
@@ -267,6 +270,7 @@ static err_t pkg_resolve_toplevel(pkg_t* pkg, const char* import_path, mode_t st
 
   if (S_ISDIR(st_mode)) {
     pkg->dir = str_makelen(pkg->path.p, pkg->path.len);
+    path_makeabs(&pkg->dir);
     return 0;
   }
 
@@ -361,6 +365,8 @@ err_t pkgs_for_argv(int argc, char* argv[], pkg_t** pkgvp, u32* pkgcp) {
     } else {
       pkg_t* pkg = &pkgv[i];
       err = pkg_resolve_toplevel(pkg, argv[i], stv[i].st_mode);
+      if (!err)
+        assertf(path_isabs(pkg->dir.p), "pkg.dir \"%s\" is not absolute", pkg->dir.p);
     }
   }
 

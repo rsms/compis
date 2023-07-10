@@ -6,6 +6,6 @@ import
   // * from "cat"
   // "cat"
 
-// fun main() {
-//   im2.hello(3)
-// }
+fun main() {
+  im2.hello(3)
+}

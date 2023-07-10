@@ -2,6 +2,7 @@
 #include "colib.h"
 #include "pkgbuild.h"
 #include "path.h"
+#include "metagen.h"
 #include "llvm/llvm.h"
 
 
@@ -15,7 +16,6 @@ err_t pkgbuild_init(pkgbuild_t* pb, pkg_t* pkg, compiler_t* c, u32 flags) {
 
   // configure a bgtask for communicating status to the user
   int taskflags = (c->opt_verbose > 0) ? BGTASK_NOFANCY : 0;
-  dlog("taskflags: %d", taskflags);
   u32 tasklen = 1; // typecheck
   tasklen += (u32)!!c->opt_verbose; // cgen "api header"
   tasklen += (u32)!(flags & PKGBUILD_NOLINK); // link
@@ -335,23 +335,34 @@ static err_t pkgbuild_parse(pkgbuild_t* pb) {
 
 
 err_t pkgbuild_import(pkgbuild_t* pb) {
-  ptrarray_t pkgs = {0};
+  assert(pb->pkg->imports.len == 0);
   err_t err = import_find_pkgs(
-    pb->c, pb->pkg, (const unit_t*const*)pb->unitv, pb->unitc, &pkgs);
-  if (err) {
-    ptrarray_dispose(&pkgs, pb->c->ma);
+    pb->c, pb->pkg, (const unit_t*const*)pb->unitv, pb->unitc, &pb->pkg->imports);
+  if (err)
     return err;
-  }
+
+  // return if no packages are imported
+  if (pb->pkg->imports.len == 0)
+    return 0;
 
   dlog("imported packages:");
-  for (u32 i = 0; i < pkgs.len; i++)
-    dlog("  %s", ((pkg_t*)pkgs.v[i])->dir.p);
+  for (u32 i = 0; i < pb->pkg->imports.len; i++)
+    dlog("  %s", ((pkg_t*)pb->pkg->imports.v[i])->dir.p);
 
-  ptrarray_dispose(&pkgs, pb->c->ma);
+  for (u32 i = 0; i < pb->pkg->imports.len; i++) {
+    pkg_t* pkg = pb->pkg->imports.v[i];
+    dlog("███████████████████████████████████████████████████████");
+    if (( err = build_pkg(pkg, pb->c, /*outfile*/"", /*pkgbuildflags*/0) )) {
+      dlog("error while building pkg %s: %s", pkg->path.p, err_str(err));
+      break;
+    }
+    dlog("███████████████████████████████████████████████████████");
+  }
 
-  dlog("TODO %s: actually import packages", __FUNCTION__);
+  // trim excess space of imports array since we'll be keeping it around
+  ptrarray_shrinkwrap(&pb->pkg->imports, pb->c->ma);
 
-  return 0;
+  return err;
 }
 
 
@@ -412,9 +423,20 @@ err_t pkgbuild_typecheck(pkgbuild_t* pb) {
 }
 
 
-static err_t cgen_api(pkgbuild_t* pb, cgen_t* g, cgen_pkgapi_t* pkgapi) {
-  err_t err;
+err_t pkgbuild_metagen(pkgbuild_t* pb) {
+  err_t err = 0;
+  buf_t outbuf = buf_make(pb->c->ma);
 
+  err = metagen(&outbuf, pb->c, pb->pkg, (const unit_t*const*)pb->unitv, pb->unitc);
+  if (!err)
+    err = fs_writefile("meta.lisp", 0644, buf_slice(outbuf));
+
+  buf_dispose(&outbuf);
+  return err;
+}
+
+
+static err_t cgen_api(pkgbuild_t* pb, cgen_t* g, cgen_pkgapi_t* pkgapi) {
   str_t pubhfile = pkg_buildfile(pb->pkg, pb->c, "pub.h");
   if UNLIKELY(pubhfile.len == 0)
     return ErrNoMem;
@@ -422,7 +444,7 @@ static err_t cgen_api(pkgbuild_t* pb, cgen_t* g, cgen_pkgapi_t* pkgapi) {
   if (pb->c->opt_verbose)
     pkgbuild_begintask(pb, "cgen %s", relpath(pubhfile.p));
 
-  err = cgen_pkgapi(g, (const unit_t**)pb->unitv, pb->unitc, pkgapi);
+  err_t err = cgen_pkgapi(g, (const unit_t**)pb->unitv, pb->unitc, pkgapi);
   if (err) {
     dlog("cgen_pkgapi: %s", err_str(err));
     goto end;
@@ -707,6 +729,11 @@ err_t build_pkg(
 
   // typecheck package
   DO_STEP(pkgbuild_typecheck);
+
+  // generate package metadata (can run in parallel to the rest of these tasks)
+  #ifdef ENABLE_METAGEN
+  DO_STEP(pkgbuild_metagen);
+  #endif
 
   // generate C code for package
   DO_STEP(pkgbuild_cgen);

@@ -33,17 +33,17 @@ typedef double             f64;
 #include <limits.h>
 #include <math.h> // HUGE_VAL
 
-#define I8_MAX    0x7f
-#define I16_MAX   0x7fff
-#define I32_MAX   0x7fffffff
-#define I64_MAX   0x7fffffffffffffffll
-#define ISIZE_MAX __LONG_MAX__
+#define I8_MAX    ((i8)0x7f)
+#define I16_MAX   ((i16)0x7fff)
+#define I32_MAX   ((i32)0x7fffffff)
+#define I64_MAX   ((i64)0x7fffffffffffffffll)
+#define ISIZE_MAX ((isize)__LONG_MAX__)
 
-#define I8_MIN    (-0x80)
-#define I16_MIN   (-0x8000)
-#define I32_MIN   (-0x80000000)
-#define I64_MIN   (-0x8000000000000000ll)
-#define ISIZE_MIN (-__LONG_MAX__ -1L)
+#define I8_MIN    ((i8)(-0x80))
+#define I16_MIN   ((i16)(-0x8000))
+#define I32_MIN   ((i32)(-0x80000000))
+#define I64_MIN   ((i64)(-0x8000000000000000ll))
+#define ISIZE_MIN ((isize)(-__LONG_MAX__ -1L))
 
 #define U8_MAX    0xff
 #define U16_MAX   0xffff
@@ -52,13 +52,13 @@ typedef double             f64;
 #ifdef __SIZE_MAX__
   #define USIZE_MAX __SIZE_MAX__
 #else
-  #define USIZE_MAX (__LONG_MAX__ *2UL+1UL)
+  #define USIZE_MAX ((usize)(__LONG_MAX__ *2UL+1UL))
 #endif
 #ifndef UINTPTR_MAX
   #ifdef __UINTPTR_MAX__
     #define UINTPTR_MAX __UINTPTR_MAX__
   #else
-    #define UINTPTR_MAX USIZE_MAX
+    #define UINTPTR_MAX ((uintptr)USIZE_MAX)
   #endif
 #endif
 
@@ -983,11 +983,13 @@ bool string_endswithn(const char* s, usize slen, const char* suffix, usize suffi
 // Returns the number of bytes that would be written to dst if dstcap was unlimited.
 usize string_repr(char* dst, usize dstcap, const void* src, usize srclen);
 
+// integer log10, e.g. ndigits10(1234) => 4
+u32 ndigits10(u64 v);
+u32 sndigits10(i64 v);
 
 usize sfmtu64(char* buf, u64 v, u32 base);
-
-// integer log10, e.g. u64log10(1234) => 4
-int u64log10(u64 u);
+u32 fmt_u64_base10(char* dst, usize cap, u64 value);
+u32 fmt_i64_base10(char* dst, usize cap, i64 svalue);
 
 int strcasecmp(const char*, const char*);
 inline static bool streq(const char* a, const char* b) { return strcmp(a, b) == 0; }
@@ -1075,14 +1077,6 @@ typedef struct {
 } promise_t;
 
 err_t promise_await(promise_t* p);
-
-//—————————————————————————————————————————————————————————————————————————————————————
-// LEB128: Little Endian Base 128
-#define LEB128_NBYTE_64 10 // bytes needed to represent all 64-bit integer values
-#define LEB128_NBYTE_32 5  // bytes needed to represent all 32-bit integer values
-u32 leb128_size(u64 val); // actual bytes needed
-u32 leb128_u64_write(u8 out[LEB128_NBYTE_64], u64 val);
-u32 leb128_u32_write(u8 out[LEB128_NBYTE_32], u32 val);
 
 //—————————————————————————————————————————————————————————————————————————————————————
 // co_qsort is qsort_r aka qsort_s

@@ -2233,7 +2233,6 @@ static void expr(cgen_t* g, const expr_t* n) {
     return vardef(g, (const local_t*)n);
 
   // node types we should never see
-  case NODEKIND_COUNT:
   case NODE_BAD:
   case NODE_COMMENT:
   case NODE_UNIT:

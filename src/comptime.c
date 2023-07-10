@@ -483,7 +483,6 @@ static void* eval1(ctx_t* ctx, void* np) {
   // nodes we should never encounter as an expression
   case NODE_BAD:
   case NODE_COMMENT:
-  case NODEKIND_COUNT:
   case EXPR_FIELD:
     break;
   }

@@ -69,7 +69,7 @@ bool buf_reserve(buf_t* b, usize minavail);
 // buf_alloc allocates len bytes at b->p+b->len and increments b->len by len.
 // If there's not enough space available, buf_grow is called to grow b->cap.
 // Returns a pointer to the beginning of the allocated range, or NULL if buf_grow failed.
-u8* nullable buf_alloc(buf_t* b, usize len) WARN_UNUSED_RESULT;
+void* nullable buf_alloc(buf_t* b, usize len) WARN_UNUSED_RESULT;
 
 // buf_push appends a byte
 inline static bool buf_push(buf_t* b, u8 byte) {
@@ -83,18 +83,18 @@ inline static bool buf_push(buf_t* b, u8 byte) {
 bool buf_nullterm(buf_t* b);
 
 // buf_append appends len bytes to the end of the buffer by copying src
-bool buf_append(buf_t* b, const void* src, usize len);
+bool buf_append(buf_t* b, const void* nullable src, usize len);
 
 // buf_appendrepr appends len bytes of src to b, escaping some bytes in Compis style,
 // i.e. what would need to be escaped to form a valid co string literal.
-bool buf_appendrepr(buf_t* b, const void* src, usize len);
+bool buf_appendrepr(buf_t* b, const void* nullable src, usize len);
 
 // buf_appendhex appends len bytes as hexadecimal data, e.g. "km" -> "6B6D"
-bool buf_appendhex(buf_t* b, const void* src, usize len);
+bool buf_appendhex(buf_t* b, const void* nullable src, usize len);
 
 // buf_insert inserts bytes at index, shifting any existing data over
 // e.g. buf_insert("abc", 1, "123") => "a123bc"
-bool buf_insert(buf_t* b, usize index, const void* src, usize len);
+bool buf_insert(buf_t* b, usize index, const void* nullable src, usize len);
 
 // buf_fill appends len bytes (like buf_alloc + memset)
 bool buf_fill(buf_t* b, u8 byte, usize len);

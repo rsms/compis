@@ -102,7 +102,7 @@ static char* _setstatus_begin(bgtask_t* bgt) {
     usize avail = BUFAVAIL(bgt, buf);
     int n;
     if (bgt->ntotal) {
-      int digits = u64log10(bgt->ntotal) * (bgt->flags & BGTASK_FANCY);
+      int digits = ndigits10(bgt->ntotal) * (bgt->flags & BGTASK_FANCY);
       n = snprintf(buf, avail, " %*u/%u] ", digits, bgt->n, MAX(bgt->ntotal, bgt->n));
     } else {
       n = snprintf(buf, avail, " %u] ", bgt->n);

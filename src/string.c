@@ -56,13 +56,110 @@ static char* strrevn(char* s, usize len) {
 }
 
 
+static const char kEncChars[] = {
+  "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+};
+
+
+u32 ndigits10(u64 v) {
+  // based on https://www.facebook.com/notes/10158791579037200/
+  if (v < 10) return 1;
+  if (v < 100) return 2;
+  if (v < 1000) return 3;
+  if (v < 1000000000000UL) {
+    if (v < 100000000UL) {
+      if (v < 1000000) {
+        if (v < 10000) return 4;
+        return 5 + (v >= 100000);
+      }
+      return 7 + (v >= 10000000UL);
+    }
+    if (v < 10000000000UL)
+      return 9 + (v >= 1000000000UL);
+    return 11 + (v >= 100000000000UL);
+  }
+  return 12 + ndigits10(v / 1000000000000UL);
+}
+
+
+u32 sndigits10(i64 v) {
+  if (v < 0) {
+    u64 uv = (v != I64_MIN) ? (u64)-v : ((u64)I64_MAX) + 1;
+    return ndigits10(uv) + 1; // +1 for '-'
+  }
+  return ndigits10((u64)v);
+}
+
+
+u32 fmt_u64_base10(char* dst, usize cap, u64 value) {
+  // based on https://www.facebook.com/notes/10158791579037200/
+  static const char digits[201] =
+    "0001020304050607080910111213141516171819"
+    "2021222324252627282930313233343536373839"
+    "4041424344454647484950515253545556575859"
+    "6061626364656667686970717273747576777879"
+    "8081828384858687888990919293949596979899";
+
+  u32 len = ndigits10(value);
+  if ((usize)len > cap)
+    return 0;
+
+  u32 next = len - 1;
+  // dst[next + 1] = '\0';
+  while (value >= 100) {
+    u32 i = (u32)(value % 100ul) * 2;
+    value /= 100ull;
+    dst[next] = digits[i + 1];
+    dst[next - 1] = digits[i];
+    next -= 2;
+  }
+
+  // handle last 1-2 digits
+  if (value < 10) {
+    dst[next] = '0' + (u32)value;
+  } else {
+    u32 i = (u32)value * 2u;
+    dst[next] = digits[i + 1];
+    dst[next - 1] = digits[i];
+  }
+
+  return len;
+}
+
+
+u32 fmt_i64_base10(char* dst, usize cap, i64 svalue) {
+  u64 value;
+  u32 isneg = 0;
+
+  // convert to u64
+  if (svalue < 0) {
+    if (svalue != I64_MIN) {
+      value = -svalue;
+    } else {
+      value = ((u64)I64_MAX) + 1;
+    }
+    if (cap == 0)
+      return 0;
+    isneg = 1;
+    dst[0] = '-';
+    dst++;
+    cap--;
+  } else {
+    value = svalue;
+  }
+
+  u32 len = fmt_u64_base10(dst, cap, value);
+  if (len == 0)
+    return 0;
+  return len + isneg;
+}
+
+
 usize sfmtu64(char* buf, u64 v, u32 base) {
-  static const char* chars =
-    "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
   base = MIN(MAX(base, 2u), 62u);
   char* p = buf;
   do {
-    *p++ = chars[v % base];
+    *p++ = kEncChars[v % base];
     v /= base;
   } while (v);
   usize len = (usize)(uintptr)(p - buf);
@@ -86,20 +183,6 @@ bool string_endswithn(const char* s, usize slen, const char* suffix, usize suffi
 
 bool str_endswith(const char* s, const char* suffix) {
   return string_endswithn(s, strlen(s), suffix, strlen(suffix));
-}
-
-
-int u64log10(u64 u) {
-  // U64_MAX 18446744073709551615
-  int w = 20;
-  u64 x = 10000000000000000000llu;
-  while (w > 1) {
-    if (u >= x)
-      break;
-    x /= 10;
-    w--;
-  }
-  return w;
 }
 
 

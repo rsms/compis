@@ -223,6 +223,7 @@ static void fmt(abuf_t* s, const node_t* nullable n, u32 indent, u32 maxdepth) {
     return;
   if (!n)
     return abuf_str(s, "(NULL)");
+
   switch ((enum nodekind)n->kind) {
 
   case NODE_UNIT: {
@@ -235,6 +236,8 @@ static void fmt(abuf_t* s, const node_t* nullable n, u32 indent, u32 maxdepth) {
   }
 
   case STMT_TYPEDEF:
+    if (n->flags & NF_VIS_PUB)
+      abuf_str(s, "pub ");
     abuf_fmt(s, "type ");
     fmt(s, (node_t*)&((typedef_t*)n)->type, indent, maxdepth);
     break;
@@ -248,6 +251,8 @@ static void fmt(abuf_t* s, const node_t* nullable n, u32 indent, u32 maxdepth) {
     return local(s, (const local_t*)n, indent, maxdepth);
 
   case EXPR_FUN: {
+    if (n->flags & NF_VIS_PUB)
+      abuf_str(s, "pub ");
     fun_t* fn = (fun_t*)n;
     funtype_t* ft = (funtype_t*)fn->type;
     abuf_fmt(s, "fun %s(", fn->name);
@@ -506,9 +511,6 @@ static void fmt(abuf_t* s, const node_t* nullable n, u32 indent, u32 maxdepth) {
   case NODE_COMMENT:
     abuf_fmt(s, "/*comment*/");
     break;
-
-  case NODEKIND_COUNT:
-    assertf(0, "unexpected node %s", nodekind_name(n->kind));
   }
 }
 

@@ -449,9 +449,9 @@ err_t import_find_pkgs(
     }
   }
 
-  dlog("unique_imports:");
-  for (u32 i = 0; i < unique_imports.len; i++)
-    dlog("  %s", unique_imports.v[i].fspath.p);
+  // dlog("unique_imports:");
+  // for (u32 i = 0; i < unique_imports.len; i++)
+  //   dlog("  %s", unique_imports.v[i].fspath.p);
 
   // resolve imports
   for (u32 i = 0; i < unique_imports.len; i++) {
@@ -459,8 +459,6 @@ err_t import_find_pkgs(
     pkg_t* pkg;
     err_t err1 = import_resolve_pkg(
       c, importer_pkg, str_slice(ip->path), &ip->fspath, &pkg);
-    if (!err1)
-      dlog("got pkg %p", pkg);
     if UNLIKELY(err1) {
       if (err == 0) err = err1;
       if (err1 != ErrNotFound)

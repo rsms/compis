@@ -2449,7 +2449,6 @@ static void exprp(typecheck_t* a, expr_t** np) {
     break;
 
   // We should never see these kinds of nodes
-  case NODEKIND_COUNT:
   case NODE_BAD:
   case NODE_COMMENT:
   case NODE_UNIT:

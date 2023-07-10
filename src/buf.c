@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "colib.h"
 #include "buf.h"
+#include "leb128.h"
 
 
 // buf_t should be castable to mem_t
@@ -83,9 +84,9 @@ bool buf_nullterm(buf_t* b) {
 }
 
 
-u8* nullable buf_alloc(buf_t* b, usize len) {
+void* nullable buf_alloc(buf_t* b, usize len) {
   usize newlen;
-  if (check_add_overflow(b->len, len, &newlen))
+  if (len == 0 || check_add_overflow(b->len, len, &newlen))
     return NULL;
   if (newlen > b->cap && UNLIKELY(!buf_grow(b, newlen - b->cap)))
     return NULL;
@@ -96,6 +97,8 @@ u8* nullable buf_alloc(buf_t* b, usize len) {
 
 
 bool buf_append(buf_t* b, const void* src, usize len) {
+  if (len == 0)
+    return true;
   void* p = buf_alloc(b, len);
   if (p)
     memcpy(p, src, len);

@@ -1,3 +1,7 @@
+pub type Thing {
+  x, y int
+}
 pub fun hello(x int) int {
   x * x
 }
+fun unused() {}

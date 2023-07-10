@@ -38,8 +38,11 @@ void compiler_dispose(compiler_t* c) {
   mem_freecstr(c->ma, c->sysroot);
   rwmutex_dispose(&c->diag_mu);
   locmap_dispose(&c->locmap, c->ma);
-  rwmutex_dispose(&c->pkgindex_mu);
+
+  for (const mapent_t* e = map_it(&c->pkgindex); map_itnext(&c->pkgindex, &e); )
+    pkg_dispose(e->value, c->ma);
   map_dispose(&c->pkgindex, c->ma);
+  rwmutex_dispose(&c->pkgindex_mu);
 }
 
 

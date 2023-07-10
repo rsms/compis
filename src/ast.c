@@ -95,7 +95,7 @@ static const struct {
 })
 
 #define REPR_END(closech) \
-  ( CHAR((closech)), indent -= 2 )
+  ( CHAR((closech)), indent -= INDENT )
 
 
 const char* nodekind_name(nodekind_t kind) {
@@ -618,7 +618,7 @@ origin_t node_origin(locmap_t* lm, const node_t* n) {
 
   case EXPR_INTLIT:
     if (r.width == 0)
-      r.width = (u32)u64log10(((intlit_t*)n)->intval); // FIXME e.g. 0xbeef
+      r.width = (u32)ndigits10(((intlit_t*)n)->intval); // FIXME e.g. 0xbeef
     break;
 
   case EXPR_ID:

@@ -2170,7 +2170,6 @@ static irval_t* expr(ircons_t* c, void* expr_node) {
     return v;
 
   // We should never see these kinds of nodes
-  case NODEKIND_COUNT:
   case NODE_BAD:
   case NODE_COMMENT:
   case NODE_UNIT:

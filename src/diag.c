@@ -200,7 +200,7 @@ static void add_srclines(compiler_t* c, origin_t origin, abuf_t* s) {
   }
 
   c->diag.srclines = s->p;
-  int lnw = u64log10((u64)endline);
+  int lnw = (int)ndigits10((u64)endline);
   str_t buf = {0};
 
   for (;;) {

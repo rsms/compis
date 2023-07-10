@@ -80,8 +80,14 @@ enum tok {
   #include "tokens.h"
   #undef _
   #undef KEYWORD
-  TOK_COUNT,
 };
+enum { TOK_COUNT = (0lu
+  #define _(...) + 1lu
+  #define KEYWORD(...) + 1lu
+  #include "tokens.h"
+  #undef _
+  #undef KEYWORD
+) };
 
 typedef u8 opflag_t;
 #define OP_FL_WRITE ((opflag_t)1<< 0) // write semantics
@@ -173,6 +179,7 @@ typedef struct pkg_t {
   rwmutex_t       defs_mu;  // protects access to defs field
   typefuntab_t    tfundefs; // type functions defined by the package
   fun_t* nullable mainfun;  // fun main(), if any
+  ptrarray_t      imports;  // pkg_t*[] -- imported packages
   promise_t       findpr;   // promise<err_t> resolved when package has been found
   promise_t       loadpr;   // promise<err_t> resolved when package has been loaded
 } pkg_t;
@@ -209,8 +216,10 @@ enum nodekind {
   FOREACH_NODEKIND(_)
   FOREACH_NODEKIND_TYPE(_)
   #undef _
-  NODEKIND_COUNT,
 };
+enum { NODEKIND_COUNT = (0lu
+  FOREACH_NODEKIND(CO_PLUS_ONE)
+  FOREACH_NODEKIND_TYPE(CO_PLUS_ONE)) };
 
 typedef u16 nodeflag_t;
 #define NF_RVALUE      ((nodeflag_t)1<< 0) // expression is used as an rvalue
@@ -290,7 +299,7 @@ typedef struct importid_t {
 typedef struct {
   type_t;
   sym_t            name;
-  type_t* nullable resolved; // used by typeresolve
+  type_t* nullable resolved; // used by typecheck
 } unresolvedtype_t;
 
 typedef struct {
@@ -849,6 +858,9 @@ node_t* clone_node(parser_t* p, const node_t* n);
 local_t* nullable lookup_struct_field(structtype_t* st, sym_t name);
 fun_t* nullable lookup_method(parser_t* p, type_t* recv, sym_t name);
 const char* node_srcfilename(const node_t* n, locmap_t* lm);
+
+// ast_childrenof appends children of n to children array
+err_t ast_childrenof(ptrarray_t* children, memalloc_t ma, const node_t* n);
 
 inline static void bubble_flags(void* parent, void* child) {
   ((node_t*)parent)->flags |= (((node_t*)child)->flags & NODEFLAGS_BUBBLE);
