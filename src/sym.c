@@ -92,14 +92,17 @@ void sym_init(memalloc_t ma) {
 
 
 sym_t sym_intern(const void* key, usize keylen) {
-  #if DEBUG
-    if UNLIKELY(strnlen(key, keylen) != keylen) {
-      char tmp[128];
-      abuf_t s = abuf_make(tmp, sizeof(tmp));
-      abuf_repr(&s, (char*)key, keylen);
-      abuf_terminate(&s);
-      assertf(0, "symbol \"%s\" contains NUL byte (len %zu, nul at %zu)",
-        tmp, keylen, strnlen(key, keylen));
+  #ifdef DEBUG
+    // check for prohibited bytes in key.
+    // Note: AST encoder cannot handle symbols containing LF (0x0A '\n')
+    char tmp[128];
+    for (usize i = 0; i < keylen; i++) {
+      u8 c = ((u8*)key)[i];
+      if UNLIKELY(c == 0 || c == '\n') {
+        int tmpz = (int)string_repr(tmp, sizeof(tmp), key, keylen);
+        panic("symbol \"%.*s\" contains invalid byte at offset %zu: 0x%02x '%c'",
+          tmpz, tmp, i, c, c);
+      }
     }
   #endif
 

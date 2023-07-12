@@ -274,7 +274,8 @@ static err_t parse_co_file(
     goto end;
   }
 
-  dlog_if(opt_trace_parse, "————————— parse —————————");
+  dlog_if(opt_trace_parse, "————————— parse %s —————————",
+    relpath(path_join(pkg->dir.p, srcfile->name.p).p)); // leaking memory :-/
   err = parser_parse(&parser, ast_ma, srcfile, result);
   if (!err && parser_errcount(&parser) > 0) {
     dlog("syntax errors");

@@ -16,7 +16,7 @@ ASSUME_NONNULL_BEGIN
 typedef struct {
   u8* nullable ptr;
   u32 len, cap; // count of T items (not bytes)
-#if DEBUG
+#ifdef DEBUG
   memalloc_t ma;
 #endif
 } array_t;
@@ -48,8 +48,16 @@ slice_t array_slice(const array_t a, usize start, usize len);
 // so make sure to add all elements using this function (or don't use it at all.)
 // If there's an equivalent element in the array, its pointer is returned instead
 // of allocating a new slot.
-T* array_sortedset_assign(
-  T, array_t* a, memalloc_t, T* vptr, array_sorted_cmp_t cmpf, void* nullable ctx);
+T* nullable array_sortedset_assign(
+  T, array_t* a, memalloc_t, const T* vptr, array_sorted_cmp_t cmpf, void* nullable ctx);
+
+// array_sortedset_lookup works like array_sortedset_assign but just looks a value up,
+// it does not add it if its not found.
+// If a value is not found, NULL is returned.
+// When a value is found, *indexp is set to its index.
+T* nullable array_sortedset_lookup(
+  T, const array_t* a, const T* vptr, u32* indexp,
+  array_sorted_cmp_t cmpf, void* nullable ctx);
 
 // array_move moves the chunk [start,end) to index dst. For example:
 //
@@ -79,6 +87,9 @@ inline static array_t array_make() { return (array_t){ 0 }; }
   ( (T*)_array_allocat((a), (ma), sizeof(T), (i), (len)) )
 #define array_sortedset_assign(T, a, ma, valptr, cmpf, ctx) \
   (T*)_array_sortedset_assign((array_t*)(a), (ma), sizeof(T), (valptr), (cmpf), (ctx))
+#define array_sortedset_lookup(T, a, valptr, indexp, cmpf, ctx) \
+  (T*)_array_sortedset_lookup(\
+    (const array_t*)(a), sizeof(T), (valptr), (indexp), (cmpf), (ctx))
 #define array_push(T, a, ma, val) ({ \
   static_assert(co_same_type(T, __typeof__(val)), ""); \
   array_t* __a = (a); \
@@ -118,6 +129,9 @@ bool _array_reserve(array_t* a, memalloc_t ma, u32 elemsize, u32 minavail);
 void* nullable _array_sortedset_assign(
   array_t* a, memalloc_t ma, u32 elemsize,
   const void* valptr, array_sorted_cmp_t cmpf, void* nullable ctx);
+void* nullable _array_sortedset_lookup(
+  const array_t* a, u32 elemsize,
+  const void* valptr, u32* indexp, array_sorted_cmp_t cmpf, void* nullable ctx);
 
 // void _ARRAY_MOVE(usize elemsize, void* v, usize dst, usize start, usize end)
 #define _ARRAY_MOVE(elemsize, v, dst, start, end) (                               \
@@ -275,5 +289,6 @@ void ptrarray_move_to_end(ptrarray_t* a, u32 index);
 // returns false if memory allocation failed
 bool ptrarray_sortedset_addcstr(ptrarray_t* a, memalloc_t ma, const char* str);
 bool ptrarray_sortedset_addptr(ptrarray_t* a, memalloc_t ma, const void* ptr);
+bool u32array_sortedset_add(u32array_t* a, memalloc_t ma, u32 v);
 
 ASSUME_NONNULL_END

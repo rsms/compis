@@ -5,11 +5,13 @@ ASSUME_NONNULL_BEGIN
 // typedef struct { usize start, end; } sizerange_t;
 
 typedef struct {
-  memalloc_t ma;
-  ptrarray_t nodelist;
-  u32array_t rootlist; // indices in nodelist of root nodes
-  map_t      nodemap;  // maps {node_t* => uintptr nodelist index}
-  ptrarray_t children; // work set
+  memalloc_t  ma;
+  nodearray_t nodelist;
+  u32array_t  rootlist;   // indices in nodelist of root nodes
+  u32array_t  srcfileids; // unique loc_t srcfile IDs
+  map_t       nodemap;    // maps {node_t* => uintptr nodelist index}
+  ptrarray_t  symmap;     // maps {sym_t => u32 index} (sorted set)
+  usize       symsize;    // total length of all symbol characters
 } astencode_t;
 
 err_t astencode_init(astencode_t* ae, memalloc_t ma);

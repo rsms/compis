@@ -155,7 +155,7 @@ static void funtype1(encoder_t* e, const funtype_t* ft) {
   if (ft->params.len) {
     buf_push(&e->buf, 'T');
     for (u32 i = 0; i < ft->params.len; i++) {
-      const local_t* param = ft->params.v[i];
+      const local_t* param = (local_t*)ft->params.v[i];
       type(e, param->type);
     }
     buf_push(&e->buf, 'E');

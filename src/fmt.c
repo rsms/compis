@@ -164,7 +164,7 @@ static void funtype(abuf_t* s, const funtype_t* nullable n, u32 indent, u32 maxd
   abuf_c(s, '(');
   for (u32 i = 0; i < n->params.len; i++) {
     if (i) abuf_str(s, ", ");
-    const local_t* param = n->params.v[i];
+    const local_t* param = (local_t*)n->params.v[i];
     abuf_str(s, param->name);
     if (i+1 == n->params.len || ((local_t*)n->params.v[i+1])->type != param->type) {
       abuf_c(s, ' ');
@@ -193,7 +193,7 @@ static void structtype(
     indent++;
     for (u32 i = 0; i < t->fields.len; i++) {
       startline(s, indent);
-      const local_t* f = t->fields.v[i];
+      const local_t* f = (local_t*)t->fields.v[i];
       abuf_str(s, f->name), abuf_c(s, ' ');
       fmt(s, (const node_t*)f->type, indent, maxdepth);
       if (f->init) {
@@ -209,7 +209,7 @@ static void structtype(
 
 
 static void fmt_nodelist(
-  abuf_t* s, const ptrarray_t* nodes, const char* sep, u32 indent, u32 maxdepth)
+  abuf_t* s, const nodearray_t* nodes, const char* sep, u32 indent, u32 maxdepth)
 {
   for (u32 i = 0; i < nodes->len; i++) {
     if (i) abuf_str(s, sep);
@@ -227,7 +227,7 @@ static void fmt(abuf_t* s, const node_t* nullable n, u32 indent, u32 maxdepth) {
   switch ((enum nodekind)n->kind) {
 
   case NODE_UNIT: {
-    const ptrarray_t* a = &((unit_t*)n)->children;
+    const nodearray_t* a = &((unit_t*)n)->children;
     for (u32 i = 0; i < a->len; i++) {
       startline(s, indent);
       fmt(s, a->v[i], indent, maxdepth - 1);
@@ -239,7 +239,7 @@ static void fmt(abuf_t* s, const node_t* nullable n, u32 indent, u32 maxdepth) {
     if (n->flags & NF_VIS_PUB)
       abuf_str(s, "pub ");
     abuf_fmt(s, "type ");
-    fmt(s, (node_t*)&((typedef_t*)n)->type, indent, maxdepth);
+    fmt(s, (node_t*)((typedef_t*)n)->type, indent, maxdepth);
     break;
 
   case EXPR_VAR:
@@ -268,7 +268,7 @@ static void fmt(abuf_t* s, const node_t* nullable n, u32 indent, u32 maxdepth) {
 
   case EXPR_BLOCK: {
     abuf_c(s, '{');
-    const ptrarray_t* a = &((block_t*)n)->children;
+    const nodearray_t* a = &((block_t*)n)->children;
     if (a->len > 0) {
       if (maxdepth <= 1) {
         abuf_str(s, "...");

@@ -10,103 +10,114 @@
 static_assert(((u32)KIND_CODE_START + (u32)(NODEKIND_COUNT - 1)) <= U8_MAX,
   "kind code overflows; need to reduce KIND_CODE_START");
 
-#define MIN_ENCODED_NODE_SIZE 8ul // "XXXX\n\n\n\n"
+#define MIN_ENCODED_NODE_SIZE \
+  ALIGN2_X(strlen("XXXX 1 1 1\n"), 4)
+
+#define ALLOC_ENCODED_NODE_SIZE \
+  ALIGN2_X(strlen("XXXX 65535 4294967295 18446744073709551615\n"), 4)
 
 /*
 format
 
-root = header node*
+root = header
+       symbol{symcount}
+       node{nodecount-rootcount}
+       node{rootcount}
 
-header    = magic SP version SP nodecount LF
+header    = magic SP version SP symcount SP nodecount SP rootcount LF
 magic     = "cAST"
-version   = u32
-nodecount = u32
+version   = u32x
+symcount  = u32x
+nodecount = u32x
+rootcount = u32x
 
-node        = nodekind_id
+symbol = <byte 0x01..0x09, 0x0B..0xFF>+ padding LF
+
+node        = nodekind_id SP attr* padding LF
 nodekind_id = (alnum | under | SP){4}
+attr        = (uint | string | none | symref | noderef) SP
+uint        = u8x | u16x | u32x | u64x
+string      = '"' <byte 0x20..0xFF>+ '"' // compis-escaped string
+symref      = "#" u32x
+noderef     = "&" u32x
+none        = "_"
 
-alnum = digit | <byte 'A'>
-digit = <byte '0'..'9'>
-alpha = <byte 'A'..'Z' 'a'..'z'>
-under = <byte '_'>
-u32   = digit (digit | SP)*
-SP    = <byte 0x20>
-LF    = <byte 0x0A>
+padding  = SP{0,3}
+alnum    = digit | <byte 'A'>
+digit    = <byte '0'..'9'>
+hexdigit = <byte '0'..'9' 'A'..'F'>
+alpha    = <byte 'A'..'Z' 'a'..'z'>
+under    = <byte '_'>
+u8x      = hexdigit{1,2}
+u16x     = hexdigit{1,4}
+u32x     = hexdigit{1,8}
+u64x     = hexdigit{1,16}
+SP       = <byte 0x20>
+LF       = <byte 0x0A>
+
 */
-
-#if CO_LITTLE_ENDIAN
-  #define HTONu32(x) ( \
-    (((x) >> 24) & 0x000000FF) | \
-    (((x) >> 8)  & 0x0000FF00) | \
-    (((x) << 8)  & 0x00FF0000) | \
-    (((x) << 24) & 0xFF000000) \
-  )
-  #define STRu32(code) HTONu32((u32)(code))
-#else
-  #define STRu32(code) ((u32)(code))
-#endif
 
 
 #define FILE_MAGIC_STR "cAST"
-#define FILE_MAGIC_u32 STRu32('cAST')
+#define FILE_MAGIC_u32 CO_STRu32('cAST')
 
 
 static const u32 nodekind_id_tab[NODEKIND_COUNT] = {
-  [NODE_BAD]        = STRu32('BAD '),
-  [NODE_COMMENT]    = STRu32('CMNT'),
-  [NODE_UNIT]       = STRu32('UNIT'),
-  [STMT_TYPEDEF]    = STRu32('TDEF'),
-  [STMT_IMPORT]     = STRu32('IMPO'),
-  [EXPR_FUN]        = STRu32('FUN '),
-  [EXPR_BLOCK]      = STRu32('BLOK'),
-  [EXPR_CALL]       = STRu32('CALL'),
-  [EXPR_TYPECONS]   = STRu32('TCON'),
-  [EXPR_ID]         = STRu32('ID  '),
-  [EXPR_FIELD]      = STRu32('FIEL'),
-  [EXPR_PARAM]      = STRu32('PARM'),
-  [EXPR_VAR]        = STRu32('VAR '),
-  [EXPR_LET]        = STRu32('LET '),
-  [EXPR_MEMBER]     = STRu32('MEMB'),
-  [EXPR_SUBSCRIPT]  = STRu32('SUSC'),
-  [EXPR_PREFIXOP]   = STRu32('PROP'),
-  [EXPR_POSTFIXOP]  = STRu32('POOP'),
-  [EXPR_BINOP]      = STRu32('BIOP'),
-  [EXPR_ASSIGN]     = STRu32('ASSI'),
-  [EXPR_DEREF]      = STRu32('DERE'),
-  [EXPR_IF]         = STRu32('IF  '),
-  [EXPR_FOR]        = STRu32('FOR '),
-  [EXPR_RETURN]     = STRu32('RETU'),
-  [EXPR_BOOLLIT]    = STRu32('BOOL'),
-  [EXPR_INTLIT]     = STRu32('INTL'),
-  [EXPR_FLOATLIT]   = STRu32('FLOA'),
-  [EXPR_STRLIT]     = STRu32('STRL'),
-  [EXPR_ARRAYLIT]   = STRu32('ARRA'),
-  [TYPE_VOID]       = STRu32('void'),
-  [TYPE_BOOL]       = STRu32('bool'),
-  [TYPE_I8]         = STRu32('i8  '),
-  [TYPE_I16]        = STRu32('i16 '),
-  [TYPE_I32]        = STRu32('i32 '),
-  [TYPE_I64]        = STRu32('i64 '),
-  [TYPE_INT]        = STRu32('int '),
-  [TYPE_U8]         = STRu32('u8  '),
-  [TYPE_U16]        = STRu32('u16 '),
-  [TYPE_U32]        = STRu32('u32 '),
-  [TYPE_U64]        = STRu32('u64 '),
-  [TYPE_UINT]       = STRu32('uint'),
-  [TYPE_F32]        = STRu32('f32 '),
-  [TYPE_F64]        = STRu32('f64 '),
-  [TYPE_ARRAY]      = STRu32('arry'),
-  [TYPE_FUN]        = STRu32('fun '),
-  [TYPE_PTR]        = STRu32('ptr '),
-  [TYPE_REF]        = STRu32('ref '),
-  [TYPE_MUTREF]     = STRu32('mref'),
-  [TYPE_SLICE]      = STRu32('sli '),
-  [TYPE_MUTSLICE]   = STRu32('msli'),
-  [TYPE_OPTIONAL]   = STRu32('opt '),
-  [TYPE_STRUCT]     = STRu32('stct'),
-  [TYPE_ALIAS]      = STRu32('alia'),
-  [TYPE_UNKNOWN]    = STRu32('unkn'),
-  [TYPE_UNRESOLVED] = STRu32('unre'),
+  [NODE_BAD]        = CO_STRu32('BAD '),
+  [NODE_COMMENT]    = CO_STRu32('CMNT'),
+  [NODE_UNIT]       = CO_STRu32('UNIT'),
+  [STMT_TYPEDEF]    = CO_STRu32('TDEF'),
+  [STMT_IMPORT]     = CO_STRu32('IMPO'),
+  [EXPR_FUN]        = CO_STRu32('FUN '),
+  [EXPR_BLOCK]      = CO_STRu32('BLK '),
+  [EXPR_CALL]       = CO_STRu32('CALL'),
+  [EXPR_TYPECONS]   = CO_STRu32('TCON'),
+  [EXPR_ID]         = CO_STRu32('ID  '),
+  [EXPR_FIELD]      = CO_STRu32('FIEL'),
+  [EXPR_PARAM]      = CO_STRu32('PARM'),
+  [EXPR_VAR]        = CO_STRu32('VAR '),
+  [EXPR_LET]        = CO_STRu32('LET '),
+  [EXPR_MEMBER]     = CO_STRu32('MEMB'),
+  [EXPR_SUBSCRIPT]  = CO_STRu32('SUBS'),
+  [EXPR_PREFIXOP]   = CO_STRu32('PREO'),
+  [EXPR_POSTFIXOP]  = CO_STRu32('POSO'),
+  [EXPR_BINOP]      = CO_STRu32('BINO'),
+  [EXPR_ASSIGN]     = CO_STRu32('ASSI'),
+  [EXPR_DEREF]      = CO_STRu32('DREF'),
+  [EXPR_IF]         = CO_STRu32('IF  '),
+  [EXPR_FOR]        = CO_STRu32('FOR '),
+  [EXPR_RETURN]     = CO_STRu32('RET '),
+  [EXPR_BOOLLIT]    = CO_STRu32('BLIT'),
+  [EXPR_INTLIT]     = CO_STRu32('ILIT'),
+  [EXPR_FLOATLIT]   = CO_STRu32('FLIT'),
+  [EXPR_STRLIT]     = CO_STRu32('SLIT'),
+  [EXPR_ARRAYLIT]   = CO_STRu32('ALIT'),
+  [TYPE_VOID]       = CO_STRu32('void'),
+  [TYPE_BOOL]       = CO_STRu32('bool'),
+  [TYPE_I8]         = CO_STRu32('i8  '),
+  [TYPE_I16]        = CO_STRu32('i16 '),
+  [TYPE_I32]        = CO_STRu32('i32 '),
+  [TYPE_I64]        = CO_STRu32('i64 '),
+  [TYPE_INT]        = CO_STRu32('int '),
+  [TYPE_U8]         = CO_STRu32('u8  '),
+  [TYPE_U16]        = CO_STRu32('u16 '),
+  [TYPE_U32]        = CO_STRu32('u32 '),
+  [TYPE_U64]        = CO_STRu32('u64 '),
+  [TYPE_UINT]       = CO_STRu32('uint'),
+  [TYPE_F32]        = CO_STRu32('f32 '),
+  [TYPE_F64]        = CO_STRu32('f64 '),
+  [TYPE_ARRAY]      = CO_STRu32('arry'),
+  [TYPE_FUN]        = CO_STRu32('fun '),
+  [TYPE_PTR]        = CO_STRu32('ptr '),
+  [TYPE_REF]        = CO_STRu32('ref '),
+  [TYPE_MUTREF]     = CO_STRu32('mref'),
+  [TYPE_SLICE]      = CO_STRu32('sli '),
+  [TYPE_MUTSLICE]   = CO_STRu32('msli'),
+  [TYPE_OPTIONAL]   = CO_STRu32('opt '),
+  [TYPE_STRUCT]     = CO_STRu32('stct'),
+  [TYPE_ALIAS]      = CO_STRu32('alia'),
+  [TYPE_UNKNOWN]    = CO_STRu32('unkn'),
+  [TYPE_UNRESOLVED] = CO_STRu32('unre'),
 };
 
 
@@ -241,30 +252,142 @@ err_t astdecode(
 // encoder
 
 
-static err_t add_ast(astencode_t* a, const node_t* n) {
-  // check if nodemap (and return early if so) or register np as visited
-  uintptr* vp = (uintptr*)map_assign_ptr(&a->nodemap, a->ma, n);
-  if (!vp || *vp != 0)
-    return vp == NULL ? ErrNoMem : 0;
-  *vp = (uintptr)U32_MAX; // placeholder
+static int ptr_cmp(const void** a, const void** b, void* ctx) {
+  return *a == *b ? 0 : *a < *b ? -1 : 1;
+}
 
-  // visit children of node
-  a->children.len = 0;
-  err_t err = ast_childrenof(&a->children, a->ma, n);
-  for (u32 i = 0; i < a->children.len && !err; i++)
-    err = add_ast(a, a->children.v[i]);
 
-  // add node to nodelist
-  if (!err) {
-    dlog("nodelist[%u] <= %s %p", a->nodelist.len, nodekind_name(n->kind), n);
-    if (!ptrarray_push(&a->nodelist, a->ma, (void*)n))
-      err = ErrNoMem;
+// returns false if memory allocation failed
+static bool reg_sym(astencode_t* a, sym_t sym) {
+  sym_t* vp = array_sortedset_assign(
+    sym_t, &a->symmap, a->ma, &sym, (array_sorted_cmp_t)ptr_cmp, NULL);
+  if UNLIKELY(!vp)
+    return false;
+  if (*vp == NULL) {
+    *vp = sym;
+    a->symsize += ALIGN2(strlen(sym) + 1, 4);
   }
+  return true;
+}
 
-  // store nodelist index (+1 to avoid )
-  *vp = (uintptr)a->nodelist.len;
 
-  return err;
+static u32 sym_index(const astencode_t* a, sym_t sym) {
+  u32 index;
+  UNUSED sym_t* vp = array_sortedset_lookup(
+    sym_t, &a->symmap, &sym, &index, (array_sorted_cmp_t)ptr_cmp, NULL);
+  assertf(vp != NULL, "%s not in symmap", sym);
+  return index;
+}
+
+
+static err_t reg_syms(astencode_t* a, const node_t* np) {
+  bool ok = true;
+
+  #define ADDSYM(sym)  ( ok &= reg_sym(a, assertnotnull(sym)) )
+  #define ADDSYMZ(sym) ( (sym) ? ok &= reg_sym(a, (sym)) : ((void)0) )
+
+  if (node_istype(np))
+    ADDSYMZ(((const type_t*)np)->tid);
+
+  switch ((enum nodekind)np->kind) {
+
+  case EXPR_VAR:
+  case EXPR_LET:
+  case EXPR_FIELD: { const local_t* n = (local_t*)np;
+    ADDSYM(n->name); break; }
+
+  case EXPR_PARAM: { const local_t* n = (local_t*)np;
+    ADDSYMZ(n->name); break; }
+
+  case EXPR_ID: { const idexpr_t* n = (idexpr_t*)np;
+    ADDSYM(n->name); break; }
+
+  case EXPR_MEMBER: { const member_t* n = (member_t*)np;
+    ADDSYM(n->name); break; }
+
+  case EXPR_FUN: { const fun_t* n = (fun_t*)np;
+    ADDSYMZ(n->name); break; }
+
+  case TYPE_STRUCT: { const structtype_t* n = (structtype_t*)np;
+    ADDSYMZ(n->name); break; }
+
+  case TYPE_UNRESOLVED: { const unresolvedtype_t* n = (unresolvedtype_t*)np;
+    ADDSYM(n->name); break; }
+
+  case TYPE_ALIAS: { const aliastype_t* n = (aliastype_t*)np;
+    ADDSYM(n->name); break; }
+
+  // no symbols
+  case NODE_BAD:
+  case NODE_COMMENT:
+  case NODE_UNIT:
+  case STMT_IMPORT:  // TODO
+  case STMT_TYPEDEF:
+  case EXPR_ARRAYLIT:
+  case EXPR_BLOCK:
+  case EXPR_ASSIGN:
+  case EXPR_BINOP:
+  case EXPR_DEREF:
+  case EXPR_POSTFIXOP:
+  case EXPR_PREFIXOP:
+  case EXPR_RETURN:
+  case EXPR_CALL:
+  case EXPR_IF:
+  case EXPR_FOR:
+  case EXPR_SUBSCRIPT:
+  case EXPR_TYPECONS:
+  case EXPR_BOOLLIT:
+  case EXPR_INTLIT:
+  case EXPR_FLOATLIT:
+  case EXPR_STRLIT:
+  case TYPE_VOID:
+  case TYPE_BOOL:
+  case TYPE_I8:
+  case TYPE_I16:
+  case TYPE_I32:
+  case TYPE_I64:
+  case TYPE_INT:
+  case TYPE_U8:
+  case TYPE_U16:
+  case TYPE_U32:
+  case TYPE_U64:
+  case TYPE_UINT:
+  case TYPE_F32:
+  case TYPE_F64:
+  case TYPE_ARRAY:
+  case TYPE_FUN:
+  case TYPE_PTR:
+  case TYPE_REF:
+  case TYPE_MUTREF:
+  case TYPE_OPTIONAL:
+  case TYPE_SLICE:
+  case TYPE_MUTSLICE:
+  case TYPE_UNKNOWN:
+    break;
+
+  }
+  #undef ADDSYM
+  return ErrNoMem * (err_t)!ok;
+}
+
+
+static u32 node_index(const astencode_t* a, const void* np) {
+  assertf((uintptr)np >= 0x1000, "%p", np);
+  uintptr* vp = (uintptr*)map_lookup_ptr(&a->nodemap, np);
+  assertf(vp != NULL, "node %p %s not in nodemap",
+    np, nodekind_name(((node_t*)np)->kind));
+  // note: node indices are stored in nodemap with +1 larger value
+  // to keep 0 reserved for "not in map"
+  return (u32)(*vp - 1);
+}
+
+
+static void ptrarray_reverse(void** v, u32 len) {
+  for (u32 i = 0, j = len - 1; i < j; i++, j--) {
+    void* tmp = v[i];
+    v[i] = v[j];
+    v[j] = tmp;
+  }
 }
 
 
@@ -276,22 +399,68 @@ err_t astencode_add_ast(astencode_t* a, const node_t* n) {
   //   n2 prefixop int &n1
   //   n3 binop    int &n0 &n2
   // This allows efficient decoding from top to bottom.
-  // We do this with depth-first traversal of the AST.
+  // We accomplish this by using a logical queue of nodes to process,
+  // filling it from children of each newfound node.
+  // In practice we use the tail of the nodelist and finally reverse the added
+  // range in place.
+  err_t err;
+  u32 nodelist_start = a->nodelist.len;
 
-  u32 nodelist_len = a->nodelist.len;
+  if (!nodearray_push(&a->nodelist, a->ma, (void*)n))
+    return ErrNoMem;
 
-  err_t err = add_ast(a, n);
-  if (err)
-    return err;
+  u32 srcfileid = loc_srcfileid(n->loc);
+  if (srcfileid > 0) {
+    if (!u32array_sortedset_add(&a->srcfileids, a->ma, srcfileid))
+      return ErrNoMem;
+  }
 
-  // duplicate; same node provided to astencode_add_ast twice
-  if (a->nodelist.len - nodelist_len == 0)
+  for (u32 i = nodelist_start; i < a->nodelist.len; i++) {
+    const node_t* n = a->nodelist.v[i];
+    uintptr* vp = (uintptr*)map_assign_ptr(&a->nodemap, a->ma, n);
+    if (!vp)
+      return ErrNoMem;
+    if (*vp) {
+      // remove duplicate
+      //dlog("skip [%u] %s %p", i, nodekind_name(n->kind), n);
+      nodearray_remove(&a->nodelist, i, 1);
+      i--;
+    } else {
+      // explore new node
+      //dlog("explore [%u] %s %p", i, nodekind_name(n->kind), n);
+      *vp = UINTPTR_MAX; // ID placeholder
+      if (( err = ast_childrenof(&a->nodelist, a->ma, n) ))
+        return err;
+    }
+  }
+
+  // check if the same root node has been provided twice
+  if (nodelist_start == a->nodelist.len)
     return ErrExists;
 
-  // add to rootlist
+  // reverse order of added nodes
+  // TODO: figure out a way to avoid doing this
+  ptrarray_reverse(
+    (void**)&a->nodelist.v[nodelist_start], a->nodelist.len - nodelist_start);
+
+  // register symbols in symset
+  for (u32 i = nodelist_start; i < a->nodelist.len; i++)
+    reg_syms(a, a->nodelist.v[i]);
+
+  // assign node IDs
+  for (u32 i = nodelist_start; i < a->nodelist.len;) {
+    const node_t* n = a->nodelist.v[i];
+    dlog("nodelist[%u] ← %s %p", i, nodekind_name(n->kind), n);
+    uintptr* vp = (uintptr*)map_lookup_ptr(&a->nodemap, n);
+    assertnotnull(vp);
+    i++; // +1 to avoid 0 which would mess up map assignment
+    *vp = (uintptr)i;
+  }
+
+  // add root node index to rootlist
   u32 index = a->nodelist.len - 1;
-  dlog("rootlist[%u] <= nodelist[%u] = %s",
-    a->rootlist.len, index, nodekind_name(n->kind));
+  //dlog("rootlist[%u] <= %u (nodelist[%u] = %s)",
+  //  a->rootlist.len, index, index, nodekind_name(n->kind));
   if (!u32array_push(&a->rootlist, a->ma, index))
     return ErrNoMem;
 
@@ -299,21 +468,23 @@ err_t astencode_add_ast(astencode_t* a, const node_t* n) {
 }
 
 
-static err_t append_aligned_linebreak(buf_t* outbuf) {
-  if (!IS_ALIGN2(outbuf->len + 1, 4)) {
-    usize aligned_len = ALIGN2(outbuf->len + 1, 4) - 1;
-    usize padding_len = aligned_len - outbuf->len;
-    if UNLIKELY(buf_avail(outbuf) <= padding_len) { // <= since we add '\n' later
-      if (!buf_reserve(outbuf, padding_len))
-        return ErrNoMem;
-    }
-    memset(&outbuf->bytes[outbuf->len], ' ', padding_len);
-    outbuf->len = aligned_len;
-  } else if UNLIKELY(buf_avail(outbuf) == 0) {
-    if (!buf_reserve(outbuf, 4))
-      return ErrNoMem;
+static usize append_aligned_linebreak_unchecked(u8* dst) {
+  usize n = 0;
+  uintptr addr = (uintptr)dst;
+  if (!IS_ALIGN2(addr + 1, 4)) {
+    usize aligned_len = ALIGN2(addr + 1, 4) - 1;
+    n = aligned_len - addr;
+    memset(dst, ' ', n);
   }
-  outbuf->bytes[outbuf->len++] = '\n';
+  dst[n] = '\n';
+  return n + 1;
+}
+
+
+static err_t append_aligned_linebreak(buf_t* outbuf) {
+  if (!buf_reserve(outbuf, 4))
+    return ErrNoMem;
+  outbuf->len += append_aligned_linebreak_unchecked(outbuf->bytes + outbuf->len);
   return 0;
 }
 
@@ -324,16 +495,168 @@ static void encode_header(astencode_t* a, buf_t* outbuf) {
   char* p = outbuf->chars + outbuf->len;
   memcpy(p, FILE_MAGIC_STR, 4); p += 4; *p++ = ' ';
   p += fmt_u64_base10(p, 10, version); *p++ = ' ';
+  p += fmt_u64_base10(p, 10, a->symmap.len); *p++ = ' ';
   p += fmt_u64_base10(p, 10, a->nodelist.len); *p++ = ' ';
   p += fmt_u64_base10(p, 10, a->rootlist.len);
+  *p++ = '\n'; // p += append_aligned_linebreak_unchecked((u8*)p);
   outbuf->len += (usize)(uintptr)(p - (outbuf->chars + outbuf->len));
-  safecheckx(append_aligned_linebreak(outbuf) == 0); // can't fail
+}
+
+
+static void encode_syms(astencode_t* a, buf_t* outbuf) {
+  // space has been pre-allocated in outbuf by our caller
+  u8* p = outbuf->bytes + outbuf->len;
+  for (u32 i = 0; i < a->symmap.len; i++) {
+    sym_t sym = a->symmap.v[i];
+    // dlog("sym[%u] = '%s'", i, sym);
+    usize symlen = strlen(sym);
+    assert(p + symlen + 1 <= outbuf->bytes + outbuf->cap);
+    memcpy(p, sym, symlen); p += symlen;
+    *p++ = '\n'; // p += append_aligned_linebreak_unchecked(p);
+  }
+  outbuf->len += (usize)(uintptr)(p - (outbuf->bytes + outbuf->len));
+}
+
+
+// Reserve enough space for kMaxPlainVals u64 values and separators.
+// Note: MUST make a separate call to buf_reserve when writing strings.
+#define kMaxPlainVals 8ul
+#define kMinAlloc     ALIGN2_X(kMaxPlainVals * (20 + 1), 4)
+
+
+static bool encode_string(
+  astencode_t* a, buf_t* outbuf, char** pp, const char* src, usize srclen)
+{
+  // "flush" p offset to allow buf_ functions to accurately calculate available space
+  outbuf->len += (usize)(uintptr)(*pp - (outbuf->chars + outbuf->len));
+
+  bool ok = buf_push(outbuf, '"');
+  ok &= buf_appendrepr(outbuf, src, srclen);
+  ok &= buf_push(outbuf, '"');
+
+  // update pp
+  *pp = outbuf->chars + outbuf->len;
+  return ok;
+}
+
+
+static bool encode_nodearray(astencode_t* a, buf_t* outbuf, char** pp, nodearray_t na) {
+  outbuf->len += (usize)(uintptr)(*pp - (outbuf->chars + outbuf->len));
+
+  usize nbyte = 9ul + ((usize)na.len * 10); // "*LEN &id &id ..."
+  if (!buf_reserve(outbuf, nbyte))
+    return false;
+
+  char* p = outbuf->chars + outbuf->len;
+  *p++ = '*';
+  p += fmt_u64_base16(p, 8, (u64)na.len);
+  for (u32 i = 0; i < na.len; i++) {
+    *p++ = ' ';
+    *p++ = '&';
+    p += fmt_u64_base16(p, 8, (u64)node_index(a, na.v[i]));
+  }
+
+  // bool ok = buf_push(outbuf, '*');
+  // ok &= buf_print_u32(outbuf, na.len, 16);
+  // for (u32 i = 0; i < na.len && ok; i++) {
+  //   ok &= buf_push(outbuf, ' ');
+  //   ok &= buf_push(outbuf, '&');
+  //   ok &= buf_print_u32(outbuf, node_index(a, na.v[i]), 16);
+  // }
+
+  *pp = p;
+  return true;
 }
 
 
 static err_t encode_node_attrs(astencode_t* a, buf_t* outbuf, const node_t* np) {
+  if (!buf_reserve(outbuf, kMinAlloc))
+    return ErrNoMem;
+  char* p = outbuf->chars + outbuf->len;
+  bool ok = true;
+
+  #define NONE()         ( *p++ = '_', ((void)0) )
+  #define SEP()          ( *p++ = ' ', ((void)0) )
+  #define U32X(v)        ( p += fmt_u64_base16(p, 8, (u64)(v)), ((void)0) )
+  #define U64X(v)        ( p += fmt_u64_base16(p, 16, (v)), ((void)0) )
+  #define SYMREF(sym)    ( *p++ = '#', U32X( sym_index(a, (sym)) ) )
+  #define SYMREFZ(sym)   ( (sym) ? SYMREF(sym) : NONE() )
+  #define NODEREF(n)     ( *p++ = '&', U32X( node_index(a, (n)) ) )
+  #define NODEREFZ(n)    ( (n) ? NODEREF(n) : NONE() )
+  #define STRINGN(s,len) ( ok &= encode_string(a, outbuf, &p, (s), (len)) )
+  #define STRING(cstr)   ( STRINGN((cstr), strlen(cstr)) )
+  #define STRINGZ(cstr)  ( (cstr) ? STRING(cstr) : NONE() )
+  #define NODEARRAY(pa)  ( ok &= encode_nodearray(a, outbuf, &p, *(pa)) )
+
+  // type of expression
+  if (node_isexpr(np))
+    SEP(), NODEREFZ( ((const expr_t*)np)->type );
+
   switch ((enum nodekind)np->kind) {
-  // no children
+
+  case STMT_TYPEDEF: { const typedef_t* n = (typedef_t*)np;
+    SEP(), NODEREF(n->type);
+    break; }
+
+  case EXPR_ID: { const idexpr_t* n = (idexpr_t*)np;
+    SEP(), SYMREF(n->name);
+    break; }
+
+  case EXPR_VAR:
+  case EXPR_LET:
+  case EXPR_PARAM:
+  case EXPR_FIELD: { const local_t* n = (local_t*)np;
+    SEP(), SYMREF(n->name);
+    SEP(), U64X(n->nameloc);
+    SEP(), U64X(n->offset);
+    SEP(), NODEREFZ(n->init);
+    break; }
+
+  case TYPE_STRUCT: { const structtype_t* n = (structtype_t*)np;
+    SEP(), SYMREFZ(n->name);
+    SEP(), STRINGZ(n->mangledname);
+    SEP(), NODEARRAY(&n->fields);
+    // TODO: list of nodes
+
+    // TODO: nsparent is currently not included with ast_childrenof and so
+    // might not be indexed
+    // SEP(), SYMREFZ(n->nsparent);
+    break; }
+
+  case TYPE_FUN: /*{ const funtype_t* n = (funtype_t*)np;
+    ADD_ARRAY_OF_NODES(&n->params);
+    ADD_NODE(n->result); break; }*/
+
+  // TODO:
+  case NODE_UNIT:
+  case EXPR_ARRAYLIT:
+  case EXPR_BLOCK:
+  case EXPR_ASSIGN:
+  case EXPR_BINOP:
+  case EXPR_DEREF:
+  case EXPR_POSTFIXOP:
+  case EXPR_PREFIXOP:
+  case EXPR_RETURN:
+  case EXPR_CALL:
+  case EXPR_IF:
+  case EXPR_FOR:
+  case EXPR_FUN:
+  case EXPR_MEMBER:
+  case EXPR_SUBSCRIPT:
+  case EXPR_TYPECONS:
+  case TYPE_ALIAS:
+  case TYPE_ARRAY:
+  case TYPE_PTR:
+  case TYPE_REF:
+  case TYPE_MUTREF:
+  case TYPE_OPTIONAL:
+  case TYPE_SLICE:
+  case TYPE_MUTSLICE:
+  case TYPE_UNRESOLVED:
+    dlog("TODO %s", nodekind_name(np->kind));
+    break;
+
+  // no attributes
   case NODE_BAD:
   case NODE_COMMENT:
   case STMT_IMPORT:
@@ -358,64 +681,50 @@ static err_t encode_node_attrs(astencode_t* a, buf_t* outbuf, const node_t* np) 
   case TYPE_UNKNOWN:
     break;
 
-  case STMT_TYPEDEF: { const typedef_t* n = (typedef_t*)np;
-    buf_reserve(outbuf, 16);
-    u32 node_id = 123; // FIXME
-    outbuf->chars[outbuf->len++] = ' ';
-    outbuf->len += fmt_u64_base10(outbuf->chars + outbuf->len, 10, node_id);
-    // ADD_NODE(&n->type);
-    break; }
+  } // switch
 
-  // todo
-  case NODE_UNIT:
-  case EXPR_ARRAYLIT:
-  case EXPR_BLOCK:
-  case EXPR_ASSIGN:
-  case EXPR_BINOP:
-  case EXPR_DEREF:
-  case EXPR_POSTFIXOP:
-  case EXPR_PREFIXOP:
-  case EXPR_ID:
-  case EXPR_RETURN:
-  case EXPR_VAR:
-  case EXPR_LET:
-  case EXPR_PARAM:
-  case EXPR_FIELD:
-  case EXPR_CALL:
-  case EXPR_IF:
-  case EXPR_FOR:
-  case EXPR_FUN:
-  case EXPR_MEMBER:
-  case EXPR_SUBSCRIPT:
-  case EXPR_TYPECONS:
-  case TYPE_ALIAS:
-  case TYPE_ARRAY:
-  case TYPE_FUN:
-  case TYPE_PTR:
-  case TYPE_REF:
-  case TYPE_MUTREF:
-  case TYPE_OPTIONAL:
-  case TYPE_SLICE:
-  case TYPE_MUTSLICE:
-  case TYPE_STRUCT:
-  case TYPE_UNRESOLVED:
-    dlog("TODO %s", nodekind_name(np->kind));
-    break;
-  }
+  #undef NONE
+  #undef SEP
+  #undef U32X
+  #undef U64X
+  #undef SYMREF
+  #undef SYMREFZ
+  #undef NODEREF
+  #undef NODEREFZ
+
+  if (!ok)
+    return false;
+  outbuf->len += (usize)(uintptr)(p - (outbuf->chars + outbuf->len));
   return 0;
 }
 
 
 static err_t encode_node(astencode_t* a, buf_t* outbuf, const node_t* n) {
   // allocate space
-  if UNLIKELY(!buf_reserve(outbuf, MIN_ENCODED_NODE_SIZE + 4))
+  if UNLIKELY(!buf_reserve(outbuf, ALLOC_ENCODED_NODE_SIZE))
     return ErrNoMem;
 
   assertf(IS_ALIGN2(outbuf->len, 4), "%zu", outbuf->len);
 
+  // buf_printf(outbuf, "%-4u", node_index(a, n)); // XXX
+
   // write 4-byte node kind ID
   *(u32*)&outbuf->bytes[outbuf->len] = nodekind_id_tab[n->kind];
   outbuf->len += 4;
+
+  // // NODEFLAGS_NOENCODE: flags to exclude from AST encoding
+  // #define NODEFLAGS_NOENCODE  (NF_CHECKED | NF_UNKNOWN)
+  // buf_push(outbuf, ' '); buf_print_u32(outbuf, n->flags & ~NODEFLAGS_NOENCODE, 16);
+
+  // common attributes of node_t
+  buf_push(outbuf, ' '); buf_print_u32(outbuf, n->flags, 16);
+  buf_push(outbuf, ' '); buf_print_u32(outbuf, n->nuse, 16);
+
+  // TODO: remap srcfile
+  buf_push(outbuf, ' '); buf_print_u64(outbuf, n->loc, 16);
+  // loc_t loc = loc_make_unchecked(0,
+  //   loc_line(n->loc), loc_col(n->loc), loc_width(n->loc));
+  // buf_push(outbuf, ' '); buf_print_u64(outbuf, loc, 16);
 
   // attributes
   err_t err = encode_node_attrs(a, outbuf, n);
@@ -426,55 +735,69 @@ static err_t encode_node(astencode_t* a, buf_t* outbuf, const node_t* n) {
 }
 
 
-err_t astencode_encode(astencode_t* a, buf_t* outbuf) {
+static usize calc_min_allocsize(astencode_t* a) {
   // approximate space needed, starting with the header
   usize nbyte = 4 + 1   // magic SP
               + 10 + 1  // version SP
+              + 10 + 1  // symcount SP
               + 10 + 1  // nodecount SP
               + 10 + 1; // rootcount LF
+
+  // add space needed to encode symbols
+  nbyte += a->symsize;
+
+  // align to 4-byte boundary for nodes
   nbyte = ALIGN2(nbyte, 4);
 
   // approximate space needed to encode nodes
   usize nbyte_nodes;
   if (check_mul_overflow((usize)a->nodelist.len, MIN_ENCODED_NODE_SIZE, &nbyte_nodes))
-    return ErrOverflow;
+    goto overflow;
 
   // add space needed to encode nodes to nbyte
   if (check_add_overflow(nbyte_nodes, nbyte, &nbyte))
-    return ErrOverflow;
+    goto overflow;
 
+  assert(nbyte < USIZE_MAX);
+  return ALIGN2(nbyte, 4);
+overflow:
+  return USIZE_MAX;
+}
+
+
+err_t astencode_encode(astencode_t* a, buf_t* outbuf) {
   // allocate space in outbuf
-  if UNLIKELY(!buf_reserve(outbuf, ALIGN2(nbyte, 4)))
+  usize nbyte = calc_min_allocsize(a);
+  if (nbyte == USIZE_MAX)
+    return ErrOverflow;
+  if UNLIKELY(!buf_reserve(outbuf, nbyte))
     return ErrNoMem;
 
   // write header
   encode_header(a, outbuf);
 
-  // rootlist cursor
-  // Note: a neat property of root node detection is that node indices in nodelist
-  // are in the same order as entries in the rootlist, which means that all we have
-  // to do to check if a node is in the rootlist is compare it to rootlistp, and if
-  // it's a match we increment rootlistp.
-  u32 rootlist_i = 0;
-  u32 next_root_id = a->rootlist.len > 0 ? a->rootlist.v[0] : a->nodelist.len;
+  // write symbols
+  encode_syms(a, outbuf);
 
-  // write non-root nodes
+  // replace last '\n' with a padded '\n'
+  outbuf->len += append_aligned_linebreak_unchecked(
+    outbuf->bytes + (outbuf->len - 1)) - 1;
+
+  // write nodes
   err_t err = 0;
-  for (u32 i = 0; i < a->nodelist.len && !err; i++) {
-    if (i == next_root_id) {
-      // defer encoding of root node for later
-      rootlist_i++;
-      if (rootlist_i < a->rootlist.len)
-        next_root_id = a->rootlist.v[rootlist_i];
-    } else {
-      err = encode_node(a, outbuf, a->nodelist.v[i]);
-    }
-  }
+  for (u32 i = 0; i < a->nodelist.len && !err; i++)
+    err = encode_node(a, outbuf, a->nodelist.v[i]);
+  // for (u32 i = a->nodelist.len; i > 0 && !err; )
+  //   err = encode_node(a, outbuf, a->nodelist.v[--i]);
 
-  // write root nodes
+  // write root-node IDs
+  nbyte = (usize)a->rootlist.len * 9; // "FFFFFFFF\n"
+  if UNLIKELY(!buf_reserve(outbuf, nbyte))
+    return ErrNoMem;
   for (u32 i = 0; i < a->rootlist.len && !err; i++) {
     u32 node_i = a->rootlist.v[i];
-    err = encode_node(a, outbuf, a->nodelist.v[node_i]);
+    outbuf->len += fmt_u64_base16(outbuf->chars + outbuf->len, 8, (u64)node_i);
+    outbuf->chars[outbuf->len++] = '\n';
   }
 
   return err;
@@ -490,8 +813,9 @@ err_t astencode_init(astencode_t* a, memalloc_t ma) {
 
 
 void astencode_dispose(astencode_t* a) {
-  ptrarray_dispose(&a->children, a->ma);
-  ptrarray_dispose(&a->nodelist, a->ma);
+  nodearray_dispose(&a->nodelist, a->ma);
+  ptrarray_dispose(&a->symmap, a->ma);
   u32array_dispose(&a->rootlist, a->ma);
+  u32array_dispose(&a->srcfileids, a->ma);
   map_dispose(&a->nodemap, a->ma);
 }

@@ -3,27 +3,31 @@
 #include "compiler.h"
 
 
-static bool add_nodes(ptrarray_t* children, memalloc_t ma, const ptrarray_t* nodes) {
-  void** p = ptrarray_alloc(children, ma, nodes->len);
+static bool add_nodes(nodearray_t* children, memalloc_t ma, nodearray_t na) {
+  node_t** p = nodearray_alloc(children, ma, na.len);
   if (!p)
     return false;
-  memcpy(p, nodes->v, nodes->len * sizeof(void*));
+  memcpy(p, na.v, na.len * sizeof(void*));
+
   #ifdef DEBUG
-  for (u32 i = 0; i < nodes->len; i++)
-    assertf(nodes->v[i] != NULL, "nodes[%u]", i);
+  for (u32 i = 0; i < na.len; i++) {
+    // dlog("%s na.v[%u] %s", __FUNCTION__, i, nodekind_name(((node_t*)na.v[i])->kind));
+    assertf(na.v[i] != NULL, "nodes[%u]", i);
+  }
   #endif
+
   return true;
 }
 
 
-err_t ast_childrenof(ptrarray_t* children, memalloc_t ma, const node_t* np) {
+err_t ast_childrenof(nodearray_t* children, memalloc_t ma, const node_t* np) {
   #define ADD_NODE(n) ({ \
-    if ((n) && !ptrarray_push(children, ma, (void*)(n))) \
+    if ((n) && !nodearray_push(children, ma, (void*)(n))) \
       goto errnomem; \
   })
 
-  #define ADD_ARRAY_OF_NODES(ap) \
-    ({ if (!add_nodes(children, ma, (ap))) \
+  #define ADD_ARRAY_OF_NODES(pa) \
+    ({ if (!add_nodes(children, ma, *(pa))) \
          goto errnomem; })
 
   if (node_isexpr(np) && (np->kind < EXPR_BOOLLIT || EXPR_STRLIT < np->kind))
@@ -59,7 +63,7 @@ err_t ast_childrenof(ptrarray_t* children, memalloc_t ma, const node_t* np) {
     ADD_ARRAY_OF_NODES(&n->children); break; }
 
   case STMT_TYPEDEF: { const typedef_t* n = (typedef_t*)np;
-    ADD_NODE(&n->type); break; }
+    ADD_NODE(n->type); break; }
 
   case EXPR_ARRAYLIT: { const arraylit_t* n = (arraylit_t*)np;
     ADD_ARRAY_OF_NODES(&n->values); break; }
@@ -152,6 +156,7 @@ err_t ast_childrenof(ptrarray_t* children, memalloc_t ma, const node_t* np) {
 
   case TYPE_UNRESOLVED: { const unresolvedtype_t* n = (unresolvedtype_t*)np;
     ADD_NODE(n->resolved); break; }
+
   }
 
   return 0;

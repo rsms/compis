@@ -2,10 +2,114 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "colib.h"
 #include "compiler.h"
+
+#ifdef DEBUG
 #include "abuf.h"
+#include "debugutil.h"
+#endif
 
 #include <stdlib.h>
 #include <strings.h> // strncasecmp
+
+
+//——————————————————————— AST stats ———————————————————————
+#ifdef DEBUG
+typedef struct { const char* name; usize size; } ast_typeinfo_t;
+
+static int sort_ast_typeinfo(
+  const ast_typeinfo_t* x, const ast_typeinfo_t* y, void* nullable ctx)
+{
+  return x->size < y->size ? -1 : y->size < x->size ? 1 : 0;
+}
+
+__attribute__((constructor)) static void print_ast_stats() {
+  ast_typeinfo_t ast_types[] = {
+    { "node_t", sizeof(node_t) },
+    { "type_t", sizeof(type_t) },
+    { "expr_t", sizeof(expr_t) },
+    { "unit_t", sizeof(unit_t) },
+    { "aliastype_t", sizeof(aliastype_t) },
+    { "arraylit_t", sizeof(arraylit_t) },
+    { "arraytype_t", sizeof(arraytype_t) },
+    { "binop_t", sizeof(binop_t) },
+    { "block_t", sizeof(block_t) },
+    { "call_t", sizeof(call_t) },
+    { "forexpr_t", sizeof(forexpr_t) },
+    { "fun_t", sizeof(fun_t) },
+    { "funtype_t", sizeof(funtype_t) },
+    { "idexpr_t", sizeof(idexpr_t) },
+    { "ifexpr_t", sizeof(ifexpr_t) },
+    { "local_t", sizeof(local_t) },
+    { "member_t", sizeof(member_t) },
+    { "retexpr_t", sizeof(retexpr_t) },
+    { "structtype_t", sizeof(structtype_t) },
+    { "subscript_t", sizeof(subscript_t) },
+    { "typecons_t", sizeof(typecons_t) },
+    { "typedef_t", sizeof(typedef_t) },
+    { "unaryop_t", sizeof(unaryop_t) },
+    { "unresolvedtype_t", sizeof(unresolvedtype_t) },
+    { "intlit_t", sizeof(intlit_t) },
+    { "floatlit_t", sizeof(floatlit_t) },
+    { "strlit_t", sizeof(strlit_t) },
+  };
+
+  co_qsort(ast_types, countof(ast_types), sizeof(ast_types[0]),
+    (co_qsort_cmp)sort_ast_typeinfo, NULL);
+
+  printf("——————————————————————— AST stats ———————————————————————\n");
+
+
+  #ifdef CO_DEBUG_AST_STATS
+  {
+    usize size_avg = 0;
+    usize size_max = 0;
+    int namew = 0;
+    for (usize i = 0; i < countof(ast_types); i++) {
+      namew = MAX(namew, (int)strlen(ast_types[i].name));
+      size_avg += ast_types[i].size;
+      size_max = MAX(size_max, ast_types[i].size);
+    }
+    size_avg /= countof(ast_types);
+
+    for (usize i = 0; i < countof(ast_types); i++)
+      printf("%-*s %3zu\n", namew, ast_types[i].name, ast_types[i].size);
+    printf("%-*s    \n",  namew, "");
+    printf("%-*s %3zu\n", namew, "average", size_avg);
+    printf("%-*s %3zu\n", namew, "max", size_max);
+
+    printf("\n");
+  }
+  #else
+    printf("(build with -DCO_DEBUG_AST_STATS for more details)\n");
+  #endif
+
+
+  usize histogram_labels[countof(ast_types)] = {0};
+  usize histogram_counts[countof(ast_types)] = {0};
+  usize histogram_len = 0;
+  for (usize i = 0; i < countof(ast_types); i++) {
+    bool found = false;
+    for (usize j = 0; j < histogram_len; j++) {
+      if (ast_types[i].size == histogram_labels[j]) {
+        histogram_counts[j]++;
+        found = true;
+        break;
+      }
+    }
+    if (!found) {
+      histogram_labels[histogram_len] = ast_types[i].size;
+      histogram_counts[histogram_len] = 1;
+      histogram_len++;
+    }
+  }
+  buf_t buf = buf_make(memalloc_ctx());
+  debug_histogram_fmt(&buf, histogram_labels, histogram_counts, histogram_len);
+  fwrite(buf.p, buf.len, 1, stdout);
+  buf_dispose(&buf);
+  printf("—————————————————————————————————————————————————————————\n");
+} // print_ast_stats
+#endif // DEBUG
+//——————————————————————— end AST stats ———————————————————————
 
 
 typedef enum {
@@ -485,10 +589,10 @@ err_duplicate:
 // —————————————————————————————————————————————————————————————————————————————————————
 
 
-static void push_child(parser_t* p, ptrarray_t* children, void* child) {
-  if UNLIKELY(!ptrarray_push(children, p->ast_ma, child))
-    out_of_mem(p);
-}
+// static void push_child(parser_t* p, ptrarray_t* children, void* child) {
+//   if UNLIKELY(!ptrarray_push(children, p->ast_ma, child))
+//     out_of_mem(p);
+// }
 
 
 static void dotctx_push(parser_t* p, expr_t* nullable n) {
@@ -612,9 +716,8 @@ fun_t* nullable lookup_typefun(parser_t* p, type_t* recv, sym_t name) {
 
 
 local_t* nullable lookup_struct_field(structtype_t* st, sym_t name) {
-  ptrarray_t fields = st->fields;
-  for (u32 i = 0; i < fields.len; i++) {
-    local_t* f = (local_t*)fields.v[i];
+  for (u32 i = 0; i < st->fields.len; i++) {
+    local_t* f = (local_t*)st->fields.v[i];
     if (f->name == name)
       return f;
   }
@@ -622,9 +725,94 @@ local_t* nullable lookup_struct_field(structtype_t* st, sym_t name) {
 }
 
 
+static bool nodearray_copy(nodearray_t* dst, memalloc_t ma, const nodearray_t* src) {
+  if (src->len == 0) {
+    dst->len = 0;
+  } else {
+    if UNLIKELY(dst->cap != 0)
+      mem_freex(ma, MEM(dst->v, (usize)dst->cap * sizeof(void*)));
+    usize nbyte = (usize)src->len * sizeof(void*);
+    void* v = mem_alloc(ma, nbyte).p;
+    if UNLIKELY(!v)
+      return false;
+    memcpy(v, src->v, nbyte);
+    dst->v = v;
+    dst->len = src->len;
+    dst->cap = src->len;
+  }
+  return true;
+}
+
+static nodearray_t pnodearray_alloc(parser_t* p) {
+  if (p->free_nodearrays.cap <= p->free_nodearrays.len) {
+    if (p->free_nodearrays.cap == 0) {
+      usize cap = 64/sizeof(nodearray_t);
+      // dlog("alloc %zu initial nodearrays", cap);
+      p->free_nodearrays.v = mem_alloctv(p->ma, nodearray_t, cap);
+      if UNLIKELY(!p->free_nodearrays.v)
+        goto last_resort;
+      p->free_nodearrays.cap = (u32)cap;
+    } else {
+      usize oldcount = p->free_nodearrays.cap;
+      usize newcount = oldcount + 1;
+      // dlog("alloc an extra nodearray");
+      void* v = mem_resizev(
+        p->ma, p->free_nodearrays.v, oldcount, newcount, sizeof(nodearray_t));
+      if (!v)
+        goto last_resort;
+      p->free_nodearrays.v = v;
+      p->free_nodearrays.cap += 1;
+    }
+  } else {
+    // dlog("recycle nodearray with cap %u",
+    //   p->free_nodearrays.v[p->free_nodearrays.len].cap);
+    p->free_nodearrays.v[p->free_nodearrays.len].len = 0;
+  }
+  return p->free_nodearrays.v[p->free_nodearrays.len++];
+last_resort:
+  return (nodearray_t){0};
+}
+
+static void pnodearray_dispose(parser_t* p, nodearray_t* na) {
+  if (p->free_nodearrays.len == 0) {
+    nodearray_dispose(na, p->ma);
+  } else {
+    p->free_nodearrays.v[--p->free_nodearrays.len] = *na;
+  }
+}
+
+static bool pnodearray_push(parser_t* p, nodearray_t* na, void* n) {
+  bool ok = nodearray_push(na, p->ma, n);
+  if UNLIKELY(!ok)
+    out_of_mem(p);
+  return ok;
+}
+
+static bool pnodearray_assignto(parser_t* p, nodearray_t* na, nodearray_t* dst) {
+  bool ok = nodearray_copy(dst, p->ast_ma, na);
+  if UNLIKELY(!ok)
+    out_of_mem(p);
+  pnodearray_dispose(p, na);
+  return ok;
+}
+
+static void pnodearray_assign1(parser_t* p, nodearray_t* dst, void* n1) {
+  if UNLIKELY(dst->cap != 0)
+    mem_freex(p->ast_ma, MEM(dst->v, (usize)dst->cap * sizeof(void*)));
+  usize nbyte = sizeof(void*);
+  node_t** v = mem_alloc(p->ast_ma, nbyte).p;
+  if UNLIKELY(!v)
+    return;
+  *v = n1;
+  dst->v = v;
+  dst->len = 1;
+  dst->cap = 1;
+}
+
+
 // field = id ("," id)* type ("=" expr ("," expr))
-static bool struct_fieldset(parser_t* p, structtype_t* st) {
-  u32 fields_start = st->fields.len;
+static bool struct_fieldset(parser_t* p, structtype_t* st, nodearray_t* fields) {
+  u32 fields_start = fields->len;
   for (;;) {
     local_t* f = mknode(p, local_t, EXPR_FIELD);
     f->name = p->scanner.sym;
@@ -645,15 +833,15 @@ static bool struct_fieldset(parser_t* p, structtype_t* st) {
         warning_at(p, (node_t*)existing, "previously defined here");
     }
 
-    push_child(p, &st->fields, f);
+    pnodearray_push(p, fields, f);
     if (currtok(p) != TCOMMA)
       break;
     next(p);
   }
 
   type_t* t = type(p, PREC_MEMBER);
-  for (u32 i = fields_start; i < st->fields.len; i++) {
-    local_t* f = st->fields.v[i];
+  for (u32 i = fields_start; i < fields->len; i++) {
+    local_t* f = (local_t*)fields->v[i];
     f->type = t;
     bubble_flags(f, t);
     bubble_flags(st, f);
@@ -665,12 +853,12 @@ static bool struct_fieldset(parser_t* p, structtype_t* st) {
   next(p);
   u32 i = fields_start;
   for (;;) {
-    if (i == st->fields.len) {
+    if (i == fields->len) {
       error(p, "excess field initializer");
       expr(p, PREC_COMMA, NF_RVALUE);
       break;
     }
-    local_t* f = st->fields.v[i++];
+    local_t* f = (local_t*)fields->v[i++];
     f->init = expr(p, PREC_COMMA, NF_RVALUE);
     bubble_flags(f, f->init);
     bubble_flags(st, f->init);
@@ -678,7 +866,7 @@ static bool struct_fieldset(parser_t* p, structtype_t* st) {
       break;
     next(p);
   }
-  if (i < st->fields.len)
+  if (i < fields->len)
     error(p, "missing field initializer");
   return true;
 }
@@ -741,6 +929,7 @@ static fun_t* fun(parser_t*, nodeflag_t, type_t* nullable recvt, bool requirenam
 // struct parser that prohibits inline "fun" definitions in struct
 static type_t* type_struct1(parser_t* p, structtype_t* st) {
   bool reported_fun = false;
+  nodearray_t nary = pnodearray_alloc(p); // fields are accumulated in p->nodearray
   while (currtok(p) != TRBRACE) {
     if UNLIKELY(currtok(p) == TFUN) {
       if (!reported_fun) {
@@ -752,11 +941,12 @@ static type_t* type_struct1(parser_t* p, structtype_t* st) {
         break;
       continue;
     }
-    st->hasinit |= struct_fieldset(p, st);
+    st->hasinit |= struct_fieldset(p, st, &nary);
     if (currtok(p) != TSEMI)
       break;
     next(p);
   }
+  pnodearray_assignto(p, &nary, &st->fields);
   expect(p, TRBRACE, "to match {");
   return (type_t*)st;
 }
@@ -837,38 +1027,44 @@ static type_t* type_optional(parser_t* p) {
 
 // typedef = "type" id type
 static stmt_t* stmt_typedef(parser_t* p) {
+  // "type"
   typedef_t* n = mknode(p, typedef_t, STMT_TYPEDEF);
   next(p);
 
-  n->type.kind = TYPE_ALIAS;
-  n->type.loc = currloc(p);
-
+  // name
+  loc_t nameloc = currloc(p);
   sym_t name = p->scanner.sym;
-  if (expect(p, TID, ""))
-    define(p, name, (node_t*)&n->type);
+  if (!expect(p, TID, ""))
+    name = sym__;
 
-  // special path for struct to avoid (typedef (alias x (struct x))),
-  // instead we simply get (typedef (struct x))
+  // type
   if (currtok(p) == TLBRACE) {
-    n->type.kind = TYPE_STRUCT;
-    n->type.loc = currloc(p);
+    // special path for struct to avoid (typedef (alias x (struct x))),
+    // instead we simply get (typedef (struct x))
+    structtype_t* t = mknode(p, structtype_t, TYPE_STRUCT);
+    n->type = (type_t*)t;
+    define(p, name, (node_t*)t);
+    t->name = name;
     next(p);
-    n->structtype.name = name;
-    type_struct1(p, &n->structtype);
-    bubble_flags(n, &n->structtype);
-  } else {
-    n->aliastype.name = name;
-    n->aliastype.elem = type(p, PREC_COMMA);
-    bubble_flags(n, n->aliastype.elem);
-    if UNLIKELY(type_isopt(n->aliastype.elem)) {
-      error_at(p, n->aliastype.elem,
-        "cannot define optional aliased type;"
-        " instead, mark as optional at use sites with ?%s", name);
-    }
-    if (n->aliastype.elem->kind == TYPE_STRUCT)
-      ((structtype_t*)n->aliastype.elem)->name = n->aliastype.name;
+    type_struct1(p, t);
+    bubble_flags(n, t);
+    return (stmt_t*)n;
   }
 
+  aliastype_t* t = mknode(p, aliastype_t, TYPE_ALIAS);
+  n->type = (type_t*)t;
+  define(p, name, (node_t*)t);
+  t->loc = nameloc;
+  t->name = name;
+  t->elem = type(p, PREC_COMMA);
+  bubble_flags(n, t->elem);
+  if UNLIKELY(type_isopt(t->elem)) {
+    error_at(p, t->elem,
+      "cannot define optional aliased type;"
+      " instead, mark as optional at use sites with ?%s", name);
+  }
+  if (t->elem->kind == TYPE_STRUCT)
+    ((structtype_t*)t->elem)->name = t->name;
   return (stmt_t*)n;
 }
 
@@ -957,13 +1153,13 @@ static block_t* block(parser_t* p, nodeflag_t fl) {
   bool reported_unreachable = false;
   bool exited = false;
 
+  nodearray_t nary = pnodearray_alloc(p);
+
   if (currtok(p) != TRBRACE && currtok(p) != TEOF) {
     for (;;) {
       expr_t* cn = expr(p, PREC_LOWEST, fl);
-      if UNLIKELY(!ptrarray_push(&n->children, p->ast_ma, cn)) {
-        out_of_mem(p);
+      if (!pnodearray_push(p, &nary, cn))
         break;
-      }
       bubble_flags(n, cn);
 
       if (exited) {
@@ -982,6 +1178,7 @@ static block_t* block(parser_t* p, nodeflag_t fl) {
     }
   }
 
+  pnodearray_assignto(p, &nary, &n->children);
   n->endloc = currloc(p);
   expect2(p, TRBRACE, ", expected '}' or ';'");
 
@@ -994,8 +1191,7 @@ static block_t* any_as_block(parser_t* p, nodeflag_t fl) {
     return block(p, fl);
   block_t* n = mkexpr(p, block_t, EXPR_BLOCK, fl);
   expr_t* cn = expr(p, PREC_COMMA, fl);
-  if UNLIKELY(!ptrarray_push(&n->children, p->ast_ma, cn))
-    out_of_mem(p);
+  pnodearray_assign1(p, &n->children, cn);
   bubble_flags(n, cn);
   return n;
 }
@@ -1228,19 +1424,22 @@ static expr_t* expr_boollit(parser_t* p, const parselet_t* pl, nodeflag_t fl) {
 static expr_t* expr_arraylit(parser_t* p, const parselet_t* pl, nodeflag_t fl) {
   arraylit_t* n = mkexpr(p, arraylit_t, EXPR_ARRAYLIT, fl);
   next(p); // consume '['
+  nodearray_t values = pnodearray_alloc(p);
 
   // parse values
   if (currtok(p) != TRBRACK) {
     fl |= NF_RVALUE;
     for (;;) {
       expr_t* val = expr(p, PREC_COMMA, fl);
-      push_child(p, &n->values, val);
+      pnodearray_push(p, &values, val);
       bubble_flags(n, val);
       if (currtok(p) != TSEMI && currtok(p) != TCOMMA)
         break;
       next(p);
     }
   }
+
+  pnodearray_assignto(p, &values, &n->values);
 
   // ']'
   n->endloc = currloc(p);
@@ -1485,6 +1684,8 @@ static void args(parser_t* p, call_t* n, type_t* recvtype, nodeflag_t fl) {
 
   fl |= NF_RVALUE;
 
+  nodearray_t args = pnodearray_alloc(p);
+
   for (;;) {
     expr_t* arg;
     if (currtok(p) == TID) {
@@ -1495,14 +1696,15 @@ static void args(parser_t* p, call_t* n, type_t* recvtype, nodeflag_t fl) {
       arg = expr(p, PREC_COMMA, fl);
     }
 
-    push_child(p, &n->args, arg);
+    pnodearray_push(p, &args, arg);
     bubble_flags(n, arg);
 
     if (currtok(p) != TSEMI && currtok(p) != TCOMMA)
-      return;
+      break;
     next(p);
   }
 
+  pnodearray_assignto(p, &args, &n->args);
 }
 
 
@@ -1642,18 +1844,21 @@ static bool funtype_params(parser_t* p, funtype_t* ft, type_t* nullable recvt) {
   // the case all args are just types e.g. "T1, T2, T3".
   ptrarray_t typeq = {0}; // local_t*[]
 
+  // we accumulate fields in params, which are later copied to ft->params
+  nodearray_t params = pnodearray_alloc(p);
+
   while (currtok(p) != TEOF) {
     local_t* param = mkexpr(p, local_t, EXPR_PARAM, 0);
     if UNLIKELY(param == NULL)
       goto oom;
     param->type = NULL; // clear type_void set by mkexpr for later check
 
-    if (!ptrarray_push(&ft->params, p->ast_ma, param))
+    if (!pnodearray_push(p, &params, param))
       goto oom;
 
     // "mut this"?
     bool this_ismut = false;
-    if (currtok(p) == TMUT && ft->params.len == 1 && lookahead_issym(p, sym_this)) {
+    if (currtok(p) == TMUT && params.len == 1 && lookahead_issym(p, sym_this)) {
       this_ismut = true;
       next(p);
     }
@@ -1665,7 +1870,7 @@ static bool funtype_params(parser_t* p, funtype_t* ft, type_t* nullable recvt) {
       next(p);
 
       // check for "this" as first argument
-      if (param->name == sym_this && ft->params.len == 1 && recvt) {
+      if (param->name == sym_this && params.len == 1 && recvt) {
         isnametype = true;
         param->isthis = true;
         param->ismut = this_ismut;
@@ -1735,6 +1940,7 @@ static bool funtype_params(parser_t* p, funtype_t* ft, type_t* nullable recvt) {
     }
   } // while(!EOF)
 finish:
+  pnodearray_assignto(p, &params, &ft->params);
   if (isnametype) {
     // name-and-type form; e.g. "(x, y T, z Y)".
     // Error if at least one param has type, but last one doesn't, e.g. "(x, y int, z)"
@@ -1766,6 +1972,7 @@ finish:
 oom:
   out_of_mem(p);
 error:
+  pnodearray_dispose(p, &params);
   ptrarray_dispose(&typeq, p->ma);
   return false;
 }
@@ -1910,7 +2117,7 @@ static void fun_body(parser_t* p, fun_t* n, nodeflag_t fl) {
 
   if (funtype_hasthis(ft)) {
     assert(ft->params.len > 0);
-    local_t* thisparam = ft->params.v[0];
+    local_t* thisparam = (local_t*)ft->params.v[0];
     assert(thisparam->kind == EXPR_PARAM);
 
     // idexpr_t* id = mkexpr(p, idexpr_t, EXPR_ID, fl);
@@ -2034,7 +2241,7 @@ static stmt_t* stmt_pub(parser_t* p) {
   loc_t pub_loc = currloc(p);
   next(p);
 
-  // pub "ABI"
+  // 'pub "ABI"'
   abi_t abi = ABI_CO;
   if (currtok(p) == TSTRLIT) {
     slice_t str = scanner_strval(&p->scanner);
@@ -2328,17 +2535,18 @@ err_t parser_parse(parser_t* p, memalloc_t ast_ma, srcfile_t* srcfile, unit_t** 
   // first, parse any import statements
   parse_imports(p);
 
+  nodearray_t stmts = pnodearray_alloc(p);
+
   // next, parse rest of file
   while (currtok(p) != TEOF) {
-    void** np = ptrarray_alloc(&unit->children, p->ast_ma, 1);
-    if UNLIKELY(!np) {
-      out_of_mem(p);
+    stmt_t* n = stmt(p);
+    if (!pnodearray_push(p, &stmts, n))
       break;
-    }
-    *np = stmt(p);
-    bubble_flags(unit, *np);
+    bubble_flags(unit, n);
     expect2(p, TSEMI, "");
   }
+
+  pnodearray_assignto(p, &stmts, &unit->children);
 
   leave_scope(p);
 
@@ -2374,6 +2582,7 @@ void parser_dispose(parser_t* p) {
   ptrarray_dispose(&p->dotctxstack, p->ma);
   scanner_dispose(&p->scanner);
   scope_dispose(&p->scope, p->ma);
+  array_dispose(nodearray_t, (array_t*)&p->free_nodearrays, p->ma);
 }
 
 

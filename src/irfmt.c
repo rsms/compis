@@ -181,7 +181,7 @@ static void fun(fmtctx_t* ctx, const irfun_t* f) {
     CHAR('(');
     funtype_t* ft = (funtype_t*)f->ast->type;
     for (u32 i = 0; i < ft->params.len; i++) {
-      const local_t* param = ft->params.v[i];
+      const local_t* param = (local_t*)ft->params.v[i];
       if (i) PRINT(", ");
       node_fmt(&ctx->out, (node_t*)param, 0);
     }

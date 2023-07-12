@@ -182,10 +182,10 @@ static void* call(ctx_t* ctx, call_t* n) {
   funtype_t* ft = (funtype_t*)recv->type;
   assert( ft->params.len == n->args.len );
   for (u32 i = 0; i < n->args.len; i++) {
-    expr_t* arg = n->args.v[i];
+    expr_t* arg = (expr_t*)n->args.v[i];
     if (arg->kind == EXPR_PARAM) // named argument
       arg = ((local_t*)arg)->init;
-    local_t* param = ft->params.v[i];
+    local_t* param = (local_t*)ft->params.v[i];
     define_local(ctx, param, arg);
   }
   if (ctx->err) // define_local failed

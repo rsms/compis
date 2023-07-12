@@ -35,7 +35,7 @@ static void write_u64(buf_t* buf, u64 v) {
 static void funtype(buf_t* buf, funtype_t* t) {
   write_u32(buf, t->params.len);
   for (u32 i = 0; i < t->params.len; i++) {
-    local_t* param = t->params.v[i];
+    local_t* param = (local_t*)t->params.v[i];
     assert(param->kind == EXPR_PARAM);
     append(buf, assertnotnull(param->type));
   }
@@ -46,7 +46,7 @@ static void funtype(buf_t* buf, funtype_t* t) {
 static void structtype(buf_t* buf, structtype_t* t) {
   write_u32(buf, t->fields.len);
   for (u32 i = 0; i < t->fields.len; i++) {
-    local_t* field = t->fields.v[i];
+    local_t* field = (local_t*)t->fields.v[i];
     assert(field->kind == EXPR_FIELD);
     append(buf, assertnotnull(field->type));
   }

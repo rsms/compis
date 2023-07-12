@@ -190,7 +190,7 @@ void ptrarray_move_to_end(ptrarray_t* a, u32 i) {
 #define ARRAY_ELEM_PTR(elemsize, a, i) ( (a)->ptr + ((usize)(elemsize) * (usize)(i)) )
 
 
-void* nullable _array_sortedset_assign(
+void* _array_sortedset_assign(
   array_t* a, memalloc_t ma, u32 elemsize,
   const void* valptr, array_sorted_cmp_t cmpf, void* ctx)
 {
@@ -218,10 +218,33 @@ void* nullable _array_sortedset_assign(
 }
 
 
+void* _array_sortedset_lookup(
+  const array_t* a, u32 elemsize,
+  const void* valptr, u32* indexp, array_sorted_cmp_t cmpf, void* ctx)
+{
+  // binary search
+  u32 mid, low = 0, high = a->len;
+  while (low < high) {
+    mid = (low + high) / 2;
+    void* existing = ARRAY_ELEM_PTR(elemsize, a, mid);
+    int cmp = cmpf(valptr, existing, ctx);
+    if (cmp == 0) {
+      *indexp = mid;
+      return existing;
+    }
+    if (cmp < 0) {
+      high = mid;
+    } else {
+      low = mid + 1;
+    }
+  }
+  return NULL;
+}
+
+
 static int str_cmp(const char** a, const char** b, void* ctx) {
   return strcmp(*a, *b);
 }
-
 
 bool ptrarray_sortedset_addcstr(ptrarray_t* a, memalloc_t ma, const char* str) {
   const char** vp = array_sortedset_assign(
@@ -238,12 +261,24 @@ static int ptr_cmp(const void** a, const void** b, void* ctx) {
   return *a == *b ? 0 : *a < *b ? -1 : 1;
 }
 
-
 bool ptrarray_sortedset_addptr(ptrarray_t* a, memalloc_t ma, const void* ptr) {
   const void** vp = array_sortedset_assign(
     const void*, a, ma, &ptr, (array_sorted_cmp_t)ptr_cmp, NULL);
   if UNLIKELY(!vp)
     return false;
   *vp = ptr;
+  return true;
+}
+
+
+static int u32_cmp(const u32* a, const u32* b, void* ctx) {
+  return *a == *b ? 0 : *a < *b ? -1 : 1;
+}
+
+bool u32array_sortedset_add(u32array_t* a, memalloc_t ma, u32 v) {
+  u32* vp = array_sortedset_assign(u32, a, ma, &v, (array_sorted_cmp_t)u32_cmp, NULL);
+  if UNLIKELY(!vp)
+    return false;
+  *vp = v;
   return true;
 }

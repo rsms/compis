@@ -255,13 +255,15 @@ typedef struct {
   node_t;
 } stmt_t;
 
+typedef array_type(node_t*) nodearray_t; // cap==len
+DEF_ARRAY_TYPE_API(node_t*, nodearray)
+
 typedef struct import_t import_t;
 typedef struct importid_t importid_t;
 
 typedef struct {
   node_t;
-  ptrarray_t          children;
-  scope_t             scope;
+  nodearray_t         children;
   srcfile_t* nullable srcfile;
   typefuntab_t        tfuns;      // imported type functions
   import_t* nullable  importlist; // list head
@@ -289,7 +291,7 @@ typedef struct import_t {
 } import_t;
 
 typedef struct importid_t {
-  // NOTE: importid_t is not an AST node!
+  // NOTE: —— importid_t is not an AST node! ——
   loc_t                loc;
   sym_t                name;     // e.g. x in "import x from a" (sym__ = "*")
   sym_t nullable       origname; // e.g. y in "import y as x from a"
@@ -327,20 +329,21 @@ typedef struct {
 
 typedef struct {
   usertype_t;
-  ptrarray_t params;       // local_t*[]
-  loc_t      paramsloc;    // location of "(" ...
-  loc_t      paramsendloc; // location of ")"
-  type_t*    result;
-  loc_t      resultloc;    // location of result
+  nodearray_t params;       // local_t*[]
+  loc_t       paramsloc;    // location of "(" ...
+  loc_t       paramsendloc; // location of ")"
+  type_t*     result;
+  loc_t       resultloc;    // location of result
 } funtype_t;
 
 typedef struct {
   usertype_t;
   sym_t nullable   name;        // NULL if anonymous
   char* nullable   mangledname; // mangled name, created in ast_ma by typecheck
-  ptrarray_t       fields;      // local_t*[]
+  nodearray_t      fields;      // local_t*[]
   node_t* nullable nsparent;
   bool             hasinit;     // true if at least one field has an initializer
+  // TODO: move hasinit to nodeflag_t
 } structtype_t;
 
 typedef struct {
@@ -358,11 +361,7 @@ typedef struct {
 
 typedef struct {
   stmt_t;
-  union {
-    type_t       type;
-    aliastype_t  aliastype;
-    structtype_t structtype;
-  };
+  type_t* type;
 } typedef_t;
 
 typedef struct {
@@ -376,7 +375,7 @@ DEF_ARRAY_TYPE_API(drop_t, droparray)
 typedef struct { expr_t; u64 intval; } intlit_t;
 typedef struct { expr_t; double f64val; } floatlit_t;
 typedef struct { expr_t; u8* bytes; usize len; } strlit_t;
-typedef struct { expr_t; loc_t endloc; ptrarray_t values; } arraylit_t;
+typedef struct { expr_t; loc_t endloc; nodearray_t values; } arraylit_t;
 typedef struct { expr_t; sym_t name; node_t* nullable ref; } idexpr_t;
 typedef struct { expr_t; op_t op; expr_t* expr; } unaryop_t;
 typedef struct { expr_t; op_t op; expr_t* left; expr_t* right; } binop_t;
@@ -384,24 +383,23 @@ typedef struct { expr_t; expr_t* nullable value; } retexpr_t;
 
 typedef struct {
   expr_t;
-  expr_t*    recv;
-  ptrarray_t args;
-  loc_t      argsendloc; // location of ")"
+  expr_t*     recv;
+  nodearray_t args;
+  loc_t       argsendloc; // location of ")"
 } call_t;
 
 typedef struct {
   expr_t;
   union {
     expr_t* nullable expr; // argument for primitive types
-    ptrarray_t       args; // arguments for all other types
+    nodearray_t      args; // arguments for all other types
   };
 } typecons_t;
 
 typedef struct { // block is a declaration (stmt) or an expression depending on use
   expr_t;
-  ptrarray_t  children;
+  nodearray_t children;
   droparray_t drops;    // drop_t[]
-  scope_t     scope;
   loc_t       endloc;   // location of terminating '}'
 } block_t;
 
@@ -452,7 +450,7 @@ typedef struct fun_t { // fun is a declaration (stmt) or an expression depending
   block_t* nullable body;         // NULL if function is a prototype
   type_t* nullable  recvt;        // non-NULL for type functions (type of "this")
   char* nullable    mangledname;  // mangled name, created in ast_ma by typecheck
-  abi_t             abi;
+  abi_t             abi; // TODO: move to nodeflag_t
   node_t* nullable  nsparent;
 } fun_t;
 
@@ -576,6 +574,9 @@ typedef struct {
   unit_t* nullable unit;     // current unit
   expr_t* nullable dotctx;   // for ".name" shorthand
   ptrarray_t       dotctxstack;
+
+  array_type(nodearray_t) free_nodearrays;
+
   #if DEBUG
     int traceindent;
   #endif
@@ -860,7 +861,7 @@ fun_t* nullable lookup_method(parser_t* p, type_t* recv, sym_t name);
 const char* node_srcfilename(const node_t* n, locmap_t* lm);
 
 // ast_childrenof appends children of n to children array
-err_t ast_childrenof(ptrarray_t* children, memalloc_t ma, const node_t* n);
+err_t ast_childrenof(nodearray_t* children, memalloc_t ma, const node_t* n);
 
 inline static void bubble_flags(void* parent, void* child) {
   ((node_t*)parent)->flags |= (((node_t*)child)->flags & NODEFLAGS_BUBBLE);

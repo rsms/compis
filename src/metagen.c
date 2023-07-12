@@ -116,8 +116,9 @@ static void fun_proto(GPARAMS, const fun_t* fun) {
 
   OPEN('(', "fun\n");
 
-  err_t err = node_fmt(&g->outbuf, (const node_t*)fun, U32_MAX);
 
+
+  err_t err = node_fmt(&g->outbuf, (const node_t*)fun, U32_MAX);
 
   // PRINT(" (");
   // for (u32 i = 0; i < n->params.len; i++) {

@@ -595,7 +595,7 @@ bool expr_no_side_effects(const expr_t* n) { switch (n->kind) {
     const arraylit_t* alit = (arraylit_t*)n;
     bool no_side_effects = type_cons_no_side_effects(alit->type);
     for (u32 i = 0; no_side_effects && i < alit->values.len; i++)
-      no_side_effects &= expr_no_side_effects(alit->values.v[i]);
+      no_side_effects &= expr_no_side_effects((expr_t*)alit->values.v[i]);
     return no_side_effects;
   }
 
@@ -603,7 +603,7 @@ bool expr_no_side_effects(const expr_t* n) { switch (n->kind) {
     const block_t* block = (block_t*)n;
     bool no_side_effects = true;
     for (u32 i = 0; no_side_effects && i < block->children.len; i++)
-      no_side_effects &= expr_no_side_effects(block->children.v[i]);
+      no_side_effects &= expr_no_side_effects((expr_t*)block->children.v[i]);
     return no_side_effects;
   }
 
@@ -948,7 +948,7 @@ static void structtype(typecheck_t* a, structtype_t** tp) {
   enter_ns(a, st);
 
   for (u32 i = 0; i < st->fields.len; i++) {
-    local_t* f = st->fields.v[i];
+    local_t* f = (local_t*)st->fields.v[i];
     local(a, f);
     assertnotnull(f->type);
 
@@ -1032,7 +1032,7 @@ static void funtype1(typecheck_t* a, funtype_t** np, type_t* thistype) {
   funtype_t* ft = *np;
   typectx_push(a, thistype);
   for (u32 i = 0; i < ft->params.len; i++)
-    local(a, ft->params.v[i]);
+    local(a, (local_t*)ft->params.v[i]);
   type(a, &ft->result);
   typectx_pop(a);
   // TODO: consider NOT interning function types with parameters that have initializers
@@ -1137,7 +1137,7 @@ static void fun(typecheck_t* a, fun_t* n) {
   if (ft->params.len > 0) {
     enter_scope(a);
     for (u32 i = 0; i < ft->params.len; i++) {
-      local_t* param = ft->params.v[i];
+      local_t* param = (local_t*)ft->params.v[i];
       if CHECK_ONCE(param) {
         expr(a, param);
       } else if (n->body && param->name != sym__) {
@@ -1160,7 +1160,7 @@ static void fun(typecheck_t* a, fun_t* n) {
   if (n->recvt && n->name == sym_drop) {
     bool ok = false;
     if (ft->result == type_void && ft->params.len == 1) {
-      local_t* param0 = ft->params.v[0];
+      local_t* param0 = (local_t*)ft->params.v[0];
       ok = param0->type->kind == TYPE_MUTREF;
       if (ok)
         n->recvt->flags |= NF_DROP;
@@ -1735,7 +1735,7 @@ static void arraylit(typecheck_t* a, arraylit_t* n) {
       }
     #else
       if UNLIKELY(at->len > 0 && at->len < n->values.len) {
-        expr_t* origin = n->values.v[at->len];
+        expr_t* origin = (expr_t*)n->values.v[at->len];
         if (loc_line(origin->loc) == 0)
           origin = (expr_t*)n;
         error(a, origin, "excess value in array literal");
@@ -1765,7 +1765,7 @@ static void arraylit(typecheck_t* a, arraylit_t* n) {
 
   for (; i < n->values.len; i++) {
     exprp(a, (expr_t**)&n->values.v[i]);
-    expr_t* v = n->values.v[i];
+    expr_t* v = (expr_t*)n->values.v[i];
     if UNLIKELY(!type_isassignable(a->compiler, at->elem, v->type)) {
       error_unassignable_type(a, v, v->type);
       break;
@@ -1785,7 +1785,7 @@ static expr_t* nullable find_member(typecheck_t* a, type_t* t, sym_t name) {
     for (u32 i = 0; i < st->fields.len; i++) {
       if (((local_t*)st->fields.v[i])->name == name) {
         exprp(a, (expr_t**)&st->fields.v[i]);
-        return st->fields.v[i];
+        return (expr_t*)st->fields.v[i];
       }
     }
   }
@@ -1934,14 +1934,14 @@ static void error_field_type(typecheck_t* a, const expr_t* arg, const local_t* f
 static void convert_call_to_typecons(typecheck_t* a, call_t** np, type_t* t) {
   static_assert(sizeof(typecons_t) <= sizeof(call_t), "");
 
-  ptrarray_t args = (*np)->args;
+  nodearray_t args = (*np)->args;
   typecons_t* tc = (typecons_t*)*np;
 
   tc->kind = EXPR_TYPECONS;
   tc->type = t;
   if (type_isprim(unwrap_alias(t))) {
     assert(args.len == 1);
-    tc->expr = args.v[0];
+    tc->expr = (expr_t*)args.v[0];
   } else {
     tc->args = args;
   }
@@ -1954,7 +1954,7 @@ static void check_call_type_struct(typecheck_t* a, call_t* call, structtype_t* t
   assert(call->args.len <= t->fields.len); // checked by validate_typecall_args
 
   u32 i = 0;
-  ptrarray_t args = call->args;
+  nodearray_t args = call->args;
 
   // build field map
   map_t fieldmap = a->tmpmap;
@@ -1962,7 +1962,7 @@ static void check_call_type_struct(typecheck_t* a, call_t* call, structtype_t* t
   if UNLIKELY(!map_reserve(&fieldmap, a->ma, t->fields.len))
     return out_of_mem(a);
   for (u32 i = 0; i < t->fields.len; i++) {
-    const local_t* f = t->fields.v[i];
+    const local_t* f = (local_t*)t->fields.v[i];
     void** vp = map_assign_ptr(&fieldmap, a->ma, f->name);
     assertnotnull(vp); // map_reserve
     *vp = (void*)f;
@@ -1970,7 +1970,7 @@ static void check_call_type_struct(typecheck_t* a, call_t* call, structtype_t* t
 
   // map arguments
   for (; i < args.len; i++) {
-    expr_t* arg = args.v[i];
+    expr_t* arg = (expr_t*)args.v[i];
     sym_t name = NULL;
 
     switch (arg->kind) {
@@ -2024,7 +2024,7 @@ static void check_call_type_struct(typecheck_t* a, call_t* call, structtype_t* t
       error_field_type(a, arg, f);
     } else {
       implicit_rvalue_deref(a, f->type, (expr_t**)&args.v[i]);
-      arg = args.v[i]; // reload
+      arg = (expr_t*)args.v[i]; // reload
     }
   }
 
@@ -2035,7 +2035,7 @@ static void check_call_type_struct(typecheck_t* a, call_t* call, structtype_t* t
 static void call_type_prim(typecheck_t* a, call_t** np, type_t* dst) {
   call_t* call = *np;
   assert(call->args.len == 1);
-  expr_t* arg = call->args.v[0];
+  expr_t* arg = (expr_t*)call->args.v[0];
 
   if UNLIKELY(!nodekind_isexpr(arg->kind))
     return error(a, arg, "invalid value");
@@ -2185,7 +2185,7 @@ static void call_fun(typecheck_t* a, call_t* call, funtype_t* ft) {
   bool seen_named_arg = false;
 
   for (u32 i = 0; i < paramsc; i++) {
-    expr_t* arg = call->args.v[i];
+    expr_t* arg = (expr_t*)call->args.v[i];
     local_t* param = paramsv[i];
 
 
@@ -2217,7 +2217,7 @@ static void call_fun(typecheck_t* a, call_t* call, funtype_t* ft) {
         break;
       }
       exprp(a, (expr_t**)&call->args.v[i]);
-      arg = call->args.v[i]; // reload
+      arg = (expr_t*)call->args.v[i]; // reload
     }
 
     use(arg);
@@ -2242,7 +2242,7 @@ static void call_fun(typecheck_t* a, call_t* call, funtype_t* ft) {
       // }
     } else {
       implicit_rvalue_deref(a, param->type, (expr_t**)&call->args.v[i]);
-      arg = call->args.v[i]; // reload
+      arg = (expr_t*)call->args.v[i]; // reload
     }
   }
 
@@ -2321,8 +2321,7 @@ static void unresolvedtype(typecheck_t* a, unresolvedtype_t** tp) {
 
 
 static void typedef_(typecheck_t* a, typedef_t* n) {
-  type_t* t = &n->type;
-  type(a, &t);
+  type(a, &n->type);
 }
 
 
@@ -2504,7 +2503,7 @@ static void postanalyze_dependency(typecheck_t* a, void* np) {
 
 static void postanalyze_structtype(typecheck_t* a, structtype_t* st) {
   for (u32 i = 0; i < st->fields.len; i++) {
-    local_t* f = st->fields.v[i];
+    local_t* f = (local_t*)st->fields.v[i];
     postanalyze_dependency(a, f->type);
     if (type_isowner(f->type))
       st->flags |= NF_SUBOWNERS;
@@ -2593,7 +2592,7 @@ err_t typecheck(
       import(&a, im);
 
     for (u32 i = 0; i < unit->children.len; i++)
-      stmt(&a, unit->children.v[i]);
+      stmt(&a, (stmt_t*)unit->children.v[i]);
 
     leave_ns(&a);
     leave_scope(&a);

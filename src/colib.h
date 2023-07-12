@@ -150,6 +150,25 @@ typedef double             f64;
   #endif
 #endif
 
+#if CO_LITTLE_ENDIAN
+  #define _CO_H2BE32(x) ( \
+    (((x) >> 24) & 0x000000FF) | \
+    (((x) >> 8)  & 0x0000FF00) | \
+    (((x) << 8)  & 0x00FF0000) | \
+    (((x) << 24) & 0xFF000000) \
+  )
+  #define CO_H2BE(x) _Generic((x), \
+    i8:  (x), \
+    u8:  (x), \
+    i32: _CO_H2BE32((u32)(x)), \
+    u32: _CO_H2BE32(x) \
+  )
+#else
+  #define CO_H2BE(x) (x)
+#endif
+
+#define CO_STRu32(code) CO_H2BE((u32)(code))
+
 //—————————————————————————————————————————————————————————————————————————————————————
 // nullability
 
@@ -990,6 +1009,7 @@ u32 sndigits10(i64 v);
 usize sfmtu64(char* buf, u64 v, u32 base);
 u32 fmt_u64_base10(char* dst, usize cap, u64 value);
 u32 fmt_i64_base10(char* dst, usize cap, i64 svalue);
+u32 fmt_u64_base16(char* dst, usize cap, u64 value);
 
 int strcasecmp(const char*, const char*);
 inline static bool streq(const char* a, const char* b) { return strcmp(a, b) == 0; }

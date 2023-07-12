@@ -370,7 +370,8 @@ static void funtype(cgen_t* g, const funtype_t* t, const char* nullable name) {
     PRINT("void");
   } else {
     for (u32 i = 0; i < t->params.len; i++) {
-      local_t* param = t->params.v[i]; assert(param->kind == EXPR_PARAM);
+      local_t* param = (local_t*)t->params.v[i];
+      assert(param->kind == EXPR_PARAM);
       // if (!type_isprim(param->type) && !param->ismut)
       //   PRINT("const ");
       if (i) PRINT(", ");
@@ -405,7 +406,7 @@ static void gen_struct_typedef(cgen_t* g, const type_t* tp, sym_t typename) {
     u32 start_lineno = g->lineno;
     const type_t* t = NULL;
     for (u32 i = 0; i < n->fields.len; i++) {
-      const local_t* f = n->fields.v[i];
+      const local_t* f = (local_t*)n->fields.v[i];
       bool newline = loc_line(f->loc) != g->lineno;
       if (newline) {
         if (i) CHAR(';');
@@ -871,7 +872,7 @@ static void gen_drop_custom(cgen_t* g, const drop_t* d, const type_t* bt) {
 static void gen_drop_struct_fields(cgen_t* g, const drop_t* d, const structtype_t* st) {
   buf_t tmpbuf = buf_make(g->ma);
   for (u32 i = st->fields.len; i; ) {
-    const local_t* f = st->fields.v[--i];
+    const local_t* f = (local_t*)st->fields.v[--i];
     const type_t* ft = unwrap_ptr(f->type);
 
     if (!type_isowner(ft))
@@ -1006,7 +1007,7 @@ static bool expr_contains_owners(const expr_t* n) {
     case EXPR_BLOCK: {
       const block_t* b = (const block_t*)n;
       for (u32 i = 0; i < b->children.len; i++) {
-        if (expr_contains_owners(b->children.v[i]))
+        if (expr_contains_owners((expr_t*)b->children.v[i]))
           return true;
       }
       return false;
@@ -1017,7 +1018,7 @@ static bool expr_contains_owners(const expr_t* n) {
       if (expr_contains_owners(call->recv))
         return true;
       for (u32 i = 0; i < call->args.len; i++) {
-        if (expr_contains_owners(call->args.v[i]))
+        if (expr_contains_owners((expr_t*)call->args.v[i]))
           return true;
       }
       return false;
@@ -1068,7 +1069,7 @@ static void block(cgen_t* g, const block_t* n) {
       }
       // simplify expression block with a single sub expression
       if (n->children.len == 1) {
-        expr_rvalue(g, n->children.v[0], n->type);
+        expr_rvalue(g, (expr_t*)n->children.v[0], n->type);
         g->scopenest--;
         return;
       }
@@ -1092,7 +1093,7 @@ static void block(cgen_t* g, const block_t* n) {
   if (n->children.len > 0) {
     sizetuple_t startlens;
     for (u32 i = 0, last = n->children.len - 1; i <= last; i++) {
-      const expr_t* cn = n->children.v[i];
+      const expr_t* cn = (expr_t*)n->children.v[i];
 
       // before returning we need to generate drops, however the return value
       // might use a local that is cleaned up, so we must generate drops _after_
@@ -1226,7 +1227,7 @@ static void fun_proto(cgen_t* g, const fun_t* fun) {
   if (ft->params.len > 0) {
     g->scopenest++;
     for (u32 i = 0; i < ft->params.len; i++) {
-      local_t* param = ft->params.v[i];
+      local_t* param = (local_t*)ft->params.v[i];
       if (i) PRINT(", ");
       // if (!type_isprim(param->type) && !param->ismut)
       //   PRINT("const ");
@@ -1296,22 +1297,22 @@ static void structinit_field(cgen_t* g, const type_t* t, const expr_t* value) {
 }
 
 
-static void structinit(cgen_t* g, const structtype_t* t, const ptrarray_t* args) {
-  assert(args->len <= t->fields.len);
+static void structinit(cgen_t* g, const structtype_t* t, nodearray_t args) {
+  assert(args.len <= t->fields.len);
   CHAR('{');
   u32 i = 0;
-  for (; i < args->len; i++) {
-    const expr_t* arg = args->v[i]; assert(nodekind_isexpr(arg->kind));
-    const local_t* f = t->fields.v[0];
+  for (; i < args.len; i++) {
+    const expr_t* arg = (expr_t*)args.v[i]; assert(nodekind_isexpr(arg->kind));
+    const local_t* f = (local_t*)t->fields.v[0];
     if (arg->kind == EXPR_PARAM)
       break;
     if (i) PRINT(", ");
     structinit_field(g, f->type, arg);
   }
 
-  if (i == args->len && !t->hasinit) {
+  if (i == args.len && !t->hasinit) {
     if (i == 0 && t->fields.len > 0) {
-      const local_t* f = t->fields.v[0];
+      const local_t* f = (local_t*)t->fields.v[0];
       zeroinit(g, f->type);
     }
     CHAR('}');
@@ -1325,7 +1326,7 @@ static void structinit(cgen_t* g, const structtype_t* t, const ptrarray_t* args)
   map_t* initmap = &g->tmpmap;
   map_clear(initmap);
   for (u32 i = posend; i < t->fields.len; i++) {
-    const local_t* f = t->fields.v[i];
+    const local_t* f = (local_t*)t->fields.v[i];
     const void** vp = (const void**)map_assign_ptr(initmap, g->ma, f->name);
     if UNLIKELY(!vp)
       return seterr(g, ErrNoMem);
@@ -1333,9 +1334,9 @@ static void structinit(cgen_t* g, const structtype_t* t, const ptrarray_t* args)
   }
 
   // generate named arguments
-  for (; i < args->len; i++) {
+  for (; i < args.len; i++) {
     if (i) PRINT(", ");
-    const local_t* arg = args->v[i];
+    const local_t* arg = (local_t*)args.v[i];
     CHAR('.'); PRINT(arg->name); CHAR('=');
     const local_t** fp = (const local_t**)map_lookup_ptr(initmap, arg->name);
     assert(fp && *fp);
@@ -1428,7 +1429,7 @@ again:
     PRINT("NULL");
     break;
   case TYPE_STRUCT:
-    structinit(g, (const structtype_t*)t, &(ptrarray_t){0});
+    structinit(g, (const structtype_t*)t, (nodearray_t){0});
     break;
   default:
     debugdie(g, t, "unexpected type %s", nodekind_name(t->kind));
@@ -1457,14 +1458,14 @@ static void primtype_cast(cgen_t* g, const type_t* t, const expr_t* nullable val
 static void call_type(cgen_t* g, const call_t* n, const type_t* t) {
   if (type_isprim(t)) {
     assert(n->args.len < 2);
-    return primtype_cast(g, t, n->args.len ? n->args.v[0] : NULL);
+    return primtype_cast(g, t, n->args.len ? (expr_t*)n->args.v[0] : NULL);
   }
 
   CHAR('('); type(g, t); CHAR(')');
 
   switch (t->kind) {
   case TYPE_STRUCT:
-    structinit(g, (const structtype_t*)t, &n->args);
+    structinit(g, (const structtype_t*)t, n->args);
     break;
   default:
     dlog("NOT IMPLEMENTED: type call %s", nodekind_name(t->kind));
@@ -1482,7 +1483,7 @@ static void call_fn_recv(cgen_t* g, const call_t* n, expr_t** selfp, bool* issel
         break;
       funtype_t* ft = (funtype_t*)fn->type;
       if (ft->params.len > 0 && ((const local_t*)ft->params.v[0])->isthis) {
-        const local_t* thisparam = ft->params.v[0];
+        const local_t* thisparam = (local_t*)ft->params.v[0];
         *isselfrefp = type_isref(thisparam->type);
         *selfp = m->recv;
       }
@@ -1529,7 +1530,7 @@ static void call_fun(cgen_t* g, const call_t* n) {
   }
   for (u32 i = 0; i < n->args.len; i++) {
     if (i) PRINT(", ");
-    const expr_t* arg = n->args.v[i];
+    const expr_t* arg = (expr_t*)n->args.v[i];
     if (arg->kind == EXPR_PARAM) // named argument
       arg = ((local_t*)arg)->init;
     const type_t* dst_t = ((local_t*)ft->params.v[i])->type;
@@ -1640,7 +1641,7 @@ static void arraylit1(cgen_t* g, const arraylit_t* n, u64 len) {
   PRINTF("[%llu]){", len);
   for (u32 i = 0; i < n->values.len; i++) {
     if (i) CHAR(',');
-    expr(g, n->values.v[i]);
+    expr(g, (expr_t*)n->values.v[i]);
   }
   PRINT("}");
 }
@@ -2187,7 +2188,7 @@ static void forexpr(cgen_t* g, const forexpr_t* n) {
 static void typedef_(cgen_t* g, const typedef_t* n) {
   gentypename_t gentypename;
   gentypedef_t gentypedef;
-  switch (n->type.kind) {
+  switch (n->type->kind) {
   case TYPE_STRUCT:
     gentypename = gen_struct_typename;
     gentypedef = gen_struct_typedef;
@@ -2197,10 +2198,10 @@ static void typedef_(cgen_t* g, const typedef_t* n) {
     gentypedef = gen_alias_typedef;
     break;
   default:
-    assertf(0, "unexpected %s", nodekind_name(n->type.kind));
+    assertf(0, "unexpected %s", nodekind_name(n->type->kind));
     panic("typedef kind");
   }
-  intern_typedef(g, (type_t*)&n->type, gentypename, gentypedef);
+  intern_typedef(g, n->type, gentypename, gentypedef);
 }
 
 
@@ -2278,7 +2279,7 @@ static void unit_impl(cgen_t* g, const unit_t* unit) {
   // external function prototypes (pure declarations)
   g->srcfileid = 0;
   for (u32 i = 0; i < unit->children.len; i++) {
-    const fun_t* fn = unit->children.v[i];
+    const fun_t* fn = (fun_t*)unit->children.v[i];
     if (fn->kind == EXPR_FUN && !fn->body) {
       startline(g, fn->loc);
       fun_proto(g, fn);
@@ -2290,7 +2291,7 @@ static void unit_impl(cgen_t* g, const unit_t* unit) {
   bool printed_head = false;
   g->srcfileid = 0;
   for (u32 i = 0; i < unit->children.len; i++) {
-    const fun_t* fn = unit->children.v[i];
+    const fun_t* fn = (fun_t*)unit->children.v[i];
     if (fn->kind == EXPR_FUN && fn->body && (fn->flags & NF_VIS_MASK) == NF_VIS_UNIT) {
       if (!printed_head) {
         printed_head = true;

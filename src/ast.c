@@ -140,7 +140,7 @@ static void repr_visibility(RPARAMS, const node_t* n) {
 }
 
 
-static void repr_nodearray(RPARAMS, const ptrarray_t* nodes) {
+static void repr_nodearray(RPARAMS, const nodearray_t* nodes) {
   for (usize i = 0; i < nodes->len; i++) {
     CHAR(' ');
     repr(RARGS, nodes->v[i]);
@@ -151,7 +151,7 @@ static void repr_nodearray(RPARAMS, const ptrarray_t* nodes) {
 static void repr_typedef(RPARAMS, const typedef_t* n) {
   repr_visibility(RARGS, (node_t*)n);
   CHAR(' ');
-  repr_type(RARGS, (type_t*)&n->type);
+  repr_type(RARGS, n->type);
 }
 
 
@@ -611,8 +611,8 @@ origin_t node_origin(locmap_t* lm, const node_t* n) {
 
   case STMT_TYPEDEF: {
     typedef_t* td = (typedef_t*)n;
-    if (loc_line(td->type.loc))
-      return origin_make(lm, td->type.loc);
+    if (loc_line(td->type->loc))
+      return origin_make(lm, td->type->loc);
     return r;
   }
 

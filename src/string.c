@@ -91,6 +91,26 @@ u32 sndigits10(i64 v) {
 }
 
 
+static u32 ndigits16(u64 v) {
+  if (v < 0x10) return 1;
+  if (v < 0x100) return 2;
+  if (v < 0x1000) return 3;
+  if (v < 0x1000000000000UL) {
+    if (v < 0x100000000UL) {
+      if (v < 0x1000000) {
+        if (v < 0x10000) return 4;
+        return 5 + (v >= 0x100000);
+      }
+      return 7 + (v >= 0x10000000UL);
+    }
+    if (v < 0x10000000000UL)
+      return 9 + (v >= 0x1000000000UL);
+    return 11 + (v >= 0x100000000000UL);
+  }
+  return 12 + ndigits10(v / 0x1000000000000UL);
+}
+
+
 u32 fmt_u64_base10(char* dst, usize cap, u64 value) {
   // based on https://www.facebook.com/notes/10158791579037200/
   static const char digits[201] =
@@ -169,6 +189,13 @@ usize sfmtu64(char* buf, u64 v, u32 base) {
 }
 
 
+u32 fmt_u64_base16(char* dst, usize cap, u64 value) {
+  if (cap < ndigits16(value))
+    return 0;
+  return (u32)sfmtu64(dst, value, 16);
+}
+
+
 bool string_startswith(const char* s, const char* prefix) {
   usize slen = strlen(s);
   usize prefixlen = strlen(prefix);
@@ -226,7 +253,7 @@ usize string_repr(char* dst, usize dstcap, const void* srcp, usize len) {
       // \xHH
       case '\1'...'\x08':
       case 0x0E ... 0x1F:
-      case 0x7f ... 0xFF:
+      case 0x7f ... 0x9F:
         if (LIKELY( p + 3 < lastp )) {
           p[0] = '\\';
           p[1] = 'x';

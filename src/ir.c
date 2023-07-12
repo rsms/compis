@@ -1409,7 +1409,7 @@ static irval_t* call(ircons_t* c, call_t* n) {
   pusharg(v, recv);
 
   for (u32 i = 0; i < n->args.len; i++) {
-    expr_t* arg = n->args.v[i];
+    expr_t* arg = (expr_t*)n->args.v[i];
     irval_t* arg_v = load_expr(c, arg);
     if (type_isowner(arg_v->type))
       move_owner_outside(c, arg_v);
@@ -1436,7 +1436,7 @@ static irval_t* blockexpr0(ircons_t* c, block_t* n, bool isfunbody) {
   u32 lastrval = (n->children.len-1) + (u32)!isrvalue(n);
 
   for (u32 i = 0; i < n->children.len; i++) {
-    expr_t* cn = n->children.v[i];
+    expr_t* cn = (expr_t*)n->children.v[i];
 
     if (i == lastrval && cn->kind != EXPR_RETURN) {
       irval_t* v = load_expr(c, cn);
@@ -1821,7 +1821,7 @@ static irval_t* strlit(ircons_t* c, strlit_t* n) {
 static irval_t* arraylit(ircons_t* c, arraylit_t* n) {
   irval_t* v = pushval(c, c->b, OP_ARRAY, n->loc, n->type);
   for (u32 i = 0; i < n->values.len; i++) {
-    expr_t* cn = n->values.v[i];
+    expr_t* cn = (expr_t*)n->values.v[i];
     irval_t* vv = load_expr(c, cn);
     if (vv->op != OP_MOVE)
       vv = move_or_copy(c, vv, cn->loc, NULL);
@@ -1990,7 +1990,7 @@ static irfun_t* fun(ircons_t* c, fun_t* n, irfun_t* nullable f) {
 
   // define arguments
   for (u32 i = 0; i < ft->params.len; i++) {
-    local_t* param = ft->params.v[i];
+    local_t* param = (local_t*)ft->params.v[i];
     if (param->name == sym__)
       continue;
     irval_t* v = pushval(c, c->b, OP_ARG, param->loc, param->type);
@@ -2006,7 +2006,7 @@ static irfun_t* fun(ircons_t* c, fun_t* n, irfun_t* nullable f) {
 
   // check if function has implicit return value
   if (ft->result != type_void && n->body->children.len) {
-    expr_t* lastexpr = n->body->children.v[n->body->children.len-1];
+    expr_t* lastexpr = (expr_t*)n->body->children.v[n->body->children.len-1];
     if (lastexpr->kind != EXPR_RETURN)
       n->body->flags |= NF_RVALUE;
   }
@@ -2218,7 +2218,7 @@ static irunit_t* unit(ircons_t* c, unit_t* n) {
   c->unit = u;
 
   for (u32 i = 0; i < n->children.len && c->errcount == 0; i++) {
-    stmt_t* cn = n->children.v[i];
+    stmt_t* cn = (stmt_t*)n->children.v[i];
     {
       TRACE_NODE("stmt ", cn);
       switch (cn->kind) {
