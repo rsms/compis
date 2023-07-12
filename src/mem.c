@@ -53,20 +53,16 @@ typedef struct {
 static_assert(sizeof(bump_allocator_t) == MEMALLOC_BUMP_OVERHEAD, "");
 
 
-static bool bump_alloc_fin(bump_allocator_t* a, mem_t* m, usize size, bool zeroed) {
-  m->p = a->ptr;
-  m->size = size;
-  a->ptr += size;
-  if (zeroed && !(a->flags & MEMALLOC_STORAGE_ZEROED))
-    memset(m->p, 0, size);
-  return true;
-}
-
-
 static bool bump_alloc(bump_allocator_t* a, mem_t* m, usize size, bool zeroed) {
   size = ALIGN2(size, sizeof(void*));
-  if LIKELY(a->ptr + size <= a->end)
-    MUSTTAIL return bump_alloc_fin(a, m, size, zeroed);
+  if LIKELY(a->ptr + size <= a->end) {
+    m->p = a->ptr;
+    m->size = size;
+    a->ptr += size;
+    if (zeroed && !(a->flags & MEMALLOC_STORAGE_ZEROED))
+      memset(m->p, 0, size);
+    return true;
+  }
   *m = (mem_t){0};
   return false;
 }
@@ -78,21 +74,29 @@ static bool bump_resize(bump_allocator_t* a, mem_t* m, usize size, bool zeroed) 
     m->size = size;
     return true;
   }
+
+  // grow tail if we can
   if (a->ptr == m->p + m->size) {
-    // grow tail
     void* newptr = m->p + size;
     if UNLIKELY(newptr > a->end)
-      return false;
+      return false; // no more free space left in slab
     a->ptr = newptr;
     if (zeroed && !(a->flags & MEMALLOC_STORAGE_ZEROED))
       memset(m->p + m->size, 0, size - m->size);
     m->size = size;
     return true;
   }
+
   // new allocation
   if UNLIKELY(a->ptr + size > a->end)
-    return false;
-  MUSTTAIL return bump_alloc_fin(a, m, size, zeroed);
+    return false; // no more free space left in slab
+  memcpy(a->ptr, m->p, m->size);
+  if (zeroed && !(a->flags & MEMALLOC_STORAGE_ZEROED))
+    memset(a->ptr + m->size, 0, size - m->size);
+  m->p = a->ptr;
+  m->size = size;
+  a->ptr += size;
+  return true;
 }
 
 
