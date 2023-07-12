@@ -37,7 +37,7 @@ str_t str_makeempty(usize cap) {
 static bool _str_grow(str_t* s, usize extracap) {
   usize newcap;
   if (s->cap == 0) {
-    newcap = MAX(sizeof(usize), MIN(CEIL_POW2(extracap), MAX(extracap, 256)));
+    newcap = MAX(sizeof(usize), MIN(CEIL_POW2(extracap), MAX(extracap, 64)));
   } else if (s->cap < extracap || check_mul_overflow(s->cap, 2lu, &newcap)) {
     // either the current capacity is less than what we need or cap>USIZE_MAX/2
     if (check_add_overflow(s->cap, CEIL_POW2(extracap), &newcap)) {
