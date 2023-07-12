@@ -34,22 +34,36 @@ bool _array_grow(array_t* a, memalloc_t ma, u32 elemsize, u32 extracap) {
   assert_memalloc(a, ma);
   u32 newcap;
   if (a->cap == 0) {
-    newcap = MAX(extracap, 32u);
+    // initial allocation
+    #ifdef CO_DEBUG_ARRAY_MINALLOC
+      // useful for testing out-of-bounds access along with asan
+      newcap = extracap;
+    #else
+      const u32 ideal_nbyte = 64;
+      newcap = MAX(extracap, ideal_nbyte / elemsize);
+    #endif
+  } else if (a->cap < 65536 && extracap < 65536/2) {
+    // double capacity until we hit 64KiB
+    newcap = a->cap * 2;
   } else {
-    if (check_mul_overflow(a->cap, (u32)2, &newcap))
-      return false;
+    u32 addlcap = MAX(65536u / elemsize, CEIL_POW2(extracap));
+    if UNLIKELY(check_add_overflow(a->cap, addlcap, &newcap)) {
+      // try adding exactly what is needed (extracap)
+      if (check_add_overflow(a->cap, extracap, &newcap))
+        return false;
+    }
   }
 
   usize newsize;
   if (check_mul_overflow((usize)newcap, (usize)elemsize, &newsize))
     return false;
 
-  mem_t m = { .p = a->ptr, .size = a->cap * elemsize };
+  mem_t m = { .p = a->ptr, .size = (usize)a->cap * (usize)elemsize };
   if (!mem_resize(ma, &m, newsize))
     return false;
 
   a->ptr = m.p;
-  a->cap = (u32)(m.size / elemsize);
+  a->cap = (u32)(m.size / (usize)elemsize);
 
   return true;
 }
