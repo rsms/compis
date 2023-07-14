@@ -403,6 +403,7 @@ XFLAGS+=(
   -Wcovered-switch-default \
   -Werror=format-insufficient-args \
   -Werror=bitfield-constant-conversion \
+  -Werror=excess-initializers \
   -Wno-pragma-once-outside-header \
 )
 $TESTING_ENABLED && XFLAGS+=( -D${PP_PREFIX}TESTING_ENABLED )
