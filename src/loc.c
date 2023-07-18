@@ -58,12 +58,16 @@ end:
 }
 
 
-srcfile_t* nullable loc_srcfile(loc_t p, locmap_t* lm) {
-  u32 id = loc_srcfileid(p);
+srcfile_t* nullable locmap_srcfile(locmap_t* lm, u32 srcfileid) {
   rwmutex_rlock(&lm->mu);
-  srcfile_t* sf = lm->m.len > id ? lm->m.v[id] : NULL;
+  srcfile_t* sf = lm->m.len > srcfileid ? lm->m.v[srcfileid] : NULL;
   rwmutex_runlock(&lm->mu);
   return sf;
+}
+
+
+srcfile_t* nullable loc_srcfile(loc_t p, locmap_t* lm) {
+  return locmap_srcfile(lm, loc_srcfileid(p));
 }
 
 

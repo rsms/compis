@@ -16,6 +16,7 @@ typedef struct SHA256 {
 void sha256_init(SHA256* state, u8 hash_storage[32]);
 void sha256_write(SHA256* state, const void* data, usize len);
 void sha256_close(SHA256* state);
+
 void sha256_data(u8 result[32], const u8* data, usize len);
 
 ASSUME_NONNULL_END

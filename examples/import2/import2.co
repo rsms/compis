@@ -1,7 +1,25 @@
-pub type Thing {
-  x, y int
+pub type A {
+  x int
+  // y f64 = 1.2
+  // z f64 = 0.16
 }
-pub fun hello(x int) int {
-  x * x
-}
-fun unused() {}
+type InternalStruct { x int }
+// pub type StructLeakIntType { x InternalStruct }
+
+// pub type Thing {
+//   x, y int
+// }
+// pub fun hello(x int) int {
+//   x * x
+// }
+
+// pub fun exp() {
+// }
+// fun internal() {}
+
+// allow explicitly exporting internal types via aliasing:
+pub type PubStruct InternalStruct
+
+pub type MyArray [A]
+// pub type ArrayLeakIntType [InternalStruct]
+// pub fun leaks_internal_type(x InternalStruct, y C) {}

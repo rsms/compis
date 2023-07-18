@@ -179,6 +179,15 @@ u32 ptrarray_rindexof(const ptrarray_t* a, const void* value) {
 }
 
 
+u32 u32array_rindexof(const u32array_t* a, u32 value) {
+  for (u32 i = a->len; i;) {
+    if (a->v[--i] == value)
+      return i;
+  }
+  return U32_MAX;
+}
+
+
 void ptrarray_move_to_end(ptrarray_t* a, u32 i) {
   assert(a->len > 0);
   assert(i < a->len);

@@ -12,6 +12,7 @@ typedef struct {
 
 str_t str_makelen(const char* p, usize len);
 static str_t str_make(const char* cstr);
+static str_t str_copy(const str_t str);
 str_t str_makeempty(usize cap);
 inline void str_free(str_t);
 
@@ -82,6 +83,10 @@ usize str_replacec(str_t* s, u8 oldc, u8 newc, isize limit);
 
 inline static str_t str_make(const char* cstr) {
   return str_makelen(cstr, strlen(cstr));
+}
+
+inline static str_t str_copy(const str_t str) {
+  return str_makelen(str.p, str.len);
 }
 
 #define str_free(s) mem_free(STR_MEMALLOC, (mem_t*)&(s))

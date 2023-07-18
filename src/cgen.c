@@ -389,7 +389,7 @@ static void funtype(cgen_t* g, const funtype_t* t, const char* nullable name) {
 static sym_t gen_struct_typename(cgen_t* g, const type_t* t) {
   const structtype_t* st = (const structtype_t*)t;
   if (st->mangledname)
-    return st->mangledname;
+    return sym_intern(st->mangledname, strlen(st->mangledname));
   char buf[strlen(CO_TYPE_PREFIX "structXXXXXXXX.")];
   return sym_snprintf(buf, sizeof(buf),
     CO_TYPE_PREFIX "struct%x" CO_TYPE_SUFFIX, g->anon_idgen++);
@@ -568,7 +568,9 @@ static void ptrtype(cgen_t* g, const ptrtype_t* t) {
 
 
 static sym_t gen_alias_typename(cgen_t* g, const type_t* t) {
-  return ((aliastype_t*)t)->name;
+  const aliastype_t* at = (aliastype_t*)t;
+  return sym_intern(at->mangledname, strlen(at->mangledname));
+  // return ((aliastype_t*)t)->name;
 }
 
 static void gen_alias_typedef(cgen_t* g, const type_t* tp, sym_t typename) {
@@ -1614,7 +1616,7 @@ static void boollit(cgen_t* g, const intlit_t* n) {
 static void strlit(cgen_t* g, const strlit_t* n) {
   const type_t* t = n->type;
   if (type_isref(t) && ((reftype_t*)t)->elem->kind == TYPE_ARRAY) {
-    PRINTF("(const u8[%zu]){\"", n->len);
+    PRINTF("(const u8[%llu]){\"", n->len);
     if UNLIKELY(!buf_appendrepr(&g->outbuf, n->bytes, n->len))
       seterr(g, ErrNoMem);
     PRINT("\"}");
@@ -1625,7 +1627,7 @@ static void strlit(cgen_t* g, const strlit_t* n) {
     assert(type_isslice(unwind_aliastypes(t)));
     PRINT("(");
     type(g, t);
-    PRINTF("){%zu,(const u8[%zu]){\"", n->len, n->len);
+    PRINTF("){%llu,(const u8[%llu]){\"", n->len, n->len);
     if UNLIKELY(!buf_appendrepr(&g->outbuf, n->bytes, n->len))
       seterr(g, ErrNoMem);
     PRINT("\"}}");
@@ -2345,12 +2347,23 @@ static void unit_interface(cgen_t* g, const unit_t* unit, nodeflag_t visibility)
 
   g->srcfileid = 0;
 
+
   for (u32 i = 0; i < unit->children.len; i++) {
     const node_t* n = unit->children.v[i];
     if (!(n->flags & visibility)) {
       //dlog("skip %s (%s)", nodekind_name(n->kind), visibility_str(n->flags));
       continue;
     }
+
+    // check for duplicate entries to avoid hard-to-debug situation
+    #ifdef DEBUG
+    for (u32 j = 0; j < unit->children.len; j++) {
+      assertf(i == j || unit->children.v[i] != unit->children.v[j],
+        "duplicate unit->children entries: %s %p at both [%u] & [%u]",
+        nodekind_name(unit->children.v[i]->kind), unit->children.v[i], j, i);
+    }
+    #endif
+
     switch (n->kind) {
       case STMT_TYPEDEF:
         typedef_(g, (typedef_t*)n);

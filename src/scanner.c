@@ -426,6 +426,151 @@ static void string(scanner_t* s) {
 }
 
 
+err_t co_strlit_check(const u8* src, usize* srclenp, usize* declenp) {
+  *declenp = 0;
+  err_t err = 0;
+  usize extralen = 2; // opening and closing '"'
+  const u8* srcstart = src;
+  const u8* srcend = src + *srclenp;
+
+  // smallest possible string literal is ""
+  if UNLIKELY(*srclenp < 2)
+    return ErrEnd;
+
+  // consume opening '"'
+  if UNLIKELY(*src++ != '"')
+    return ErrInvalid;
+
+  while (src < srcend) {
+    switch (*src++) {
+      case '\\':
+        switch (*src++) {
+          case '"': case '\'': case '\\':
+          case '0':
+          case 'a':
+          case 'b':
+          case 't':
+          case 'n':
+          case 'v':
+          case 'f':
+          case 'r':
+            break;
+          case 'x': // \xXX
+            if UNLIKELY(src >= srcend-2 || !ishexdigit(src[0]) || !ishexdigit(src[1])) {
+              dlog("invalid string literal: malformed \\xNN escape sequence");
+              err = ErrInvalid;
+              goto end;
+            }
+            src += 2;
+            extralen += 2;
+            break;
+          case 'u': // \uXXXX
+          case 'U': // \UXXXXXXXX
+            // TODO not yet supported
+            FALLTHROUGH;
+          default:
+            dlog("invalid string literal: unexpected escape \"\\%c\"", *src);
+            err = ErrInvalid;
+            goto end;
+        }
+        extralen++;
+        break;
+      case '"':
+        assert((usize)(uintptr)(src - srcstart) >= extralen);
+        *declenp = (usize)(uintptr)(src - srcstart) - extralen;
+        goto end;
+      case '\n':
+        // this function does not currently support mutliline string literals
+        src--;
+        err = ErrNotSupported;
+        goto end;
+      case 0:
+        src--;
+        err = ErrInvalid;
+        goto end;
+    }
+  }
+  // if we get here, there was no terminating '"'
+  err = ErrEnd;
+end:
+  *srclenp = (usize)(uintptr)(src - srcstart);
+  return err;
+}
+
+
+static u8 read_u8hex(const u8 src[2]) {
+  assert(ishexdigit(src[0]) && ishexdigit(src[1]));
+  // // here's a neat trick to calculate the bit shift amount given a base:
+  // const u32 base = ...;
+  // u32 shift = "\0\1\2\4\7\3\6\5"[((0x17 * base) >> 5) & 7];
+  // // e.g. base=16 => shift=4
+  return (g_intdectab[src[0]] << 4) | g_intdectab[src[1]];
+}
+
+
+err_t co_strlit_decode(const u8* src, usize srclen, u8* dst, usize declen) {
+  // Note: srclen and declen are results from a successful call to co_strlit_check
+  assert(srclen > 1);
+  assert(*src == '"');
+  assert(src[srclen-1] == '"');
+
+  if (declen == 0)
+    return 0;
+
+  src++;                              // he... in '"hello"'
+  const u8* end = src + (srclen - 2); // ...lo in '"hello"'
+  const u8* chunkstart = src;
+
+  #ifdef DEBUG
+  const u8* dstend = dst + declen;
+  #endif
+
+  #define FLUSH(end) { \
+    usize nbyte = (usize)((end) - chunkstart); \
+    memcpy(dst, chunkstart, nbyte); \
+    assert(dst + nbyte <= dstend); \
+    dst += nbyte; \
+  }
+
+  while (src < end) {
+    if (*src == '\\') {
+      FLUSH(src);
+      src++;
+      assert(dst < dstend);
+      switch (*src) {
+        case '"': case '\'': case '\\': *dst++ = *src; break; // verbatim
+        case '0':  *dst++ = (u8)0;   break;
+        case 'a':  *dst++ = (u8)0x7; break;
+        case 'b':  *dst++ = (u8)0x8; break;
+        case 't':  *dst++ = (u8)0x9; break;
+        case 'n':  *dst++ = (u8)0xA; break;
+        case 'v':  *dst++ = (u8)0xB; break;
+        case 'f':  *dst++ = (u8)0xC; break;
+        case 'r':  *dst++ = (u8)0xD; break;
+        case 'x': // \xXX
+          assert(src < end-3 && ishexdigit(src[1]) && ishexdigit(src[2]));
+          *dst++ = read_u8hex(src+1);
+          src += 2;
+          break;
+        // TODO: \uXXXX and \UXXXXXXXX
+        default: UNREACHABLE; // co_strlit_check guards against this
+      }
+      src++;
+      chunkstart = src;
+    } else {
+      // co_strlit_check guards against these cases
+      assert(*src != '"');
+      assert(*src != 0);
+      assert(*src != '\n');
+      src++;
+    }
+  }
+  FLUSH(src);
+  #undef FLUSH
+  return 0;
+}
+
+
 static bool utf8seq(scanner_t* s) {
   // TODO: improve this to be better and fully & truly verify UTF8
   u8 a = (u8)*s->inp++;

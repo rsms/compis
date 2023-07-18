@@ -52,8 +52,7 @@ T* nullable array_sortedset_assign(
   T, array_t* a, memalloc_t, const T* vptr, array_sorted_cmp_t cmpf, void* nullable ctx);
 
 // array_sortedset_lookup works like array_sortedset_assign but just looks a value up,
-// it does not add it if its not found.
-// If a value is not found, NULL is returned.
+// it does not add it if its not found. If a value is not found, NULL is returned.
 // When a value is found, *indexp is set to its index.
 T* nullable array_sortedset_lookup(
   T, const array_t* a, const T* vptr, u32* indexp,
@@ -282,6 +281,7 @@ typedef array_type(void*) ptrarray_t;
 
 DEF_ARRAY_TYPE_NULLABLEPTR_API(void*, ptrarray)
 u32 ptrarray_rindexof(const ptrarray_t* a, const void* value); // U32_MAX if not found
+u32 u32array_rindexof(const u32array_t* a, u32 value); // U32_MAX if not found
 
 // ptrarray_move_to_end is equivalent to ptrarray_move(a, a->len-1, index, index+1)
 void ptrarray_move_to_end(ptrarray_t* a, u32 index);

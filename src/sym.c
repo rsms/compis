@@ -19,79 +19,16 @@ sym_t sym_as;   // "as"
 sym_t sym_from; // "from"
 
 // primitive types
-sym_t sym_void;
-sym_t sym_bool;
-sym_t sym_int;
-sym_t sym_uint;
-sym_t sym_i8;
-sym_t sym_i16;
-sym_t sym_i32;
-sym_t sym_i64;
-sym_t sym_u8;
-sym_t sym_u16;
-sym_t sym_u32;
-sym_t sym_u64;
-sym_t sym_f32;
-sym_t sym_f64;
+#define _(kind, TYPE, enctag, NAME, size) \
+  sym_t sym_##NAME; \
+  sym_t sym_##NAME##_typeid;
+FOREACH_NODEKIND_PRIMTYPE(_)
+#undef _
 
-sym_t _primtype_nametab[(TYPE_F64 - TYPE_VOID) + 1] = {0};
-
-static sym_t defsym(const char* cstr) {
-  void** vp = map_assign(&symbols, sym_ma, cstr, strlen(cstr));
-  if UNLIKELY(!vp)
-    panic("out of memory");
-  *vp = mem_strdup(sym_ma, slice_cstr(cstr), 0);
-  if UNLIKELY(!*vp)
-    panic("out of memory");
-  return *vp;
-}
+sym_t _primtype_nametab[PRIMTYPE_COUNT] = {0};
 
 
-void sym_init(memalloc_t ma) {
-  sym_ma = ma;
-  if (!map_init(&symbols, sym_ma, 4096/sizeof(mapent_t)/2))
-    panic("out of memory");
-  sym__ = defsym("_");
-  sym_this = defsym("this");
-  sym_drop = defsym("drop");
-  sym_main = defsym("main");
-  sym_str  = defsym("str");
-  sym_as   = defsym("as");
-  sym_from = defsym("from");
-
-  sym_void = defsym("void");
-  sym_bool = defsym("bool");
-  sym_int = defsym("int");
-  sym_uint = defsym("uint");
-  sym_i8 = defsym("i8");
-  sym_i16 = defsym("i16");
-  sym_i32 = defsym("i32");
-  sym_i64 = defsym("i64");
-  sym_u8 = defsym("u8");
-  sym_u16 = defsym("u16");
-  sym_u32 = defsym("u32");
-  sym_u64 = defsym("u64");
-  sym_f32 = defsym("f32");
-  sym_f64 = defsym("f64");
-
-  _primtype_nametab[TYPE_VOID - TYPE_VOID] = sym_void;
-  _primtype_nametab[TYPE_BOOL - TYPE_VOID] = sym_bool;
-  _primtype_nametab[TYPE_I8 - TYPE_VOID]   = sym_i8;
-  _primtype_nametab[TYPE_I16 - TYPE_VOID]  = sym_i16;
-  _primtype_nametab[TYPE_I32 - TYPE_VOID]  = sym_i32;
-  _primtype_nametab[TYPE_I64 - TYPE_VOID]  = sym_i64;
-  _primtype_nametab[TYPE_INT - TYPE_VOID]  = sym_int;
-  _primtype_nametab[TYPE_U8 - TYPE_VOID]   = sym_u8;
-  _primtype_nametab[TYPE_U16 - TYPE_VOID]  = sym_u16;
-  _primtype_nametab[TYPE_U32 - TYPE_VOID]  = sym_u32;
-  _primtype_nametab[TYPE_U64 - TYPE_VOID]  = sym_u64;
-  _primtype_nametab[TYPE_UINT - TYPE_VOID] = sym_uint;
-  _primtype_nametab[TYPE_F32 - TYPE_VOID]  = sym_f32;
-  _primtype_nametab[TYPE_F64 - TYPE_VOID]  = sym_f64;
-}
-
-
-sym_t sym_intern(const void* key, usize keylen) {
+sym_t sym_intern(const char* key, usize keylen) {
   #ifdef DEBUG
     // check for prohibited bytes in key.
     // Note: AST encoder cannot handle symbols containing LF (0x0A '\n')
@@ -109,8 +46,12 @@ sym_t sym_intern(const void* key, usize keylen) {
   mapent_t* ent = map_assign_ent(&symbols, sym_ma, key, keylen);
   if UNLIKELY(!ent)
     goto oom;
-  if (ent->value)
+
+  if (ent->value) // already exist
     return ent->value;
+
+  // dlog("create symbol '%.*s' %p", (int)keylen, (const char*)key, ent);
+
   ent->value = mem_strdup(sym_ma, (slice_t){ .p=key, .len=keylen }, 0);
   if UNLIKELY(!ent->value)
     goto oom;
@@ -130,4 +71,50 @@ sym_t sym_snprintf(char* buf, usize bufcap, const char* fmt, ...) {
   sym_t s = sym_intern(buf, len);
   va_end(ap);
   return s;
+}
+
+
+static sym_t def_static_symn(const char* static_key, usize keylen) {
+  assert(static_key[keylen] == 0); // must be NUL terminated
+  mapent_t* ent = map_assign_ent(&symbols, sym_ma, static_key, keylen);
+  if UNLIKELY(!ent)
+    panic("out of memory");
+  assert(ent->value == NULL);
+  ent->value = (void*)static_key;
+  ent->key = static_key;
+  ent->keysize = keylen;
+  return static_key;
+}
+
+
+inline static sym_t def_static_sym(const char* static_cstr) {
+  return def_static_symn(static_cstr, strlen(static_cstr));
+}
+
+
+void sym_init(memalloc_t ma) {
+  sym_ma = ma;
+  if (!map_init(&symbols, sym_ma, 4096/sizeof(mapent_t)/2))
+    panic("out of memory");
+  sym__ = def_static_sym("_");
+  sym_this = def_static_sym("this");
+  sym_drop = def_static_sym("drop");
+  sym_main = def_static_sym("main");
+  sym_str  = def_static_sym("str");
+  sym_as   = def_static_sym("as");
+  sym_from = def_static_sym("from");
+
+  static const char typeid_symtab[PRIMTYPE_COUNT][2] = {
+    #define _(kind, TYPE, enctag, NAME, size)  {TYPEID_PREFIX(kind),0},
+    FOREACH_NODEKIND_PRIMTYPE(_)
+    #undef _
+  };
+
+  // sym_NAME = "NAME"  (e.g. sym_int = "int")
+  #define _(kind, TYPE, enctag, NAME, size) \
+    sym_##NAME = def_static_sym(#NAME); \
+    sym_##NAME##_typeid = def_static_symn(typeid_symtab[kind - TYPE_VOID], 1); \
+    _primtype_nametab[kind - TYPE_VOID] = sym_##NAME;
+  FOREACH_NODEKIND_PRIMTYPE(_)
+  #undef _
 }

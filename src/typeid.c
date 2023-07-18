@@ -12,7 +12,7 @@ static void append(buf_t* buf, type_t* t);
 
 // static nodekind_t tidc_nodekind(char c) {
 //   switch (c) {
-//   #define _(NAME) case TYPEID_PREFIX(NAME): return NAME;
+//   #define _(NAME, ...) case TYPEID_PREFIX(NAME): return NAME;
 //   FOREACH_NODEKIND_TYPE(_)
 //   #undef _
 //   }
@@ -80,6 +80,8 @@ static void append(buf_t* buf, type_t* t) {
   }
 
   usize bufstart = buf->len;
+  // if ((t->flags & NF_VIS_PUB) == 0)
+  //   buf_push(buf, '.');
   buf_push(buf, TYPEID_PREFIX(t->kind));
 
   switch (t->kind) {
@@ -115,7 +117,7 @@ static void append(buf_t* buf, type_t* t) {
   // #endif
 
   // update t
-  t->tid = sym_intern(&buf->bytes[bufstart], buf->len - bufstart);
+  t->tid = sym_intern(&buf->chars[bufstart], buf->len - bufstart);
 
   // #if DEBUG
   //   {

@@ -34,9 +34,8 @@ typedef struct {
 //   };
 #define NK_UNKNOWN_STR "NODE_???"
 enum {
-  #define _(NAME) NK_##NAME, NK__##NAME = NK_##NAME + strlen(#NAME),
+  #define _(NAME, ...) NK_##NAME, NK__##NAME = NK_##NAME + strlen(#NAME),
   FOREACH_NODEKIND(_)
-  FOREACH_NODEKIND_TYPE(_)
   #undef _
   NK_UNKNOWN, NK__UNKNOWN = NK_UNKNOWN + strlen(NK_UNKNOWN_STR),
 };
@@ -45,15 +44,13 @@ static const struct {
   char strs[];
 } nodekind_strtab = {
   { // get offset from enum
-    #define _(NAME) NK_##NAME,
+    #define _(NAME, ...) NK_##NAME,
     FOREACH_NODEKIND(_)
-    FOREACH_NODEKIND_TYPE(_)
     #undef _
     NK_UNKNOWN,
   }, {
-    #define _(NAME) #NAME "\0"
+    #define _(NAME, ...) #NAME "\0"
     FOREACH_NODEKIND(_)
-    FOREACH_NODEKIND_TYPE(_)
     #undef _
     NK_UNKNOWN_STR
   }
@@ -119,7 +116,7 @@ static void repr_type(RPARAMS, const type_t* t);
 
 static bool seen(repr_t* r, const void* n) {
   nodekind_t kind = ((const node_t*)n)->kind;
-  if (nodekind_isprimtype(kind) || kind == TYPE_UNKNOWN) {
+  if (nodekind_isprimtype(kind)) {
     // atoms/leaves (has no fields)
     return false;
   }

@@ -3,7 +3,6 @@
 #include "compiler.h"
 #include "path.h"
 #include "abuf.h"
-#include "sha256.h"
 #include "subproc.h"
 #include "llvm/llvm.h"
 #include "clang/Basic/Version.inc" // CLANG_VERSION_STRING

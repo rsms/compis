@@ -637,6 +637,22 @@ bool expr_no_side_effects(const expr_t* n) { switch (n->kind) {
   case EXPR_CALL:
     return false;
 
+  case EXPR_FUN: {
+    const fun_t* fn = (fun_t*)n;
+    const funtype_t* ft = (funtype_t*)fn->type;
+    if (!ft)
+      return false; // incomplete
+    // check parameter initializers, e.g. "fun f(x=sideeffect())"
+    for (u32 i = 0; i < ft->params.len; i++) {
+      const local_t* param = (local_t*)ft->params.v[i];
+      if (param->init && !expr_no_side_effects(param->init))
+        return false;
+    }
+    if (fn->body)
+      return expr_no_side_effects((expr_t*)fn->body);
+    return false;
+  }
+
   // TODO: other kinds
   default:
     dlog("TODO %s %s", __FUNCTION__, nodekind_name(n->kind));
@@ -968,6 +984,13 @@ static void structtype(typecheck_t* a, structtype_t** tp) {
     f->offset = ALIGN2(size, t->align);
     size = f->offset + t->size;
     align = MAX(align, t->align); // alignment of struct is max alignment of fields
+
+    // check for internal types leaking from public ones
+    if UNLIKELY(a->pubnest && (f->type->flags & NF_VIS_PUB) == 0) {
+      error(a, f, "internal type %s of field %s in public struct",
+        fmtnode(a, 0, f->type), f->name);
+      help(a, f->type, "mark %s `pub`", fmtnode(a, 0, f->type));
+    }
   }
 
   leave_ns(a);
@@ -1006,6 +1029,8 @@ static void arraytype_calc_size(typecheck_t* a, arraytype_t* at) {
 static void arraytype(typecheck_t* a, arraytype_t** tp) {
   arraytype_t* at = *tp;
 
+  type(a, &at->elem);
+
   if (at->lenexpr) {
     typectx_push(a, type_uint);
     expr(a, at->lenexpr);
@@ -1022,6 +1047,12 @@ static void arraytype(typecheck_t* a, arraytype_t** tp) {
       error(a, at, "zero length array");
   }
 
+  // check for internal types leaking from public ones
+  if UNLIKELY(a->pubnest && (at->elem->flags & NF_VIS_PUB) == 0) {
+    error(a, at, "public array type of internal subtype %s", fmtnode(a, 0, at->elem));
+    help(a, at->elem, "mark %s `pub`", fmtnode(a, 0, at->elem));
+  }
+
   assert(at->tid == NULL);
   arraytype_calc_size(a, at);
   intern_usertype(a, (usertype_t**)tp);
@@ -1031,8 +1062,17 @@ static void arraytype(typecheck_t* a, arraytype_t** tp) {
 static void funtype1(typecheck_t* a, funtype_t** np, type_t* thistype) {
   funtype_t* ft = *np;
   typectx_push(a, thistype);
-  for (u32 i = 0; i < ft->params.len; i++)
+  for (u32 i = 0; i < ft->params.len; i++) {
     local(a, (local_t*)ft->params.v[i]);
+
+    // check for internal types leaking from public function
+    local_t* param = (local_t*)ft->params.v[i];
+    if UNLIKELY(a->pubnest && (param->type->flags & NF_VIS_PUB) == 0) {
+      error(a, param, "parameter of internal type %s in public function",
+        fmtnode(a, 0, param->type));
+      help(a, param->type, "mark %s `pub`", fmtnode(a, 0, param->type));
+    }
+  }
   type(a, &ft->result);
   typectx_pop(a);
   // TODO: consider NOT interning function types with parameters that have initializers
@@ -1110,6 +1150,7 @@ static void main_fun(typecheck_t* a, fun_t* n) {
 static void fun(typecheck_t* a, fun_t* n) {
   fun_t* outer_fun = a->fun;
   a->fun = n;
+  a->pubnest += (u32)!!(n->flags & NF_VIS_PUB);
 
   if (n->recvt) {
     // type function
@@ -1124,7 +1165,7 @@ static void fun(typecheck_t* a, fun_t* n) {
     }
   }
 
-  // check function type first
+  // first, check function type
   if CHECK_ONCE(n->type) {
     type_t* thistype = n->recvt ? n->recvt : type_unknown;
     funtype1(a, (funtype_t**)&n->type, thistype);
@@ -1214,6 +1255,7 @@ static void fun(typecheck_t* a, fun_t* n) {
   if (ft->params.len > 0)
     scope_pop(&a->scope);
 
+  a->pubnest -= (u32)!!(n->flags & NF_VIS_PUB);
   a->fun = outer_fun;
 }
 
@@ -2321,7 +2363,9 @@ static void unresolvedtype(typecheck_t* a, unresolvedtype_t** tp) {
 
 
 static void typedef_(typecheck_t* a, typedef_t* n) {
+  a->pubnest += (u32)!!(n->flags & NF_VIS_PUB);
   type(a, &n->type);
+  a->pubnest -= (u32)!!(n->flags & NF_VIS_PUB);
 }
 
 
@@ -2330,6 +2374,16 @@ static void aliastype(typecheck_t* a, aliastype_t** tp) {
   type(a, &t->elem);
   if UNLIKELY(t->elem == type_void)
     return error(a, t, "cannot alias type void");
+
+  t->nsparent = a->nspath.v[a->nspath.len - 1];
+  t->mangledname = mangle(a, (node_t*)t);
+
+  // // check for internal types leaking from public ones
+  // if UNLIKELY(a->pubnest && (t->elem->flags & NF_VIS_PUB) == 0) {
+  //   error(a, f, "internal type %s aliased %s in public struct",
+  //     fmtnode(a, 0, t->elem), f->name);
+  //   help(a, t->elem, "mark %s `pub`", fmtnode(a, 0, f->type));
+  // }
 }
 
 
@@ -2410,7 +2464,9 @@ static void exprp(typecheck_t* a, expr_t** np) {
 
   TRACE_NODE(a, "", np);
 
+  a->pubnest += (u32)!!(n->flags & NF_VIS_PUB);
   type(a, &n->type);
+  a->pubnest -= (u32)!!(n->flags & NF_VIS_PUB);
 
   switch ((enum nodekind)n->kind) {
   case EXPR_FUN:       return fun(a, (fun_t*)n);

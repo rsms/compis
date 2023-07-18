@@ -10,68 +10,83 @@
 #include "thread.h"
 
 // nodekind_t
-#define FOREACH_NODEKIND(_) \
-  _( NODE_BAD )/* invalid node; parse error */ \
-  _( NODE_COMMENT )\
-  _( NODE_UNIT )\
-  _( STMT_TYPEDEF )\
-  _( STMT_IMPORT )\
-  _( EXPR_FUN )/* nodekind_isexpr assumes this is first expr kind */\
-  _( EXPR_BLOCK )\
-  _( EXPR_CALL )\
-  _( EXPR_TYPECONS )\
-  _( EXPR_ID )\
-  _( EXPR_FIELD )\
-  _( EXPR_PARAM )\
-  _( EXPR_VAR )\
-  _( EXPR_LET )\
-  _( EXPR_MEMBER )\
-  _( EXPR_SUBSCRIPT )\
-  _( EXPR_PREFIXOP )\
-  _( EXPR_POSTFIXOP )\
-  _( EXPR_BINOP )\
-  _( EXPR_ASSIGN )\
-  _( EXPR_DEREF ) /* implicit, by reading &T (user deref is EXPR_PREFIXOP) */\
-  _( EXPR_IF )\
-  _( EXPR_FOR )\
-  _( EXPR_RETURN )\
-  _( EXPR_BOOLLIT )\
-  _( EXPR_INTLIT )\
-  _( EXPR_FLOATLIT )\
-  _( EXPR_STRLIT )\
-  _( EXPR_ARRAYLIT )\
+#define FOREACH_NODEKIND_NODE(_) /* nodekind_t, TYPE, enctag */ \
+  _( NODE_BAD,     node_t, 'BAD ')/* invalid node; parse error */ \
+  _( NODE_COMMENT, node_t, 'COMN')\
+  _( NODE_UNIT,    unit_t, 'UNIT')\
 // end FOREACH_NODEKIND
-#define FOREACH_NODEKIND_TYPE(_) \
-  /* primitive types */\
-  _( TYPE_VOID ) /* must be first type kind */\
-  _( TYPE_BOOL )\
-  _( TYPE_I8  )\
-  _( TYPE_I16 )\
-  _( TYPE_I32 )\
-  _( TYPE_I64 )\
-  _( TYPE_INT )\
-  _( TYPE_U8   )\
-  _( TYPE_U16  )\
-  _( TYPE_U32  )\
-  _( TYPE_U64  )\
-  _( TYPE_UINT )\
-  _( TYPE_F32 )\
-  _( TYPE_F64 )\
+#define FOREACH_NODEKIND_STMT(_) /* nodekind_t, TYPE, enctag */ \
+  /* statements */\
+  _( STMT_TYPEDEF, typedef_t, 'TDEF')\
+  _( STMT_IMPORT,  import_t,  'IMP ')\
+// end FOREACH_NODEKIND_STMT
+#define FOREACH_NODEKIND_EXPR(_) /* nodekind_t, TYPE, enctag */ \
+  /* expressions */\
+  _( EXPR_FUN,       fun_t,       'FUN ')/* nodekind_isexpr expects position */\
+  _( EXPR_BLOCK,     block_t,     'BLK ')\
+  _( EXPR_CALL,      call_t,      'CALL')\
+  _( EXPR_TYPECONS,  typecons_t,  'TCON')\
+  _( EXPR_ID,        idexpr_t,    'ID  ')\
+  _( EXPR_FIELD,     local_t,     'FILD')\
+  _( EXPR_PARAM,     local_t,     'PARM')\
+  _( EXPR_VAR,       local_t,     'VAR ')\
+  _( EXPR_LET,       local_t,     'LET ')\
+  _( EXPR_MEMBER,    member_t,    'MEMB')\
+  _( EXPR_SUBSCRIPT, subscript_t, 'SUBS')\
+  _( EXPR_PREFIXOP,  unaryop_t,   'PREO')\
+  _( EXPR_POSTFIXOP, unaryop_t,   'POSO')\
+  _( EXPR_DEREF,     unaryop_t,   'DREF')/* implicit read of &T (expl=EXPR_PREFIXOP) */\
+  _( EXPR_BINOP,     binop_t,     'BINO')\
+  _( EXPR_ASSIGN,    binop_t,     'ASGN')\
+  _( EXPR_IF,        ifexpr_t,    'IF  ')\
+  _( EXPR_FOR,       forexpr_t,   'FOR ')\
+  _( EXPR_RETURN,    retexpr_t,   'RET ')\
+  _( EXPR_BOOLLIT,   intlit_t,    'BLIT')\
+  _( EXPR_INTLIT,    intlit_t,    'ILIT')\
+  _( EXPR_FLOATLIT,  floatlit_t,  'FLIT')\
+  _( EXPR_STRLIT,    strlit_t,    'SLIT')\
+  _( EXPR_ARRAYLIT,  arraylit_t,  'ALIT')\
+// end FOREACH_NODEKIND_EXPR
+#define FOREACH_NODEKIND_PRIMTYPE(_) /* nodekind_t, TYPE, enctag, NAME, size */\
+  /* primitive types (TYPE is always type_t) */\
+  _( TYPE_VOID,    type_t, 'void', void, 0 )/* must be first type kind */\
+  _( TYPE_BOOL,    type_t, 'bool', bool, 1 )\
+  _( TYPE_I8,      type_t, 'i8  ', i8,   1 )\
+  _( TYPE_I16,     type_t, 'i16 ', i16,  2 )\
+  _( TYPE_I32,     type_t, 'i32 ', i32,  4 )\
+  _( TYPE_I64,     type_t, 'i64 ', i64,  8 )\
+  _( TYPE_INT,     type_t, 'int ', int,  4 )\
+  _( TYPE_U8,      type_t, 'u8  ', u8,   1 )\
+  _( TYPE_U16,     type_t, 'u16 ', u16,  2 )\
+  _( TYPE_U32,     type_t, 'u32 ', u32,  4 )\
+  _( TYPE_U64,     type_t, 'u64 ', u64,  8 )\
+  _( TYPE_UINT,    type_t, 'uint', uint, 4 )\
+  _( TYPE_F32,     type_t, 'f32 ', f32,  4 )\
+  _( TYPE_F64,     type_t, 'f64 ', f64,  8 )\
+  _( TYPE_UNKNOWN, type_t, 'unkn', unknown, 0 )\
+// end FOREACH_NODEKIND_PRIMTYPE
+#define FOREACH_NODEKIND_USERTYPE(_) /* nodekind_t, TYPE, enctag */\
   /* user types */\
-  _( TYPE_ARRAY )  /* nodekind_is*type assumes this is the first user type */\
-  _( TYPE_FUN )\
-  _( TYPE_PTR )\
-  _( TYPE_REF )      /* &T      */\
-  _( TYPE_MUTREF )   /* mut&T   */\
-  _( TYPE_SLICE )    /* &[T]    */\
-  _( TYPE_MUTSLICE ) /* mut&[T] */\
-  _( TYPE_OPTIONAL )\
-  _( TYPE_STRUCT )\
-  _( TYPE_ALIAS )\
+  _( TYPE_ARRAY,    arraytype_t,  'arry')/* nodekind_is*type expects position */\
+  _( TYPE_FUN,      funtype_t,    'fun ')\
+  _( TYPE_PTR,      ptrtype_t,    'ptr ')\
+  _( TYPE_REF,      reftype_t,    'ref ')/* &T      */\
+  _( TYPE_MUTREF,   reftype_t,    'mref')/* mut&T   */\
+  _( TYPE_SLICE,    slicetype_t,  'slc ')/* &[T]    */\
+  _( TYPE_MUTSLICE, slicetype_t,  'mslc')/* mut&[T] */\
+  _( TYPE_OPTIONAL, opttype_t,    'opt ')\
+  _( TYPE_STRUCT,   structtype_t, 'st  ')\
+  _( TYPE_ALIAS,    aliastype_t,  'alis')\
   /* special types replaced by typecheck */\
-  _( TYPE_UNKNOWN ) /* nodekind_is*type assumes this is the first special type */\
-  _( TYPE_UNRESOLVED ) /* named type not yet resolved */ \
-// end FOREACH_NODEKIND_TYPE
+  _( TYPE_UNRESOLVED, unresolvedtype_t, 'ures')/* named type not yet resolved */ \
+// end FOREACH_NODEKIND_USERTYPE
+
+#define FOREACH_NODEKIND(_) /* _(nodekind, TYPE, enctag, ...) */ \
+  FOREACH_NODEKIND_NODE(_) \
+  FOREACH_NODEKIND_STMT(_) \
+  FOREACH_NODEKIND_EXPR(_) \
+  FOREACH_NODEKIND_PRIMTYPE(_) \
+  FOREACH_NODEKIND_USERTYPE(_)
 
 typedef u8 tok_t;
 enum tok {
@@ -161,8 +176,8 @@ typedef struct srcfile_t {
   void* nullable data;   // NULL until srcfile_open (and NULL after srcfile_close)
   usize          size;   // byte size of data (set by pkg_find_files, pkgs_for_argv)
   unixtime_t     mtime;  // modification time (set by pkg_find_files, pkgs_for_argv)
-  u32            sha256[8];
-  u32            id;     // index in pkg.files
+  // u32            sha256[8];
+  u32            pkgidx; // index in pkg.files
   bool           ismmap; // true if srcfile_open used mmap
   filetype_t     type;   // file type (set by pkg_add_srcfile)
 } srcfile_t;
@@ -172,7 +187,7 @@ typedef array_type(srcfile_t) srcfilearray_t;
 typedef struct pkg_t {
   str_t           path;     // import path, e.g. "main" or "std/runtime" (canonical)
   str_t           dir;      // absolute path to source directory
-  slice_t         rootdir;  // rootdir+path=dir
+  str_t           rootdir;  // rootdir+path=dir
   bool            isadhoc;  // single-file package
   srcfilearray_t  files;    // source files
   map_t           defs;     // package-level definitions
@@ -212,14 +227,15 @@ enum buildmode {
 
 typedef u8 nodekind_t;
 enum nodekind {
-  #define _(NAME) NAME,
+  #define _(NAME, ...) NAME,
   FOREACH_NODEKIND(_)
-  FOREACH_NODEKIND_TYPE(_)
   #undef _
 };
 enum { NODEKIND_COUNT = (0lu
-  FOREACH_NODEKIND(CO_PLUS_ONE)
-  FOREACH_NODEKIND_TYPE(CO_PLUS_ONE)) };
+  FOREACH_NODEKIND(CO_PLUS_ONE) ) };
+
+enum { PRIMTYPE_COUNT = (0lu
+  FOREACH_NODEKIND_PRIMTYPE(CO_PLUS_ONE) ) };
 
 typedef u16 nodeflag_t;
 #define NF_RVALUE      ((nodeflag_t)1<< 0) // expression is used as an rvalue
@@ -237,11 +253,28 @@ typedef u16 nodeflag_t;
 #define NF_VIS_PKG     ((nodeflag_t)1<< 8) // visible within same package
 #define NF_VIS_PUB     ((nodeflag_t)1<< 9) // visible to other packages
 
+typedef nodeflag_t nodevis_t; // symbolic
 static_assert(0 < NF_VIS_PKG, "");
 static_assert(NF_VIS_PKG < NF_VIS_PUB, "");
 
 // NODEFLAGS_BUBBLE are flags that "bubble" (transfer) from children to parents
 #define NODEFLAGS_BUBBLE  NF_UNKNOWN
+
+// NODEFLAGS_ALL are all flags, used by AST decoder
+#define NODEFLAGS_ALL ((nodeflag_t) \
+  ( NF_RVALUE \
+  | NF_OPTIONAL \
+  | NF_CHECKED \
+  | NF_UNKNOWN \
+  | NF_NAMEDPARAMS \
+  | NF_DROP \
+  | NF_SUBOWNERS \
+  | NF_EXIT \
+  | NF_CONST \
+  | NF_VIS_UNIT \
+  | NF_VIS_PKG \
+  | NF_VIS_PUB \
+))
 
 typedef struct {
   nodekind_t kind;
@@ -299,6 +332,11 @@ typedef struct importid_t {
 } importid_t;
 
 typedef struct {
+  stmt_t;
+  type_t* type;
+} typedef_t;
+
+typedef struct {
   type_t;
   sym_t            name;
   type_t* nullable resolved; // used by typecheck
@@ -308,7 +346,8 @@ typedef struct {
   type_t;
   sym_t            name;
   type_t*          elem;
-  node_t* nullable nsparent;
+  char* nullable   mangledname; // mangled name, created in ast_ma by typecheck
+  node_t* nullable nsparent;    // TODO: generalize to just "parent"
 } aliastype_t;
 
 typedef struct {
@@ -329,11 +368,11 @@ typedef struct {
 
 typedef struct {
   usertype_t;
+  type_t*     result;
+  loc_t       resultloc;    // location of result
   nodearray_t params;       // local_t*[]
   loc_t       paramsloc;    // location of "(" ...
   loc_t       paramsendloc; // location of ")"
-  type_t*     result;
-  loc_t       resultloc;    // location of result
 } funtype_t;
 
 typedef struct {
@@ -341,7 +380,7 @@ typedef struct {
   sym_t nullable   name;        // NULL if anonymous
   char* nullable   mangledname; // mangled name, created in ast_ma by typecheck
   nodearray_t      fields;      // local_t*[]
-  node_t* nullable nsparent;
+  node_t* nullable nsparent;    // TODO: generalize to just "parent"
   bool             hasinit;     // true if at least one field has an initializer
   // TODO: move hasinit to nodeflag_t
 } structtype_t;
@@ -360,11 +399,6 @@ typedef struct {
 } opttype_t;
 
 typedef struct {
-  stmt_t;
-  type_t* type;
-} typedef_t;
-
-typedef struct {
   sym_t   name;
   type_t* type;
 } drop_t;
@@ -374,7 +408,7 @@ DEF_ARRAY_TYPE_API(drop_t, droparray)
 
 typedef struct { expr_t; u64 intval; } intlit_t;
 typedef struct { expr_t; double f64val; } floatlit_t;
-typedef struct { expr_t; u8* bytes; usize len; } strlit_t;
+typedef struct { expr_t; u8* bytes; u64 len; } strlit_t;
 typedef struct { expr_t; loc_t endloc; nodearray_t values; } arraylit_t;
 typedef struct { expr_t; sym_t name; node_t* nullable ref; } idexpr_t;
 typedef struct { expr_t; op_t op; expr_t* expr; } unaryop_t;
@@ -450,8 +484,8 @@ typedef struct fun_t { // fun is a declaration (stmt) or an expression depending
   block_t* nullable body;         // NULL if function is a prototype
   type_t* nullable  recvt;        // non-NULL for type functions (type of "this")
   char* nullable    mangledname;  // mangled name, created in ast_ma by typecheck
-  abi_t             abi; // TODO: move to nodeflag_t
-  node_t* nullable  nsparent;
+  abi_t             abi;      // TODO: move to nodeflag_t
+  node_t* nullable  nsparent; // TODO: generalize to just "parent"
 } fun_t;
 
 // ———————— END AST ————————
@@ -575,7 +609,12 @@ typedef struct {
   expr_t* nullable dotctx;   // for ".name" shorthand
   ptrarray_t       dotctxstack;
 
-  array_type(nodearray_t) free_nodearrays;
+  // free_nodearrays is a free list of nodearray_t's
+  struct {
+    nodearray_t* nullable v;
+    u32                   len;
+    u32                   cap;
+  } free_nodearrays;
 
   #if DEBUG
     int traceindent;
@@ -593,10 +632,11 @@ typedef struct {
   type_t*         typectx;
   ptrarray_t      typectxstack;
   ptrarray_t      nspath;
-  map_t           postanalyze; // set of nodes to analyze at the very end (keys only)
+  map_t           postanalyze;    // set of nodes to analyze at the very end (keys only)
   map_t           tmpmap;
-  map_t           typeidmap;   // sym_t typeid => type_t*
+  map_t           typeidmap;      // sym_t typeid => type_t*
   bool            reported_error; // true if an error diagnostic has been reported
+  u32             pubnest;        // NF_VIS_PUB nesting level
   #if DEBUG
     int traceindent;
   #endif
@@ -721,28 +761,29 @@ extern node_t* last_resort_node;
 // TODO: condsider making this configurable in compiler_t
 #define CO_LIBCXX_ABI_VERSION 1
 
-// universe constants (universe.c)
+// universe
 extern type_t* type_void;
-extern type_t* type_unknown;
 extern type_t* type_bool;
-extern type_t* type_int;
-extern type_t* type_uint;
 extern type_t* type_i8;
 extern type_t* type_i16;
 extern type_t* type_i32;
 extern type_t* type_i64;
+extern type_t* type_int;
 extern type_t* type_u8;
 extern type_t* type_u16;
 extern type_t* type_u32;
 extern type_t* type_u64;
+extern type_t* type_uint;
 extern type_t* type_f32;
 extern type_t* type_f64;
+extern type_t* type_unknown;
+void universe_init();
 
 // pkg
 err_t pkg_init(pkg_t* pkg, memalloc_t ma);
 void pkg_dispose(pkg_t* pkg, memalloc_t ma);
 err_t pkgs_for_argv(int argc, char* argv[], pkg_t** pkgvp, u32* pkgcp);
-srcfile_t* pkg_add_srcfile(pkg_t* pkg, const char* name);
+srcfile_t* nullable pkg_add_srcfile(pkg_t* pkg, const char* name, usize namelen);
 err_t pkg_find_files(pkg_t* pkg); // updates pkg->files, sets sf.mtime
 unixtime_t pkg_source_mtime(const pkg_t* pkg); // max(f.mtime for f in files)
 bool pkg_is_built(const pkg_t* pkg, const compiler_t* c);
@@ -847,6 +888,37 @@ err_t cgen_unit_impl(
 err_t cgen_pkgapi(cgen_t* g, const unit_t** unitv, u32 unitc, cgen_pkgapi_t* result);
 void cgen_pkgapi_dispose(cgen_t* g, cgen_pkgapi_t* result);
 
+// co_strlit_check validates a compis string literal while calculating
+// its decoded byte length. I.e. "hello\nworld" is 11 bytes decoded.
+// src should point to a string starting with '"'.
+//
+// Returns 0 if the string is valid, sets *enclenp to #bytes read from src and
+// sets *declenp to the lenght of the decoded string. I.e.
+//
+//   const char* src = "\"hello\nworld\"yo"
+//   usize srclen = strlen(src), declen;
+//   co_strlit_check(src, &srclen, &declen);
+//   printf("srclen=%zu declen=%zu src_tail=%s\n", src + srclen);
+//   // prints: srclen=14 declen=11 src_tail=yo
+//
+// If an error is returned, srcp is updated to point to the offending byte,
+// which may be *srcp+srclen if there was no terminating '"'.
+err_t co_strlit_check(const u8* src, usize* srclenp, usize* declenp);
+
+// co_strlit_decode decodes a string literal with input from co_strlit_check.
+// Example:
+//
+//   usize srclen = ... , declen;
+//   co_strlit_check(src, &srclen, &declen); // + check error
+//   u8* dst = mem_alloc(ma, declen);        // + check error
+//   if (enclen - 2 == declen) {
+//     memcpy(dst, src + 1, declen);
+//   } else {
+//     co_strlit_decode(src, enclen, dst, declen); // + check error
+//   }
+//
+err_t co_strlit_decode(const u8* src, usize srclen, u8* dst, usize declen);
+
 // AST
 const char* nodekind_name(nodekind_t); // e.g. "EXPR_INTLIT"
 const char* nodekind_fmt(nodekind_t); // e.g. "variable"
@@ -860,7 +932,19 @@ local_t* nullable lookup_struct_field(structtype_t* st, sym_t name);
 fun_t* nullable lookup_method(parser_t* p, type_t* recv, sym_t name);
 const char* node_srcfilename(const node_t* n, locmap_t* lm);
 
-// ast_childrenof appends children of n to children array
+// astiter_of_children returns an iterator over n's children.
+// The type of expressions (expr_t.type) is NOT included.
+// astiter_dispose needs to be called if astiter_next is not run til completion.
+typedef struct astiter_ {
+  const node_t* nullable(*next)(struct astiter_*);
+  u64 v[2];
+} astiter_t;
+astiter_t astiter_of_children(const node_t* n);
+inline static void astiter_dispose(astiter_t* it) {}
+inline static const node_t* nullable astiter_next(astiter_t* it) {
+  return it->next(it);
+}
+
 err_t ast_childrenof(nodearray_t* children, memalloc_t ma, const node_t* n);
 
 inline static void bubble_flags(void* parent, void* child) {
@@ -886,11 +970,9 @@ inline static bool nodekind_islocal(nodekind_t kind) {
   return kind == EXPR_FIELD || kind == EXPR_PARAM
       || kind == EXPR_LET   || kind == EXPR_VAR; }
 inline static bool nodekind_isprimtype(nodekind_t kind) {
-  return TYPE_VOID <= kind && kind < TYPE_ARRAY; }
+  return TYPE_VOID <= kind && kind <= TYPE_UNKNOWN; }
 inline static bool nodekind_isusertype(nodekind_t kind) {
-  return TYPE_ARRAY <= kind && kind < TYPE_UNKNOWN; }
-inline static bool nodekind_isspecialtype(nodekind_t kind) {
-  return TYPE_UNKNOWN <= kind; }
+  return TYPE_ARRAY <= kind && kind <= TYPE_UNRESOLVED; }
 inline static bool nodekind_isptrtype(nodekind_t kind) { return kind == TYPE_PTR; }
 inline static bool nodekind_isreftype(nodekind_t kind) {
   return kind == TYPE_REF || kind == TYPE_MUTREF; }
@@ -1008,12 +1090,12 @@ ATTR_FORMAT(printf,4,5) inline static void report_diag(
 
 // symbols
 void sym_init(memalloc_t);
-sym_t sym_intern(const void* key, usize keylen);
+sym_t sym_intern(const char* key, usize keylen);
 sym_t sym_snprintf(char* buf, usize bufcap, const char* fmt, ...)ATTR_FORMAT(printf,3,4);
 inline static sym_t sym_cstr(const char* s) { return sym_intern(s, strlen(s)); }
-extern sym_t _primtype_nametab[(TYPE_F64 - TYPE_VOID) + 1];
+extern sym_t _primtype_nametab[PRIMTYPE_COUNT];
 inline static sym_t primtype_name(nodekind_t kind) { // e.g. "i64"
-  assert(TYPE_VOID <= kind && kind <= TYPE_F64);
+  assert(TYPE_VOID <= kind && kind <= TYPE_UNKNOWN);
   return _primtype_nametab[kind - TYPE_VOID];
 }
 extern sym_t sym__;    // "_"
@@ -1023,20 +1105,22 @@ extern sym_t sym_main; // "main"
 extern sym_t sym_str;  // "str"
 extern sym_t sym_as;   // "as"
 extern sym_t sym_from; // "from"
-extern sym_t sym_void;
-extern sym_t sym_bool;
-extern sym_t sym_int;
-extern sym_t sym_uint;
-extern sym_t sym_i8;
-extern sym_t sym_i16;
-extern sym_t sym_i32;
-extern sym_t sym_i64;
-extern sym_t sym_u8;
-extern sym_t sym_u16;
-extern sym_t sym_u32;
-extern sym_t sym_u64;
-extern sym_t sym_f32;
-extern sym_t sym_f64;
+
+extern sym_t sym_void;    extern sym_t sym_void_typeid;
+extern sym_t sym_bool;    extern sym_t sym_bool_typeid;
+extern sym_t sym_int;     extern sym_t sym_int_typeid;
+extern sym_t sym_uint;    extern sym_t sym_uint_typeid;
+extern sym_t sym_i8;      extern sym_t sym_i8_typeid;
+extern sym_t sym_i16;     extern sym_t sym_i16_typeid;
+extern sym_t sym_i32;     extern sym_t sym_i32_typeid;
+extern sym_t sym_i64;     extern sym_t sym_i64_typeid;
+extern sym_t sym_u8;      extern sym_t sym_u8_typeid;
+extern sym_t sym_u16;     extern sym_t sym_u16_typeid;
+extern sym_t sym_u32;     extern sym_t sym_u32_typeid;
+extern sym_t sym_u64;     extern sym_t sym_u64_typeid;
+extern sym_t sym_f32;     extern sym_t sym_f32_typeid;
+extern sym_t sym_f64;     extern sym_t sym_f64_typeid;
+extern sym_t sym_unknown; extern sym_t sym_unknown_typeid;
 
 // scope
 void scope_clear(scope_t* s);
@@ -1067,7 +1151,8 @@ const char* syslib_filename(const target_t* target, syslib_t);
 err_t locmap_init(locmap_t* lm);
 void locmap_dispose(locmap_t* lm, memalloc_t);
 void locmap_clear(locmap_t* lm);
-u32 locmap_srcfileid(locmap_t* lm, srcfile_t*, memalloc_t); // get id for source file
+u32 locmap_srcfileid(locmap_t* lm, srcfile_t*, memalloc_t); // intern id for source file
+srcfile_t* nullable locmap_srcfile(locmap_t* lm, u32 srcfileid);
 
 static loc_t loc_make(u32 srcfileid, u32 line, u32 col, u32 width);
 

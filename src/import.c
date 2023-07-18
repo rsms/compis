@@ -168,8 +168,7 @@ static err_t import_clean_path(
 
   // dlog("——————————————————————————");
   // dlog("importer_pkg.path    = \"%s\"", importer_pkg->path.p);
-  // dlog("importer_pkg.rootdir = \"%.*s\"",
-  //   (int)importer_pkg->rootdir.len, importer_pkg->rootdir.chars);
+  // dlog("importer_pkg.rootdir = \"%s\"", importer_pkg->rootdir.p);
   // dlog("importer_pkg.dir     = \"%s\"", importer_pkg->dir.p);
   // dlog("importer_fsdir       = \"%s\"", importer_fsdir);
   // dlog("import_path          = \"%s\"", path->p);
@@ -199,9 +198,9 @@ static err_t import_clean_path(
   }
 
   // check if path goes above pkg.rootdir
-  if UNLIKELY(!path_isrooted(str_slice(*fspath_out), importer_pkg->rootdir)) {
-    dlog("error: import path \"%s\" would escape pkg.rootdir=\"%.*s\"",
-      path->p, (int)importer_pkg->rootdir.len, importer_pkg->rootdir.chars);
+  if UNLIKELY(!path_isrooted(str_slice(*fspath_out), str_slice(importer_pkg->rootdir))) {
+    dlog("error: import path \"%s\" would escape pkg.rootdir=\"%s\"",
+      path->p, importer_pkg->rootdir.p);
     err = ErrInvalid;
     goto end;
   }
@@ -361,7 +360,9 @@ static err_t import_resolve_pkg(
     rootdirlen = importer_pkg->rootdir.len;
   pkg->path = str_makelen(path.p, path.len);
   pkg->dir = str_makelen(fspath->p, fspath->len);
-  pkg->rootdir = str_slice(pkg->dir, 0, rootdirlen);
+  pkg->rootdir = str_makelen(pkg->dir.p, rootdirlen);
+  if (pkg->path.cap == 0 || pkg->dir.cap == 0 || pkg->rootdir.cap == 0)
+    err = ErrNoMem;
   // dlog("adding pkg");
   // dlog("  .path    = \"%s\"", pkg->path.p);
   // dlog("  .dir     = \"%s\"", pkg->dir.p);
@@ -398,7 +399,7 @@ err_t import_find_pkgs(
 
   array_type(pkgimp_t) unique_imports = {0};
 
-  // Build a list of package to import, sorted uniquely on path.
+  // Build a list of packages to import, sorted uniquely on path.
   // This serves multiple purposes:
   // - Reduce obviously-duplicate package paths imported by many
   //   source files of a package.

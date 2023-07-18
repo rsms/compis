@@ -1063,8 +1063,10 @@ static stmt_t* stmt_typedef(parser_t* p) {
       "cannot define optional aliased type;"
       " instead, mark as optional at use sites with ?%s", name);
   }
-  if (t->elem->kind == TYPE_STRUCT)
-    ((structtype_t*)t->elem)->name = t->name;
+
+  // if (t->elem->kind == TYPE_STRUCT && ((structtype_t*)t->elem)->name == NULL)
+  //   ((structtype_t*)t->elem)->name = t->name;
+
   return (stmt_t*)n;
 }
 
@@ -2266,10 +2268,16 @@ static stmt_t* stmt_pub(parser_t* p) {
   node_set_visibility((node_t*)n, NF_VIS_PUB);
 
   switch (n->kind) {
-    case EXPR_FUN:
-      ((fun_t*)n)->abi = abi;
+    case EXPR_FUN: {
+      fun_t* fn = (fun_t*)n;
+      fn->abi = abi;
+      // if (fn->type && !(fn->type->flags & NF_VIS_PUB))
+      //   node_set_visibility((node_t*)fn->type, NF_VIS_PUB);
       break;
+    }
     case STMT_TYPEDEF:
+      if (!(((typedef_t*)n)->type->flags & NF_VIS_PUB))
+        node_set_visibility((node_t*)((typedef_t*)n)->type, NF_VIS_PUB);
       break;
     case NODE_BAD:
       break;

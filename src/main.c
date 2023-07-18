@@ -246,6 +246,7 @@ int main(int argc, char* argv[]) {
   relpath_init();
   tmpbuf_init(ma);
   sym_init(ma);
+  universe_init();
   coroot_init(ma);
   copath_init(ma);
   cocachedir_init(ma);

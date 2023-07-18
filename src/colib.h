@@ -150,24 +150,56 @@ typedef double             f64;
   #endif
 #endif
 
-#if CO_LITTLE_ENDIAN
-  #define _CO_H2BE32(x) ( \
-    (((x) >> 24) & 0x000000FF) | \
-    (((x) >> 8)  & 0x0000FF00) | \
-    (((x) << 8)  & 0x00FF0000) | \
-    (((x) << 24) & 0xFF000000) \
-  )
-  #define CO_H2BE(x) _Generic((x), \
-    i8:  (x), \
-    u8:  (x), \
-    i32: _CO_H2BE32((u32)(x)), \
-    u32: _CO_H2BE32(x) \
-  )
+
+
+#if __has_builtin(__builtin_bswap32)
+  #define co_bswap32(x) __builtin_bswap32(x)
+#elif defined(_MSC_VER)
+  #define co_bswap32(x) _byteswap_ulong(x)
 #else
-  #define CO_H2BE(x) (x)
+  inline static u32 co_bswap32(u32 x) {
+    return ((x << 24) & 0xff000000 ) |
+           ((x <<  8) & 0x00ff0000 ) |
+           ((x >>  8) & 0x0000ff00 ) |
+           ((x >> 24) & 0x000000ff );
+  }
 #endif
 
-#define CO_STRu32(code) CO_H2BE((u32)(code))
+#if __has_builtin(__builtin_bswap64)
+  #define co_bswap64(x) __builtin_bswap64(x)
+#elif defined(_MSC_VER)
+  #define co_bswap64(x) _byteswap_uint64(x)
+#else
+  inline static u64 co_bswap64(u64 x) {
+    u64 hi = bswap32((u32)x);
+    u32 lo = bswap32((u32)(x >> 32));
+    return (hi << 32) | lo;
+  }
+#endif
+
+#if CO_LITTLE_ENDIAN
+  #define co_htole(x) (x)
+  #define co_htobe(x) _Generic((x), \
+    i8:  (x), \
+    u8:  (x), \
+    i32: co_bswap32((u32)(x)), \
+    u32: co_bswap32(x), \
+    i64: co_bswap64((u64)(x)), \
+    u64: co_bswap64(x) \
+  )
+#else
+  #define co_htole(x) _Generic((x), \
+    i8:  (x), \
+    u8:  (x), \
+    i32: co_bswap32((u32)(x)), \
+    u32: co_bswap32(x), \
+    i64: co_bswap64((u64)(x)), \
+    u64: co_bswap64(x) \
+  )
+  #define co_htobe(x) (x)
+#endif
+
+#define CO_STRu32(code) co_htobe((u32)(code))
 
 //—————————————————————————————————————————————————————————————————————————————————————
 // nullability
@@ -960,6 +992,8 @@ inline static void mem_freev(memalloc_t ma, void* nullable array, usize count, u
 
 #define UTF8_SELF  0x80 // UTF-8 "self" byte constant
 
+extern const u8 g_intdectab[256]; // decoding table
+
 // character classifiers
 #define isdigit(c)    ( ((u32)(c) - '0') < 10 )                 /* 0-9 */
 #define isalpha(c)    ( ((u32)(c) | 32) - 'a' < 26 )            /* A-Za-z */
@@ -1005,11 +1039,21 @@ usize string_repr(char* dst, usize dstcap, const void* src, usize srclen);
 // integer log10, e.g. ndigits10(1234) => 4
 u32 ndigits10(u64 v);
 u32 sndigits10(i64 v);
+u32 ndigits16(u64 v);
 
 usize sfmtu64(char* buf, u64 v, u32 base);
 u32 fmt_u64_base10(char* dst, usize cap, u64 value);
 u32 fmt_i64_base10(char* dst, usize cap, i64 svalue);
 u32 fmt_u64_base16(char* dst, usize cap, u64 value);
+
+// co_intscan parses an integer from a string
+// After returning, *srcp points to the end of the parsed segment.
+// limit should be the max value to limit, i.e.
+//   i64 = 0xFFFFFFFFFFFFFFFFull
+//   i32 = 0xFFFFFFFF
+//   i16 = 0xFFFF
+//   i8  = 0xFF
+err_t co_intscan(const u8** srcp, usize srccap, u32 base, u64 limit, u64* result);
 
 int strcasecmp(const char*, const char*);
 inline static bool streq(const char* a, const char* b) { return strcmp(a, b) == 0; }

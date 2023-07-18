@@ -23,6 +23,7 @@ typedef struct {
 
 static u8 tagtab[NODEKIND_COUNT] = {
   [NODE_UNIT] = 'M',
+  // primitive types use lower-case characters
   [TYPE_VOID] = 'z',
   [TYPE_BOOL] = 'b',
   [TYPE_I8]   = 'a',  [TYPE_U8]   = 'h',
@@ -32,12 +33,14 @@ static u8 tagtab[NODEKIND_COUNT] = {
   [TYPE_INT]  = 'i',  [TYPE_UINT] = 'j',
   [TYPE_F32]  = 'f',
   [TYPE_F64]  = 'd',
+
+  // all other types use upper-case characters
   // [TYPE_ARRAY] = '?',
   [TYPE_PTR] = 'P',
   [TYPE_REF] = 'R',
   // [TYPE_OPTIONAL] = '?',
-  // [TYPE_ALIAS]    = '?',
-  [TYPE_FUN] = 'F',
+  [TYPE_ALIAS]  = 'A',
+  [TYPE_FUN]    = 'F',
   [TYPE_STRUCT] = 'N',
   [EXPR_FUN]    = 'N',
 };
@@ -145,6 +148,9 @@ static void end_path(encoder_t* e, const node_t* n) {
     } else {
       dlog("TODO unnamed type");
     }
+    break;
+  case TYPE_ALIAS:
+    append_zname(e, ((aliastype_t*)n)->name);
     break;
   }
 }
@@ -296,6 +302,7 @@ bool compiler_mangle(const compiler_t* c, const pkg_t* pkg, buf_t* buf, const no
     switch (ns->kind) {
       case EXPR_FUN:    ns = assertnotnull(((fun_t*)ns)->nsparent); break;
       case TYPE_STRUCT: ns = assertnotnull(((structtype_t*)ns)->nsparent); break;
+      case TYPE_ALIAS:  ns = assertnotnull(((aliastype_t*)ns)->nsparent); break;
 
       case NODE_UNIT:
       case TYPE_BOOL:

@@ -69,10 +69,12 @@ bool buf_grow(buf_t* b, usize extracap) {
 
 
 bool buf_reserve(buf_t* b, usize minavail) {
+  if (buf_avail(b) >= minavail)
+    return true;
   usize newlen;
   if (check_add_overflow(b->len, minavail, &newlen))
     return false;
-  return newlen <= b->cap || buf_grow(b, newlen - b->cap);
+  return buf_grow(b, newlen - b->cap);
 }
 
 

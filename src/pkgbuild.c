@@ -2,7 +2,7 @@
 #include "colib.h"
 #include "pkgbuild.h"
 #include "path.h"
-#include "metagen.h"
+#include "astencode.h"
 #include "llvm/llvm.h"
 
 
@@ -100,7 +100,7 @@ static void build_ofiles_and_cfiles(pkgbuild_t* pb, str_t builddir) {
   for (u32 i = 0; i < pb->pkg->files.len; i++) {
     // {builddir}/{srcfile}.o  (note that builddir includes pkgname)
     srcfile_t* srcfile = &pb->pkg->files.v[i];
-    assert(srcfile->id == i);
+    assert(srcfile->pkgidx == i);
 
     s.len = 0;
 
@@ -156,7 +156,7 @@ static const char* cfile_of_srcfile_id(pkgbuild_t* pb, u32 srcfile_id) {
 static const char* cfile_of_unit(pkgbuild_t* pb, const unit_t* unit) {
   assert(pb->cfiles.len == pb->pkg->files.len);
   assertnotnull(unit->srcfile);
-  return cfile_of_srcfile_id(pb, unit->srcfile->id);
+  return cfile_of_srcfile_id(pb, unit->srcfile->pkgidx);
 }
 
 
@@ -428,9 +428,31 @@ err_t pkgbuild_metagen(pkgbuild_t* pb) {
   err_t err = 0;
   buf_t outbuf = buf_make(pb->c->ma);
 
-  err = metagen(&outbuf, pb->c, pb->pkg, (const unit_t*const*)pb->unitv, pb->unitc);
-  if (!err)
-    err = fs_writefile("meta.lisp", 0644, buf_slice(outbuf));
+  // encode package API
+  astencode_t astenc;
+  if (( err = astencode_init(&astenc, pb->c->ma, &pb->c->locmap) ) == 0) {
+    for (u32 i = 0; i < pb->unitc && err == 0; i++)
+      err = astencode_add_ast(&astenc, (const node_t*)pb->unitv[i], AENC_PUB_API);
+    if (!err)
+      err = astencode_encode(&astenc, &outbuf);
+    astencode_dispose(&astenc);
+  }
+
+  // write to file
+  if (!err) {
+    str_t filename = pkg_buildfile(pb->pkg, pb->c, "pub.coast");
+    if (filename.cap == 0) {
+      err = ErrNoMem;
+    } else {
+      dlog("write %s", filename.p);
+      err = fs_writefile_mkdirs(filename.p, 0644, buf_slice(outbuf));
+      str_free(filename);
+    }
+  }
+
+  // err = metagen(&outbuf, pb->c, pb->pkg, (const unit_t*const*)pb->unitv, pb->unitc);
+  // if (!err)
+  //   err = fs_writefile("meta.lisp", 0644, buf_slice(outbuf));
 
   buf_dispose(&outbuf);
   return err;
@@ -452,8 +474,8 @@ static err_t cgen_api(pkgbuild_t* pb, cgen_t* g, cgen_pkgapi_t* pkgapi) {
   }
 
   if (opt_trace_cgen) {
-    fprintf(stderr, "—————————— cgen %s ——————————\n", relpath(pubhfile.p));
-    fwrite(g->outbuf.p, g->outbuf.len, 1, stderr);
+    fprintf(stderr, "—————————— cgen API %s ——————————\n", relpath(pubhfile.p));
+    fwrite(pkgapi->pub_header.chars, pkgapi->pub_header.len, 1, stderr);
     fputs("\n——————————————————————————————————\n", stderr);
   }
 
@@ -732,9 +754,7 @@ err_t build_pkg(
   DO_STEP(pkgbuild_typecheck);
 
   // generate package metadata (can run in parallel to the rest of these tasks)
-  #ifdef ENABLE_METAGEN
   DO_STEP(pkgbuild_metagen);
-  #endif
 
   // generate C code for package
   DO_STEP(pkgbuild_cgen);

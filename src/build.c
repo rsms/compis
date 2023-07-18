@@ -5,7 +5,6 @@
 #include "subproc.h"
 #include "bgtask.h"
 #include "dirwalk.h"
-#include "sha256.h"
 #include "thread.h"
 #include "hash.h"
 #include "chan.h"

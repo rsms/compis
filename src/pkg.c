@@ -36,6 +36,7 @@ end_err1:
 void pkg_dispose(pkg_t* pkg, memalloc_t ma) {
   str_free(pkg->path);
   str_free(pkg->dir);
+  str_free(pkg->rootdir);
   if (pkg->defs.cap == 0)
     return;
   array_dispose(srcfile_t, (array_t*)&pkg->files, ma);
@@ -46,13 +47,15 @@ void pkg_dispose(pkg_t* pkg, memalloc_t ma) {
 }
 
 
-srcfile_t* pkg_add_srcfile(pkg_t* pkg, const char* name) {
+srcfile_t* pkg_add_srcfile(pkg_t* pkg, const char* name, usize namelen) {
   // add to sorted set, or retrieve existing with same name
-  srcfile_t tmp = { .name = str_make(name) };
+  srcfile_t tmp = { .name = str_makelen(name, namelen) };
   srcfile_t* f = array_sortedset_assign(
     srcfile_t, (array_t*)&pkg->files, memalloc_ctx(),
     &tmp, (array_sorted_cmp_t)srcfile_cmp, NULL);
-  safecheckf(f, "out of memory");
+
+  if (f == NULL)
+    return NULL;
 
   if (f->name.p != NULL) {
     // duplicate
@@ -65,7 +68,7 @@ srcfile_t* pkg_add_srcfile(pkg_t* pkg, const char* name) {
 
   // assign ids
   for (u32 i = 0; i < pkg->files.len; i++)
-    pkg->files.v[i].id = i;
+    pkg->files.v[i].pkgidx = i;
 
   // dlog("%s: add %s", __FUNCTION__, name);
   f->pkg = pkg;
@@ -105,7 +108,7 @@ err_t pkg_find_files(pkg_t* pkg) {
     if (!strieq(ext, "co") && !strieq(ext, "c"))
       continue; // ignore e.g. "a.x"
 
-    srcfile_t* f = pkg_add_srcfile(pkg, dw->name);
+    srcfile_t* f = pkg_add_srcfile(pkg, dw->name, namelen);
     if (!f) {
       err = ErrNoMem;
       break;
@@ -195,7 +198,14 @@ static err_t pkg_resolve_dir(pkg_t* pkg, const char* parentdir) {
     rootdirlen = strlen(parentdir);
 
   pkg->dir = fspath;
-  pkg->rootdir = str_slice(fspath, 0, rootdirlen);
+  pkg->rootdir = str_makelen(fspath.p, rootdirlen);
+  if (pkg->rootdir.len < rootdirlen)
+    return ErrNoMem;
+
+  // dlog("pkg_resolve_dir:");
+  // dlog("  .path    = \"%s\"", pkg->path.p);
+  // dlog("  .dir     = \"%s\"", pkg->dir.p);
+  // dlog("  .rootdir = \"%.*s\"", (int)pkg->rootdir.len, pkg->rootdir.chars);
 
   return 0;
 }
@@ -212,13 +222,14 @@ static err_t pkg_set_path_from_dir(pkg_t* pkg) {
   if (path_isabs(base)) {
     // pkg->dir is file system root, e.g. "/" or "C:"
     // e.g. dir="/" -> rootdir="/" path="main"
-    pkg->rootdir = str_slice(pkg->dir);
+    pkg->rootdir = str_copy(pkg->dir);
     ok = str_append(&pkg->path, "main");
   } else {
     // e.g. dir="/a/b/c" -> rootdir="/a/b" path="c"
     usize dirnamelen = (usize)(uintptr)(base - pkg->dir.p) - 1;
-    pkg->rootdir = str_slice(pkg->dir, 0, dirnamelen);
-    ok = str_append(&pkg->path, base);
+    pkg->rootdir = str_makelen(pkg->dir.p, dirnamelen);
+    ok = pkg->rootdir.len == dirnamelen;
+    ok &= str_append(&pkg->path, base);
   }
 
   if LIKELY(ok)
@@ -226,9 +237,10 @@ static err_t pkg_set_path_from_dir(pkg_t* pkg) {
 
   str_free(pkg->path);
   str_free(pkg->dir);
+  str_free(pkg->rootdir);
   pkg->dir = (str_t){0};
   pkg->path = (str_t){0};
-  pkg->rootdir = (slice_t){0};
+  pkg->rootdir = (str_t){0};
   return ErrNoMem;
 }
 
@@ -246,13 +258,17 @@ static err_t pkg_resolve_toplevel(pkg_t* pkg, const char* import_path, mode_t st
   pkg->path = str_make(import_path);
   safecheckx(path_clean(&pkg->path)); // e.g. "./my//package" => "my/package"
 
+  #ifdef WIN32
+    // TODO: handle Windows paths. Something like this somewhere:
+    // str_replacec(&pkg->path, '\\', '/', -1);
+    elog("warning: Windows support is work-in-progress");
+  #endif
+
   // current directory (".")
   if (pkg->path.p[0] == '.' && pkg->path.p[1] == 0) {
     assert(pkg->path.len == 1); // path_clean only results in "." (never e.g. "./x")
     return pkg_resolve_toplevel_cwd(pkg);
   }
-
-  err_t err = 0;
 
   // absolute path, e.g. "/foo/bar"
   if (path_isabs(pkg->path.p)) {
@@ -261,16 +277,52 @@ static err_t pkg_resolve_toplevel(pkg_t* pkg, const char* import_path, mode_t st
     return pkg_set_path_from_dir(pkg);
   }
 
-  // parent-relative path, e.g. "../bar"
-  if (pkg->path.p[0] == '.') {
-    // note: path_clean ensures that "./foo/bar" => "foo/bar"
-    assert(pkg->path.p[0] != '.' || pkg->path.p[1] == '.');
-    // TODO
-  }
+  // // parent-relative path, e.g. "../bar"
+  // if (pkg->path.p[0] == '.') {
+  //   // import_path is parent-relative path, e.g. "../bar"
+  //   // Note that path_clean ensures that "./foo" => "foo", so even if
+  //   // the user invokes compis with "./foo" we see "foo".
+  //   assert(pkg->path.p[0] != '.' || pkg->path.p[1] == '.');
+  // }
 
-  if (S_ISDIR(st_mode)) {
-    pkg->dir = str_makelen(pkg->path.p, pkg->path.len);
-    path_makeabs(&pkg->dir);
+  err_t err = 0;
+
+  // relative import of a directory that was found, e.g. "./foo"
+  if (*import_path == '.') {
+    if (st_mode == 0) {
+      elog("%s: not found: %s", coprogname, import_path);
+      return ErrNotFound;
+    }
+
+    pkg->dir = path_abs(pkg->path.p);
+    if (pkg->dir.len == 0)
+      return ErrNoMem;
+
+    if (pkg->path.p[0] == '.') {
+      // import_path is parent-relative, e.g. "../bar".
+      // Note that path_clean ensures that "./foo" => "foo",
+      // so even when the user invokes compis with "./foo" we see path="foo".
+      pkg->path = (str_t){0};
+      return pkg_set_path_from_dir(pkg);
+    }
+
+    // rootdir = dir[0:len(dir)-len(path)-1]
+    // e.g. dir="/a/b/c/d" path="c/d" rootdir="/a/b"
+    usize rootdirlen = pkg->dir.len - pkg->path.len;
+    if (rootdirlen < 2) {
+      rootdirlen = 1;
+      pkg->rootdir = str_make("/"); // TODO: Windows
+    } else {
+      rootdirlen--; // exclude the path separator
+      pkg->rootdir = str_makelen(pkg->dir.p, rootdirlen);
+    }
+    if (pkg->rootdir.len != rootdirlen) {
+      err = ErrNoMem;
+      goto error;
+    }
+
+    // make sure we set the correct rootdir
+    assert(streq(path_join(pkg->rootdir.p, pkg->path.p).p, pkg->dir.p));
     return 0;
   }
 
@@ -281,14 +333,16 @@ static err_t pkg_resolve_toplevel(pkg_t* pkg, const char* import_path, mode_t st
 
   if (!err)
     return 0;
-
   elog("%s: cannot find package %s", coprogname, pkg->path.p);
+
+error:
   str_free(pkg->path);
   str_free(pkg->dir);
+  str_free(pkg->rootdir);
   pkg->path = (str_t){0};
   pkg->dir = (str_t){0};
-  pkg->rootdir = (slice_t){0};
-  return ErrNoMem;
+  pkg->rootdir = (str_t){0};
+  return err;
 }
 
 
@@ -306,13 +360,17 @@ err_t pkgs_for_argv(int argc, char* argv[], pkg_t** pkgvp, u32* pkgcp) {
   safecheckf(stv, "out of memory");
   u8 input_type = 0;
   for (int i = 0; i < argc; i++) {
-    if (stat(argv[i], &stv[i]) != 0 || S_ISDIR(stv[i].st_mode)) {
-      // directory or package name; guess from filename
+    if (stat(argv[i], &stv[i]) != 0) {
+      // stat failed; guess type from filename
+      memset(&stv[i], 0, sizeof(stv[i]));
       if (filetype_guess(argv[i]) == FILE_OTHER) {
         input_type |= 2;
       } else {
         input_type |= 1;
       }
+    } if (S_ISDIR(stv[i].st_mode)) {
+      // directory
+      input_type |= 2;
     } else if (S_ISREG(stv[i].st_mode)) {
       // files as input; build one ad-hoc package
       input_type |= 1;
@@ -349,7 +407,13 @@ err_t pkgs_for_argv(int argc, char* argv[], pkg_t** pkgvp, u32* pkgcp) {
       goto end;
     pkgv->isadhoc = true;
     for (int i = 0; i < argc; i++) {
-      srcfile_t* f = pkg_add_srcfile(pkgv, argv[i]);
+      if (stv[i].st_mode == 0) {
+        elog("%s: not found", argv[i]);
+        err = ErrNotFound;
+        goto end;
+      }
+      srcfile_t* f = pkg_add_srcfile(pkgv, argv[i], strlen(argv[i]));
+      safecheckf(f, "out of memory");
       f->mtime = unixtime_of_stat_mtime(&stv[i]);
       f->size = (usize)stv[i].st_size;
     }
