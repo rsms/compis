@@ -17,7 +17,8 @@ err_t pkgbuild_init(pkgbuild_t* pb, pkg_t* pkg, compiler_t* c, u32 flags) {
   // configure a bgtask for communicating status to the user
   int taskflags = (c->opt_verbose > 0) ? BGTASK_NOFANCY : 0;
   u32 tasklen = 1; // typecheck
-  tasklen += (u32)!!c->opt_verbose; // cgen "api header"
+  tasklen += (u32)!!c->opt_verbose; // metagen
+  tasklen += (u32)!!c->opt_verbose; // cgen
   tasklen += (u32)!(flags & PKGBUILD_NOLINK); // link
   pb->bgt = bgtask_open(c->ma, pkg->path.p, tasklen, taskflags);
   // note: bgtask_open currently panics on OOM; change that, make it return NULL
@@ -426,6 +427,14 @@ err_t pkgbuild_typecheck(pkgbuild_t* pb) {
 
 err_t pkgbuild_metagen(pkgbuild_t* pb) {
   err_t err = 0;
+
+  str_t filename = pkg_buildfile(pb->pkg, pb->c, "pub.coast");
+  if (filename.cap == 0)
+    return ErrNoMem;
+
+  if (pb->c->opt_verbose)
+    pkgbuild_begintask(pb, "metagen %s", relpath(filename.p));
+
   buf_t outbuf = buf_make(pb->c->ma);
 
   // encode package API
@@ -438,16 +447,10 @@ err_t pkgbuild_metagen(pkgbuild_t* pb) {
     astencode_dispose(&astenc);
   }
 
-  // write to file
+  // write file
   if (!err) {
-    str_t filename = pkg_buildfile(pb->pkg, pb->c, "pub.coast");
-    if (filename.cap == 0) {
-      err = ErrNoMem;
-    } else {
-      dlog("write %s", filename.p);
-      err = fs_writefile_mkdirs(filename.p, 0644, buf_slice(outbuf));
-      str_free(filename);
-    }
+    err = fs_writefile_mkdirs(filename.p, 0644, buf_slice(outbuf));
+    str_free(filename);
   }
 
   // err = metagen(&outbuf, pb->c, pb->pkg, (const unit_t*const*)pb->unitv, pb->unitc);
@@ -516,7 +519,7 @@ err_t pkgbuild_cgen(pkgbuild_t* pb) {
     const char* cfile = cfile_of_unit(pb, unit);
 
     if (pb->c->opt_verbose)
-      pkgbuild_begintask(pb, "cgen %s", node_srcfilename((node_t*)unit, &c->locmap));
+      pkgbuild_begintask(pb, "cgen %s", relpath(cfile));
 
     if (( err = cgen_unit_impl(&g, unit, &pkgapi) ))
       break;

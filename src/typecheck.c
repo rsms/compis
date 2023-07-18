@@ -727,10 +727,8 @@ static void leave_ns(typecheck_t* a) {
 
 static node_t* nullable lookup(typecheck_t* a, sym_t name) {
   assert(name != sym__);
-  dlog("lookup %s", name);
   node_t* n = scope_lookup(&a->scope, name, U32_MAX);
   if (!n) {
-    dlog("—— pkg lookup %s", name);
     if (!( n = pkg_def_get(a->pkg, name) ))
       return NULL;
 
@@ -1048,9 +1046,12 @@ static void arraytype(typecheck_t* a, arraytype_t** tp) {
   }
 
   // check for internal types leaking from public ones
-  if UNLIKELY(a->pubnest && (at->elem->flags & NF_VIS_PUB) == 0) {
-    error(a, at, "public array type of internal subtype %s", fmtnode(a, 0, at->elem));
-    help(a, at->elem, "mark %s `pub`", fmtnode(a, 0, at->elem));
+  if UNLIKELY(a->pubnest) {
+    if ((at->elem->flags & NF_VIS_PUB) == 0) {
+      error(a, at, "public array type of internal subtype %s", fmtnode(a, 0, at->elem));
+      help(a, at->elem, "mark %s `pub`", fmtnode(a, 0, at->elem));
+    }
+    node_set_visibility((node_t*)at, NF_VIS_PUB);
   }
 
   assert(at->tid == NULL);
@@ -2378,12 +2379,15 @@ static void aliastype(typecheck_t* a, aliastype_t** tp) {
   t->nsparent = a->nspath.v[a->nspath.len - 1];
   t->mangledname = mangle(a, (node_t*)t);
 
-  // // check for internal types leaking from public ones
-  // if UNLIKELY(a->pubnest && (t->elem->flags & NF_VIS_PUB) == 0) {
-  //   error(a, f, "internal type %s aliased %s in public struct",
-  //     fmtnode(a, 0, t->elem), f->name);
-  //   help(a, t->elem, "mark %s `pub`", fmtnode(a, 0, f->type));
-  // }
+  // check for internal types leaking from public ones
+  if (a->pubnest) {
+    if UNLIKELY((t->elem->flags & NF_VIS_PUB) == 0) {
+      error(a, t, "internal type %s in public alias %s",
+        fmtnode(a, 0, t->elem), t->name);
+      help(a, t->elem, "mark %s `pub`", fmtnode(a, 0, t->elem));
+    }
+    node_set_visibility((node_t*)t, NF_VIS_PUB);
+  }
 }
 
 
