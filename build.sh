@@ -404,6 +404,7 @@ XFLAGS+=(
   -Werror=format-insufficient-args \
   -Werror=bitfield-constant-conversion \
   -Werror=excess-initializers \
+  -Werror=implicit-int \
   -Wno-pragma-once-outside-header \
 )
 $TESTING_ENABLED && XFLAGS+=( -D${PP_PREFIX}TESTING_ENABLED )
