@@ -13,22 +13,43 @@
 #include <sys/mman.h> // mmap
 
 
-err_t mmap_file_ro(const char* filename, usize size, void** resultp) {
+err_t mmap_file_ro(const char* filename, const void** datap, struct stat* st) {
+  err_t err;
+  void* p = NULL;
+
   int fd = open(filename, O_RDONLY);
-  if (fd < 0)
-    return err_errno();
+  if (fd < 0) {
+    err = err_errno();
+    goto end;
+  }
+
+  if UNLIKELY(fstat(fd, st) != 0) {
+    err = err_errno();
+    close(fd);
+    goto end;
+  }
+
+  if UNLIKELY(S_ISDIR(st->st_mode)) {
+    close(fd);
+    err = ErrIsDir;
+    goto end;
+  }
 
   errno = 0;
-  void* p = mmap(0, size, PROT_READ, MAP_PRIVATE, fd, 0);
-  err_t err = errno ? err_errno() : ErrInvalid;
+  p = mmap(0, (usize)st->st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+  err = errno ? err_errno() : ErrInvalid;
 
   close(fd);
 
-  if (p == MAP_FAILED)
-    return err;
+  if (p == MAP_FAILED) {
+    p = NULL;
+  } else {
+    err = 0;
+  }
 
-  *resultp = p;
-  return 0;
+end:
+  *datap = p;
+  return err;
 }
 
 
@@ -69,8 +90,8 @@ err_t mmap_file(const char* filename, mem_t* data_out, struct stat* nullable stp
 }
 
 
-err_t mmap_unmap(void* p, usize size) {
-  if (munmap(p, size) == 0)
+err_t mmap_unmap(const void* p, usize size) {
+  if (munmap((void*)p, size) == 0)
     return 0;
   return err_errno();
 }

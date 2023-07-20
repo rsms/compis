@@ -5,6 +5,8 @@
 #include "astencode.h"
 #include "llvm/llvm.h"
 
+#include <sys/stat.h>
+
 
 err_t pkgbuild_init(pkgbuild_t* pb, pkg_t* pkg, compiler_t* c, u32 flags) {
   memset(pb, 0, sizeof(*pb));
@@ -39,7 +41,7 @@ err_t pkgbuild_init(pkgbuild_t* pb, pkg_t* pkg, compiler_t* c, u32 flags) {
 
 static void assert_promises_completed(pkgbuild_t* pb) {
   // catches missing (or broken) call to pkgbuild_await_compilation
-  if (pb->promisev) for (u32 i = 0; i < pb->pkg->files.len; i++)
+  if (pb->promisev) for (u32 i = 0; i < pb->pkg->srcfiles.len; i++)
     assertf(pb->promisev[i].await == NULL, "promisev[%u] was not awaited", i);
 }
 
@@ -47,8 +49,8 @@ static void assert_promises_completed(pkgbuild_t* pb) {
 void pkgbuild_dispose(pkgbuild_t* pb) {
   // srcfiles may have been opened if diagnostics were reported during
   // typecheck or cgen, so let's make sure they are all closed
-  for (u32 i = 0; i < pb->pkg->files.len; i++)
-    srcfile_close(&pb->pkg->files.v[i]);
+  for (u32 i = 0; i < pb->pkg->srcfiles.len; i++)
+    srcfile_close(&pb->pkg->srcfiles.v[i]);
 
   bgtask_close(pb->bgt);
   memalloc_bump_in_dispose(pb->ast_ma);
@@ -56,7 +58,7 @@ void pkgbuild_dispose(pkgbuild_t* pb) {
   strlist_dispose(&pb->ofiles);
   if (pb->promisev) {
     assert_promises_completed(pb);
-    mem_freetv(pb->c->ma, pb->promisev, (usize)pb->pkg->files.len);
+    mem_freetv(pb->c->ma, pb->promisev, (usize)pb->pkg->srcfiles.len);
   }
 }
 
@@ -98,10 +100,9 @@ static err_t dump_pkg_ast(const pkg_t* pkg, unit_t*const* unitv, u32 unitc) {
 static void build_ofiles_and_cfiles(pkgbuild_t* pb, str_t builddir) {
   str_t s = {0};
 
-  for (u32 i = 0; i < pb->pkg->files.len; i++) {
+  for (u32 i = 0; i < pb->pkg->srcfiles.len; i++) {
     // {builddir}/{srcfile}.o  (note that builddir includes pkgname)
-    srcfile_t* srcfile = &pb->pkg->files.v[i];
-    assert(srcfile->pkgidx == i);
+    srcfile_t* srcfile = &pb->pkg->srcfiles.v[i];
 
     s.len = 0;
 
@@ -155,9 +156,11 @@ static const char* cfile_of_srcfile_id(pkgbuild_t* pb, u32 srcfile_id) {
 
 
 static const char* cfile_of_unit(pkgbuild_t* pb, const unit_t* unit) {
-  assert(pb->cfiles.len == pb->pkg->files.len);
+  assert(pb->cfiles.len == pb->pkg->srcfiles.len);
   assertnotnull(unit->srcfile);
-  return cfile_of_srcfile_id(pb, unit->srcfile->pkgidx);
+  isize srcfile_idx = srcfilearray_indexof(&pb->pkg->srcfiles, unit->srcfile);
+  assert(srcfile_idx > -1);
+  return cfile_of_srcfile_id(pb, (u32)srcfile_idx);
 }
 
 
@@ -194,21 +197,21 @@ static err_t compile_c_source(
 err_t pkgbuild_locate_sources(pkgbuild_t* pb) {
   pkg_t* pkg = pb->pkg;
 
-  if (pkg->files.len == 0)
+  if (pkg->srcfiles.len == 0)
     pkg_find_files(pkg);
 
-  if (pkg->files.len == 0) {
+  if (pkg->srcfiles.len == 0) {
     elog("[%s] no source files in %s", pkg->path.p, relpath(pkg->dir.p));
     return ErrNotFound;
   }
 
   // count number of compis source files
   u32 ncosrc = 0;
-  for (u32 i = 0; i < pkg->files.len; i++)
-    ncosrc += (u32)(pkg->files.v[i].type == FILE_CO);
+  for (u32 i = 0; i < pkg->srcfiles.len; i++)
+    ncosrc += (u32)(pkg->srcfiles.v[i].type == FILE_CO);
 
   // update bgtask
-  pb->bgt->ntotal += pkg->files.len; // "parse foo.co"
+  pb->bgt->ntotal += pkg->srcfiles.len; // "parse foo.co"
   pb->bgt->ntotal += ncosrc;         // "compile foo.co"
   if (pb->c->opt_verbose)
     pb->bgt->ntotal += ncosrc;       // "cgen foo.co"
@@ -216,9 +219,9 @@ err_t pkgbuild_locate_sources(pkgbuild_t* pb) {
   // allocate promise array
   if (pb->promisev) {
     assert_promises_completed(pb);
-    mem_freetv(pb->c->ma, pb->promisev, (usize)pkg->files.len);
+    mem_freetv(pb->c->ma, pb->promisev, (usize)pkg->srcfiles.len);
   }
-  pb->promisev = mem_alloctv(pb->c->ma, promise_t, (usize)pkg->files.len);
+  pb->promisev = mem_alloctv(pb->c->ma, promise_t, (usize)pkg->srcfiles.len);
   if UNLIKELY(!pb->promisev) {
     pkgbuild_dispose(pb);
     return ErrNoMem;
@@ -233,8 +236,8 @@ err_t pkgbuild_begin_early_compilation(pkgbuild_t* pb) {
 
   // find first C srcfile or bail out if there are no C sources in the package
   u32 i = 0;
-  for (; i < pkg->files.len && pkg->files.v[i].type != FILE_C; i++) {}
-  if (i == pkg->files.len)
+  for (; i < pkg->srcfiles.len && pkg->srcfiles.v[i].type != FILE_C; i++) {}
+  if (i == pkg->srcfiles.len)
     return 0; // no C sources
 
   err_t err = 0;
@@ -243,8 +246,8 @@ err_t pkgbuild_begin_early_compilation(pkgbuild_t* pb) {
   if (( err = prepare_builddir(pb) ))
     return err;
 
-  for (; i < pkg->files.len && err == 0; i++) {
-    srcfile_t* srcfile = &pkg->files.v[i];
+  for (; i < pkg->srcfiles.len && err == 0; i++) {
+    srcfile_t* srcfile = &pkg->srcfiles.v[i];
     if (srcfile->type != FILE_C)
       continue;
     const char* cfile = srcfile->name.p;
@@ -300,8 +303,8 @@ static err_t pkgbuild_parse(pkgbuild_t* pb) {
 
   // count number of compis source files
   u32 ncosrc = 0;
-  for (u32 i = 0; i < pkg->files.len; i++)
-    ncosrc += (u32)(pkg->files.v[i].type == FILE_CO);
+  for (u32 i = 0; i < pkg->srcfiles.len; i++)
+    ncosrc += (u32)(pkg->srcfiles.v[i].type == FILE_CO);
 
   // allocate unit array
   unit_t** unitv = mem_alloctv(pb->ast_ma, unit_t*, (usize)ncosrc);
@@ -314,8 +317,8 @@ static err_t pkgbuild_parse(pkgbuild_t* pb) {
 
   // parse each file
   err_t err = 0;
-  for (u32 i = 0; i < pkg->files.len && err == 0; i++) {
-    srcfile_t* srcfile = &pkg->files.v[i];
+  for (u32 i = 0; i < pkg->srcfiles.len && err == 0; i++) {
+    srcfile_t* srcfile = &pkg->srcfiles.v[i];
 
     if (srcfile->type != FILE_CO) {
       assertf(srcfile->type == FILE_C, "%s: unrecognized file type", srcfile->name.p);
@@ -336,29 +339,268 @@ static err_t pkgbuild_parse(pkgbuild_t* pb) {
 }
 
 
+static err_t build_pkg1(pkgbuild_t* pb, pkg_t* pkg) {
+  dlog("███████████████████████████████████████████████████████");
+  err_t err = build_pkg(pkg, pb->c, /*outfile*/"", /*pkgbuildflags*/0);
+  dlog("███████████████████████████████████████████████████████");
+  if (err)
+    dlog("error while building pkg %s: %s", pkg->path.p, err_str(err));
+  return err;
+}
+
+
+static err_t load_pkg(pkgbuild_t* pb, pkg_t* pkg);
+
+
+// check_pkg_src_uptodate stats pkg->files and compares their mtime to product_mtime.
+// It also compares the names at pkg->files to readdir(pkg->dir).
+// product_mtime should be the timestamp of a package product, like metafile or libfile.
+// If a source file is newer than product_mtime, the set of files on disk has changed
+// or an I/O error occurred, false is returned to signal ""
+static bool check_pkg_src_uptodate(pkg_t* pkg, unixtime_t product_mtime) {
+  bool ok = false;
+
+  // First we need to scan for added or removed source files on disk.
+  // Since we "own" pkg here, it's safe to modify its srcfiles array, which we'll
+  // do in order to compare cached srcfiles vs actual on-disk srcfiles.
+
+  srcfilearray_t cached_srcfiles = {0};
+  CO_SWAP(cached_srcfiles, pkg->srcfiles);
+
+  // populate pkg->srcfiles with source files found on disk
+  err_t err = pkg_find_files(pkg);
+  if (err) {
+    dlog("[%s] error in pkg_find_files: %s", __FUNCTION__, err_str(err));
+    goto end;
+  }
+
+  // now pkg->srcfiles contains the current srcfiles on disk and cached_srcfiles
+  // contains the sources used to build the existing product.
+
+  // if the number of source files changed, the package is definitely out of date
+  if (cached_srcfiles.len != pkg->srcfiles.len)
+    goto end;
+
+  // Find renamed, added, removed or modified files.
+  // Since srcfilearray_t is sorted (by name) we can find name differences
+  // simply by comparing file by file.
+  // We also take this opportunity to check mtime.
+  for (u32 i = 0; i < cached_srcfiles.len; i++) {
+    if (!streq(cached_srcfiles.v[i].name.p, pkg->srcfiles.v[i].name.p)) {
+      //dlog("newfound srcfile: %s", pkg->srcfiles.v[i].name.p);
+      goto end;
+    }
+    if (pkg->srcfiles.v[i].mtime > product_mtime) {
+      //dlog("modified srcfile: %s", pkg->srcfiles.v[i].name.p);
+      goto end;
+    }
+  }
+
+  // pkg is up-to-date; source files have not changed since product was created
+  ok = true;
+
+end:
+  srcfilearray_dispose(&cached_srcfiles);
+  return ok;
+}
+
+
+// load_pkg_api decodes AST from astdec and assigns it to pkg->api
+static err_t load_pkg_api(pkgbuild_t* pb, pkg_t* pkg, astdecoder_t* astdec) {
+  node_t** nodev;
+  u32 nodec;
+  err_t err = astdecoder_decode_ast(astdec, &nodev, &nodec);
+  if (err) {
+    dlog("astdecode error: %s", err_str(err));
+    return err;
+  }
+  dlog("[%s] decoded %u unit%s", __FUNCTION__, nodec, nodec == 1 ? "" : "s");
+
+  // We expect a package to be zero or more NODE_UNITs.
+  // A package's API is comprised of all declarations of the decoded units
+  u32 ndecls = 0;
+  for (u32 i = 0; i < nodec; i++) {
+    // check that node is a unit
+    if UNLIKELY(nodev[i]->kind != NODE_UNIT) {
+      dlog("decoded nodev[%u].kind is %s (expected NODE_UNIT)",
+        i, nodekind_name(nodev[i]->kind));
+      elog("%s: invalid AST", astdecoder_srcname(astdec));
+      return ErrInvalid;
+    }
+
+    // tally the number of declarations
+    unit_t* unit = (unit_t*)nodev[i];
+    if (check_add_overflow(ndecls, unit->children.len, &ndecls)) {
+      elog("%s: package AST too large", astdecoder_srcname(astdec));
+      return ErrOverflow;
+    }
+  }
+
+  // allocate memory for ndecls nodes
+  dlog("[%s] found %u package-level declaration%s",
+    __FUNCTION__, ndecls, ndecls == 1 ? "" : "s");
+  assert(pkg->api.len == 0);
+  if UNLIKELY(!nodearray_reserve_exact(&pkg->api, pb->ast_ma, ndecls))
+    return ErrNoMem;
+
+  // add declarations to pkg->api
+  for (u32 i = 0; i < nodec; i++) {
+    unit_t* unit = (unit_t*)nodev[i];
+    for (u32 i = 0; i < unit->children.len; i++)
+      pkg->api.v[pkg->api.len++] = unit->children.v[i];
+  }
+
+  return 0;
+}
+
+
+// load_pkg1
+//
+// 1. check if there's a valid metafile, and if so, load it, and:
+//    1. parse header of metafile
+//    2. compare mtime of sources to metafile; if a src is newer, we must rebuild
+//
+static err_t load_pkg1(pkgbuild_t* pb, pkg_t* pkg) {
+  err_t err;
+  str_t metafile;       // path to metafile
+  const void* encdata;  // contents of metafile
+  struct stat metast;       // status of metafile
+  astdecoder_t* astdec = NULL;
+  bool did_buildpkg = false; // true if we have tried to build_pkg1
+
+  // construct metafile path
+  metafile = pkg_buildfile(pkg, pb->c, "pub.coast");
+  if (metafile.cap == 0)
+    return ErrNoMem;
+
+  // try to open metafile in read-only mode
+open_metafile:
+  if UNLIKELY(( err = mmap_file_ro(metafile.p, &encdata, &metast) )) {
+    // note: encdata is set to NULL when mmap_file_ro fails
+    if (err != ErrNotFound) {
+      elog("%s: failed to read (%s)", relpath(metafile.p), err_str(err));
+      goto end;
+    }
+
+    // if this is our second attempt and the file is still not showing;
+    // something is broken with build_pkg or the file system (or a race happened)
+    if (did_buildpkg) {
+      elog("%s: failed to build", relpath(metafile.p));
+      goto end;
+    }
+
+    // build package and then try opening metafile again
+    did_buildpkg = true;
+    if (( err = build_pkg1(pb, pkg) ))
+      goto end;
+    goto open_metafile;
+  }
+
+  // when we get here, the metafile is open for reading
+  unixtime_t meta_mtime = unixtime_of_stat_mtime(&metast);
+  dlog("opened metafile %s (modified %.2f seconds ago)",
+    relpath(metafile.p), (double)(unixtime_now() - meta_mtime) / 1000000.0);
+
+  // open an AST decoder
+  astdec = astdecoder_open(
+    pb->c->ma, pb->ast_ma, &pb->c->locmap, metafile.p, encdata, metast.st_size);
+  if (!astdec) {
+    err = ErrNoMem;
+    goto end;
+  }
+
+  // decode package information; astdecoder_decode_header populates ...
+  // - decpkg.{path,dir,root} (+ verifies they match prior input values of pkg)
+  // - decpkg.files via pkg_add_srcfile
+  // - decpkg.imports
+  if (( err = astdecoder_decode_header(astdec, pkg) ))
+    goto end;
+
+  // unless we just built the package, check source files and load imports
+  if (!did_buildpkg) {
+    // check if source files have been modified
+    unixtime_t meta_mtime = unixtime_of_stat_mtime(&metast);
+    if (!check_pkg_src_uptodate(pkg, meta_mtime)) {
+      // at least one source file has been modified since metafile was modified
+      did_buildpkg = true;
+      if (( err = build_pkg1(pb, pkg) ))
+        goto end;
+
+      // close old metafile and associated resources
+      astdecoder_close(astdec); astdec = NULL;
+      mmap_unmap((void*)encdata, metast.st_size); encdata = NULL;
+
+      // open the new metafile
+      goto open_metafile;
+    } else {
+      // up to date (all source files are older than metafile)
+      dlog("source files are up to date");
+    }
+
+    // load dependencies
+    for (u32 i = 0; i < pkg->imports.len; i++) {
+      pkg_t* dep = pkg->imports.v[i];
+      if (( err = load_pkg(pb, dep) ))
+        goto end;
+    }
+  }
+
+  // When we get here, pkg is loaded & current.
+  // We now need to load the package's API.
+  err = load_pkg_api(pb, pkg, astdec);
+
+end:
+  if (astdec)
+    astdecoder_close(astdec);
+  if (encdata)
+    mmap_unmap((void*)encdata, metast.st_size);
+  str_free(metafile);
+  return err;
+}
+
+
+static err_t load_pkg(pkgbuild_t* pb, pkg_t* pkg) {
+  dlog("%s %s", __FUNCTION__, pkg->path.p);
+  err_t err;
+  if (future_acquire(&pkg->loadfut)) {
+    err = load_pkg1(pb, pkg);
+    future_finalize(&pkg->loadfut, err);
+  } else {
+    dlog("[%s] future_wait", __FUNCTION__);
+    err = future_wait(&pkg->loadfut);
+  }
+  return err;
+}
+
+
 err_t pkgbuild_import(pkgbuild_t* pb) {
   assert(pb->pkg->imports.len == 0);
-  err_t err = import_find_pkgs(
-    pb->c, pb->pkg, (const unit_t*const*)pb->unitv, pb->unitc, &pb->pkg->imports);
+
+  // import_pkgs
+  // 1. finds all unique imports across units
+  // 2. resolves each imported package
+  err_t err = import_pkgs(pb->c, pb->pkg, pb->unitv, pb->unitc, &pb->pkg->imports);
   if (err)
     return err;
 
-  // return if no packages are imported
+  // stop now if no packages are imported
   if (pb->pkg->imports.len == 0)
     return 0;
 
-  dlog("imported packages:");
-  for (u32 i = 0; i < pb->pkg->imports.len; i++)
-    dlog("  %s", ((pkg_t*)pb->pkg->imports.v[i])->dir.p);
+  // at this point all packages at pkg->imports ...
+  // - are verified to exist (have a valid pkg->path, pkg->dir & pkg->root)
+  // - may or may not be ready for use (may need to be built before it can be used)
 
+  dlog("imported packages:");
   for (u32 i = 0; i < pb->pkg->imports.len; i++) {
+    pkg_t* dep = pb->pkg->imports.v[i];
+    dlog("  %s (root %s)", dep->path.p, dep->root.p);
+  }
+
+  // load imported packages (which might cause us to build them)
+  for (u32 i = 0; i < pb->pkg->imports.len && !err; i++) {
     pkg_t* pkg = pb->pkg->imports.v[i];
-    dlog("███████████████████████████████████████████████████████");
-    if (( err = build_pkg(pkg, pb->c, /*outfile*/"", /*pkgbuildflags*/0) )) {
-      dlog("error while building pkg %s: %s", pkg->path.p, err_str(err));
-      break;
-    }
-    dlog("███████████████████████████████████████████████████████");
+    err = load_pkg(pb, pkg);
   }
 
   // trim excess space of imports array since we'll be keeping it around
@@ -438,14 +680,17 @@ err_t pkgbuild_metagen(pkgbuild_t* pb) {
   buf_t outbuf = buf_make(pb->c->ma);
 
   // encode package API
-  astencode_t astenc;
-  if (( err = astencode_init(&astenc, pb->c->ma, &pb->c->locmap) ) == 0) {
-    for (u32 i = 0; i < pb->unitc && err == 0; i++)
-      err = astencode_add_ast(&astenc, (const node_t*)pb->unitv[i], AENC_PUB_API);
-    if (!err)
-      err = astencode_encode(&astenc, &outbuf);
-    astencode_dispose(&astenc);
+  astencoder_t* astenc = astencoder_create(pb->c->ma);
+  if (!astenc) {
+    err = ErrNoMem;
+    goto end;
   }
+  astencoder_begin(astenc, &pb->c->locmap);
+  for (u32 i = 0; i < pb->unitc && err == 0; i++)
+    err = astencoder_add_ast(astenc, (const node_t*)pb->unitv[i], ASTENCODER_PUB_API);
+  if (!err)
+    err = astencoder_encode(astenc, &outbuf);
+  astencoder_free(astenc);
 
   // write file
   if (!err) {
@@ -453,10 +698,7 @@ err_t pkgbuild_metagen(pkgbuild_t* pb) {
     str_free(filename);
   }
 
-  // err = metagen(&outbuf, pb->c, pb->pkg, (const unit_t*const*)pb->unitv, pb->unitc);
-  // if (!err)
-  //   err = fs_writefile("meta.lisp", 0644, buf_slice(outbuf));
-
+end:
   buf_dispose(&outbuf);
   return err;
 }
@@ -495,7 +737,7 @@ err_t pkgbuild_cgen(pkgbuild_t* pb) {
   compiler_t* c = pb->c;
 
   dlog_if(opt_trace_cgen, "————————— cgen —————————");
-  assert(pb->pkg->files.len > 0);
+  assert(pb->pkg->srcfiles.len > 0);
 
   // create C code generator
   cgen_t g;
@@ -541,14 +783,14 @@ end:
 
 
 err_t pkgbuild_begin_late_compilation(pkgbuild_t* pb) {
-  if (pb->pkg->files.len == 0)
+  if (pb->pkg->srcfiles.len == 0)
     return 0;
 
   err_t err = 0;
   assertf(pb->ofiles.len > 0, "prepare_builddir not called");
 
-  for (u32 i = 0; i < pb->pkg->files.len && err == 0; i++) {
-    srcfile_t* srcfile = &pb->pkg->files.v[i];
+  for (u32 i = 0; i < pb->pkg->srcfiles.len && err == 0; i++) {
+    srcfile_t* srcfile = &pb->pkg->srcfiles.v[i];
     if (srcfile->type != FILE_CO)
       continue;
     const char* cfile = cfile_of_srcfile_id(pb, i);
@@ -566,7 +808,7 @@ err_t pkgbuild_begin_late_compilation(pkgbuild_t* pb) {
 
 err_t pkgbuild_await_compilation(pkgbuild_t* pb) {
   err_t err = 0;
-  for (u32 i = 0; i < pb->pkg->files.len; i++) {
+  for (u32 i = 0; i < pb->pkg->srcfiles.len; i++) {
     err_t err1 = promise_await(&pb->promisev[i]);
     if (!err)
       err = err1;
@@ -686,11 +928,11 @@ err_t pkgbuild_link(pkgbuild_t* pb, const char* outfile) {
     if (is_exe) {
       ofstr = str_make(pb->c->builddir);
       ok &= str_append(&ofstr, PATH_SEP_STR "bin" PATH_SEP_STR);
-      ok &= str_append(&ofstr, path_base(pb->pkg->path.p));
+      ok &= str_append(&ofstr, path_base_cstr(pb->pkg->path.p));
     } else {
       ofstr = pkg_builddir(pb->pkg, pb->c);
       ok &= str_append(&ofstr, PATH_SEP_STR "lib");
-      ok &= str_append(&ofstr, path_base(pb->pkg->path.p));
+      ok &= str_append(&ofstr, path_base_cstr(pb->pkg->path.p));
       ok &= str_append(&ofstr, ".a");
     }
     if (!ok) {

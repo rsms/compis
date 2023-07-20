@@ -37,7 +37,10 @@ bool str_push(str_t*, char c);
 // str_appendlen appends len characters from src to end of s,
 // plus a terminating null char.
 // Caution: Does not check if src contains null characters.
-bool str_appendlen(str_t*, const char* src, usize len);
+bool str_appendlen(str_t* s, const char* src, usize len);
+
+// str_appendstr appends another string `src` to the end of s
+static bool str_appendstr(str_t* s, const str_t src);
 
 // str_appendv appends 'count' c-strings, optionally separated by 'glue'.
 // Set glue=0 to join strings together without a glue character.
@@ -90,6 +93,10 @@ inline static str_t str_copy(const str_t str) {
 }
 
 #define str_free(s) mem_free(STR_MEMALLOC, (mem_t*)&(s))
+
+inline static bool str_appendstr(str_t* s, const str_t src) {
+  return str_appendlen(s, src.p, src.len);
+}
 
 inline static bool _str_append2(str_t* s, const char* cstr) {
   return str_appendlen(s, cstr, strlen(cstr));

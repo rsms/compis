@@ -30,14 +30,36 @@ str_t path_dir(const char* path) WARN_UNUSED_RESULT;
 // Returns bytes written to buf as if bufcap was infinite.
 usize path_dir_buf(char* buf, usize bufcap, const char* path);
 
-// path_base returns a pointer to the last path element. E.g. "foo/bar/baz.x" => "baz.x"
+// path_dir_len returns the offset into path of the directory part.
+// It does not clean the path.
+// e.g.
+//   path_dir_len("/foo/bar/cat")    => 8 ("/foo/bar")
+//   path_dir_len("/foo//bar/cat//") => 9 ("/foo//bar")
+//   path_dir_len("/foo")            => 1 ("/")
+//   path_dir_len("/")               => 1 ("/")
+//   path_dir_len("foo/bar")         => 3 ("foo")
+//   path_dir_len("foo")             => 0 ("")
+//   path_dir_len("")                => 0 ("")
+//
+usize path_dir_len(const char* path, usize len);
+
+// path_base returns a pointer to the last path element.
+// E.g. "foo/bar/baz.x" => "baz.x"
 // If the path is empty, returns "".
 // If the path consists entirely of slashes, returns "/".
-const char* path_base(const char* path);
+// path_basen takes the length of path in *lenp_inout as input and returns the
+// length of the returned string at *lenp_inout.
+const char* path_base_cstr(const char* path);
+const char* path_basen(const char* path, usize* lenp_inout);
 
 // path_ext returns a pointer to the filename extension, or end of path if none.
 // e.g. path_ext("a.b/c.d") => ".d", path_ext("a.b/c") => ""
-const char* path_ext(const char* path);
+const char* path_ext_cstr(const char* path);
+
+// path_common_dirname finds the offset of the common directory of the provided paths.
+// Note: This function does not properly handle trailing slashes when duplicate paths
+// are provided, i.e. ["/a/b/","/a/b/"] return "/a/b", not "/a".
+usize path_common_dirname(const char*const pathv[], usize pathc);
 
 // path_clean resolves parent paths ("..") and eliminates redundant "/" and "./",
 // reducing 'path' to a clean, canonical form. E.g. "a/b/../c//./d" => "a/c/d"

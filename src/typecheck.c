@@ -2600,9 +2600,10 @@ static void import_pkg(typecheck_t* a, import_t* im) {
   if (im->idlist == NULL) // just for the side effects
     return;
   assertnull(im->idlist->next_id); // must only be one name
+  assertnotnull(im->pkg);
 
   // TODO FIXME
-  dlog("TODO define imported package's namespace in unit");
+  dlog("TODO define imported package \"%s\" namespace in unit", im->pkg->path.p);
   // namespace_t* ns = mknode(a, namespace_t, NODE_NAMESPACE);
   local_t* ns = mknode(a, local_t, EXPR_LET);
   ns->type = type_unknown;

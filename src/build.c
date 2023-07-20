@@ -177,9 +177,9 @@ int main_build(int argc, char* argv[]) {
   if (( err = pkgs_for_argv(argc, argv, &pkgv, &pkgc) ))
     return 1;
   #if DEBUG
-    printf("[D] building %u package%s:", pkgc, pkgc != 1 ? "s" : "");
+    dlog("building %u package%s:", pkgc, pkgc != 1 ? "s" : "");
     for (u32 i = 0; i < pkgc; i++)
-      printf(&", %s (\"%s\")"[((u32)!i)], pkgv[i].path.p, pkgv[i].dir.p);
+      dlog("  %s (dir %s, root %s)", pkgv[i].path.p, pkgv[i].dir.p, pkgv[i].root.p);
     printf("\n");
   #endif
   assert(pkgc > 0);

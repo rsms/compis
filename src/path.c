@@ -32,7 +32,35 @@ const char* relpath(const char* path) {
 }
 
 
-static usize path_dir_len(const char* path, char* singlecp) {
+usize path_dir_len(const char* path, usize len) {
+  // special case of empty string: we can't even say "/ is the dir"
+  if (len == 0)
+    return 0;
+
+  const char* end = path + (len - 1);
+
+  // skip past trailing slashes, e.g. "/a/b//" => "/a/b"
+  while (*end == PATH_SEP && end != path)
+    end--;
+
+  // if path is only slashes, the dir is the root
+  if (end == path)
+    return 1;
+
+  // find next slash
+  const char* end2 = end;
+  for (;;) {
+    end2--;
+    if (end2 == path) // root
+      return (*path == PATH_SEP); // 1 for "/", 0 for ""
+    if (*end2 == PATH_SEP)
+      return (usize)(uintptr)(end2 - path);
+  }
+  UNREACHABLE;
+}
+
+
+static usize path_dir_len1(const char* path, char* singlecp) {
   // examples:
   //   "a/b/c"    => "a/b"
   //   "a/b//c//" => "a/b"
@@ -78,7 +106,7 @@ static usize path_dir_len(const char* path, char* singlecp) {
 
 usize path_dir_buf(char* buf, usize bufcap, const char* path) {
   char singlec;
-  usize dirlen = path_dir_len(path, &singlec);
+  usize dirlen = path_dir_len1(path, &singlec);
   if (dirlen == 1) {
     if (bufcap > 1 && singlec) *buf++ = singlec;
     if (bufcap > 0) *buf = 0;
@@ -95,7 +123,7 @@ usize path_dir_buf(char* buf, usize bufcap, const char* path) {
 
 str_t path_dir(const char* path) {
   char singlec;
-  usize dirlen = path_dir_len(path, &singlec);
+  usize dirlen = path_dir_len1(path, &singlec);
   assert(dirlen > 0);
   if (dirlen == 1)
     path = &singlec;
@@ -103,23 +131,72 @@ str_t path_dir(const char* path) {
 }
 
 
-const char* path_base(const char* path) {
+const char* path_basen(const char* path, usize* lenp) {
+  if (*lenp == 0)
+    return path;
+  const char* p = path + (*lenp - 1);
+  // skip trailing separators, e.g. "/foo/bar/" => "bar/"
+  while (*p == PATH_SEP && p != path)
+    p--;
+  while (*p != PATH_SEP && p != path)
+    p--;
+  if (p == path) {
+    // no base; e.g. "/foo", "foo/", "foo" or "/"
+    *lenp = 0;
+    return path;
+  }
+  p++; // "undo" last PATH_SEP
+  *lenp -= (usize)(uintptr)(p - path);
+  return p;
+}
+
+
+const char* path_base_cstr(const char* path) {
   if (*path == 0)
     return path;
   const char* p = path + strlen(path) - 1;
-  // don't count trailing separators, e.g. "/foo/bar/" => "bar/" (not "")
-  while (*p == PATH_SEPARATOR && p != path)
+  // skip trailing separators
+  while (*p == PATH_SEP && p != path)
     p--;
-  while (*p != PATH_SEPARATOR && p != path)
+  while (*p != PATH_SEP && p != path)
     p--;
   return p == path ? p : p + 1;
 }
 
 
-const char* path_ext(const char* path) {
-  path = path_base(path);
+const char* path_ext_cstr(const char* path) {
+  path = path_base_cstr(path);
   const char* p = strrchr(path, '.');
   return p && p > path ? p : path+strlen(path);
+}
+
+
+usize path_common_dirname(const char*const pathv[], usize pathc) {
+  if (pathc == 0)
+    return 0;
+
+  if (pathc == 1)
+    return path_dir_len(pathv[0], strlen(pathv[0]));
+
+  // search left to right, char by char.
+  // e.g. with input ["/foo/bar", "/foo/baz"]
+  // 1. find the first differing char:
+  //   / → /f → /fo → /foo → /foo/ → /foo/b → /foo/ba → /foo/bar differs
+  //   / → /f → /fo → /foo → /foo/ → /foo/b → /foo/ba → /foo/baz differs
+  //   ~    ~     ~      ~       ~        ~         ~          ~
+  // 2. backtrack to the previous slash
+  //   /foo/ ← /foo/b ← /foo/ba
+  //       ~        ~         ~
+  for (usize pos = 0; ; pos++) {
+    for (usize i = 0; i < pathc; i++) {
+      if (pathv[i][pos] != 0 && pathv[i][pos] == pathv[0][pos])
+        continue;
+      // backtrack to previous slash
+      while (pos > 0 && pathv[0][--pos] != PATH_SEP) {}
+      return pos;
+    }
+  }
+  UNREACHABLE;
 }
 
 

@@ -133,13 +133,8 @@ bool sema_signal(sema_t* sp, u32 count) {
   assert(count > 0);
   semaphore_t s = *(semaphore_t*)sp;
   kern_return_t rc = 0; // KERN_SUCCESS
-  while (count-- > 0) {
-    rc += semaphore_signal(s); // == ...
-    // auto rc1 = semaphore_signal(s);
-    // if (rc1 != KERN_SUCCESS) {
-    //   rc = rc1;
-    // }
-  }
+  while (count-- > 0)
+    rc += semaphore_signal(s);
   return rc == KERN_SUCCESS;
 }
 

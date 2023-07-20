@@ -50,7 +50,7 @@ static err_t copy_target_layer_dirs(
       nlayers_found++;
       task->n++;
       bgtask_setstatusf(task, "copy {compis}/%s/%s/ -> {sysroot}/%s/",
-        relpath(src_basedir), path_base(layers[i]), dst_basedir);
+        relpath(src_basedir), path_base_cstr(layers[i]), dst_basedir);
       // dlog("copy %s -> %s", relpath(layers[i]), relpath(dstpath.p));
       if (( err = fs_copyfile(layers[i], dstpath.p, 0) ))
         break;
@@ -59,7 +59,7 @@ static err_t copy_target_layer_dirs(
 
   if UNLIKELY(nlayers_found == 0) {
     elog("error: no layers found in %s/ for target %s",
-      path_dir_alloca(layers[0]), path_base(layers[0]));
+      path_dir_alloca(layers[0]), path_base_cstr(layers[0]));
     err = ErrNotFound;
   }
 

@@ -28,7 +28,7 @@ static err_t symlink_ld(compiler_t* c) {
   if (*c->ldname == 0)
     return 0;
 
-  const char* target = path_base(coexefile); // e.g. "compis"
+  const char* target = path_base_cstr(coexefile); // e.g. "compis"
 
   // linkfile = path_dir(coexefile) "/" c->ldname
   char linkfile[PATH_MAX];
@@ -229,7 +229,7 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
 
     // non-option args (does not start with "-" OR we have seen "--")
     else {
-      const char* ext = path_ext(arg);
+      const char* ext = path_ext_cstr(arg);
       if (*ext++ == '.' && *ext) {
         if (ext[1] == 0) {
           char c = *ext;

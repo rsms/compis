@@ -62,6 +62,7 @@ AST encoding format:
 #include "colib.h"
 #include "compiler.h"
 #include "astencode.h"
+#include "path.h"
 #include "hash.h"
 
 
@@ -379,7 +380,20 @@ inline static f64 u64_to_f64(u64 v) { return *(f64*)&v; }
 
 
 //———————————————————————————————————————————————————————————————————————————————————————
-// astencode_t implementation
+// encoder
+
+typedef struct astencoder_ {
+  memalloc_t         ma;
+  array_type(mem_t)  tmpallocs;  // temporary allocations
+  nodearray_t        nodelist;   // all nodes
+  u32array_t         rootlist;   // indices in nodelist of root nodes
+  u32array_t         srcfileids; // unique loc_t srcfile IDs
+  map_t              nodemap;    // maps {node_t* => uintptr nodelist index}
+  ptrarray_t         symmap;     // maps {sym_t => u32 index} (sorted set)
+  usize              symsize;    // total length of all symbol characters
+  locmap_t* nullable locmap;     // locmap in which all IDs in srcfileids are registered
+  bool               oom;        // true if memory allocation failed (internal state)
+} astencoder_t;
 
 
 // buf_setlenp sets buf->len to the offset of p relative to the start of buf
@@ -407,7 +421,7 @@ static int ptr_cmp(const void** a, const void** b, void* ctx) {
 }
 
 
-static u32 encoded_sym_index(const astencode_t* a, sym_t sym) {
+static u32 encoded_sym_index(const astencoder_t* a, sym_t sym) {
   u32 index;
   UNUSED sym_t* vp = array_sortedset_lookup(
     sym_t, &a->symmap, &sym, &index, (array_sorted_cmp_t)ptr_cmp, NULL);
@@ -416,7 +430,7 @@ static u32 encoded_sym_index(const astencode_t* a, sym_t sym) {
 }
 
 
-static u32 encoded_node_index(const astencode_t* a, const void* np) {
+static u32 encoded_node_index(const astencoder_t* a, const void* np) {
   uintptr* vp = (uintptr*)map_lookup_ptr(&a->nodemap, np);
   assertf(vp != NULL, "node %p %s not in nodemap",
     np, nodekind_name(((node_t*)np)->kind));
@@ -431,7 +445,7 @@ static u32 encoded_node_index(const astencode_t* a, const void* np) {
 #define AST_ENC_VERSION 1u
 
 
-static void encode_header(astencode_t* a, buf_t* outbuf) {
+static void encode_header(astencoder_t* a, buf_t* outbuf) {
   // write header
   char* p = outbuf->chars + outbuf->len;
   memcpy(p, FILE_MAGIC, 4); p += 4; *p++ = ' ';
@@ -444,7 +458,7 @@ static void encode_header(astencode_t* a, buf_t* outbuf) {
 }
 
 
-static void encode_filepath(astencode_t* a, buf_t* outbuf, const char* str, usize len) {
+static void encode_filepath(astencoder_t* a, buf_t* outbuf, const char* str, usize len) {
   // filepath = <byte 0x20..0x39, 0x3B...0xFF>+  // note: 0x40 = ":"
   #ifdef CO_SAFE
   for (usize i = 0; i < len; i++) {
@@ -460,7 +474,7 @@ static void encode_filepath(astencode_t* a, buf_t* outbuf, const char* str, usiz
 }
 
 
-static void encode_srcinfo(astencode_t* a, buf_t* outbuf) {
+static void encode_srcinfo(astencoder_t* a, buf_t* outbuf) {
   if (a->srcfileids.len == 0) {
     a->oom |= !buf_print(outbuf, "\n\n0\n");
     return;
@@ -529,7 +543,7 @@ static void encode_srcinfo(astencode_t* a, buf_t* outbuf) {
 }
 
 
-static void encode_syms(astencode_t* a, buf_t* outbuf) {
+static void encode_syms(astencoder_t* a, buf_t* outbuf) {
   BUF_RESERVE(a->symsize);
   u8* p = outbuf->bytes + outbuf->len;
   for (u32 i = 0; i < a->symmap.len; i++) {
@@ -544,7 +558,7 @@ static void encode_syms(astencode_t* a, buf_t* outbuf) {
 }
 
 
-static void encode_str(astencode_t* a, buf_t* outbuf, const char* str, usize len) {
+static void encode_str(astencoder_t* a, buf_t* outbuf, const char* str, usize len) {
   usize bufavail, w;
 
   if (len > U32_MAX) {
@@ -574,7 +588,7 @@ try_string_repr:
 
 
 static void encode_field_nodearray(
-  astencode_t* a, buf_t* outbuf, const void* fp, ae_field_t f)
+  astencoder_t* a, buf_t* outbuf, const void* fp, ae_field_t f)
 {
   // We have space for max possible node IDs, so no bounds checks needed here
   const nodearray_t* na = fp;
@@ -593,7 +607,7 @@ static void encode_field_nodearray(
 
 
 static void encode_field_str(
-  astencode_t* a, buf_t* outbuf, const void* fp, ae_field_t f)
+  astencoder_t* a, buf_t* outbuf, const void* fp, ae_field_t f)
 {
   const char* str = *(const char**)fp;
   usize len = strlen(str);
@@ -602,7 +616,7 @@ static void encode_field_str(
 
 
 static void encode_field_custom(
-  astencode_t* a, buf_t* outbuf, const void* fp, ae_field_t f)
+  astencoder_t* a, buf_t* outbuf, const void* fp, ae_field_t f)
 {
   dlog("TODO %s", __FUNCTION__);
 }
@@ -613,7 +627,7 @@ static int u32_cmp(const u32* a, const u32* b, void* ctx) {
 }
 
 
-static loc_t enc_remap_loc(astencode_t* a, loc_t loc) {
+static loc_t enc_remap_loc(astencoder_t* a, loc_t loc) {
   // search a->srcfileids, which is a sorted u32array
   u32 srcfileid = loc_srcfileid(loc);
   if (srcfileid == 0) // unknown srcfile
@@ -631,7 +645,7 @@ static loc_t enc_remap_loc(astencode_t* a, loc_t loc) {
 
 
 // field_encsize calculates the space needed to encode a field
-static usize field_encsize(astencode_t* a, const void* fp, ae_field_t f) {
+static usize field_encsize(astencoder_t* a, const void* fp, ae_field_t f) {
   usize z = 1; // leading SP
 again:
   switch ((enum ae_fieldtype)f.type) {
@@ -679,7 +693,7 @@ again:
 }
 
 
-static void encode_field(astencode_t* a, buf_t* outbuf, const void* fp, ae_field_t f) {
+static void encode_field(astencoder_t* a, buf_t* outbuf, const void* fp, ae_field_t f) {
   //dlog("  %-12s %-9s  +%u", f.name, ae_fieldtype_str(f.type), f.offs);
 
   // set fp to point to the field's data
@@ -745,11 +759,11 @@ enc_str: {}
 #define NODE_BASE_ENCSIZE  strlen("XXXX FFFF FFFFFFFF FFFFFFFFFFFFFFFF\n")
 
 
-static void encode_node(astencode_t* a, buf_t* outbuf, const node_t* n) {
+static void encode_node(astencoder_t* a, buf_t* outbuf, const node_t* n) {
   assertf(n->kind < NODEKIND_COUNT, "%s %u", nodekind_name(n->kind), n->kind);
 
   // Reserve enough space for base node attributes (kind, flags etc) and fields.
-  // Note that astencode_encode has preallocated memory already so in most cases
+  // Note that astencoder_encode has preallocated memory already so in most cases
   // this is just a check on "buf_avail(outbuf) >= NODE_BASE_ENCSIZE" that passes.
   // Only in cases where a previous node wrote long string data does this cause
   // outbuf to grow.
@@ -793,7 +807,7 @@ static void encode_node(astencode_t* a, buf_t* outbuf, const node_t* n) {
 }
 
 
-static usize enc_preallocsize(astencode_t* a) {
+static usize enc_preallocsize(astencoder_t* a) {
   // start with space needed for the header
   usize nbyte = 4 + 1  // magic SP
               + 8 + 1  // version SP
@@ -849,7 +863,9 @@ static usize enc_preallocsize(astencode_t* a) {
 }
 
 
-err_t astencode_encode(astencode_t* a, buf_t* outbuf) {
+err_t astencoder_encode(astencoder_t* a, buf_t* outbuf) {
+  assertf(a->locmap != NULL, "astencoder_begin not called before astencoder_encode");
+
   // allocate space in outbuf
   usize nbyte = enc_preallocsize(a);
   if (nbyte == USIZE_MAX)
@@ -873,8 +889,10 @@ err_t astencode_encode(astencode_t* a, buf_t* outbuf) {
   // write nodes
   for (u32 i = 0; i < a->nodelist.len; i++)
     encode_node(a, outbuf, a->nodelist.v[i]);
-  if (a->oom)
+  if (a->oom) {
+    a->locmap = NULL;
     return ErrNoMem;
+  }
 
   // write root node IDs (make sure we have space in outbuf)
   BUF_RESERVE((usize)a->rootlist.len * 9, ErrNoMem);
@@ -897,6 +915,7 @@ err_t astencode_encode(astencode_t* a, buf_t* outbuf) {
     );
   #endif
 
+  a->locmap = NULL;
   return 0;
 }
 
@@ -904,7 +923,7 @@ err_t astencode_encode(astencode_t* a, buf_t* outbuf) {
 // ———————————————— adding AST to be encoded ————————————————
 
 
-static void reg_sym(astencode_t* a, sym_t sym) {
+static void reg_sym(astencoder_t* a, sym_t sym) {
   sym_t* vp = array_sortedset_assign(
     sym_t, &a->symmap, a->ma, &sym, (array_sorted_cmp_t)ptr_cmp, NULL);
   if UNLIKELY(!vp) {
@@ -916,7 +935,7 @@ static void reg_sym(astencode_t* a, sym_t sym) {
 }
 
 
-static void reg_syms(astencode_t* a, const node_t* n) {
+static void reg_syms(astencoder_t* a, const node_t* n) {
   if (a->oom)
     return;
 
@@ -993,7 +1012,7 @@ static void reg_syms(astencode_t* a, const node_t* n) {
 }
 
 
-static void* nullable enc_tmpalloc(astencode_t* a, usize size) {
+static void* nullable enc_tmpalloc(astencoder_t* a, usize size) {
   mem_t m = mem_alloc(a->ma, size);
   if (m.p) {
     if UNLIKELY(!array_push(mem_t, (array_t*)&a->tmpallocs, a->ma, m)) {
@@ -1008,7 +1027,7 @@ static void* nullable enc_tmpalloc(astencode_t* a, usize size) {
 }
 
 
-static void* nullable clone_node_shallow(astencode_t* a, const node_t* n) {
+static void* nullable clone_node_shallow(astencoder_t* a, const node_t* n) {
   usize nodesize = g_nodekindsizetab[n->kind];
   node_t* n2 = enc_tmpalloc(a, nodesize);
   if LIKELY(n2)
@@ -1017,7 +1036,7 @@ static void* nullable clone_node_shallow(astencode_t* a, const node_t* n) {
 }
 
 
-static const node_t* pub_api_filter_unit(astencode_t* a, const unit_t* unit1) {
+static const node_t* pub_api_filter_unit(astencoder_t* a, const unit_t* unit1) {
   // first, count public children
   u32 pubchildcount = 0;
   for (u32 i = 0; i < unit1->children.len; i++)
@@ -1055,7 +1074,7 @@ static const node_t* pub_api_filter_unit(astencode_t* a, const unit_t* unit1) {
 }
 
 
-static const node_t* pub_api_filter_node(astencode_t* a, const node_t* n) {
+static const node_t* pub_api_filter_node(astencoder_t* a, const node_t* n) {
   switch (n->kind) {
 
     // function definitions become declarations in PUB_API mode
@@ -1076,7 +1095,7 @@ static const node_t* pub_api_filter_node(astencode_t* a, const node_t* n) {
 }
 
 
-static void add_ast_visitor(astencode_t* a, u32 flags, const node_t* n) {
+static void add_ast_visitor(astencoder_t* a, u32 flags, const node_t* n) {
   // assign n to nodemap, returning early if it's already in the map
   uintptr* vp = (uintptr*)map_assign_ptr(&a->nodemap, a->ma, n);
   if UNLIKELY(!vp) {
@@ -1099,7 +1118,7 @@ static void add_ast_visitor(astencode_t* a, u32 flags, const node_t* n) {
     add_ast_visitor(a, flags, (node_t*)expr->type);
   }
 
-  if (flags & AENC_PUB_API)
+  if (flags & ASTENCODER_PUB_API)
     n = pub_api_filter_node(a, n);
 
   // visit each child
@@ -1122,7 +1141,7 @@ static void add_ast_visitor(astencode_t* a, u32 flags, const node_t* n) {
 }
 
 
-err_t astencode_add_ast(astencode_t* a, const node_t* n, u32 flags) {
+err_t astencoder_add_ast(astencoder_t* a, const node_t* n, u32 flags) {
   // nodes are ordered from least refs to most refs (children first, parents last) e.g.
   //   (<int> + (<int> intlit 1) (<int> intlit 2))
   // is encoded as:
@@ -1169,7 +1188,7 @@ err_t astencode_add_ast(astencode_t* a, const node_t* n, u32 flags) {
     node_id = a->nodelist.len - 1;
   }
 
-  // it's illegal to call astencode_add_ast twice with the same node
+  // it's illegal to call astencoder_add_ast twice with the same node
   assertf(u32array_rindexof(&a->rootlist, node_id) == U32_MAX,
     "%s %p added twice", nodekind_name(n->kind), n);
 
@@ -1185,26 +1204,20 @@ err_t astencode_add_ast(astencode_t* a, const node_t* n, u32 flags) {
 }
 
 
-err_t astencode_init(astencode_t* a, memalloc_t ma, locmap_t* locmap) {
-  memset(a, 0, sizeof(*a));
+astencoder_t* nullable astencoder_create(memalloc_t ma) {
+  astencoder_t* a = mem_alloct(ma, astencoder_t);
+  if (!a)
+    return NULL;
   a->ma = ma;
-  a->locmap = locmap;
-  err_t err = map_init(&a->nodemap, ma, 256) ? 0 : ErrNoMem;
-  return err;
+  if (!map_init(&a->nodemap, ma, 256)) {
+    mem_freet(ma, a);
+    return NULL;
+  }
+  return a;
 }
 
 
-void astencode_reset(astencode_t* a, locmap_t* locmap) {
-  a->nodelist.len = 0;
-  a->symmap.len = 0;
-  a->rootlist.len = 0;
-  a->srcfileids.len = 0;
-  a->locmap = locmap;
-  map_clear(&a->nodemap);
-}
-
-
-void astencode_dispose(astencode_t* a) {
+void astencoder_free(astencoder_t* a) {
   for (u32 i = 0; i < a->tmpallocs.len; i++)
     mem_freex(a->ma, a->tmpallocs.v[i]);
   array_dispose(mem_t, (array_t*)&a->tmpallocs, a->ma);
@@ -1214,13 +1227,25 @@ void astencode_dispose(astencode_t* a) {
   u32array_dispose(&a->rootlist, a->ma);
   u32array_dispose(&a->srcfileids, a->ma);
   map_dispose(&a->nodemap, a->ma);
+
+  mem_freet(a->ma, a);
+}
+
+
+void astencoder_begin(astencoder_t* a, locmap_t* locmap) {
+  a->nodelist.len = 0;
+  a->symmap.len = 0;
+  a->rootlist.len = 0;
+  a->srcfileids.len = 0;
+  a->locmap = locmap;
+  map_clear(&a->nodemap);
 }
 
 
 //———————————————————————————————————————————————————————————————————————————————————————
 // decoder
 
-typedef struct {
+typedef struct astdecoder_ {
   u32         version;
   u32         symcount;  // size of symtab
   u32         nodecount; // size of nodetab
@@ -1231,17 +1256,28 @@ typedef struct {
   u32*        srctab;    // ID => srcfileid (document local ID => global ID)
   memalloc_t  ma;
   memalloc_t  ast_ma;
-  pkg_t*      pkg;
   locmap_t*   locmap;
   const char* srcname;
   const u8*   pstart;
+  const u8*   pend;
+  const u8*   pcurr;
   err_t       err;
-} astdecode_t;
+} astdecoder_t;
 
-#define DEC_PARAMS  astdecode_t* d, const u8* pend, const u8* p
+#define DEC_PARAMS  astdecoder_t* d, const u8* const pend, const u8* p
 #define DEC_ARGS    d, pend, p
 
 #define DEC_DATA_AVAIL  ((usize)(uintptr)(pend - p))
+
+
+const char* astdecoder_srcname(const astdecoder_t* d) {
+  return d->srcname;
+}
+
+
+memalloc_t astdecoder_ast_ma(const astdecoder_t* d) {
+  return d->ast_ma;
+}
 
 
 static void decoder_error_loc(DEC_PARAMS, u32* linenop, u32* colp) {
@@ -1474,6 +1510,12 @@ static const u8* dec_nodearray(DEC_PARAMS, nodearray_t* dstp) {
   if UNLIKELY((usize)len > USIZE_MAX / sizeof(void*))
     return DEC_ERROR(ErrOverflow, "node array too large (%u)", len);
 
+  if (len == 0) {
+    dstp->len = 0;
+    dstp->cap = 0;
+    return p;
+  }
+
   // allocate memory for array
   mem_t m = mem_alloc(d->ast_ma, (usize)len * sizeof(void*));
   if UNLIKELY(m.p == NULL)
@@ -1588,7 +1630,7 @@ static const u8* decode_line(DEC_PARAMS, const char** startp, usize* lenp) {
 }
 
 
-static const u8* decode_srctab(DEC_PARAMS) {
+static const u8* decode_srctab(DEC_PARAMS, pkg_t* pkg) {
   if (d->srccount == 0)
     return p;
 
@@ -1611,7 +1653,7 @@ static const u8* decode_srctab(DEC_PARAMS) {
     p = decode_line(DEC_ARGS, &linep, &linelen);
 
     // allocate or retrieve srcfile for pkg
-    srcfile_t* srcfile = pkg_add_srcfile(d->pkg, linep, linelen);
+    srcfile_t* srcfile = pkg_add_srcfile(pkg, linep, linelen, NULL);
     if UNLIKELY(!srcfile)
       return DEC_ERROR(ErrNoMem, "pkg_add_srcfile OOM");
 
@@ -1627,7 +1669,7 @@ static const u8* decode_srctab(DEC_PARAMS) {
 }
 
 
-static const u8* decode_srcinfo(DEC_PARAMS) {
+static const u8* decode_srcinfo(DEC_PARAMS, pkg_t* pkg) {
   // srcinfo   = pkgpath? LF
   //             srcdir? LF
   //             srccount LF (srcfile LF){srccount}
@@ -1643,20 +1685,54 @@ static const u8* decode_srcinfo(DEC_PARAMS) {
 
   // pkgpath LF
   p = decode_line(DEC_ARGS, &linep, &linelen);
-  dlog(">> pkgpath = '%.*s'", (int)linelen, linep);
-  str_free(d->pkg->path);
-  d->pkg->path = str_makelen(linep, linelen);
+  str_t pkgpath = str_makelen(linep, linelen);
 
   // srcdir LF
   p = decode_line(DEC_ARGS, &linep, &linelen);
-  dlog(">> srcdir = '%.*s'", (int)linelen, linep);
-  str_free(d->pkg->dir);
-  d->pkg->dir = str_makelen(linep, linelen);
+  str_t pkgdir = str_makelen(linep, linelen);
+
+  // check pkg.{path,dir}
+  if UNLIKELY(pkg->path.len > 0 && !streq(pkg->path.p, pkgpath.p)) {
+    d->err = ErrInvalid;
+    if (coverbose) {
+      elog("[astdecoder] error: %s: unexpected pkg path \"%s\" (expected \"%s\")",
+        relpath(d->srcname), pkgpath.p, pkg->path.p);
+    }
+    str_free(pkgpath);
+    str_free(pkgdir);
+    return p;
+  }
+  if UNLIKELY(pkg->dir.len > 0 && !streq(pkg->dir.p, pkgdir.p) && coverbose) {
+    elog("[astdecoder] warning: %s: unexpected pkg dir \"%s\" (expected \"%s\")",
+      relpath(d->srcname), pkgdir.p, pkg->dir.p);
+  }
+
+  // set pkg.{path,dir}
+  str_free(pkg->path); pkg->path = pkgpath;
+  str_free(pkg->dir); pkg->dir = pkgdir;
+
+  // set or check pkg.root
+  if (pkg->root.len == 0) {
+    assertf(string_endswithn(
+      pkg->dir.p, pkg->dir.len, pkg->path.p, pkg->path.len),
+      "dir=%s path=%s", pkg->dir.p, pkg->path.p);
+    str_free(pkg->root);
+    pkg->root = str_makelen(pkg->dir.p, pkg->dir.len - pkg->path.len - 1);
+  } else if (coverbose) {
+    str_t pkgroot = str_makelen(pkg->dir.p, pkg->dir.len - pkg->path.len - 1);
+    if UNLIKELY(!streq(pkg->root.p, pkgroot.p)) {
+      elog("[astdecoder] warning: %s: unexpected pkg root \"%s\" (expected \"%s\")",
+        relpath(d->srcname), pkgroot.p, pkg->root.p);
+    }
+  }
+
+  if UNLIKELY(pkg->path.cap == 0 || pkg->dir.cap == 0 || pkg->root.cap == 0)
+    return DEC_ERROR(ErrNoMem);
 
   // srccount LF (srcfile LF){srccount}
   p = dec_u32x(DEC_ARGS, &d->srccount);
   p = dec_byte(DEC_ARGS, '\n');
-  p = decode_srctab(DEC_ARGS);
+  p = decode_srctab(DEC_ARGS, pkg);
 
   // importcount LF (pkgpath LF){importcount}
   u32 importcount;
@@ -1668,7 +1744,7 @@ static const u8* decode_srcinfo(DEC_PARAMS) {
     //
     // TODO: imports
     //
-    // This is a little tricky: we can't simply popluate d->pkg->imports
+    // This is a little tricky: we can't simply popluate pkg->imports
     // since that would require us to resolve packages up front, here and now,
     // which would be slow.
     //
@@ -1802,7 +1878,7 @@ static const u8* decode_nodes(DEC_PARAMS) {
 }
 
 
-static bool dec_tmptabs_alloc(astdecode_t* d) {
+static bool dec_tmptabs_alloc(astdecoder_t* d) {
   usize nbyte_nodetab = (usize)d->nodecount;
   usize nbyte_symtab = (usize)d->symcount;
   usize nbyte;
@@ -1828,7 +1904,7 @@ static bool dec_tmptabs_alloc(astdecode_t* d) {
 }
 
 
-static void dec_tmptabs_free(astdecode_t* d) {
+static void dec_tmptabs_free(astdecoder_t* d) {
   if (!d->nodetab)
     return;
   usize nbyte = ((usize)d->nodecount * sizeof(*d->nodetab))
@@ -1839,50 +1915,71 @@ static void dec_tmptabs_free(astdecode_t* d) {
 }
 
 
-err_t astdecode(
-  memalloc_t ma,
-  memalloc_t ast_ma,
-  pkg_t* pkg,
-  locmap_t* locmap,
-  const char* srcname, const u8* src, usize srclen,
-  node_t*** resultv, u32* resultc
-) {
-  if (!IS_ALIGN2((uintptr)src, 4)) {
-    dlog("src %p not 4-byte aligned", src);
-    return ErrInvalid;
+
+astdecoder_t* nullable astdecoder_open(
+  memalloc_t  ma,
+  memalloc_t  ast_ma,
+  locmap_t*   locmap,
+  const char* srcname,
+  const u8*   src,
+  usize       srclen)
+{
+  astdecoder_t* d = mem_alloct(ma, astdecoder_t);
+  if (d) {
+    d->ast_ma = ast_ma;
+    d->ma = ma;
+    d->locmap = locmap;
+    d->srcname = srcname;
+    d->pstart = src;
+    d->pend = src + srclen;
+    d->pcurr = src;
   }
+  return d;
+}
 
-  astdecode_t dec_ = {
-    .pstart = src,
-    .srcname = srcname,
-    .ast_ma = ast_ma,
-    .ma = ma,
-    .pkg = pkg,
-    .locmap = locmap,
-  };
 
-  node_t** roots = NULL;
+void astdecoder_close(astdecoder_t* d) {
+  if (d->srctab)
+    mem_freex(d->ma, MEM(d->srctab, (usize)d->srccount * sizeof(*d->srctab)));
+  dec_tmptabs_free(d);
+  mem_freet(d->ma, d);
+}
 
+
+err_t astdecoder_decode_header(astdecoder_t* d, pkg_t* pkg) {
   // DEC_ARGS
-  astdecode_t* d = &dec_;
-  const u8* p = src;
-  const u8* pend = p + srclen;
+  const u8* p = d->pcurr;
+  const u8* pend = d->pend;
 
   // decode header
   p = decode_header(DEC_ARGS);
   if (d->err)
-    return d->err;
+    goto end;
+
   // dlog("header: symcount %u, nodecount %u, rootcount %u",
   //   d->symcount, d->nodecount, d->rootcount);
 
   // allocate memory for temporary tables
   if (!dec_tmptabs_alloc(d))
-    return d->err;
+    goto end;
 
   // decode srcinfo
-  p = decode_srcinfo(DEC_ARGS);
-  if (d->err)
-    goto error;
+  p = decode_srcinfo(DEC_ARGS, pkg);
+
+end:
+  d->pcurr = p;
+  return d->err;
+}
+
+
+err_t astdecoder_decode_ast(astdecoder_t* d, node_t** resultv[], u32* resultc) {
+  assertf(d->version > 0, "header not decoded");
+
+  // DEC_ARGS
+  const u8* p = d->pcurr;
+  const u8* pend = d->pend;
+
+  node_t** roots = NULL;
 
   // decode symbols
   p = decode_symtab(DEC_ARGS);
@@ -1896,7 +1993,7 @@ err_t astdecode(
 
   // create list of root nodes, returned to the user via resultv & resultc
   // note: alloc size is guaranteed to not overflow since rootcount <= nodecount.
-  roots = mem_alloc(ast_ma, (usize)d->rootcount * sizeof(void*)).p;
+  roots = mem_alloc(d->ast_ma, (usize)d->rootcount * sizeof(void*)).p;
   if (!roots) {
     d->err = ErrNoMem;
     goto error;
@@ -1925,12 +2022,9 @@ err_t astdecode(
 error:
   assert(d->err != 0);
   if (roots)
-    mem_freex(ast_ma, MEM(roots, (usize)d->rootcount * sizeof(void*)));
+    mem_freex(d->ast_ma, MEM(roots, (usize)d->rootcount * sizeof(void*)));
   *resultv = NULL;
   *resultc = 0;
 end:
-  if (d->srctab)
-    mem_freex(d->ma, MEM(d->srctab, (usize)d->srccount * sizeof(*d->srctab)));
-  dec_tmptabs_free(d);
   return d->err;
 }

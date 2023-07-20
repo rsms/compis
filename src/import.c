@@ -102,62 +102,62 @@ static err_t import_clean_path(
   // examples
   //   import from NON-ad-hoc package "foo/bar":
   //     input, symbolic "a/b":
-  //       importer_pkg.path    = "foo/bar"
-  //       importer_pkg.rootdir = "C:\src\lolcat"
-  //       importer_pkg.dir     = "C:\src\lolcat\foo\bar"
-  //       importer_fsdir       = "C:\src\lolcat\foo\bar"
-  //       import_path          = "a/b"
+  //       importer_pkg.path = "foo/bar"
+  //       importer_pkg.root = "C:\src\lolcat"
+  //       importer_pkg.dir  = "C:\src\lolcat\foo\bar"
+  //       importer_fsdir    = "C:\src\lolcat\foo\bar"
+  //       import_path       = "a/b"
   //       >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
-  //       import_path          = "a/b"
-  //       import_fspath        = "a\b"  <—— to be resolved by searching copath
+  //       import_path       = "a/b"
+  //       import_fspath     = "a\b"  <—— to be resolved by searching copath
   //
   //     input, relative "./a/b":
-  //       importer_pkg.path    = "foo/bar"
-  //       importer_pkg.rootdir = "C:\src\lolcat"
-  //       importer_pkg.dir     = "C:\src\lolcat\foo\bar"
-  //       importer_fsdir       = "C:\src\lolcat\foo\bar"
-  //       import_path          = "./a/b"
+  //       importer_pkg.path = "foo/bar"
+  //       importer_pkg.root = "C:\src\lolcat"
+  //       importer_pkg.dir  = "C:\src\lolcat\foo\bar"
+  //       importer_fsdir    = "C:\src\lolcat\foo\bar"
+  //       import_path       = "./a/b"
   //       >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
-  //       import_path          = "foo/bar/a/b"
-  //       import_fspath        = "C:\src\lolcat\foo\bar\a\b"
+  //       import_path       = "foo/bar/a/b"
+  //       import_fspath     = "C:\src\lolcat\foo\bar\a\b"
   //
   //     input, relative "../a/b":
-  //       importer_pkg.path    = "foo/bar"
-  //       importer_pkg.rootdir = "C:\src\lolcat"
-  //       importer_pkg.dir     = "C:\src\lolcat\foo\bar"
-  //       importer_fsdir       = "C:\src\lolcat\foo\bar"
-  //       import_path          = "../a/b"
+  //       importer_pkg.path = "foo/bar"
+  //       importer_pkg.root = "C:\src\lolcat"
+  //       importer_pkg.dir  = "C:\src\lolcat\foo\bar"
+  //       importer_fsdir    = "C:\src\lolcat\foo\bar"
+  //       import_path       = "../a/b"
   //       >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
-  //       import_path          = "foo/a/b"
-  //       import_fspath        = "C:\src\lolcat\foo\a\b"
+  //       import_path       = "foo/a/b"
+  //       import_fspath     = "C:\src\lolcat\foo\a\b"
   //
   //   import from AD-HOC package "foo/bar": (e.g. from "co build C:\other\dir\file.co")
   //     input, symbolic "a/b":
-  //       importer_pkg.path    = "lolcat"
-  //       importer_pkg.rootdir = "C:\src"
-  //       importer_pkg.dir     = "C:\src\lolcat"  <——— $PWD of compis process
-  //       importer_fsdir       = "C:\other\dir"
-  //       import_path          = "a/b"
+  //       importer_pkg.path = "lolcat"
+  //       importer_pkg.root = "C:\src"
+  //       importer_pkg.dir  = "C:\src\lolcat"  <——— $PWD of compis process
+  //       importer_fsdir    = "C:\other\dir"
+  //       import_path       = "a/b"
   //       >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
-  //       import_path          = "a/b"
-  //       import_fspath        = "a\b"  <—— to be resolved by searching copath
+  //       import_path       = "a/b"
+  //       import_fspath     = "a\b"  <—— to be resolved by searching copath
   //
   //     input, relative "./a/b":
-  //       importer_pkg.path    = "lolcat"
-  //       importer_pkg.rootdir = "C:\src"
-  //       importer_pkg.dir     = "C:\src\lolcat"
-  //       importer_fsdir       = "C:\other\dir"  <——— note! dir of srcfile, not pkg
-  //       import_path          = "./a/b"
+  //       importer_pkg.path = "lolcat"
+  //       importer_pkg.root = "C:\src"
+  //       importer_pkg.dir  = "C:\src\lolcat"
+  //       importer_fsdir    = "C:\other\dir"  <——— note! dir of srcfile, not pkg
+  //       import_path       = "./a/b"
   //       >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
-  //       import_path          = "lolcat/a/b"
-  //       import_fspath        = "C:\other\dir\a\b"
+  //       import_path       = "lolcat/a/b"
+  //       import_fspath     = "C:\other\dir\a\b"
   //
   //     input, relative "../a/b":
-  //       importer_pkg.path    = "lolcat"
-  //       importer_pkg.rootdir = "C:\src"
-  //       importer_pkg.dir     = "C:\src\lolcat"
-  //       importer_fsdir       = "C:\other\dir"
-  //       import_path          = "../a/b"
+  //       importer_pkg.path = "lolcat"
+  //       importer_pkg.root = "C:\src"
+  //       importer_pkg.dir  = "C:\src\lolcat"
+  //       importer_fsdir    = "C:\other\dir"
+  //       import_path       = "../a/b"
   //       >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
   //       error: invalid (goes above "lolcat")
   //
@@ -168,7 +168,7 @@ static err_t import_clean_path(
 
   // dlog("——————————————————————————");
   // dlog("importer_pkg.path    = \"%s\"", importer_pkg->path.p);
-  // dlog("importer_pkg.rootdir = \"%s\"", importer_pkg->rootdir.p);
+  // dlog("importer_pkg.root = \"%s\"", importer_pkg->root.p);
   // dlog("importer_pkg.dir     = \"%s\"", importer_pkg->dir.p);
   // dlog("importer_fsdir       = \"%s\"", importer_fsdir);
   // dlog("import_path          = \"%s\"", path->p);
@@ -197,19 +197,19 @@ static err_t import_clean_path(
     goto end;
   }
 
-  // check if path goes above pkg.rootdir
-  if UNLIKELY(!path_isrooted(str_slice(*fspath_out), str_slice(importer_pkg->rootdir))) {
-    dlog("error: import path \"%s\" would escape pkg.rootdir=\"%s\"",
-      path->p, importer_pkg->rootdir.p);
+  // check if path goes above pkg.root
+  if UNLIKELY(!path_isrooted(str_slice(*fspath_out), str_slice(importer_pkg->root))) {
+    dlog("error: import path \"%s\" would escape pkg.root=\"%s\"",
+      path->p, importer_pkg->root.p);
     err = ErrInvalid;
     goto end;
   }
 
-  // Now we know that fspath_out has prefix importer_pkg->rootdir.
+  // Now we know that fspath_out has prefix importer_pkg->root.
   // This gives us the symbolic package path:
-  usize rootdir_len = importer_pkg->rootdir.len + 1; // +1 for ending PATH_SEP
+  usize root_len = importer_pkg->root.len + 1; // +1 for ending PATH_SEP
   path->len = 0;
-  if (!str_appendlen(path, fspath_out->p + rootdir_len, fspath_out->len - rootdir_len)) {
+  if (!str_appendlen(path, fspath_out->p + root_len, fspath_out->len - root_len)) {
     err = ErrNoMem;
     goto end;
   }
@@ -230,7 +230,7 @@ end:
 }
 
 
-err_t import_resolve_fspath(str_t* fspath, usize* rootdirlen_out) {
+err_t import_resolve_fspath(str_t* fspath, usize* rootlen_out) {
   assert(fspath->len > 0);
 
   // fspath must be either "/ab/so/lute" or "sym/bol/ic", not "./rel/a/tive"
@@ -252,7 +252,7 @@ err_t import_resolve_fspath(str_t* fspath, usize* rootdirlen_out) {
 
   str_t tmpstr = {0};
   err_t err = 0;
-  *rootdirlen_out = 0;
+  *rootlen_out = 0;
 
   // If path is absolute, e.g. "/ab/so/lute", we just check that the directory
   // exists and then we are done. Otherwise fspath is symbolic, e.g. "sym/bol/ic"
@@ -275,7 +275,7 @@ err_t import_resolve_fspath(str_t* fspath, usize* rootdirlen_out) {
       goto end;
     }
     fspath->p[corootlen] = PATH_SEP;
-    *rootdirlen_out = corootlen;
+    *rootlen_out = corootlen;
     vlog("looking for package \"%.*s\" at \"%s\"", fspathlen, fspath->p, fspath->p);
     goto checked_return;
   }
@@ -291,7 +291,7 @@ err_t import_resolve_fspath(str_t* fspath, usize* rootdirlen_out) {
     vlog("looking for package \"%s\" at \"%s\"", fspath->p, tmpstr.p);
     if (fs_isdir(tmpstr.p)) {
       // note: fspath is symbolic and guaranteed by pkg_validate_path to not contain ".."
-      *rootdirlen_out = tmpstr.len - fspath->len - 1;
+      *rootlen_out = tmpstr.len - fspath->len - 1;
       str_t tmp = *fspath;
       *fspath = tmpstr;
       str_free(tmp);
@@ -325,8 +325,8 @@ static err_t import_resolve_pkg(
     fspath->p);
 
   // resolve absolute filesystem directory path, or return "not found"
-  usize rootdirlen;
-  err_t err = import_resolve_fspath(fspath, &rootdirlen);
+  usize rootlen;
+  err_t err = import_resolve_fspath(fspath, &rootlen);
   if (err) {
     *result = NULL;
     return err;
@@ -356,17 +356,17 @@ static err_t import_resolve_pkg(
     err = ErrNoMem;
     goto end;
   }
-  if (rootdirlen == 0)
-    rootdirlen = importer_pkg->rootdir.len;
+  if (rootlen == 0)
+    rootlen = importer_pkg->root.len;
   pkg->path = str_makelen(path.p, path.len);
   pkg->dir = str_makelen(fspath->p, fspath->len);
-  pkg->rootdir = str_makelen(pkg->dir.p, rootdirlen);
-  if (pkg->path.cap == 0 || pkg->dir.cap == 0 || pkg->rootdir.cap == 0)
+  pkg->root = str_makelen(pkg->dir.p, rootlen);
+  if (pkg->path.cap == 0 || pkg->dir.cap == 0 || pkg->root.cap == 0)
     err = ErrNoMem;
   // dlog("adding pkg");
-  // dlog("  .path    = \"%s\"", pkg->path.p);
-  // dlog("  .dir     = \"%s\"", pkg->dir.p);
-  // dlog("  .rootdir = \"%.*s\"", (int)pkg->rootdir.len, pkg->rootdir.chars);
+  // dlog("  .path = \"%s\"", pkg->path.p);
+  // dlog("  .dir  = \"%s\"", pkg->dir.p);
+  // dlog("  .root = \"%.*s\"", (int)pkg->root.len, pkg->root.chars);
   *pkgp = pkg;
 
 end:
@@ -377,9 +377,9 @@ end:
 
 
 typedef struct {
-  str_t           path;
-  str_t           fspath;
-  const import_t* im;
+  str_t     path;
+  str_t     fspath;
+  import_t* im;
 } pkgimp_t;
 
 
@@ -388,11 +388,8 @@ static int pkgimp_cmp(const pkgimp_t* a, const pkgimp_t* b, void* ctx) {
 }
 
 
-err_t import_find_pkgs(
-  compiler_t* c,
-  const pkg_t* importer_pkg,
-  const unit_t*const* unitv, u32 unitc,
-  ptrarray_t* pkgs)
+err_t import_pkgs(
+  compiler_t* c, const pkg_t* importer_pkg, unit_t* unitv[], u32 unitc, ptrarray_t* pkgs)
 {
   err_t err = 0;
   str_t importer_dir = {0};
@@ -410,14 +407,14 @@ err_t import_find_pkgs(
   //   imports to remove the effects of source import-declaration order.
   //
   for (u32 i = 0; i < unitc; i++) {
-    const unit_t* unit = unitv[i];
+    unit_t* unit = unitv[i];
 
     str_free(importer_dir);
     importer_dir = pkg_unit_srcdir(importer_pkg, unit);
     if (importer_dir.len == 0)
       goto end_err_nomem;
 
-    for (const import_t* im = unit->importlist; im; im = im->next_import) {
+    for (import_t* im = unit->importlist; im; im = im->next_import) {
       // Import path is either "/ab/so/lute" or "sym/bol/ic", not "./rel/a/tive"
 
       str_t path = str_make(im->path);
@@ -460,16 +457,25 @@ err_t import_find_pkgs(
     pkg_t* pkg;
     err_t err1 = import_resolve_pkg(
       c, importer_pkg, str_slice(ip->path), &ip->fspath, &pkg);
+
     if UNLIKELY(err1) {
       if (err == 0) err = err1;
       if (err1 != ErrNotFound)
         break;
       origin_t origin = origin_make(&c->locmap, ip->im->pathloc);
       report_diag(c, origin, DIAG_ERR, "package \"%s\" not found", ip->im->path);
-      // keep going so we can report all missing packages, if there is more than one
-    } else if (!ptrarray_sortedset_addptr(pkgs, c->ma, pkg)) {
+      // keep going so we can report all missing packages, if there are more than one
+    } else if UNLIKELY(pkg == importer_pkg || streq(pkg->dir.p, importer_pkg->dir.p)) {
+      // cyclic import
+      origin_t origin = origin_make(&c->locmap, ip->im->pathloc);
+      report_diag(c, origin, DIAG_ERR, "package \"%s\" imports itself", pkg->path.p);
+      err = ErrInvalid;
+      goto end;
+    } else if UNLIKELY(!ptrarray_sortedset_addptr(pkgs, c->ma, pkg)) {
       goto end_err_nomem;
     }
+
+    ip->im->pkg = pkg;
   }
 
   goto end;

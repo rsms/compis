@@ -62,7 +62,7 @@ void cbuild_dispose(cbuild_t* b) {
 
 
 static cobj_srctype_t detect_srctype(const char* filename) {
-  const char* ext = path_ext(filename);
+  const char* ext = path_ext_cstr(filename);
   if (strieq(ext, ".c"))                         return COBJ_TYPE_C;
   if (strieq(ext, ".cc") || strieq(ext, ".cpp")) return COBJ_TYPE_CXX;
   if (strieq(ext, ".s"))                         return COBJ_TYPE_ASSEMBLY;
@@ -268,7 +268,7 @@ static err_t cbuild_build_compile(cbuild_t* b, bgtask_t* task, strlist_t* objfil
     if (obj->objfile && *obj->objfile) {
       // custom objfile (ie may be compiling the same source as multiple objects)
       bgtask_setstatusf(task, "compile %s (%s)",
-        relpath(obj->srcfile), path_base(obj->objfile));
+        relpath(obj->srcfile), path_base_cstr(obj->objfile));
     } else {
       bgtask_setstatusf(task, "compile %s", relpath(obj->srcfile));
     }

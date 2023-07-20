@@ -8,6 +8,7 @@
 #include "subproc.h"
 #include "target.h"
 #include "thread.h"
+#include "future.h"
 
 // nodekind_t
 #define FOREACH_NODEKIND_NODE(_) /* nodekind_t, TYPE, enctag */ \
@@ -171,32 +172,35 @@ typedef struct diag {
 } diag_t;
 
 typedef struct srcfile_t {
-  pkg_t*         pkg;    // parent package (set by pkg_add_srcfile)
-  str_t          name;   // relative to pkg.dir (or absolute if there's no pkg.dir)
-  void* nullable data;   // NULL until srcfile_open (and NULL after srcfile_close)
-  usize          size;   // byte size of data (set by pkg_find_files, pkgs_for_argv)
-  unixtime_t     mtime;  // modification time (set by pkg_find_files, pkgs_for_argv)
-  // u32            sha256[8];
-  u32            pkgidx; // index in pkg.files
-  bool           ismmap; // true if srcfile_open used mmap
-  filetype_t     type;   // file type (set by pkg_add_srcfile)
+  pkg_t* nullable      pkg;    // parent package (set by pkg_add_srcfile)
+  str_t                name;   // relative to pkg.dir (or absolute if there's no pkg.dir)
+  const void* nullable data;   // NULL until srcfile_open (and NULL after srcfile_close)
+  usize                size;   // byte size of data, set by pkg_find_files, pkgs_for_argv
+  unixtime_t           mtime;  // modification time, set by pkg_find_files, pkgs_for_argv
+  bool                 ismmap; // true if srcfile_open used mmap
+  filetype_t           type;   // file type (set by pkg_add_srcfile)
 } srcfile_t;
 
 typedef array_type(srcfile_t) srcfilearray_t;
 
+typedef struct node_ node_t;
+typedef array_type(node_t*) nodearray_t; // cap==len
+DEF_ARRAY_TYPE_API(node_t*, nodearray)
+
 typedef struct pkg_t {
   str_t           path;     // import path, e.g. "main" or "std/runtime" (canonical)
   str_t           dir;      // absolute path to source directory
-  str_t           rootdir;  // rootdir+path=dir
+  str_t           root;     // root + path = dir
   bool            isadhoc;  // single-file package
-  srcfilearray_t  files;    // source files
+  srcfilearray_t  srcfiles; // source files
   map_t           defs;     // package-level definitions
   rwmutex_t       defs_mu;  // protects access to defs field
   typefuntab_t    tfundefs; // type functions defined by the package
   fun_t* nullable mainfun;  // fun main(), if any
   ptrarray_t      imports;  // pkg_t*[] -- imported packages
-  promise_t       findpr;   // promise<err_t> resolved when package has been found
-  promise_t       loadpr;   // promise<err_t> resolved when package has been loaded
+
+  future_t    loadfut;
+  nodearray_t api;      // package-level declarations, available after loadfut
 } pkg_t;
 
 typedef struct {
@@ -276,7 +280,7 @@ static_assert(NF_VIS_PKG < NF_VIS_PUB, "");
   | NF_VIS_PUB \
 ))
 
-typedef struct {
+typedef struct node_ {
   nodekind_t kind;
   u8         _unused;
   nodeflag_t flags;
@@ -287,9 +291,6 @@ typedef struct {
 typedef struct {
   node_t;
 } stmt_t;
-
-typedef array_type(node_t*) nodearray_t; // cap==len
-DEF_ARRAY_TYPE_API(node_t*, nodearray)
 
 typedef struct import_t import_t;
 typedef struct importid_t importid_t;
@@ -319,6 +320,7 @@ typedef struct import_t {
   char*                path;        // e.g. "foo/lolcat"
   loc_t                pathloc;     // source location of path
   importid_t* nullable idlist;      // imported identifiers (list head)
+  pkg_t* nullable      pkg;         // resolved package (set by import_pkgs)
   bool                 isfrom;      // true if idlist denotes items to import (not pkg)
   import_t* nullable   next_import; // linked-list link
 } import_t;
@@ -783,7 +785,8 @@ void universe_init();
 err_t pkg_init(pkg_t* pkg, memalloc_t ma);
 void pkg_dispose(pkg_t* pkg, memalloc_t ma);
 err_t pkgs_for_argv(int argc, char* argv[], pkg_t** pkgvp, u32* pkgcp);
-srcfile_t* nullable pkg_add_srcfile(pkg_t* pkg, const char* name, usize namelen);
+srcfile_t* nullable pkg_add_srcfile(
+  pkg_t* pkg, const char* name, usize namelen, bool* nullable added_out);
 err_t pkg_find_files(pkg_t* pkg); // updates pkg->files, sets sf.mtime
 unixtime_t pkg_source_mtime(const pkg_t* pkg); // max(f.mtime for f in files)
 bool pkg_is_built(const pkg_t* pkg, const compiler_t* c);
@@ -797,6 +800,11 @@ str_t pkg_unit_srcdir(const pkg_t* pkg, const unit_t* unit);
 // srcfile
 err_t srcfile_open(srcfile_t* sf);
 void srcfile_close(srcfile_t* sf);
+void srcfile_dispose(srcfile_t* sf);
+isize srcfilearray_indexof(const srcfilearray_t* srcfiles, const srcfile_t* f);
+srcfile_t* nullable srcfilearray_add(
+  srcfilearray_t* srcfiles, const char* name, usize namelen, bool* nullable addedp);
+void srcfilearray_dispose(srcfilearray_t* srcfiles);
 
 // filetype
 filetype_t filetype_guess(const char* filename);
@@ -809,9 +817,11 @@ err_t compile_c_to_obj_async(
   compiler_t* c, subprocs_t* sp, const char* wdir, const char* cfile, const char* ofile);
 err_t compile_c_to_asm_async(
   compiler_t* c, subprocs_t* sp, const char* wdir, const char* cfile, const char* ofile);
-bool compiler_fully_qualified_name(const compiler_t*, const pkg_t*, buf_t* dst, const node_t*);
+bool compiler_fully_qualified_name(
+  const compiler_t*, const pkg_t*, buf_t* dst, const node_t*);
 bool compiler_mangle(const compiler_t*, const pkg_t*, buf_t* dst, const node_t*);
-bool compiler_mangle_type(const compiler_t* c, const pkg_t*, buf_t* buf, const type_t* t);
+bool compiler_mangle_type(
+  const compiler_t* c, const pkg_t*, buf_t* buf, const type_t* t);
 
 // mangle_str writes str to buf, escaping any chars not in 0-9A-Za-z_
 // by "$XX" where XX is the hexadecimal encoding of the byte value,
@@ -868,11 +878,11 @@ err_t analyze(compiler_t* c, memalloc_t ast_ma, pkg_t* pkg, unit_t** unitv, u32 
 
 // importing of packages
 bool import_validate_path(const char* path, const char** errmsgp, usize* erroffsp);
-err_t import_resolve_fspath(str_t* fspath, usize* rootdirlen_out);
-err_t import_find_pkgs(
+err_t import_resolve_fspath(str_t* fspath, usize* rootlen_out);
+err_t import_pkgs(
   compiler_t* c,
   const pkg_t* importer_pkg,
-  const unit_t*const* unitv, u32 unitc,
+  unit_t* unitv[], u32 unitc,
   ptrarray_t* pkgs_result /* pkg_t*[] */ );
 
 // ir
@@ -893,7 +903,7 @@ void cgen_pkgapi_dispose(cgen_t* g, cgen_pkgapi_t* result);
 // src should point to a string starting with '"'.
 //
 // Returns 0 if the string is valid, sets *enclenp to #bytes read from src and
-// sets *declenp to the lenght of the decoded string. I.e.
+// sets *declenp to the length of the decoded string. I.e.
 //
 //   const char* src = "\"hello\nworld\"yo"
 //   usize srclen = strlen(src), declen;

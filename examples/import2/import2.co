@@ -1,17 +1,18 @@
-pub type A {
-  x int
-  // y f64 = 1.2
-  // z f64 = 0.16
-}
-type InternalStruct { x int }
-// pub type StructLeakIntType { x InternalStruct } // error
+pub fun hello(x int) int { x * x }
+// pub type A {
+//   x int
+//   // y f64 = 1.2
+//   // z f64 = 0.16
+// }
+// type InternalStruct { x int }
+// // pub type StructLeakIntType { x InternalStruct } // error
 
-pub fun exp() {
-  // force cgen to generate package-level definitions
-  internal() // defined in internal.co
-}
+// pub fun exp() {
+//   // force cgen to generate package-level definitions
+//   internal() // defined in internal.co
+// }
 
-pub type MyArray [A] // ok: A is pub
-// pub type PubStruct InternalStruct // error
-// pub type ArrayLeakIntType [InternalStruct] // error
-// pub fun funLeakIntType(x InternalStruct) {} // error
+// pub type MyArray [A] // ok: A is pub
+// // pub type PubStruct InternalStruct // error
+// // pub type ArrayLeakIntType [InternalStruct] // error
+// // pub fun funLeakIntType(x InternalStruct) {} // error

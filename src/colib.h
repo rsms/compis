@@ -392,6 +392,15 @@ typedef double             f64;
 #define CO_STRX(s) CO_STR(s)
 #define CO_STR(s) #s
 
+// void CO_SWAP<T>(T* a, T* b); swaps *a <=> *b
+#define CO_SWAP(a,b) ({ \
+  static_assert(co_same_type((a),(b)), ""); \
+  co_swap(&(a), &(b), sizeof(__typeof__(a))); \
+})
+ASSUME_NONNULL_BEGIN
+void co_swap(void* a, void* b, usize size);
+ASSUME_NONNULL_END
+
 //—————————————————————————————————————————————————————————————————————————————————————
 // debugging
 #include <stdio.h>
@@ -1109,9 +1118,16 @@ const char* sys_homedir();
 //—————————————————————————————————————————————————————————————————————————————————————
 // files
 
-err_t mmap_file_ro(const char* filename, usize size, void** resultp);
+// mmap_file_ro maps file as read-only.
+// On success, *datap is set to point to the mapped memory.
+// The size of *datap can be found in stp->st_size.
+err_t mmap_file_ro(const char* filename, const void** datap, struct stat* st);
+
+// DEPRECATED: use mmap_file_ro
 err_t mmap_file(const char* filename, mem_t* data_out, struct stat* nullable stp); // D!
-err_t mmap_unmap(void* p, usize size);
+
+err_t mmap_unmap(const void* p, usize size);
+
 err_t fs_writefile(const char* filename, u32 mode, slice_t data);
 err_t fs_writefile_mkdirs(const char* filename, u32 mode, slice_t data);
 err_t fs_touch(const char* filename, u32 mode); // update {a,m}time, create if needed
@@ -1135,9 +1151,9 @@ err_t fs_unlock(int fd);
 
 typedef err_t(*promise_await_t)(void* impl);
 typedef struct {
-  promise_await_t nullable await; // NULL if resolved
-  void*                    impl;
-  err_t                    result;
+  void* impl;
+  _Atomic(promise_await_t) await; // NULL if resolved
+  err_t result;
 } promise_t;
 
 err_t promise_await(promise_t* p);

@@ -30,8 +30,29 @@ void _array_dispose(array_t* a, memalloc_t ma, u32 elemsize) {
 }
 
 
+static bool _array_resize(array_t* a, memalloc_t ma, u32 elemsize, u32 newcap) {
+  assert(newcap >= a->len);
+
+  if (a->cap == newcap)
+    return true;
+
+  usize newsize;
+  if (check_mul_overflow((usize)newcap, (usize)elemsize, &newsize))
+    return false;
+
+  mem_t m = { .p = a->ptr, .size = (usize)a->cap * (usize)elemsize };
+  if (!mem_resize(ma, &m, newsize))
+    return false;
+
+  a->ptr = m.p;
+  a->cap = (u32)(m.size / (usize)elemsize);
+  return true;
+}
+
+
 bool _array_grow(array_t* a, memalloc_t ma, u32 elemsize, u32 extracap) {
   assert_memalloc(a, ma);
+
   u32 newcap;
   if (a->cap == 0) {
     // initial allocation
@@ -54,40 +75,30 @@ bool _array_grow(array_t* a, memalloc_t ma, u32 elemsize, u32 extracap) {
     }
   }
 
-  usize newsize;
-  if (check_mul_overflow((usize)newcap, (usize)elemsize, &newsize))
-    return false;
-
-  mem_t m = { .p = a->ptr, .size = (usize)a->cap * (usize)elemsize };
-  if (!mem_resize(ma, &m, newsize))
-    return false;
-
-  a->ptr = m.p;
-  a->cap = (u32)(m.size / (usize)elemsize);
-
-  return true;
+  return _array_resize(a, ma, elemsize, newcap);
 }
 
 
 bool _array_shrinkwrap(array_t* a, memalloc_t ma, usize elemsize) {
-  usize oldsize = (usize)a->cap * elemsize;
-  usize newsize = (usize)a->len * elemsize;
-  if (newsize == oldsize)
-    return true;
-  mem_t m = { .p = a->ptr, .size = oldsize };
-  if (!mem_resize(ma, &m, newsize))
-    return false;
-  a->ptr = m.p;
-  a->cap = (u32)(m.size / elemsize);
-  return m.size < oldsize;
+  return _array_resize(a, ma, elemsize, a->len);
 }
 
 
 bool _array_reserve(array_t* a, memalloc_t ma, u32 elemsize, u32 minavail) {
-  u32 newlen;
-  if (check_add_overflow(a->len, minavail, &newlen))
-    return false;
-  return newlen <= a->cap || _array_grow(a, ma, elemsize, newlen - a->cap);
+  usize avail = a->cap - a->len;
+  if (avail >= minavail)
+    return true;
+  usize extracap = minavail - avail;
+  return _array_grow(a, ma, elemsize, extracap);
+}
+
+
+bool _array_reserve_exact(array_t* a, memalloc_t ma, u32 elemsize, u32 minavail) {
+  usize avail = a->cap - a->len;
+  if (avail >= minavail)
+    return true;
+  usize newcap = a->cap + (minavail - avail);
+  return _array_resize(a, ma, elemsize, newcap);
 }
 
 

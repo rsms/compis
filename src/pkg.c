@@ -8,25 +8,25 @@
 #include <err.h>
 
 
-static int srcfile_cmp(const srcfile_t* a, const srcfile_t* b, void* ctx) {
-  return strcmp(a->name.p, b->name.p);
-}
-
-
 err_t pkg_init(pkg_t* pkg, memalloc_t ma) {
   // *pkg is assumed to be zeroed
   assertf(memcmp(pkg, &(pkg_t){0}, sizeof(*pkg)) == 0, "pkg not zeroed");
-  err_t err = rwmutex_init(&pkg->defs_mu);
-  if (err)
+  err_t err;
+
+  if (( err = rwmutex_init(&pkg->defs_mu) ))
     return err;
-  if (( err = map_init(&pkg->defs, ma, 32) ? 0 : ErrNoMem ))
+  if (( err = future_init(&pkg->loadfut) ))
     goto end_err1;
-  if (( err = typefuntab_init(&pkg->tfundefs, ma) ))
+  if (( err = map_init(&pkg->defs, ma, 32) ? 0 : ErrNoMem ))
     goto end_err2;
+  if (( err = typefuntab_init(&pkg->tfundefs, ma) ))
+    goto end_err3;
   return 0;
 
-end_err2:
+end_err3:
   map_dispose(&pkg->defs, ma);
+end_err2:
+  future_dispose(&pkg->loadfut);
 end_err1:
   rwmutex_dispose(&pkg->defs_mu);
   return err;
@@ -36,44 +36,20 @@ end_err1:
 void pkg_dispose(pkg_t* pkg, memalloc_t ma) {
   str_free(pkg->path);
   str_free(pkg->dir);
-  str_free(pkg->rootdir);
-  if (pkg->defs.cap == 0)
-    return;
-  array_dispose(srcfile_t, (array_t*)&pkg->files, ma);
+  str_free(pkg->root);
+  srcfilearray_dispose(&pkg->srcfiles);
   ptrarray_dispose(&pkg->imports, ma);
-  map_dispose(&pkg->defs, ma);
+  if (pkg->defs.cap != 0)
+    map_dispose(&pkg->defs, ma);
   rwmutex_dispose(&pkg->defs_mu);
   typefuntab_dispose(&pkg->tfundefs, ma);
 }
 
 
-srcfile_t* pkg_add_srcfile(pkg_t* pkg, const char* name, usize namelen) {
-  // add to sorted set, or retrieve existing with same name
-  srcfile_t tmp = { .name = str_makelen(name, namelen) };
-  srcfile_t* f = array_sortedset_assign(
-    srcfile_t, (array_t*)&pkg->files, memalloc_ctx(),
-    &tmp, (array_sorted_cmp_t)srcfile_cmp, NULL);
-
-  if (f == NULL)
-    return NULL;
-
-  if (f->name.p != NULL) {
-    // duplicate
-    // dlog("%s: skip duplicate %s", __FUNCTION__, name);
-    str_free(tmp.name);
-    return f;
-  }
-
-  // note: array_sortedset_assign returns new entries zero initialized
-
-  // assign ids
-  for (u32 i = 0; i < pkg->files.len; i++)
-    pkg->files.v[i].pkgidx = i;
-
-  // dlog("%s: add %s", __FUNCTION__, name);
-  f->pkg = pkg;
-  f->name = tmp.name;
-  f->type = filetype_guess(f->name.p);
+srcfile_t* pkg_add_srcfile(pkg_t* pkg, const char* name, usize namelen, bool* addedp) {
+  srcfile_t* f = srcfilearray_add(&pkg->srcfiles, name, namelen, addedp);
+  if (f)
+    f->pkg = pkg;
   return f;
 }
 
@@ -87,7 +63,7 @@ err_t pkg_find_files(pkg_t* pkg) {
   if (!dw)
     return ErrNoMem;
 
-  if (pkg->files.len > 0) {
+  if (pkg->srcfiles.len > 0) {
     dlog("TODO: free exising `srcfile_t`s");
     return ErrExists;
   }
@@ -108,7 +84,8 @@ err_t pkg_find_files(pkg_t* pkg) {
     if (!strieq(ext, "co") && !strieq(ext, "c"))
       continue; // ignore e.g. "a.x"
 
-    srcfile_t* f = pkg_add_srcfile(pkg, dw->name, namelen);
+    bool added;
+    srcfile_t* f = pkg_add_srcfile(pkg, dw->name, namelen, &added);
     if (!f) {
       err = ErrNoMem;
       break;
@@ -126,8 +103,8 @@ err_t pkg_find_files(pkg_t* pkg) {
 
 unixtime_t pkg_source_mtime(const pkg_t* pkg) {
   unixtime_t mtime_max = 0;
-  for (u32 i = 0; i < pkg->files.len; i++)
-    mtime_max = MAX(mtime_max, pkg->files.v[i].mtime);
+  for (u32 i = 0; i < pkg->srcfiles.len; i++)
+    mtime_max = MAX(mtime_max, pkg->srcfiles.v[i].mtime);
   return mtime_max;
 }
 
@@ -187,48 +164,49 @@ static err_t pkg_resolve_dir(pkg_t* pkg, const char* parentdir) {
   if (fspath.cap == 0)
     return ErrNoMem;
 
-  usize rootdirlen;
-  err_t err = import_resolve_fspath(&fspath, &rootdirlen);
+  usize rootlen;
+  err_t err = import_resolve_fspath(&fspath, &rootlen);
   if UNLIKELY(err) {
     str_free(fspath);
     return err;
   }
 
-  if (rootdirlen == 0)
-    rootdirlen = strlen(parentdir);
+  if (rootlen == 0)
+    rootlen = strlen(parentdir);
 
   pkg->dir = fspath;
-  pkg->rootdir = str_makelen(fspath.p, rootdirlen);
-  if (pkg->rootdir.len < rootdirlen)
+  pkg->root = str_makelen(fspath.p, rootlen);
+  if (pkg->root.len < rootlen)
     return ErrNoMem;
 
   // dlog("pkg_resolve_dir:");
-  // dlog("  .path    = \"%s\"", pkg->path.p);
-  // dlog("  .dir     = \"%s\"", pkg->dir.p);
-  // dlog("  .rootdir = \"%.*s\"", (int)pkg->rootdir.len, pkg->rootdir.chars);
+  // dlog("  .path = \"%s\"", pkg->path.p);
+  // dlog("  .dir  = \"%s\"", pkg->dir.p);
+  // dlog("  .root = \"%.*s\"", (int)pkg->root.len, pkg->root.chars);
 
   return 0;
 }
 
 
+// pkg_set_path_from_dir sets pkg->path & pkg->root based on pkg->dir
 static err_t pkg_set_path_from_dir(pkg_t* pkg) {
   assert(pkg->dir.len > 0);
   assert(path_isabs(pkg->dir.p));
 
-  // set path to basename of dir, e.g. dir="/a/b/c" -> rootdir="/a/b" path="c"
+  // set path to basename of dir, e.g. dir="/a/b/c" -> root="/a/b" path="c"
   pkg->path.len = 0;
   bool ok;
-  const char* base = path_base(pkg->dir.p); // e.g. "c" in "/a/b/c"
+  const char* base = path_base_cstr(pkg->dir.p); // e.g. "c" in "/a/b/c"
   if (path_isabs(base)) {
     // pkg->dir is file system root, e.g. "/" or "C:"
-    // e.g. dir="/" -> rootdir="/" path="main"
-    pkg->rootdir = str_copy(pkg->dir);
+    // e.g. dir="/" -> root="/" path="main"
+    pkg->root = str_copy(pkg->dir);
     ok = str_append(&pkg->path, "main");
   } else {
-    // e.g. dir="/a/b/c" -> rootdir="/a/b" path="c"
+    // e.g. dir="/a/b/c" -> root="/a/b" path="c"
     usize dirnamelen = (usize)(uintptr)(base - pkg->dir.p) - 1;
-    pkg->rootdir = str_makelen(pkg->dir.p, dirnamelen);
-    ok = pkg->rootdir.len == dirnamelen;
+    pkg->root = str_makelen(pkg->dir.p, dirnamelen);
+    ok = pkg->root.len == dirnamelen;
     ok &= str_append(&pkg->path, base);
   }
 
@@ -237,10 +215,10 @@ static err_t pkg_set_path_from_dir(pkg_t* pkg) {
 
   str_free(pkg->path);
   str_free(pkg->dir);
-  str_free(pkg->rootdir);
+  str_free(pkg->root);
   pkg->dir = (str_t){0};
   pkg->path = (str_t){0};
-  pkg->rootdir = (str_t){0};
+  pkg->root = (str_t){0};
   return ErrNoMem;
 }
 
@@ -306,23 +284,23 @@ static err_t pkg_resolve_toplevel(pkg_t* pkg, const char* import_path, mode_t st
       return pkg_set_path_from_dir(pkg);
     }
 
-    // rootdir = dir[0:len(dir)-len(path)-1]
-    // e.g. dir="/a/b/c/d" path="c/d" rootdir="/a/b"
-    usize rootdirlen = pkg->dir.len - pkg->path.len;
-    if (rootdirlen < 2) {
-      rootdirlen = 1;
-      pkg->rootdir = str_make("/"); // TODO: Windows
+    // root = dir[0:len(dir)-len(path)-1]
+    // e.g. dir="/a/b/c/d" path="c/d" root="/a/b"
+    usize rootlen = pkg->dir.len - pkg->path.len;
+    if (rootlen < 2) {
+      rootlen = 1;
+      pkg->root = str_make("/"); // TODO: Windows
     } else {
-      rootdirlen--; // exclude the path separator
-      pkg->rootdir = str_makelen(pkg->dir.p, rootdirlen);
+      rootlen--; // exclude the path separator
+      pkg->root = str_makelen(pkg->dir.p, rootlen);
     }
-    if (pkg->rootdir.len != rootdirlen) {
+    if (pkg->root.len != rootlen) {
       err = ErrNoMem;
       goto error;
     }
 
-    // make sure we set the correct rootdir
-    assert(streq(path_join(pkg->rootdir.p, pkg->path.p).p, pkg->dir.p));
+    // make sure we set the correct root
+    assert(streq(path_join(pkg->root.p, pkg->path.p).p, pkg->dir.p));
     return 0;
   }
 
@@ -338,10 +316,112 @@ static err_t pkg_resolve_toplevel(pkg_t* pkg, const char* import_path, mode_t st
 error:
   str_free(pkg->path);
   str_free(pkg->dir);
-  str_free(pkg->rootdir);
+  str_free(pkg->root);
   pkg->path = (str_t){0};
   pkg->dir = (str_t){0};
-  pkg->rootdir = (str_t){0};
+  pkg->root = (str_t){0};
+  return err;
+}
+
+
+// pkg_resolve_adhoc resolves an "ad-hoc" package made up of individually-provided
+// source files.
+// The path of the package is the path in between cwd and the common path prefix
+// of the source files. If source files are outside of cwd, the package's path
+// will be basename(cwd) and its root dirname(cwd).
+static err_t pkg_resolve_adhoc(
+  pkg_t* pkg, const char*const filenamev[], struct stat filestv[], u32 filec)
+{
+  // before we do anything else, check if the files were found when we stat()ed them
+  for (u32 i = 0; i < filec; i++) {
+    if (filestv[i].st_mode == 0) {
+      elog("%s: not found", filenamev[i]);
+      return ErrNotFound;
+    }
+  }
+
+  if ((usize)filec > USIZE_MAX/(sizeof(str_t) + sizeof(void*)))
+    return ErrOverflow;
+
+  // before searching for a common directory, we need to make the filenames absolute
+  usize abspath_size = (sizeof(str_t) + sizeof(void*)) * filec;
+  const char** abspathv = mem_alloc(memalloc_ctx(), abspath_size).p;
+  if (!abspathv)
+    return ErrNoMem;
+  str_t* abspath_strv = (void*)abspathv + filec*sizeof(void*);
+  err_t err = 0;
+  for (u32 i = 0; i < filec; i++) {
+    abspath_strv[i] = path_abs(filenamev[i]);
+    if (abspath_strv[i].cap == 0) {
+      err = ErrNoMem;
+      break;
+    }
+    abspathv[i] = abspath_strv[i].p;
+  }
+  if (err)
+    goto end;
+
+  // find common path prefix to use for inferring package directory
+  usize dirlen = path_common_dirname(abspathv, filec);
+  const char* dir = abspathv[0];
+
+  // start by setting dir to cwd
+  pkg->dir = path_cwd();
+  if (pkg->dir.cap == 0) {
+    err = ErrNoMem;
+    goto end;
+  }
+
+  // compare common dir to cwd
+  bool is_dir_in_cwd = string_startswithn(dir, dirlen, pkg->dir.p);
+  if (0 && is_dir_in_cwd && dirlen > pkg->dir.len) {
+    // sourcefile common dir is a subdirectory of cwd
+    usize cwdlen = pkg->dir.len;
+    pkg->root = pkg->dir; // move str ownership
+    pkg->dir = str_makelen(dir, dirlen);
+    pkg->path = str_makelen(dir + cwdlen + 1, dirlen - cwdlen - 1);
+  } else {
+    // either the common srcfile dir is outside cwd or it is cwd
+    // note: dir==cwd at this point
+    // if (( err = pkg_set_path_from_dir(pkg) ))
+    //   return err;
+
+    // set dir to common directory of srcfiles
+    // set root to dirname(dir)
+    // set path to basename(dir)
+    pkg->dir.len = 0;
+    str_appendlen(&pkg->dir, dir, dirlen);
+    pkg->root = str_makelen(dir, path_dir_len(dir, dirlen));
+    const char* path = path_basen(dir, &dirlen); // note: updates dirlen
+    pkg->path = str_makelen(path, dirlen);
+  }
+
+  if (pkg->dir.cap == 0 || pkg->path.cap == 0 || pkg->root.cap == 0) {
+    err = ErrNoMem;
+    goto end;
+  }
+
+  // add srcfiles
+  for (u32 i = 0; i < filec; i++) {
+    assert(pkg->dir.len+1 < strlen(abspathv[i]));
+    assert(string_startswith(abspathv[i], pkg->dir.p));
+
+    // use path relative to pkg->dir
+    const char* path = abspathv[i] + pkg->dir.len + 1;
+    usize pathlen = strlen(abspathv[i]) - pkg->dir.len - 1;
+
+    srcfile_t* f = pkg_add_srcfile(pkg, path, pathlen, /*addedp*/NULL);
+    if (!f) {
+      err = ErrNoMem;
+      break;
+    }
+
+    f->mtime = unixtime_of_stat_mtime(&filestv[i]);
+    f->size = (usize)filestv[i].st_size;
+  }
+
+end:
+  mem_freex(memalloc_ctx(), MEM(abspathv, abspath_size));
   return err;
 }
 
@@ -403,25 +483,11 @@ err_t pkgs_for_argv(int argc, char* argv[], pkg_t** pkgvp, u32* pkgcp) {
 
   // ad-hoc main package of one or more files
   if (input_type == 1) {
-    if (( err = pkg_resolve_toplevel_cwd(pkgv) ))
-      goto end;
-    pkgv->isadhoc = true;
-    for (int i = 0; i < argc; i++) {
-      if (stv[i].st_mode == 0) {
-        elog("%s: not found", argv[i]);
-        err = ErrNotFound;
-        goto end;
-      }
-      srcfile_t* f = pkg_add_srcfile(pkgv, argv[i], strlen(argv[i]));
-      safecheckf(f, "out of memory");
-      f->mtime = unixtime_of_stat_mtime(&stv[i]);
-      f->size = (usize)stv[i].st_size;
-    }
+    err = pkg_resolve_adhoc(pkgv, (const char**)argv, stv, (u32)argc);
     goto end;
   }
 
   // multiple packages
-  str_t cwd = {0};
   for (int i = 0; !err && i < argc; i++) {
     if UNLIKELY(*argv[i] == 0) {
       elog("%s: argument %d: empty package name", coprogname, i);
@@ -433,8 +499,6 @@ err_t pkgs_for_argv(int argc, char* argv[], pkg_t** pkgvp, u32* pkgcp) {
         assertf(path_isabs(pkg->dir.p), "pkg.dir \"%s\" is not absolute", pkg->dir.p);
     }
   }
-
-  str_free(cwd);
 
 end:
   if (err && pkgv) {
