@@ -40,7 +40,8 @@ void scanner_begin(scanner_t* s, srcfile_t* srcfile) {
   s->inp = srcfile->data;
   s->inend = srcfile->data + srcfile->size;
   s->linestart = srcfile->data;
-  u32 loc_srcfileid = locmap_srcfileid(&s->compiler->locmap, srcfile, s->compiler->ma);
+  u32 loc_srcfileid = locmap_intern_srcfileid(
+    &s->compiler->locmap, srcfile, s->compiler->ma);
   s->loc = loc_make(loc_srcfileid, 1, 1, 1);
   s->lineno = 1;
   s->errcount = 0;

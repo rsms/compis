@@ -213,7 +213,7 @@ static const parselet_t expr_parsetab[TOK_COUNT];
 static const type_parselet_t type_parsetab[TOK_COUNT];
 
 // last_resort_node is returned by mknode when memory allocation fails
-static struct { node_t; u8 opaque[64]; } _last_resort_node = { .kind=NODE_BAD };
+static struct { node_t; u8 opaque[128]; } _last_resort_node = { .kind=NODE_BAD };
 node_t* last_resort_node = (node_t*)&_last_resort_node;
 
 

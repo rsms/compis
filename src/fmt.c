@@ -235,6 +235,10 @@ static void fmt(abuf_t* s, const node_t* nullable n, u32 indent, u32 maxdepth) {
     break;
   }
 
+  case STMT_IMPORT:
+    abuf_str(s, "/*TODO import_t*/");
+    break;
+
   case STMT_TYPEDEF:
     if (n->flags & NF_VIS_PUB)
       abuf_str(s, "pub ");
@@ -249,6 +253,10 @@ static void fmt(abuf_t* s, const node_t* nullable n, u32 indent, u32 maxdepth) {
   case EXPR_PARAM:
   case EXPR_FIELD:
     return local(s, (const local_t*)n, indent, maxdepth);
+
+  case EXPR_NS:
+    abuf_str(s, "/*TODO nsexpr_t*/");
+    break;
 
   case EXPR_FUN: {
     if (n->flags & NF_VIS_PUB)
@@ -483,6 +491,9 @@ static void fmt(abuf_t* s, const node_t* nullable n, u32 indent, u32 maxdepth) {
   case TYPE_OPTIONAL: {
     abuf_c(s, '?');
     fmt(s, (node_t*)((const opttype_t*)n)->elem, indent, maxdepth);
+    break;
+  case TYPE_NS:
+    abuf_str(s, "namespace");
     break;
   }
 

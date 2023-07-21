@@ -37,8 +37,10 @@ typedef struct astencoder_ astencoder_t;
 astencoder_t* nullable astencoder_create(memalloc_t ma);
 void astencoder_free(astencoder_t* a);
 
-void astencoder_begin(astencoder_t* a, locmap_t* locmap);
+void astencoder_begin(astencoder_t* a, locmap_t* locmap, const pkg_t* pkg);
 err_t astencoder_add_ast(astencoder_t* a, const node_t* n, u32 flags);
+err_t astencoder_add_srcfileid(astencoder_t* a, u32 srcfileid);
+err_t astencoder_add_srcfile(astencoder_t* a, const srcfile_t* srcfile);
 err_t astencoder_encode(astencoder_t* a, buf_t* outbuf);
 
 // flags for astencoder_add_ast

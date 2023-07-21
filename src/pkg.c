@@ -511,34 +511,46 @@ end:
 }
 
 
-static str_t _pkg_builddir(const pkg_t* pkg, const compiler_t* c, usize extracap) {
+static bool _append_pkg_builddir(
+  const pkg_t* pkg, const compiler_t* c, str_t* dst, usize extracap)
+{
   // pkgbuilddir = {builddir}/pkg/{pkgname}
   slice_t basedir = slice_cstr(c->builddir);
   slice_t prefix = slice_cstr("pkg");
 
-  str_t s = str_makeempty(basedir.len + 1 + pkg->path.len + 1 + prefix.len + extracap);
-  safecheck(s.p != NULL);
+  usize nbyte = basedir.len + 1 + pkg->path.len + 1 + prefix.len + extracap;
+  if (!str_ensure_avail(dst, nbyte))
+    return false;
 
-  str_appendlen(&s, basedir.p, basedir.len);
-  str_push(&s, PATH_SEP);
-  str_appendlen(&s, prefix.p, prefix.len);
-  str_push(&s, PATH_SEP);
-  str_appendlen(&s, pkg->path.p, pkg->path.len);
-
-  return s;
+  str_appendlen(dst, basedir.p, basedir.len);
+  str_push(dst, PATH_SEP);
+  str_appendlen(dst, prefix.p, prefix.len);
+  str_push(dst, PATH_SEP);
+  str_appendlen(dst, pkg->path.p, pkg->path.len);
+  return true;
 }
 
 
 str_t pkg_builddir(const pkg_t* pkg, const compiler_t* c) {
-  return _pkg_builddir(pkg, c, 0);
+  str_t s = {0};
+  safecheckx(_append_pkg_builddir(pkg, c, &s, 0));
+  return s;
+}
+
+
+bool pkg_buildfilea(
+  const pkg_t* pkg, const compiler_t* c, str_t* dst, const char* filename)
+{
+  usize filename_len = strlen(filename);
+  bool ok = _append_pkg_builddir(pkg, c, dst, 1 + filename_len);
+  str_push(dst, PATH_SEP);
+  return ok & str_appendlen(dst, filename, filename_len);
 }
 
 
 str_t pkg_buildfile(const pkg_t* pkg, const compiler_t* c, const char* filename) {
-  usize filename_len = strlen(filename);
-  str_t apifile = _pkg_builddir(pkg, c, 1 + filename_len);
-  str_push(&apifile, PATH_SEP);
-  str_appendlen(&apifile, filename, filename_len);
+  str_t apifile = {0};
+  safecheckx(pkg_buildfilea(pkg, c, &apifile, filename));
   return apifile;
 }
 

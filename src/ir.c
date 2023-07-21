@@ -1239,6 +1239,11 @@ static irval_t* idexpr(ircons_t* c, idexpr_t* n) {
 }
 
 
+static irval_t* nsexpr(ircons_t* c, nsexpr_t* n) {
+  return push_TODO_val(c, c->b, n->type, "nsexpr");
+}
+
+
 static irval_t* param(ircons_t* c, local_t* n) {
   return var_read(c, n->name, n->type, n->loc);
 }
@@ -2137,6 +2142,7 @@ static irval_t* expr(ircons_t* c, void* expr_node) {
   case EXPR_TYPECONS:  return typecons(c, (typecons_t*)n);
   case EXPR_DEREF:     return deref(c, n, (unaryop_t*)n);
   case EXPR_ID:        return idexpr(c, (idexpr_t*)n);
+  case EXPR_NS:        return nsexpr(c, (nsexpr_t*)n);
   case EXPR_FUN:       return funexpr(c, (fun_t*)n);
   case EXPR_IF:        return ifexpr(c, (ifexpr_t*)n);
   case EXPR_RETURN:    return retexpr(c, (retexpr_t*)n);
@@ -2199,6 +2205,7 @@ static irval_t* expr(ircons_t* c, void* expr_node) {
   case TYPE_OPTIONAL:
   case TYPE_STRUCT:
   case TYPE_ALIAS:
+  case TYPE_NS:
   case TYPE_UNKNOWN:
   case TYPE_UNRESOLVED:
     break;

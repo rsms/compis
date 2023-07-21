@@ -150,30 +150,6 @@ typedef struct {
     { offsetof(STRUCT_TYPE, field_name), AFT_##FIELD_TYPE }
 #endif
 
-#define EXPR_FIELDS /* expr_t */ \
-  FIELD(expr_t, type, NODEZ) \
-// end EXPR_FIELDS
-
-#define LOCAL_FIELDS /* local_t */ \
-  EXPR_FIELDS, \
-  FIELD(local_t, type,    NODEZ), \
-  FIELD(local_t, name,    SYM), \
-  FIELD(local_t, nameloc, LOC), \
-  FIELD(local_t, offset,  U64), \
-  FIELD(local_t, init,    NODEZ) \
-// end LOCAL_FIELDS
-
-#define TYPE_FIELDS /* type_t */ \
-  FIELD(type_t, size,  U64), \
-  FIELD(type_t, align, U8), \
-  FIELD(type_t, tid,   SYMZ) \
-// end TYPE_FIELDS
-
-#define PTRTYPE_FIELDS /* ptrtype_t */ \
-  TYPE_FIELDS, \
-  FIELD(ptrtype_t, elem, NODE) \
-// end PTRTYPE_FIELDS
-
 
 // per-AST-struct field tables
 static const ae_field_t g_fieldsof_node_t[0] = {};
@@ -193,6 +169,11 @@ static const ae_field_t g_fieldsof_import_t[] = {
   // TODO: isfrom
   // TODO: next_import
 };
+
+
+#define EXPR_FIELDS /* expr_t */ \
+  FIELD(expr_t, type, NODEZ) \
+// end EXPR_FIELDS
 static const ae_field_t g_fieldsof_fun_t[] = {
   EXPR_FIELDS,
   FIELD(fun_t, type,        NODEZ),
@@ -218,6 +199,11 @@ static const ae_field_t g_fieldsof_call_t[] = {
 static const ae_field_t g_fieldsof_typecons_t[] = {
   EXPR_FIELDS,
   // TODO
+};
+static const ae_field_t g_fieldsof_nsexpr_t[] = {
+  EXPR_FIELDS,
+  FIELD(nsexpr_t, name, SYM),
+  FIELD(nsexpr_t, members, NODEARRAY),
 };
 static const ae_field_t g_fieldsof_idexpr_t[] = {
   EXPR_FIELDS,
@@ -283,7 +269,7 @@ static const ae_field_t g_fieldsof_floatlit_t[] = {
 static const ae_field_t g_fieldsof_strlit_t[] = {
   EXPR_FIELDS,
   FIELD(strlit_t, bytes, STR),
-  FIELD(strlit_t, len, U64),
+  FIELD(strlit_t, len,   U64),
 };
 static const ae_field_t g_fieldsof_arraylit_t[] = {
   EXPR_FIELDS,
@@ -291,16 +277,34 @@ static const ae_field_t g_fieldsof_arraylit_t[] = {
   FIELD(arraylit_t, values, NODEARRAY),
 };
 
+
 static const ae_field_t g_fieldsof_type_t[] = {
+  #define TYPE_FIELDS /* type_t */ \
+    FIELD(type_t, size,  U64), \
+    FIELD(type_t, align, U8), \
+    FIELD(type_t, tid,   SYMZ) \
+  // end TYPE_FIELDS
   TYPE_FIELDS,
 };
 static const ae_field_t g_fieldsof_arraytype_t[] = {
   TYPE_FIELDS,
+  FIELD(arraytype_t, endloc,  LOC),
+  FIELD(arraytype_t, len,     U64),
+  FIELD(arraytype_t, lenexpr, NODEZ),
 };
 static const ae_field_t g_fieldsof_funtype_t[] = {
   TYPE_FIELDS,
+  FIELD(funtype_t, result,       NODE),
+  FIELD(funtype_t, resultloc,    LOC),
+  FIELD(funtype_t, params,       NODEARRAY),
+  FIELD(funtype_t, paramsloc,    LOC),
+  FIELD(funtype_t, paramsendloc, LOC),
 };
 static const ae_field_t g_fieldsof_ptrtype_t[] = {
+  #define PTRTYPE_FIELDS /* ptrtype_t */ \
+    TYPE_FIELDS, \
+    FIELD(ptrtype_t, elem, NODE) \
+  // end PTRTYPE_FIELDS
   PTRTYPE_FIELDS,
 };
 static const ae_field_t g_fieldsof_reftype_t[] = {
@@ -325,6 +329,10 @@ static const ae_field_t g_fieldsof_aliastype_t[] = {
   FIELD(aliastype_t, elem,        NODE),
   FIELD(aliastype_t, mangledname, STRZ),
 };
+static const ae_field_t g_fieldsof_nstype_t[] = {
+  TYPE_FIELDS,
+  FIELD(nstype_t, members, NODEARRAY),
+};
 static const ae_field_t g_fieldsof_unresolvedtype_t[] = {
   TYPE_FIELDS,
   FIELD(unresolvedtype_t, name, SYM),
@@ -333,7 +341,6 @@ static const ae_field_t g_fieldsof_unresolvedtype_t[] = {
 
 #undef FIELD
 #undef EXPR_FIELDS
-#undef LOCAL_FIELDS
 #undef TYPE_FIELDS
 #undef PTRTYPE_FIELDS
 
@@ -388,6 +395,7 @@ typedef struct astencoder_ {
   nodearray_t        nodelist;   // all nodes
   u32array_t         rootlist;   // indices in nodelist of root nodes
   u32array_t         srcfileids; // unique loc_t srcfile IDs
+  const pkg_t*       pkg;
   map_t              nodemap;    // maps {node_t* => uintptr nodelist index}
   ptrarray_t         symmap;     // maps {sym_t => u32 index} (sorted set)
   usize              symsize;    // total length of all symbol characters
@@ -480,7 +488,7 @@ static void encode_srcinfo(astencoder_t* a, buf_t* outbuf) {
     return;
   }
 
-  pkg_t* pkg = NULL;
+  const pkg_t* pkg = assertnotnull(a->pkg);
   usize nbyte = ndigits16(a->srcfileids.len) + 1; // srccount LF
 
   // find pkg and calculate outbuf size needed to encode srcinfo
@@ -491,14 +499,11 @@ static void encode_srcinfo(astencoder_t* a, buf_t* outbuf) {
 
     // check so that there's just one package
     #ifdef CO_SAFE
-      if (pkg) {
-        assert(srcfile->pkg != NULL);
-        safecheckf(pkg == srcfile->pkg,
-          "srcfiles from mixed packages %s (%p) and %s (%p)",
-          pkg->path.p, pkg, srcfile->pkg->path.p, srcfile->pkg);
-      }
+      assert(srcfile->pkg != NULL);
+      safecheckf(pkg == srcfile->pkg,
+        "srcfiles from mixed packages %s (%p) and %s (%p)",
+        pkg->path.p, pkg, srcfile->pkg->path.p, srcfile->pkg);
     #endif
-    pkg = assertnotnull(srcfile->pkg);
 
     // srcfile LF
     a->oom |= check_add_overflow(nbyte, srcfile->name.len + 1, &nbyte);
@@ -817,10 +822,10 @@ static usize enc_preallocsize(astencoder_t* a) {
   ;
 
   // approximate space needed for srcinfo
-  usize nbyte_srcinfo = 32    // pkgpath (31 chars + LF)
-                      + 64    // srcdir (63 chars + LF)
-                      + 8 + 1 // srccount (u32x)
-                      + (usize)a->srcfileids.len * 16 // srcfile (15 chars + LF)
+  usize nbyte_srcinfo = ndigits16(a->pkg->path.len) + 1 // + LF
+                      + ndigits16(a->pkg->dir.len) + 1  // + LF
+                      + 8 + 1                           // srccount (u32x)
+                      + (usize)a->srcfileids.len * 16   // srcfile (15 chars + LF)
   ;
   if ((usize)a->srcfileids.len > USIZE_MAX/16 ||
       check_add_overflow(nbyte, nbyte_srcinfo, &nbyte))
@@ -953,6 +958,7 @@ static void reg_syms(astencoder_t* a, const node_t* n) {
 
   case EXPR_PARAM:      return ADDSYMZ(((local_t*)n)->name);
   case EXPR_ID:         return ADDSYM(((idexpr_t*)n)->name);
+  case EXPR_NS:         return ADDSYM(((nsexpr_t*)n)->name);
   case EXPR_MEMBER:     return ADDSYM(((member_t*)n)->name);
   case EXPR_FUN:        return ADDSYMZ(((fun_t*)n)->name);
   case TYPE_STRUCT:     return ADDSYMZ(((structtype_t*)n)->name);
@@ -994,6 +1000,7 @@ static void reg_syms(astencoder_t* a, const node_t* n) {
   case TYPE_INT:
   case TYPE_MUTREF:
   case TYPE_MUTSLICE:
+  case TYPE_NS:
   case TYPE_OPTIONAL:
   case TYPE_PTR:
   case TYPE_REF:
@@ -1111,15 +1118,15 @@ static void add_ast_visitor(astencoder_t* a, u32 flags, const node_t* n) {
   // assign placeholder ID (can't be 0 since we use that in the check above)
   *vp = UINTPTR_MAX;
 
+  if (flags & ASTENCODER_PUB_API)
+    n = pub_api_filter_node(a, n);
+
   // visit expression's type
   if (node_isexpr(n) && ((expr_t*)n)->type) {
     const expr_t* expr = (expr_t*)n;
     // dlog("visit type %s %p", nodekind_name(expr->type->kind), expr->type);
     add_ast_visitor(a, flags, (node_t*)expr->type);
   }
-
-  if (flags & ASTENCODER_PUB_API)
-    n = pub_api_filter_node(a, n);
 
   // visit each child
   astiter_t childit = astiter_of_children(n);
@@ -1141,6 +1148,26 @@ static void add_ast_visitor(astencoder_t* a, u32 flags, const node_t* n) {
 }
 
 
+err_t astencoder_add_srcfileid(astencoder_t* a, u32 srcfileid) {
+  if (srcfileid > 0) {
+    assertf(locmap_srcfile(a->locmap, srcfileid), "%u not found", srcfileid);
+    if (!u32array_sortedset_add(&a->srcfileids, a->ma, srcfileid))
+      return ErrNoMem;
+  }
+  return 0;
+}
+
+
+err_t astencoder_add_srcfile(astencoder_t* a, const srcfile_t* srcfile) {
+  u32 srcfileid = locmap_lookup_srcfileid(a->locmap, srcfile);
+  if (srcfileid == 0)
+    return ErrNotFound;
+  if (!u32array_sortedset_add(&a->srcfileids, a->ma, srcfileid))
+    return ErrNoMem;
+  return 0;
+}
+
+
 err_t astencoder_add_ast(astencoder_t* a, const node_t* n, u32 flags) {
   // nodes are ordered from least refs to most refs (children first, parents last) e.g.
   //   (<int> + (<int> intlit 1) (<int> intlit 2))
@@ -1153,11 +1180,7 @@ err_t astencoder_add_ast(astencoder_t* a, const node_t* n, u32 flags) {
   u32 nodelist_start = a->nodelist.len;
 
   // register source file
-  u32 srcfileid = loc_srcfileid(n->loc);
-  if (srcfileid > 0) {
-    if (!u32array_sortedset_add(&a->srcfileids, a->ma, srcfileid))
-      return ErrNoMem;
-  }
+  astencoder_add_srcfileid(a, loc_srcfileid(n->loc));
 
   // add n and all its children to nodelist using a depth-first traversal of n
   //
@@ -1232,12 +1255,13 @@ void astencoder_free(astencoder_t* a) {
 }
 
 
-void astencoder_begin(astencoder_t* a, locmap_t* locmap) {
+void astencoder_begin(astencoder_t* a, locmap_t* locmap, const pkg_t* pkg) {
   a->nodelist.len = 0;
   a->symmap.len = 0;
   a->rootlist.len = 0;
   a->srcfileids.len = 0;
   a->locmap = locmap;
+  a->pkg = pkg;
   map_clear(&a->nodemap);
 }
 
@@ -1529,8 +1553,8 @@ static const u8* dec_nodearray(DEC_PARAMS, nodearray_t* dstp) {
     if (d->err)
       break;
     if UNLIKELY(id > d->nodecount)
-      return DEC_ERROR(ErrInvalid, "invalid node ID %u", id);
-    v[i] = assertnotnull(d->nodetab[i]);
+      return DEC_ERROR(ErrInvalid, "invalid node ID 0x%x", id);
+    v[i] = assertnotnull(d->nodetab[id]);
   }
 
   if (d->err)
@@ -1658,7 +1682,7 @@ static const u8* decode_srctab(DEC_PARAMS, pkg_t* pkg) {
       return DEC_ERROR(ErrNoMem, "pkg_add_srcfile OOM");
 
     // intern in locmap, resulting in our "local" srcfileid
-    u32 srcfileid = locmap_srcfileid(d->locmap, srcfile, d->ma);
+    u32 srcfileid = locmap_intern_srcfileid(d->locmap, srcfile, d->ma);
     if UNLIKELY(srcfileid == 0)
       return DEC_ERROR(ErrNoMem, "locmap_srcfileid OOM");
 

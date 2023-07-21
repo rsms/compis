@@ -230,12 +230,6 @@ int main_build(int argc, char* argv[]) {
                      ;
   for (u32 i = 0; i < pkgc; i++) {
     pkg_t* pkg = &pkgv[i];
-
-    if (pkg_is_built(pkg, &c)) {
-      log("[%s] up to date", pkg->path.p); // in lieu of bgtask
-      continue;
-    }
-
     if (( err = build_pkg(pkg, &c, opt_out, pkgbuild_flags) )) {
       dlog("error while building pkg %s: %s", pkg->path.p, err_str(err));
       break;

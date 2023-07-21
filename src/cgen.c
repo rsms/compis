@@ -1820,6 +1820,12 @@ static void param(cgen_t* g, const local_t* n) {
 }
 
 
+static void nsexpr(cgen_t* g, const nsexpr_t* n) {
+  // Note: maybe don't do anything since a namespace is not materialized (it's abstract)
+  panic("TODO namespace");
+}
+
+
 static void member_op(cgen_t* g, const type_t* recvt) {
   if (recvt->kind == TYPE_PTR ||
     (type_isref(recvt) && !reftype_byvalue(g, (reftype_t*)recvt)))
@@ -2216,6 +2222,7 @@ static void expr(cgen_t* g, const expr_t* n) {
   case EXPR_STRLIT:    return strlit(g, (const strlit_t*)n);
   case EXPR_ARRAYLIT:  return arraylit(g, (const arraylit_t*)n);
   case EXPR_ID:        return idexpr(g, (const idexpr_t*)n);
+  case EXPR_NS:        return nsexpr(g, (const nsexpr_t*)n);
   case EXPR_PARAM:     return param(g, (const local_t*)n);
   case EXPR_BLOCK:     return block(g, (const block_t*)n);
   case EXPR_CALL:      return call(g, (const call_t*)n);
@@ -2240,6 +2247,7 @@ static void expr(cgen_t* g, const expr_t* n) {
   case NODE_COMMENT:
   case NODE_UNIT:
   case STMT_TYPEDEF:
+  case STMT_IMPORT:
   case EXPR_FIELD:
   case TYPE_VOID:
   case TYPE_BOOL:
@@ -2265,11 +2273,52 @@ static void expr(cgen_t* g, const expr_t* n) {
   case TYPE_OPTIONAL:
   case TYPE_STRUCT:
   case TYPE_ALIAS:
+  case TYPE_NS:
   case TYPE_UNKNOWN:
   case TYPE_UNRESOLVED:
     break;
   }
   debugdie(g, n, "unexpected node %s", nodekind_name(n->kind));
+}
+
+
+static void gen_imports(cgen_t* g, const unit_t* unit) {
+  if (g->pkg->imports.len == 0)
+    return;
+
+  // build list of packages that this unit needs
+  pkg_t** depv = mem_alloc(g->ma, sizeof(void*) * (usize)g->pkg->imports.len).p;
+  if (!depv) {
+    g->err = ErrNoMem;
+    return;
+  }
+  u32 depc = 0;
+
+  for (const import_t* im = unit->importlist; im; ) {
+    pkg_t* pkg = assertnotnull(im->pkg);
+    for (u32 i = depc; i;) {
+      if (depv[--i] == pkg)
+        goto next;
+    }
+    depv[depc++] = pkg;
+  next:
+    im = im->next_import;
+  }
+
+  str_t path = {0};
+  for (u32 i = 0; i < depc; i++) {
+    path.len = 0;
+    if (!pkg_buildfilea(depv[i], g->compiler, &path, "pub.h")) {
+      str_free(path);
+      g->err = ErrNoMem;
+      goto end;
+    }
+    PRINTF("// import \"%s\"\n", depv[i]->path.p);
+    PRINTF("#include \"%s\"\n", path.p);
+  }
+
+end:
+  mem_freex(g->ma, MEM(depv, sizeof(void*) * (usize)g->pkg->imports.len));
 }
 
 
@@ -2461,6 +2510,8 @@ err_t cgen_unit_impl(cgen_t* g, const unit_t* u, const cgen_pkgapi_t* nullable p
   }
 
   PRINT("#include <coprelude.h>\n");
+
+  gen_imports(g, u);
 
   // Include pre-generated package API.
   // This data is usually a copy of g->outbuf after callint cgen_pkg_api

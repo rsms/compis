@@ -14,6 +14,7 @@ err_t pkgbuild_init(pkgbuild_t* pb, pkg_t* pkg, compiler_t* c, u32 flags) {
   pb->c = c;
   pb->flags = flags;
 
+  // package lives inside the builtins namespace
   pkg->defs.parent = &c->builtins;
 
   // configure a bgtask for communicating status to the user
@@ -335,6 +336,9 @@ static err_t pkgbuild_parse(pkgbuild_t* pb) {
     assertnotnull(pb->unitv[i]);
   #endif
 
+  if (err)
+    return err;
+
   return err;
 }
 
@@ -405,6 +409,82 @@ end:
 }
 
 
+// create_pkg_api_ns creates pkg->api_ns from pkg->api
+static err_t create_pkg_api_ns(pkgbuild_t* pb, pkg_t* pkg) {
+  nsexpr_t* ns = NULL;
+
+  // allocate namespace type
+  nstype_t* nst = (nstype_t*)ast_mknode(pb->ast_ma, sizeof(nstype_t), TYPE_NS);
+  if (!nst)
+    goto oom;
+  nst->flags |= NF_CHECKED;
+  if (!nodearray_reserve_exact(&nst->members, pb->ast_ma, pkg->api.len))
+    goto oom;
+
+  // create package namespace node
+  ns = (nsexpr_t*)ast_mknode(pb->ast_ma, sizeof(nsexpr_t), EXPR_NS);
+  if (!ns)
+    goto oom;
+  sym_t* member_names = mem_alloc(pb->ast_ma, sizeof(sym_t) * (usize)pkg->api.len).p;
+  if (!member_names)
+    goto oom;
+  ns->flags |= NF_CHECKED | NF_PKGNS;
+  ns->name = sym__;
+  ns->type = (type_t*)nst;
+  ns->members = pkg->api;
+  ns->member_names = member_names;
+  ns->pkg = pkg; // note: "pkg" field is only valid with flags&NF_PKGNS
+
+  // populate namespace type members and member_names
+  for (u32 i = 0; i < pkg->api.len; i++) {
+    node_t* n = pkg->api.v[i];
+    switch (n->kind) {
+      case EXPR_FUN: {
+        fun_t* fn = (fun_t*)n;
+        member_names[i] = fn->name ? fn->name : sym__;
+        nst->members.v[i] = (node_t*)fn->type;
+        break;
+      }
+      case STMT_TYPEDEF: {
+        type_t* t = ((typedef_t*)n)->type;
+        if (t->kind == TYPE_STRUCT) {
+          member_names[i] = ((structtype_t*)t)->name ? ((structtype_t*)t)->name : sym__;
+        } else {
+          assertf(t->kind == TYPE_ALIAS, "unexpected %s", nodekind_name(t->kind));
+          member_names[i] = ((aliastype_t*)t)->name;
+        }
+        nst->members.v[i] = (node_t*)type_unknown;
+        break;
+      }
+      default:
+        safecheckf(0, "TODO %s %s", __FUNCTION__, nodekind_name(n->kind));
+        member_names[i] = sym__;
+        nst->members.v[i] = (node_t*)type_unknown;
+
+    } // switch
+  }
+
+  assertnull(pkg->api_ns);
+  pkg->api_ns = ns;
+
+  if (opt_trace_parse && pb->c->opt_printast) {
+    dlog("————————— AST pkg.api %s —————————", pkg->path.p);
+    dump_ast((node_t*)ns);
+  }
+
+  return 0;
+
+oom:
+  if (nst) {
+    nodearray_dispose(&nst->members, pb->ast_ma);
+    mem_freex(pb->ast_ma, MEM(nst, sizeof(*nst)));
+  }
+  if (ns)
+    mem_freex(pb->ast_ma, MEM(ns, sizeof(*ns)));
+  return ErrNoMem;
+}
+
+
 // load_pkg_api decodes AST from astdec and assigns it to pkg->api
 static err_t load_pkg_api(pkgbuild_t* pb, pkg_t* pkg, astdecoder_t* astdec) {
   node_t** nodev;
@@ -414,43 +494,14 @@ static err_t load_pkg_api(pkgbuild_t* pb, pkg_t* pkg, astdecoder_t* astdec) {
     dlog("astdecode error: %s", err_str(err));
     return err;
   }
-  dlog("[%s] decoded %u unit%s", __FUNCTION__, nodec, nodec == 1 ? "" : "s");
-
-  // We expect a package to be zero or more NODE_UNITs.
-  // A package's API is comprised of all declarations of the decoded units
-  u32 ndecls = 0;
-  for (u32 i = 0; i < nodec; i++) {
-    // check that node is a unit
-    if UNLIKELY(nodev[i]->kind != NODE_UNIT) {
-      dlog("decoded nodev[%u].kind is %s (expected NODE_UNIT)",
-        i, nodekind_name(nodev[i]->kind));
-      elog("%s: invalid AST", astdecoder_srcname(astdec));
-      return ErrInvalid;
-    }
-
-    // tally the number of declarations
-    unit_t* unit = (unit_t*)nodev[i];
-    if (check_add_overflow(ndecls, unit->children.len, &ndecls)) {
-      elog("%s: package AST too large", astdecoder_srcname(astdec));
-      return ErrOverflow;
-    }
-  }
-
-  // allocate memory for ndecls nodes
-  dlog("[%s] found %u package-level declaration%s",
-    __FUNCTION__, ndecls, ndecls == 1 ? "" : "s");
-  assert(pkg->api.len == 0);
-  if UNLIKELY(!nodearray_reserve_exact(&pkg->api, pb->ast_ma, ndecls))
-    return ErrNoMem;
+  dlog("[%s] decoded %u node%s", __FUNCTION__, nodec, nodec == 1 ? "" : "s");
 
   // add declarations to pkg->api
-  for (u32 i = 0; i < nodec; i++) {
-    unit_t* unit = (unit_t*)nodev[i];
-    for (u32 i = 0; i < unit->children.len; i++)
-      pkg->api.v[pkg->api.len++] = unit->children.v[i];
-  }
+  pkg->api.v = nodev;
+  pkg->api.cap = nodec;
+  pkg->api.len = nodec;
 
-  return 0;
+  return create_pkg_api_ns(pb, pkg);
 }
 
 
@@ -663,6 +714,26 @@ err_t pkgbuild_typecheck(pkgbuild_t* pb) {
     dump_pkg_ast(pb->pkg, pb->unitv, pb->unitc);
   }
 
+  // create public namespace for package, at pkg->api
+  // first, count declarations so we can allocate an array of just the right size
+  u32 nmembers = 0;
+  for (u32 i = 0; i < pb->unitc; i++) {
+    nodearray_t decls = pb->unitv[i]->children;
+    for (u32 i = 0; i < decls.len; i++)
+      nmembers += (u32)!!(decls.v[i]->flags & NF_VIS_PUB);
+  }
+  // create & populate api array
+  assert(pb->pkg->api.len == 0);
+  if (!nodearray_reserve_exact(&pb->pkg->api, pb->ast_ma, nmembers))
+    return ErrNoMem;
+  for (u32 i = 0; i < pb->unitc; i++) {
+    nodearray_t decls = pb->unitv[i]->children;
+    for (u32 i = 0; i < decls.len; i++) {
+      if (decls.v[i]->flags & NF_VIS_PUB)
+        pb->pkg->api.v[pb->pkg->api.len++] = decls.v[i];
+    }
+  }
+
   return 0;
 }
 
@@ -679,26 +750,43 @@ err_t pkgbuild_metagen(pkgbuild_t* pb) {
 
   buf_t outbuf = buf_make(pb->c->ma);
 
-  // encode package API
+  // create AST encoder
   astencoder_t* astenc = astencoder_create(pb->c->ma);
   if (!astenc) {
     err = ErrNoMem;
     goto end;
   }
-  astencoder_begin(astenc, &pb->c->locmap);
-  for (u32 i = 0; i < pb->unitc && err == 0; i++)
-    err = astencoder_add_ast(astenc, (const node_t*)pb->unitv[i], ASTENCODER_PUB_API);
+
+  // encoders can be reused, so we need to tell it to start an encoding session
+  astencoder_begin(astenc, &pb->c->locmap, pb->pkg);
+
+  // add top-level declarations from pkg->api
+  for (u32 i = 0; i < pb->pkg->api.len && err == 0; i++)
+    err = astencoder_add_ast(astenc, pb->pkg->api.v[i], ASTENCODER_PUB_API);
+
+  // Register all source files.
+  // This is needed since, even though astencoder_add_ast implicitly registers source
+  // files for us, it only does so for nodes which are part of the public package API.
+  // I.e. if a source file does not contain any public definitions, it will not be
+  // automatically registered.
+  // Note that it does not matter if we call astencoder_add_srcfile before or after
+  // calling astencoder_add_ast, as source files are ordered by the encoder, so the
+  // results are the same no matter the order we call these functions.
+  for (u32 i = 0; i < pb->pkg->srcfiles.len && err == 0; i++)
+    err = astencoder_add_srcfile(astenc, &pb->pkg->srcfiles.v[i]);
+
+  // finalize
   if (!err)
     err = astencoder_encode(astenc, &outbuf);
   astencoder_free(astenc);
+  if (err)
+    goto end;
 
-  // write file
-  if (!err) {
-    err = fs_writefile_mkdirs(filename.p, 0644, buf_slice(outbuf));
-    str_free(filename);
-  }
+  // write to file
+  err = fs_writefile_mkdirs(filename.p, 0644, buf_slice(outbuf));
 
 end:
+  str_free(filename);
   buf_dispose(&outbuf);
   return err;
 }

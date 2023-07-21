@@ -233,6 +233,8 @@ static void repr_import(RPARAMS, const import_t* im) {
   } else if (im->idlist) {
     PRINT(" as "), PRINT(im->idlist->name);
   }
+  if (im->pkg && im->pkg->api_ns)
+    repr(RARGS, (node_t*)im->pkg->api_ns);
 }
 
 
@@ -255,6 +257,15 @@ static void repr_unit(RPARAMS, const unit_t* n) {
   }
 
   repr_nodearray(RARGS, &n->children);
+}
+
+
+static void repr_nsexpr(RPARAMS, const nsexpr_t* n) {
+  for (usize i = 0; i < n->members.len; i++) {
+    REPR_BEGIN('(', n->member_names[i]);
+    repr(RARGS, n->members.v[i]);
+    REPR_END(')');
+  }
 }
 
 
@@ -401,6 +412,18 @@ static void repr(RPARAMS, const node_t* nullable n) {
       CHAR(' '), PRINT(((idexpr_t*)n)->name);
     } else if (n->kind == EXPR_MEMBER) {
       CHAR(' '), PRINT(((member_t*)n)->name);
+    } else if (n->kind == EXPR_NS) {
+      CHAR(' ');
+      const nsexpr_t* ns = (nsexpr_t*)n;
+      if ((ns->flags & NF_PKGNS) == 0 && ns->name && ns->name != sym__) {
+        PRINT(ns->name);
+      } else if ((ns->flags & NF_PKGNS) && ns->pkg != NULL) {
+        CHAR('"');
+        buf_appendrepr(&r->outbuf, ns->pkg->path.p, ns->pkg->path.len);
+        CHAR('"');
+      } else {
+        PRINTF("%p", ns);
+      }
     }
     // PRINTF(" #%u", n->nuse);
   } else if (n->kind == TYPE_UNRESOLVED) {
@@ -432,6 +455,7 @@ static void repr(RPARAMS, const node_t* nullable n) {
   case EXPR_FUN:      repr_fun(RARGS, (fun_t*)n); break;
   case EXPR_CALL:     repr_call(RARGS, (call_t*)n); break;
   case EXPR_TYPECONS: repr_typecons(RARGS, (typecons_t*)n); break;
+  case EXPR_NS:       repr_nsexpr(RARGS, (nsexpr_t*)n); break;
   case NODE_UNIT:     repr_unit(RARGS, (unit_t*)n); break;
 
   case EXPR_RETURN:
@@ -445,6 +469,7 @@ static void repr(RPARAMS, const node_t* nullable n) {
     drops(RARGS, &b->drops);
     break;
   }
+
 
   case EXPR_BOOLLIT:
     CHAR(' '), PRINT(((intlit_t*)n)->intval ? "true" : "false");

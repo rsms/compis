@@ -28,6 +28,7 @@
   _( EXPR_CALL,      call_t,      'CALL')\
   _( EXPR_TYPECONS,  typecons_t,  'TCON')\
   _( EXPR_ID,        idexpr_t,    'ID  ')\
+  _( EXPR_NS,        nsexpr_t,    'NS  ')\
   _( EXPR_FIELD,     local_t,     'FILD')\
   _( EXPR_PARAM,     local_t,     'PARM')\
   _( EXPR_VAR,       local_t,     'VAR ')\
@@ -68,16 +69,17 @@
 // end FOREACH_NODEKIND_PRIMTYPE
 #define FOREACH_NODEKIND_USERTYPE(_) /* nodekind_t, TYPE, enctag */\
   /* user types */\
-  _( TYPE_ARRAY,    arraytype_t,  'arry')/* nodekind_is*type expects position */\
-  _( TYPE_FUN,      funtype_t,    'fun ')\
-  _( TYPE_PTR,      ptrtype_t,    'ptr ')\
-  _( TYPE_REF,      reftype_t,    'ref ')/* &T      */\
-  _( TYPE_MUTREF,   reftype_t,    'mref')/* mut&T   */\
-  _( TYPE_SLICE,    slicetype_t,  'slc ')/* &[T]    */\
-  _( TYPE_MUTSLICE, slicetype_t,  'mslc')/* mut&[T] */\
-  _( TYPE_OPTIONAL, opttype_t,    'opt ')\
-  _( TYPE_STRUCT,   structtype_t, 'st  ')\
-  _( TYPE_ALIAS,    aliastype_t,  'alis')\
+  _( TYPE_ARRAY,    arraytype_t, 'arry')/* nodekind_is*type expects position */\
+  _( TYPE_FUN,      funtype_t,   'fun ')\
+  _( TYPE_PTR,      ptrtype_t,   'ptr ')\
+  _( TYPE_REF,      reftype_t,   'ref ')/* &T      */\
+  _( TYPE_MUTREF,   reftype_t,   'mref')/* mut&T   */\
+  _( TYPE_SLICE,    slicetype_t, 'slc ')/* &[T]    */\
+  _( TYPE_MUTSLICE, slicetype_t, 'mslc')/* mut&[T] */\
+  _( TYPE_OPTIONAL, opttype_t,   'opt ')\
+  _( TYPE_STRUCT,   structtype_t,'st  ')\
+  _( TYPE_ALIAS,    aliastype_t, 'alis')\
+  _( TYPE_NS,       nstype_t,    'ns  ')\
   /* special types replaced by typecheck */\
   _( TYPE_UNRESOLVED, unresolvedtype_t, 'ures')/* named type not yet resolved */ \
 // end FOREACH_NODEKIND_USERTYPE
@@ -186,6 +188,7 @@ typedef array_type(srcfile_t) srcfilearray_t;
 typedef struct node_ node_t;
 typedef array_type(node_t*) nodearray_t; // cap==len
 DEF_ARRAY_TYPE_API(node_t*, nodearray)
+typedef struct nsexpr_ nsexpr_t;
 
 typedef struct pkg_t {
   str_t           path;     // import path, e.g. "main" or "std/runtime" (canonical)
@@ -199,8 +202,9 @@ typedef struct pkg_t {
   fun_t* nullable mainfun;  // fun main(), if any
   ptrarray_t      imports;  // pkg_t*[] -- imported packages
 
-  future_t    loadfut;
-  nodearray_t api;      // package-level declarations, available after loadfut
+  future_t           loadfut;
+  nodearray_t        api;     // package-level declarations, available after loadfut
+  nsexpr_t* nullable api_ns;  // set by pkgbuild after loading api
 } pkg_t;
 
 typedef struct {
@@ -242,20 +246,22 @@ enum { PRIMTYPE_COUNT = (0lu
   FOREACH_NODEKIND_PRIMTYPE(CO_PLUS_ONE) ) };
 
 typedef u16 nodeflag_t;
-#define NF_RVALUE      ((nodeflag_t)1<< 0) // expression is used as an rvalue
-#define NF_OPTIONAL    ((nodeflag_t)1<< 1) // type-narrowed from optional
-#define NF_CHECKED     ((nodeflag_t)1<< 2) // has been typecheck'ed (or doesn't need it)
-#define NF_UNKNOWN     ((nodeflag_t)1<< 3) // has or contains unresolved identifier
-#define NF_NAMEDPARAMS ((nodeflag_t)1<< 4) // function has named parameters
-#define NF_DROP        ((nodeflag_t)1<< 5) // type has drop() function
-#define NF_SUBOWNERS   ((nodeflag_t)1<< 6) // type has owning elements
-#define NF_EXIT        ((nodeflag_t)1<< 7) // block exits (i.e. "return" or "break")
-#define NF_CONST       ((nodeflag_t)1<< 7) // [anything but block] is a constant
-// visibility
-#define NF_VIS_MASK    ((nodeflag_t)0x300) // 0b1100000000
+
+#define NF_VIS_MASK    ((nodeflag_t)3) // 0b11
 #define NF_VIS_UNIT    ((nodeflag_t)0)     // visible within same source file
-#define NF_VIS_PKG     ((nodeflag_t)1<< 8) // visible within same package
-#define NF_VIS_PUB     ((nodeflag_t)1<< 9) // visible to other packages
+#define NF_VIS_PKG     ((nodeflag_t)1<< 0) // visible within same package
+#define NF_VIS_PUB     ((nodeflag_t)1<< 1) // visible to other packages
+// #define NF_VIS_     ((nodeflag_t)1<< 2) // spare bit (0b11)
+#define NF_CHECKED     ((nodeflag_t)1<< 3) // has been typecheck'ed (or doesn't need it)
+#define NF_RVALUE      ((nodeflag_t)1<< 4) // expression is used as an rvalue
+#define NF_OPTIONAL    ((nodeflag_t)1<< 5) // type-narrowed from optional
+#define NF_UNKNOWN     ((nodeflag_t)1<< 6) // has or contains unresolved identifier
+#define NF_NAMEDPARAMS ((nodeflag_t)1<< 7) // function has named parameters
+#define NF_DROP        ((nodeflag_t)1<< 8) // type has drop() function
+#define NF_SUBOWNERS   ((nodeflag_t)1<< 9) // type has owning elements
+#define NF_EXIT        ((nodeflag_t)1<< 10) // block exits (i.e. "return" or "break")
+#define NF_CONST       ((nodeflag_t)1<< 10) // [anything but block] is a constant
+#define NF_PKGNS       ((nodeflag_t)1<< 11) // [namespace] is a package API
 
 typedef nodeflag_t nodevis_t; // symbolic
 static_assert(0 < NF_VIS_PKG, "");
@@ -335,7 +341,7 @@ typedef struct importid_t {
 
 typedef struct {
   stmt_t;
-  type_t* type;
+  type_t* type; // TYPE_STRUCT or TYPE_ALIAS
 } typedef_t;
 
 typedef struct {
@@ -351,6 +357,11 @@ typedef struct {
   char* nullable   mangledname; // mangled name, created in ast_ma by typecheck
   node_t* nullable nsparent;    // TODO: generalize to just "parent"
 } aliastype_t;
+
+typedef struct {
+  type_t;
+  nodearray_t members;
+} nstype_t;
 
 typedef struct {
   type_t;
@@ -416,6 +427,16 @@ typedef struct { expr_t; sym_t name; node_t* nullable ref; } idexpr_t;
 typedef struct { expr_t; op_t op; expr_t* expr; } unaryop_t;
 typedef struct { expr_t; op_t op; expr_t* left; expr_t* right; } binop_t;
 typedef struct { expr_t; expr_t* nullable value; } retexpr_t;
+
+typedef struct nsexpr_ {
+  expr_t;
+  union {
+    sym_t  name; // if not NF_PKGNS
+    pkg_t* pkg;  // if NF_PKGNS
+  };
+  nodearray_t     members;
+  sym_t*          member_names;
+} nsexpr_t;
 
 typedef struct {
   expr_t;
@@ -792,6 +813,8 @@ unixtime_t pkg_source_mtime(const pkg_t* pkg); // max(f.mtime for f in files)
 bool pkg_is_built(const pkg_t* pkg, const compiler_t* c);
 str_t pkg_builddir(const pkg_t* pkg, const compiler_t* c);
 str_t pkg_buildfile(const pkg_t* pkg, const compiler_t* c, const char* filename);
+bool pkg_buildfilea(
+  const pkg_t* pkg, const compiler_t* c, str_t* dst, const char* filename);
 node_t* nullable pkg_def_get(pkg_t* pkg, sym_t name);
 err_t pkg_def_set(pkg_t* pkg, memalloc_t ma, sym_t name, node_t* n);
 err_t pkg_def_add(pkg_t* pkg, memalloc_t ma, sym_t name, node_t** np_inout);
@@ -954,8 +977,6 @@ inline static void astiter_dispose(astiter_t* it) {}
 inline static const node_t* nullable astiter_next(astiter_t* it) {
   return it->next(it);
 }
-
-err_t ast_childrenof(nodearray_t* children, memalloc_t ma, const node_t* n);
 
 inline static void bubble_flags(void* parent, void* child) {
   ((node_t*)parent)->flags |= (((node_t*)child)->flags & NODEFLAGS_BUBBLE);
@@ -1161,7 +1182,8 @@ const char* syslib_filename(const target_t* target, syslib_t);
 err_t locmap_init(locmap_t* lm);
 void locmap_dispose(locmap_t* lm, memalloc_t);
 void locmap_clear(locmap_t* lm);
-u32 locmap_srcfileid(locmap_t* lm, srcfile_t*, memalloc_t); // intern id for source file
+u32 locmap_intern_srcfileid(locmap_t* lm, srcfile_t*, memalloc_t);
+u32 locmap_lookup_srcfileid(locmap_t* lm, const srcfile_t*); // 0 = not found
 srcfile_t* nullable locmap_srcfile(locmap_t* lm, u32 srcfileid);
 
 static loc_t loc_make(u32 srcfileid, u32 line, u32 col, u32 width);

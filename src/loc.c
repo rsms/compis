@@ -23,7 +23,25 @@ void locmap_clear(locmap_t* lm) {
 }
 
 
-u32 locmap_srcfileid(locmap_t* lm, srcfile_t* sf, memalloc_t ma) {
+u32 locmap_lookup_srcfileid(locmap_t* lm, const srcfile_t* sf) {
+  u32 id = 0;
+
+  rwmutex_rlock(&lm->mu);
+
+  for (; id < lm->m.len; id++) {
+    if (lm->m.v[id] == sf)
+      goto end;
+  }
+
+  id = 0; // not found
+
+end:
+  rwmutex_runlock(&lm->mu);
+  return id;
+}
+
+
+u32 locmap_intern_srcfileid(locmap_t* lm, srcfile_t* sf, memalloc_t ma) {
   assertnotnull(sf);
   rwmutex_lock(&lm->mu);
 

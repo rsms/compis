@@ -1345,6 +1345,11 @@ static void idexpr(typecheck_t* a, idexpr_t* n) {
 }
 
 
+static void nsexpr(typecheck_t* a, nsexpr_t* n) {
+  panic("TODO nsexpr");
+}
+
+
 static void retexpr(typecheck_t* a, retexpr_t* n) {
   if UNLIKELY(!a->fun)
     return error(a, n, "return outside of function");
@@ -1819,10 +1824,59 @@ static void arraylit(typecheck_t* a, arraylit_t* n) {
 }
 
 
-static expr_t* nullable find_member(typecheck_t* a, type_t* t, sym_t name) {
-  type_t* bt = unwrap_ptr_and_alias(t); // e.g. "?&MyMyT" => "T"
+static void member_ns(typecheck_t* a, member_t* n) {
+  nsexpr_t* ns = (nsexpr_t*)unwrap_id(n->recv);
+  if (ns->kind != EXPR_NS) {
+    error(a, n, "NOT IMPLEMENTED: namespace access via %s", nodekind_name(ns->kind));
+    n->type = a->typectx;
+    return;
+  }
 
-  // start with fields for struct
+  sym_t name = n->name;
+  expr_t* target = NULL;
+
+  for (u32 i = 0; i < ns->members.len; i++) {
+    if (ns->member_names[i] == name) {
+      if UNLIKELY(!node_isexpr(ns->members.v[i])) {
+        error(a, n, "names a %s", nodekind_fmt(ns->members.v[i]->kind));
+        return;
+      }
+      target = (expr_t*)ns->members.v[i];
+      n->target = use(target);
+      n->type = target->type;
+      return;
+    }
+  }
+
+  // not found
+  n->type = a->typectx; // avoid cascading errors
+
+  if (ns->flags & NF_PKGNS) {
+    assertnotnull(ns->pkg);
+    error(a, n, "package \"%s\" has no member \"%s\"", ns->pkg->path.p, n->name);
+  } else {
+    const char* nsname;
+    if (ns->name && ns->name != sym__) {
+      nsname = ns->name;
+    } else if (n->recv->kind == EXPR_ID) {
+      nsname = ((idexpr_t*)n->recv)->name;
+    } else {
+      nsname = "";
+    }
+    error(a, n, "namespace %s has no member \"%s\"", nsname, n->name);
+  }
+}
+
+
+static expr_t* nullable find_member(
+  typecheck_t* a, type_t* bt, type_t* recvt, sym_t name)
+{
+  // note: bt has unwrap_ptr_and_alias applied, e.g. ?&MyMyT => T
+  assert(bt->kind != TYPE_NS); // handled by find_member_ns
+
+  // Treat the member operation as a field access.
+  // If there are no matching fields of the type bt, consider type functions for bt.
+
   if (bt->kind == TYPE_STRUCT) {
     structtype_t* st = (structtype_t*)bt;
     for (u32 i = 0; i < st->fields.len; i++) {
@@ -1834,9 +1888,17 @@ static expr_t* nullable find_member(typecheck_t* a, type_t* t, sym_t name) {
   }
 
   // look for type function
-  fun_t* fn = typefuntab_lookup(&a->pkg->tfundefs, t, name);
-  if (fn && CHECK_ONCE(fn))
+  type_t* bt2 = type_unwrap_ptr(recvt); // e.g. ?&MyMyT => MyMyT
+  fun_t* fn = typefuntab_lookup(&a->pkg->tfundefs, bt2, name);
+  if (fn && CHECK_ONCE(fn)) {
     fun(a, fn);
+    if (bt2 != recvt) panic("TODO check if fun is compatible with recvt");
+    // TODO: check if fun is compatible with recvt, which could be for example a ref.
+    // e.g. this should fail:
+    //   fun Foo.bar(mut this)
+    //   fun example(x &Foo)
+    //     x.bar() // error: Foo.bar requires mutable receiver
+  }
   return (expr_t*)fn;
 }
 
@@ -1846,11 +1908,16 @@ static void member(typecheck_t* a, member_t* n) {
   expr(a, n->recv);
 
   // get receiver type without ref or optional
-  type_t* recvt = n->recv->type;
+  type_t* recvt = n->recv->type; // e.g. ?&MyMyT
+  type_t* recvbt = unwrap_ptr_and_alias(recvt); // e.g. ?&MyMyT => T
+
+  // namespace has dedicated implementation
+  if (recvbt->kind == TYPE_NS)
+    return member_ns(a, n);
 
   // resolve target
   typectx_push(a, type_unknown);
-  expr_t* target = find_member(a, recvt, n->name);
+  expr_t* target = find_member(a, recvbt, recvt, n->name);
   typectx_pop(a);
 
   if (target) {
@@ -2418,6 +2485,7 @@ static void _type(typecheck_t* a, type_t** tp) {
     case TYPE_UINT:
     case TYPE_F32:
     case TYPE_F64:
+    case TYPE_NS:
     case TYPE_UNKNOWN:
       assertf(0, "%s should always be NF_CHECKED", nodekind_name((*tp)->kind));
       return;
@@ -2476,6 +2544,7 @@ static void exprp(typecheck_t* a, expr_t** np) {
   case EXPR_FUN:       return fun(a, (fun_t*)n);
   case EXPR_IF:        return ifexpr(a, (ifexpr_t*)n);
   case EXPR_ID:        return idexpr(a, (idexpr_t*)n);
+  case EXPR_NS:        return nsexpr(a, (nsexpr_t*)n);
   case EXPR_RETURN:    return retexpr(a, (retexpr_t*)n);
   case EXPR_BINOP:     return binop(a, (binop_t*)n);
   case EXPR_ASSIGN:    return assign(a, (binop_t*)n);
@@ -2537,6 +2606,7 @@ static void exprp(typecheck_t* a, expr_t** np) {
   case TYPE_OPTIONAL:
   case TYPE_STRUCT:
   case TYPE_ALIAS:
+  case TYPE_NS:
   case TYPE_UNKNOWN:
   case TYPE_UNRESOLVED:
     break;
@@ -2600,15 +2670,12 @@ static void import_pkg(typecheck_t* a, import_t* im) {
   if (im->idlist == NULL) // just for the side effects
     return;
   assertnull(im->idlist->next_id); // must only be one name
-  assertnotnull(im->pkg);
+  assertnotnull(im->pkg); // should have been resolved by pkgbuild
 
-  // TODO FIXME
-  dlog("TODO define imported package \"%s\" namespace in unit", im->pkg->path.p);
-  // namespace_t* ns = mknode(a, namespace_t, NODE_NAMESPACE);
-  local_t* ns = mknode(a, local_t, EXPR_LET);
-  ns->type = type_unknown;
-  ns->name = im->idlist->name;
-  define(a, im->idlist->name, ns);
+  trace("define \"%s\" = namespace of pkg \"%s\"", im->idlist->name, im->pkg->path.p);
+
+  assertnotnull(im->pkg->api_ns);
+  define(a, im->idlist->name, im->pkg->api_ns);
 }
 
 
