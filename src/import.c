@@ -311,7 +311,98 @@ end:
 }
 
 
-static err_t import_resolve_pkg(
+static void pkgindex_dlog_added(const pkg_t* pkg) {
+  dlog("added compiler.pkgindex[%s] = pkg_t{", pkg->dir.p);
+  dlog("  .path = \"%s\"", pkg->path.p);
+  dlog("  .root = \"%s\"", pkg->root.p);
+  dlog("  .dir  = \"%s\"", pkg->dir.p);
+  dlog("}");
+}
+
+
+err_t pkgindex_add(compiler_t* c, pkg_t* pkg) {
+  err_t err;
+  rwmutex_lock(&c->pkgindex_mu);
+
+  pkg_t** pkgp = (pkg_t**)map_assign(&c->pkgindex, c->ma, pkg->dir.p, pkg->dir.len);
+  if (!pkgp) {
+    err = ErrNoMem;
+  } else if (*pkgp) {
+    err = ErrExists;
+  } else {
+    *pkgp = pkg;
+    err = 0;
+    pkgindex_dlog_added(pkg);
+  }
+
+  rwmutex_unlock(&c->pkgindex_mu);
+  return err;
+}
+
+
+err_t pkgindex_intern(compiler_t* c, slice_t pkgdir, slice_t pkgpath, pkg_t** result) {
+  err_t err = 0;
+  pkg_t* pkg = NULL;
+
+  // pkgdir and pkgpath are expected to be well-formed
+  // e.g. a valid combination: ("/foo/bar/cat/lol", "cat/lol"),
+  //      invalid combinations: ("/foo/bar/cat/lol", "abc"), ("bar/cat", "cat")
+  assert(pkgpath.len > 0);
+  assert(pkgdir.len > pkgpath.len);
+  assert(path_isabs(pkgdir.chars));
+  assert(string_endswithn(pkgdir.chars, pkgdir.len, pkgpath.chars, pkgpath.len));
+  assertf(pkgdir.chars[pkgdir.len - pkgpath.len - 1] == PATH_SEP,
+    "%.*s[%zu]", (int)pkgdir.len, pkgdir.chars, pkgdir.len - pkgpath.len - 1);
+  assertf(fs_isdir(pkgdir.chars), "%.*s", (int)pkgdir.len, pkgdir.chars);
+
+  rwmutex_lock(&c->pkgindex_mu);
+
+  // lookup or allocate in map
+  mapent_t* ent = map_assign_ent(&c->pkgindex, c->ma, pkgdir.chars, pkgdir.len);
+  if UNLIKELY(!ent) {
+    err = ErrNoMem;
+    goto end;
+  }
+
+  // if package is already indexed, we are done
+  if (ent->value) {
+    pkg = ent->value;
+    goto end;
+  }
+
+  // add package
+  if UNLIKELY((pkg = mem_alloct(c->ma, pkg_t)) == NULL)
+    goto oom;
+  if UNLIKELY(pkg_init(pkg, c->ma) != 0)
+    goto oom;
+
+  pkg->path = str_makelen(pkgpath.chars, pkgpath.len);
+  pkg->dir  = str_makelen(pkgdir.chars, pkgdir.len);
+  pkg->root = str_makelen(pkgdir.chars, pkgdir.len - pkgpath.len - 1);
+
+  if LIKELY(pkg->path.cap && pkg->dir.cap && pkg->root.cap) {
+    ent->key = pkg->dir.p;
+    ent->keysize = pkg->dir.len;
+    ent->value = pkg;
+    pkgindex_dlog_added(pkg);
+    goto end;
+  }
+
+oom:
+  if (pkg) {
+    mem_freet(c->ma, pkg);
+    pkg = NULL;
+  }
+  err = ErrNoMem;
+
+end:
+  rwmutex_unlock(&c->pkgindex_mu);
+  *result = pkg;
+  return err;
+}
+
+
+err_t import_resolve_pkg(
   compiler_t* c, const pkg_t* importer_pkg, slice_t path, str_t* fspath, pkg_t** result)
 {
   assert(path.len > 0);
@@ -332,47 +423,7 @@ static err_t import_resolve_pkg(
     return err;
   }
 
-  rwmutex_lock(&c->pkgindex_mu);
-
-  // lookup or allocate in map
-  pkg_t* pkg = NULL;
-  pkg_t** pkgp = (pkg_t**)map_assign(&c->pkgindex, c->ma, fspath->p, fspath->len);
-  if UNLIKELY(!pkgp) {
-    err = ErrNoMem;
-    goto end;
-  }
-
-  // if package is already resolved, we are done
-  if ((pkg = *pkgp) != NULL)
-    goto end;
-
-  // add package
-  if UNLIKELY((pkg = mem_alloct(c->ma, pkg_t)) == NULL) {
-    err = ErrNoMem;
-    goto end;
-  }
-  if UNLIKELY(pkg_init(pkg, c->ma) != 0) {
-    mem_freet(c->ma, pkg);
-    err = ErrNoMem;
-    goto end;
-  }
-  if (rootlen == 0)
-    rootlen = importer_pkg->root.len;
-  pkg->path = str_makelen(path.p, path.len);
-  pkg->dir = str_makelen(fspath->p, fspath->len);
-  pkg->root = str_makelen(pkg->dir.p, rootlen);
-  if (pkg->path.cap == 0 || pkg->dir.cap == 0 || pkg->root.cap == 0)
-    err = ErrNoMem;
-  // dlog("adding pkg");
-  // dlog("  .path = \"%s\"", pkg->path.p);
-  // dlog("  .dir  = \"%s\"", pkg->dir.p);
-  // dlog("  .root = \"%.*s\"", (int)pkg->root.len, pkg->root.chars);
-  *pkgp = pkg;
-
-end:
-  *result = pkg;
-  rwmutex_unlock(&c->pkgindex_mu);
-  return err;
+  return pkgindex_intern(c, str_slice(*fspath), path, result);
 }
 
 
@@ -388,9 +439,7 @@ static int pkgimp_cmp(const pkgimp_t* a, const pkgimp_t* b, void* ctx) {
 }
 
 
-err_t import_pkgs(
-  compiler_t* c, const pkg_t* importer_pkg, unit_t* unitv[], u32 unitc, ptrarray_t* pkgs)
-{
+err_t import_pkgs(compiler_t* c, pkg_t* importer_pkg, unit_t* unitv[], u32 unitc) {
   err_t err = 0;
   str_t importer_dir = {0};
 
@@ -471,7 +520,7 @@ err_t import_pkgs(
       report_diag(c, origin, DIAG_ERR, "package \"%s\" imports itself", pkg->path.p);
       err = ErrInvalid;
       goto end;
-    } else if UNLIKELY(!ptrarray_sortedset_addptr(pkgs, c->ma, pkg)) {
+    } else if UNLIKELY(!pkg_imports_add(importer_pkg, pkg, c->ma)) {
       goto end_err_nomem;
     }
 

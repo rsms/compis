@@ -373,7 +373,7 @@ static err_t pkg_resolve_adhoc(
   }
 
   // compare common dir to cwd
-  bool is_dir_in_cwd = string_startswithn(dir, dirlen, pkg->dir.p);
+  bool is_dir_in_cwd = string_startswithn(dir, dirlen, pkg->dir.p, pkg->dir.len);
   if (0 && is_dir_in_cwd && dirlen > pkg->dir.len) {
     // sourcefile common dir is a subdirectory of cwd
     usize cwdlen = pkg->dir.len;
@@ -566,6 +566,32 @@ bool pkg_is_built(const pkg_t* pkg, const compiler_t* c) {
   dlog("TODO: pkg_is_built implementation");
 
   return false;
+}
+
+
+bool pkg_imports_add(pkg_t* importer_pkg, pkg_t* dep, memalloc_t ma) {
+  return ptrarray_sortedset_addptr(&importer_pkg->imports, ma, dep);
+}
+
+
+bool pkg_dir_of_root_and_path(str_t* dst, slice_t root, slice_t path) {
+  usize dst_len = dst->len;
+  bool ok = str_ensure_avail(dst, root.len + 1 + path.len);
+
+  ok &= str_appendlen(dst, root.chars, root.len);
+  ok &= str_push(dst, PATH_SEP);
+
+  #ifdef WIN32
+    str_replacec(&path, '/', '\\', -1);
+    ok &= str_appendlen(dst, path.chars, path.len);
+    str_replacec(&path, '\\', '/', -1);
+  #else
+    ok &= str_appendlen(dst, path.chars, path.len);
+  #endif
+
+  if (!ok)
+    dst->len = dst_len;
+  return ok;
 }
 
 

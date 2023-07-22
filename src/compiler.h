@@ -200,11 +200,12 @@ typedef struct pkg_t {
   rwmutex_t       defs_mu;  // protects access to defs field
   typefuntab_t    tfundefs; // type functions defined by the package
   fun_t* nullable mainfun;  // fun main(), if any
-  ptrarray_t      imports;  // pkg_t*[] -- imported packages
+  ptrarray_t      imports;  // pkg_t*[] -- imported packages (set by import_pkgs)
 
   future_t           loadfut;
   nodearray_t        api;     // package-level declarations, available after loadfut
   nsexpr_t* nullable api_ns;  // set by pkgbuild after loading api
+  unixtime_t         mtime;
 } pkg_t;
 
 typedef struct {
@@ -247,18 +248,18 @@ enum { PRIMTYPE_COUNT = (0lu
 
 typedef u16 nodeflag_t;
 
-#define NF_VIS_MASK    ((nodeflag_t)3) // 0b11
-#define NF_VIS_UNIT    ((nodeflag_t)0)     // visible within same source file
-#define NF_VIS_PKG     ((nodeflag_t)1<< 0) // visible within same package
-#define NF_VIS_PUB     ((nodeflag_t)1<< 1) // visible to other packages
-// #define NF_VIS_     ((nodeflag_t)1<< 2) // spare bit (0b11)
-#define NF_CHECKED     ((nodeflag_t)1<< 3) // has been typecheck'ed (or doesn't need it)
-#define NF_RVALUE      ((nodeflag_t)1<< 4) // expression is used as an rvalue
-#define NF_OPTIONAL    ((nodeflag_t)1<< 5) // type-narrowed from optional
-#define NF_UNKNOWN     ((nodeflag_t)1<< 6) // has or contains unresolved identifier
-#define NF_NAMEDPARAMS ((nodeflag_t)1<< 7) // function has named parameters
-#define NF_DROP        ((nodeflag_t)1<< 8) // type has drop() function
-#define NF_SUBOWNERS   ((nodeflag_t)1<< 9) // type has owning elements
+#define NF_VIS_MASK    ((nodeflag_t)3)      // 0b11
+#define NF_VIS_UNIT    ((nodeflag_t)0)      // visible within same source file
+#define NF_VIS_PKG     ((nodeflag_t)1<< 0)  // visible within same package
+#define NF_VIS_PUB     ((nodeflag_t)1<< 1)  // visible to other packages
+// #define NF_VIS_     ((nodeflag_t)1<< 2)  // spare bit (0b11)
+#define NF_CHECKED     ((nodeflag_t)1<< 3)  // has been typecheck'ed (or doesn't need it)
+#define NF_RVALUE      ((nodeflag_t)1<< 4)  // expression is used as an rvalue
+#define NF_OPTIONAL    ((nodeflag_t)1<< 5)  // type-narrowed from optional
+#define NF_UNKNOWN     ((nodeflag_t)1<< 6)  // has or contains unresolved identifier
+#define NF_NAMEDPARAMS ((nodeflag_t)1<< 7)  // function has named parameters
+#define NF_DROP        ((nodeflag_t)1<< 8)  // type has drop() function
+#define NF_SUBOWNERS   ((nodeflag_t)1<< 9)  // type has owning elements
 #define NF_EXIT        ((nodeflag_t)1<< 10) // block exits (i.e. "return" or "break")
 #define NF_CONST       ((nodeflag_t)1<< 10) // [anything but block] is a constant
 #define NF_PKGNS       ((nodeflag_t)1<< 11) // [namespace] is a package API
@@ -272,18 +273,19 @@ static_assert(NF_VIS_PKG < NF_VIS_PUB, "");
 
 // NODEFLAGS_ALL are all flags, used by AST decoder
 #define NODEFLAGS_ALL ((nodeflag_t) \
-  ( NF_RVALUE \
-  | NF_OPTIONAL \
+  ( NF_VIS_UNIT \
+  | NF_VIS_PKG \
+  | NF_VIS_PUB \
   | NF_CHECKED \
+  | NF_RVALUE \
+  | NF_OPTIONAL \
   | NF_UNKNOWN \
   | NF_NAMEDPARAMS \
   | NF_DROP \
   | NF_SUBOWNERS \
   | NF_EXIT \
   | NF_CONST \
-  | NF_VIS_UNIT \
-  | NF_VIS_PKG \
-  | NF_VIS_PUB \
+  | NF_PKGNS \
 ))
 
 typedef struct node_ {
@@ -811,6 +813,7 @@ srcfile_t* nullable pkg_add_srcfile(
 err_t pkg_find_files(pkg_t* pkg); // updates pkg->files, sets sf.mtime
 unixtime_t pkg_source_mtime(const pkg_t* pkg); // max(f.mtime for f in files)
 bool pkg_is_built(const pkg_t* pkg, const compiler_t* c);
+bool pkg_dir_of_root_and_path(str_t* dst, slice_t root, slice_t path);
 str_t pkg_builddir(const pkg_t* pkg, const compiler_t* c);
 str_t pkg_buildfile(const pkg_t* pkg, const compiler_t* c, const char* filename);
 bool pkg_buildfilea(
@@ -819,6 +822,8 @@ node_t* nullable pkg_def_get(pkg_t* pkg, sym_t name);
 err_t pkg_def_set(pkg_t* pkg, memalloc_t ma, sym_t name, node_t* n);
 err_t pkg_def_add(pkg_t* pkg, memalloc_t ma, sym_t name, node_t** np_inout);
 str_t pkg_unit_srcdir(const pkg_t* pkg, const unit_t* unit);
+// pkg_imports_add adds dep to importer_pkg->imports (uniquely)
+bool pkg_imports_add(pkg_t* importer_pkg, pkg_t* dep, memalloc_t ma);
 
 // srcfile
 err_t srcfile_open(srcfile_t* sf);
@@ -901,12 +906,17 @@ err_t analyze(compiler_t* c, memalloc_t ast_ma, pkg_t* pkg, unit_t** unitv, u32 
 
 // importing of packages
 bool import_validate_path(const char* path, const char** errmsgp, usize* erroffsp);
-err_t import_resolve_fspath(str_t* fspath, usize* rootlen_out);
-err_t import_pkgs(
+err_t import_pkgs(compiler_t* c, pkg_t* importer_pkg, unit_t* unitv[], u32 unitc);
+err_t import_resolve_pkg(
   compiler_t* c,
   const pkg_t* importer_pkg,
-  unit_t* unitv[], u32 unitc,
-  ptrarray_t* pkgs_result /* pkg_t*[] */ );
+  slice_t path,
+  str_t* fspath,
+  pkg_t** result);
+err_t import_resolve_fspath(str_t* fspath, usize* rootlen_out);
+
+err_t pkgindex_intern(compiler_t* c, slice_t pkgdir, slice_t pkgpath, pkg_t** result);
+err_t pkgindex_add(compiler_t* c, pkg_t* pkg);
 
 // ir
 bool irfmt(compiler_t*, const pkg_t*, buf_t*, const irunit_t*);

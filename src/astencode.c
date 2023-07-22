@@ -4,31 +4,32 @@
 AST encoding format:
 
   root = header
-         srcinfo
+         pkg
+         srcfile{srccount}
+         pkg{importcount}
          symbol{symcount}
          node{nodecount}
          nodeid{rootcount}
 
-  header    = magic SP
-              version SP
-              symcount SP
-              nodecount SP
-              rootcount LF
-  magic     = "cAST"
-  version   = u32x
-  symcount  = u32x
-  nodecount = u32x
-  rootcount = u32x
+  header      = magic SP
+                version SP
+                srccount SP
+                importcount SP
+                symcount SP
+                nodecount SP
+                rootcount LF
+  magic       = "cAST"
+  version     = u32x
+  srccount    = u32x
+  symcount    = u32x
+  importcount = u32x
+  nodecount   = u32x
+  rootcount   = u32x
 
-  srcinfo   = pkgpath? LF
-              srcdir? LF
-              srccount LF (srcfile LF){srccount}
-              importcount LF (pkgpath LF){importcount}
-  pkgpath   = filepath
-  srcdir    = filepath
-  srccount  = u32x
-  srcfile   = filepath
-  mtime     = u64x
+  pkg     = pkgroot ":" pkgpath LF
+  pkgroot = filepath
+  pkgpath = filepath
+  srcfile = filepath LF
 
   symbol = <byte 0x01..0x09, 0x0B..0xFF>+ LF
 
@@ -67,6 +68,8 @@ AST encoding format:
 
 
 #define FILE_MAGIC "cAST"
+
+#define AST_ENC_VERSION 1u
 
 
 // DEBUG_LOG_ENCODE_STATS: define to dlog some encoder stats
@@ -390,17 +393,17 @@ inline static f64 u64_to_f64(u64 v) { return *(f64*)&v; }
 // encoder
 
 typedef struct astencoder_ {
-  memalloc_t         ma;
-  array_type(mem_t)  tmpallocs;  // temporary allocations
-  nodearray_t        nodelist;   // all nodes
-  u32array_t         rootlist;   // indices in nodelist of root nodes
-  u32array_t         srcfileids; // unique loc_t srcfile IDs
-  const pkg_t*       pkg;
-  map_t              nodemap;    // maps {node_t* => uintptr nodelist index}
-  ptrarray_t         symmap;     // maps {sym_t => u32 index} (sorted set)
-  usize              symsize;    // total length of all symbol characters
-  locmap_t* nullable locmap;     // locmap in which all IDs in srcfileids are registered
-  bool               oom;        // true if memory allocation failed (internal state)
+  compiler_t*       c;
+  memalloc_t        ma;
+  array_type(mem_t) tmpallocs;  // temporary allocations
+  nodearray_t       nodelist;   // all nodes
+  u32array_t        rootlist;   // indices in nodelist of root nodes
+  u32array_t        srcfileids; // unique loc_t srcfile IDs
+  map_t             nodemap;    // maps {node_t* => uintptr nodelist index}
+  ptrarray_t        symmap;     // maps {sym_t => u32 index} (sorted set)
+  usize             symsize;    // total length of all symbol characters
+  const pkg_t*      pkg;        //
+  bool              oom;        // true if memory allocation failed (internal state)
 } astencoder_t;
 
 
@@ -447,119 +450,6 @@ static u32 encoded_node_index(const astencoder_t* a, const void* np) {
   // note: node indices are stored in nodemap with +1 larger value
   // to keep 0 reserved for "not in map"
   return (u32)(*vp - 1);
-}
-
-
-#define AST_ENC_VERSION 1u
-
-
-static void encode_header(astencoder_t* a, buf_t* outbuf) {
-  // write header
-  char* p = outbuf->chars + outbuf->len;
-  memcpy(p, FILE_MAGIC, 4); p += 4; *p++ = ' ';
-  p += fmt_u64_base16(p, 8, AST_ENC_VERSION); *p++ = ' ';
-  p += fmt_u64_base16(p, 8, a->symmap.len); *p++ = ' ';
-  p += fmt_u64_base16(p, 8, a->nodelist.len); *p++ = ' ';
-  p += fmt_u64_base16(p, 8, a->rootlist.len);
-  *p++ = '\n';
-  buf_setlenp(outbuf, p);
-}
-
-
-static void encode_filepath(astencoder_t* a, buf_t* outbuf, const char* str, usize len) {
-  // filepath = <byte 0x20..0x39, 0x3B...0xFF>+  // note: 0x40 = ":"
-  #ifdef CO_SAFE
-  for (usize i = 0; i < len; i++) {
-    if UNLIKELY(str[i] < 0x20 || str[i] == ':') {
-      dlog("invalid char 0x%02x in filepath \"%.*s\"",
-        str[i], (int)MIN((usize)I32_MAX, len), str);
-      a->oom = true; // TODO: signal more accurate error
-      return;
-    }
-  }
-  #endif
-  a->oom |= !buf_append(outbuf, str, len);
-}
-
-
-static void encode_srcinfo(astencoder_t* a, buf_t* outbuf) {
-  if (a->srcfileids.len == 0) {
-    a->oom |= !buf_print(outbuf, "\n\n0\n");
-    return;
-  }
-
-  const pkg_t* pkg = assertnotnull(a->pkg);
-  usize nbyte = ndigits16(a->srcfileids.len) + 1; // srccount LF
-
-  // find pkg and calculate outbuf size needed to encode srcinfo
-  for (u32 enc_srcfileid = 0; enc_srcfileid < a->srcfileids.len; enc_srcfileid++) {
-    u32 srcfileid = a->srcfileids.v[enc_srcfileid];
-    srcfile_t* srcfile = locmap_srcfile(a->locmap, srcfileid);
-    assertf(srcfile, "srcfile#%u not in locmap", srcfileid);
-
-    // check so that there's just one package
-    #ifdef CO_SAFE
-      assert(srcfile->pkg != NULL);
-      safecheckf(pkg == srcfile->pkg,
-        "srcfiles from mixed packages %s (%p) and %s (%p)",
-        pkg->path.p, pkg, srcfile->pkg->path.p, srcfile->pkg);
-    #endif
-
-    // srcfile LF
-    a->oom |= check_add_overflow(nbyte, srcfile->name.len + 1, &nbyte);
-  }
-
-  // pkgpath LF srcdir LF
-  a->oom |= check_add_overflow(nbyte, pkg->path.len + 1, &nbyte);
-  a->oom |= check_add_overflow(nbyte, pkg->dir.len + 1, &nbyte);
-
-  // importcount LF (pkgpath LF){importcount}
-  a->oom |= check_add_overflow(nbyte, (usize)ndigits16(pkg->imports.len) + 1, &nbyte);
-  for (u32 i = 0; i < pkg->imports.len; i++) {
-    const pkg_t* dep = pkg->imports.v[i];
-    a->oom |= check_add_overflow(nbyte, (usize)ndigits16(dep->path.len) + 1, &nbyte);
-  }
-
-  if (a->oom)
-    return;
-  BUF_RESERVE(nbyte);
-
-  // pkgpath LF
-  encode_filepath(a, outbuf, pkg->path.p, pkg->path.len);
-  outbuf->chars[outbuf->len++] = '\n';
-
-  // srcdir LF
-  encode_filepath(a, outbuf, pkg->dir.p, pkg->dir.len);
-  outbuf->chars[outbuf->len++] = '\n';
-
-  // srccount LF (srcfile LF){srccount}
-  outbuf->len += fmt_u64_base16(outbuf->chars + outbuf->len, 8, a->srcfileids.len);
-  outbuf->chars[outbuf->len++] = '\n';
-  for (u32 enc_srcfileid = 0; enc_srcfileid < a->srcfileids.len; enc_srcfileid++) {
-    srcfile_t* srcfile = locmap_srcfile(a->locmap, a->srcfileids.v[enc_srcfileid]);
-    encode_filepath(a, outbuf, srcfile->name.p, srcfile->name.len);
-    assert(buf_avail(outbuf) > 0);
-    outbuf->chars[outbuf->len++] = '\n';
-  }
-
-  // importcount LF (pkgpath LF){importcount}
-  outbuf->len += fmt_u64_base16(outbuf->chars + outbuf->len, 8, pkg->imports.len);
-  outbuf->chars[outbuf->len++] = '\n';
-}
-
-
-static void encode_syms(astencoder_t* a, buf_t* outbuf) {
-  BUF_RESERVE(a->symsize);
-  u8* p = outbuf->bytes + outbuf->len;
-  for (u32 i = 0; i < a->symmap.len; i++) {
-    sym_t sym = a->symmap.v[i];
-    // dlog("sym[%u] = '%s' %p", i, sym, sym);
-    usize symlen = strlen(sym);
-    assert(p + symlen + 1 <= outbuf->bytes + outbuf->cap);
-    memcpy(p, sym, symlen); p += symlen;
-    *p++ = '\n'; // p += append_aligned_linebreak_unchecked(p);
-  }
-  buf_setlenp(outbuf, p);
 }
 
 
@@ -812,53 +702,130 @@ static void encode_node(astencoder_t* a, buf_t* outbuf, const node_t* n) {
 }
 
 
+static void encode_header(astencoder_t* a, buf_t* outbuf) {
+  char* p = outbuf->chars + outbuf->len;
+  memcpy(p, FILE_MAGIC, 4); p += 4; *p++ = ' ';
+  p += fmt_u64_base16(p, 8, AST_ENC_VERSION); *p++ = ' ';
+  p += fmt_u64_base16(p, 8, a->srcfileids.len); *p++ = ' ';
+  p += fmt_u64_base16(p, 8, a->pkg->imports.len); *p++ = ' ';
+  p += fmt_u64_base16(p, 8, a->symmap.len); *p++ = ' ';
+  p += fmt_u64_base16(p, 8, a->nodelist.len); *p++ = ' ';
+  p += fmt_u64_base16(p, 8, a->rootlist.len);
+  *p++ = '\n';
+  buf_setlenp(outbuf, p);
+}
+
+
+static void encode_filepath(astencoder_t* a, buf_t* outbuf, const char* str, usize len) {
+  // filepath = <byte 0x20..0x39, 0x3B...0xFF>+  // note: 0x40 = ":"
+  #ifdef CO_SAFE
+  for (usize i = 0; i < len; i++) {
+    if UNLIKELY(str[i] < 0x20 || str[i] == ':') {
+      dlog("invalid char 0x%02x in filepath \"%.*s\"",
+        str[i], (int)MIN((usize)I32_MAX, len), str);
+      a->oom = true; // TODO: signal more accurate error
+      return;
+    }
+  }
+  #endif
+
+  a->oom |= !buf_append(outbuf, str, len);
+}
+
+
+static void encode_pkg(astencoder_t* a, buf_t* outbuf, const pkg_t* pkg) {
+  encode_filepath(a, outbuf, pkg->root.p, pkg->root.len);
+  outbuf->chars[outbuf->len++] = ':';
+  encode_filepath(a, outbuf, pkg->path.p, pkg->path.len);
+  outbuf->chars[outbuf->len++] = '\n';
+}
+
+
+static void encode_srcfiles(astencoder_t* a, buf_t* outbuf) {
+  for (u32 i = 0; i < a->srcfileids.len; i++) {
+    srcfile_t* srcfile = locmap_srcfile(&a->c->locmap, a->srcfileids.v[i]);
+    encode_filepath(a, outbuf, srcfile->name.p, srcfile->name.len);
+    outbuf->chars[outbuf->len++] = '\n';
+
+    // verify that sources are from just one package
+    assertnotnull(srcfile->pkg);
+    assertf(a->pkg == srcfile->pkg,
+      "srcfiles from mixed packages %s (%p) and %s (%p)",
+      a->pkg->path.p, a->pkg, srcfile->pkg->path.p, srcfile->pkg);
+  }
+}
+
+
+static void encode_imports(astencoder_t* a, buf_t* outbuf) {
+  for (u32 i = 0; i < a->pkg->imports.len; i++)
+    encode_pkg(a, outbuf, a->pkg->imports.v[i]);
+}
+
+
+static void encode_syms(astencoder_t* a, buf_t* outbuf) {
+  BUF_RESERVE(a->symsize);
+  u8* p = outbuf->bytes + outbuf->len;
+  for (u32 i = 0; i < a->symmap.len; i++) {
+    sym_t sym = a->symmap.v[i];
+    // dlog("sym[%u] = '%s' %p", i, sym, sym);
+    usize symlen = strlen(sym);
+    assert(p + symlen + 1 <= outbuf->bytes + outbuf->cap);
+    memcpy(p, sym, symlen); p += symlen;
+    *p++ = '\n'; // p += append_aligned_linebreak_unchecked(p);
+  }
+  buf_setlenp(outbuf, p);
+}
+
+
 static usize enc_preallocsize(astencoder_t* a) {
   // start with space needed for the header
+  // Rather than using ndigits for an accurate estimation, we're assuming
+  // "the worst"; we will most certainly need to use more space than what
+  // we allocate since certain node fields require buffer expansion.
   usize nbyte = 4 + 1  // magic SP
-              + 8 + 1  // version SP
+              + ndigits16(AST_ENC_VERSION) + 1  // version SP
+              + 8 + 1  // srccount SP
+              + 8 + 1  // importcount SP
               + 8 + 1  // symcount SP
               + 8 + 1  // nodecount SP
               + 8 + 1  // rootcount LF
   ;
 
-  // approximate space needed for srcinfo
-  usize nbyte_srcinfo = ndigits16(a->pkg->path.len) + 1 // + LF
-                      + ndigits16(a->pkg->dir.len) + 1  // + LF
-                      + 8 + 1                           // srccount (u32x)
-                      + (usize)a->srcfileids.len * 16   // srcfile (15 chars + LF)
-  ;
-  if ((usize)a->srcfileids.len > USIZE_MAX/16 ||
-      check_add_overflow(nbyte, nbyte_srcinfo, &nbyte))
-  {
-    return USIZE_MAX;
+  // add space needed to encode pkg (pkgroot ":" pkgpath LF)
+  a->oom |= check_add_overflow(nbyte, a->pkg->root.len + 1, &nbyte);
+  a->oom |= check_add_overflow(nbyte, a->pkg->path.len + 1, &nbyte);
+
+  // add space needed to encode srcfiles
+  for (u32 i = 0; i < a->srcfileids.len; i++) {
+    srcfile_t* srcfile = locmap_srcfile(&a->c->locmap, a->srcfileids.v[i]);
+    assertnotnull(srcfile);
+    a->oom |= check_add_overflow(nbyte, srcfile->name.len + 1, &nbyte);
+  }
+
+  // add space needed to encode imports
+  for (u32 i = 0; i < a->pkg->imports.len; i++) {
+    const pkg_t* dep = a->pkg->imports.v[i];
+    a->oom |= check_add_overflow(nbyte, dep->root.len + 1, &nbyte);
+    a->oom |= check_add_overflow(nbyte, dep->path.len + 1, &nbyte);
   }
 
   // add space needed to encode symbols
-  // nbyte += a->symsize
-  if (check_add_overflow(nbyte, a->symsize, &nbyte))
-    return USIZE_MAX;
+  a->oom |= check_add_overflow(nbyte, a->symsize, &nbyte);
 
   // approximate space needed to encode nodes in nodelist
-  // nbyte_nodes = NODE_BASE_ENCSIZE * nodelist.len
+  // nbyte += NODE_BASE_ENCSIZE * nodelist.len
   usize nbyte_nodes;
-  if (check_mul_overflow(NODE_BASE_ENCSIZE, (usize)a->nodelist.len, &nbyte_nodes))
-    return USIZE_MAX;
-
-  // add approximate space needed to encode nodes
-  // nbyte = align4(nbyte) + nbyte_nodes
-  if (check_add_overflow(nbyte, nbyte_nodes, &nbyte))
-    return USIZE_MAX;
+  a->oom |= check_mul_overflow(NODE_BASE_ENCSIZE, (usize)a->nodelist.len, &nbyte_nodes);
+  a->oom |= check_add_overflow(nbyte, nbyte_nodes, &nbyte);
 
   // calculate space needed to encode root node IDs ("XXXXXXXX\n")
   // nbyte_rootids = 9 * rootlist.len
   usize nbyte_rootids;
   usize maxdigits = ndigits16(a->nodelist.len - 1) + 1; // +1 for '\n'
-  if (check_mul_overflow(maxdigits, (usize)a->rootlist.len, &nbyte_rootids))
-    return USIZE_MAX;
+  a->oom |= check_mul_overflow(maxdigits, (usize)a->rootlist.len, &nbyte_rootids);
 
   // add space needed to encode root node IDs
-  if (check_add_overflow(nbyte, nbyte_rootids, &nbyte))
-    return USIZE_MAX;
+  a->oom |= check_add_overflow(nbyte, nbyte_rootids, &nbyte);
 
   // align to pointer size, since that is what the allocator will do anyways
   nbyte = ALIGN2(nbyte, sizeof(void*));
@@ -869,11 +836,14 @@ static usize enc_preallocsize(astencoder_t* a) {
 
 
 err_t astencoder_encode(astencoder_t* a, buf_t* outbuf) {
-  assertf(a->locmap != NULL, "astencoder_begin not called before astencoder_encode");
+  assertf(a->pkg != NULL, "astencoder_begin not called before astencoder_encode");
+
+  if (a->oom)
+    return ErrNoMem;
 
   // allocate space in outbuf
   usize nbyte = enc_preallocsize(a);
-  if (nbyte == USIZE_MAX)
+  if (a->oom)
     return ErrOverflow;
   #ifdef DEBUG_LOG_ENCODE_STATS
     dlog("%s: allocating %zu B in outbuf (%u syms, %u nodes, %u roots)",
@@ -882,22 +852,17 @@ err_t astencoder_encode(astencoder_t* a, buf_t* outbuf) {
   #endif
   BUF_RESERVE(nbyte, ErrNoMem);
 
-  // write header
   encode_header(a, outbuf);
-
-  // write srcinfo
-  encode_srcinfo(a, outbuf);
-
-  // write symbols
+  encode_pkg(a, outbuf, a->pkg);
+  encode_srcfiles(a, outbuf);
+  encode_imports(a, outbuf);
   encode_syms(a, outbuf);
 
   // write nodes
   for (u32 i = 0; i < a->nodelist.len; i++)
     encode_node(a, outbuf, a->nodelist.v[i]);
-  if (a->oom) {
-    a->locmap = NULL;
+  if (a->oom)
     return ErrNoMem;
-  }
 
   // write root node IDs (make sure we have space in outbuf)
   BUF_RESERVE((usize)a->rootlist.len * 9, ErrNoMem);
@@ -920,7 +885,6 @@ err_t astencoder_encode(astencoder_t* a, buf_t* outbuf) {
     );
   #endif
 
-  a->locmap = NULL;
   return 0;
 }
 
@@ -1150,7 +1114,7 @@ static void add_ast_visitor(astencoder_t* a, u32 flags, const node_t* n) {
 
 err_t astencoder_add_srcfileid(astencoder_t* a, u32 srcfileid) {
   if (srcfileid > 0) {
-    assertf(locmap_srcfile(a->locmap, srcfileid), "%u not found", srcfileid);
+    assertf(locmap_srcfile(&a->c->locmap, srcfileid), "%u not found", srcfileid);
     if (!u32array_sortedset_add(&a->srcfileids, a->ma, srcfileid))
       return ErrNoMem;
   }
@@ -1159,7 +1123,7 @@ err_t astencoder_add_srcfileid(astencoder_t* a, u32 srcfileid) {
 
 
 err_t astencoder_add_srcfile(astencoder_t* a, const srcfile_t* srcfile) {
-  u32 srcfileid = locmap_lookup_srcfileid(a->locmap, srcfile);
+  u32 srcfileid = locmap_lookup_srcfileid(&a->c->locmap, srcfile);
   if (srcfileid == 0)
     return ErrNotFound;
   if (!u32array_sortedset_add(&a->srcfileids, a->ma, srcfileid))
@@ -1227,13 +1191,14 @@ err_t astencoder_add_ast(astencoder_t* a, const node_t* n, u32 flags) {
 }
 
 
-astencoder_t* nullable astencoder_create(memalloc_t ma) {
-  astencoder_t* a = mem_alloct(ma, astencoder_t);
+astencoder_t* nullable astencoder_create(compiler_t* c) {
+  astencoder_t* a = mem_alloct(c->ma, astencoder_t);
   if (!a)
     return NULL;
-  a->ma = ma;
-  if (!map_init(&a->nodemap, ma, 256)) {
-    mem_freet(ma, a);
+  a->ma = c->ma;
+  a->c = c;
+  if (!map_init(&a->nodemap, c->ma, 256)) {
+    mem_freet(c->ma, a);
     return NULL;
   }
   return a;
@@ -1255,12 +1220,11 @@ void astencoder_free(astencoder_t* a) {
 }
 
 
-void astencoder_begin(astencoder_t* a, locmap_t* locmap, const pkg_t* pkg) {
+void astencoder_begin(astencoder_t* a, const pkg_t* pkg) {
   a->nodelist.len = 0;
   a->symmap.len = 0;
   a->rootlist.len = 0;
   a->srcfileids.len = 0;
-  a->locmap = locmap;
   a->pkg = pkg;
   map_clear(&a->nodemap);
 }
@@ -1271,16 +1235,17 @@ void astencoder_begin(astencoder_t* a, locmap_t* locmap, const pkg_t* pkg) {
 
 typedef struct astdecoder_ {
   u32         version;
-  u32         symcount;  // size of symtab
-  u32         nodecount; // size of nodetab
-  u32         rootcount; // number of root nodes at the tail of nodetab
-  u32         srccount;  // size of srctab
-  sym_t*      symtab;    // ID => sym_t
-  node_t**    nodetab;   // ID => node_t*
-  u32*        srctab;    // ID => srcfileid (document local ID => global ID)
+  u32         symcount;    // length of symtab
+  u32         nodecount;   // length of nodetab
+  u32         rootcount;   // number of root nodes at the tail of nodetab
+  u32         srccount;    // length of srctab
+  u32         importcount; //
+  sym_t*      symtab;      // ID => sym_t
+  node_t**    nodetab;     // ID => node_t*
+  u32*        srctab;      // ID => srcfileid (document local ID => global ID)
   memalloc_t  ma;
   memalloc_t  ast_ma;
-  locmap_t*   locmap;
+  compiler_t* c;
   const char* srcname;
   const u8*   pstart;
   const u8*   pend;
@@ -1597,6 +1562,28 @@ static const u8* decode_field(DEC_PARAMS, void* fp, ae_field_t f) {
   return p;
 }
 
+#ifdef XXXXX
+typedef struct astdecoder_ {
+  u32         version;
+  u32         symcount;    // length of symtab
+  u32         nodecount;   // length of nodetab
+  u32         rootcount;   // number of root nodes at the tail of nodetab
+  u32         srccount;    // length of srctab
+  u32         importcount; //
+  sym_t*      symtab;      // ID => sym_t
+  node_t**    nodetab;     // ID => node_t*
+  u32*        srctab;      // ID => srcfileid (document local ID => global ID)
+  memalloc_t  ma;
+  memalloc_t  ast_ma;
+  locmap_t*   locmap;
+  const char* srcname;
+  const u8*   pstart;
+  const u8*   pend;
+  const u8*   pcurr;
+  err_t       err;
+} astdecoder_t;
+#endif
+
 
 static const u8* decode_header(DEC_PARAMS) {
   // check that header is reasonably long
@@ -1621,6 +1608,16 @@ static const u8* decode_header(DEC_PARAMS) {
 
   p = dec_u32x(DEC_ARGS, &d->version);
   p = dec_whitespace(DEC_ARGS);
+
+  if (d->version != 1 && !d->err) {
+    dlog("unsupported version: %u", d->version);
+    d->err = ErrNotSupported;
+  }
+
+  p = dec_u32x(DEC_ARGS, &d->srccount);
+  p = dec_whitespace(DEC_ARGS);
+  p = dec_u32x(DEC_ARGS, &d->importcount);
+  p = dec_whitespace(DEC_ARGS);
   p = dec_u32x(DEC_ARGS, &d->symcount);
   p = dec_whitespace(DEC_ARGS);
   p = dec_u32x(DEC_ARGS, &d->nodecount);
@@ -1628,10 +1625,6 @@ static const u8* decode_header(DEC_PARAMS) {
   p = dec_u32x(DEC_ARGS, &d->rootcount);
   p = dec_byte(DEC_ARGS, '\n');
 
-  if (d->version != 1 && !d->err) {
-    dlog("unsupported version: %u", d->version);
-    d->err = ErrNotSupported;
-  }
   if (d->rootcount > d->nodecount && !d->err) {
     dlog("invalid rootcount: %u", d->rootcount);
     d->err = ErrInvalid;
@@ -1640,10 +1633,12 @@ static const u8* decode_header(DEC_PARAMS) {
 }
 
 
-static const u8* decode_line(DEC_PARAMS, const char** startp, usize* lenp) {
-  // decode LF-terminated line (consumes terminating LF)
+static const u8* decode_bytes_untilchar(
+  DEC_PARAMS, const char** startp, usize* lenp, char endc)
+{
+  // decode endc-terminated line (consumes terminating endc)
   *startp = (const char*)p;
-  while (p < pend && *p != '\n')
+  while (p < pend && *p != endc)
     p++;
   if UNLIKELY(p == pend) {
     *lenp = 0;
@@ -1654,7 +1649,51 @@ static const u8* decode_line(DEC_PARAMS, const char** startp, usize* lenp) {
 }
 
 
-static const u8* decode_srctab(DEC_PARAMS, pkg_t* pkg) {
+static const u8* decode_pkg(DEC_PARAMS, pkg_t* pkg) {
+  // pkg = pkgroot ":" pkgpath LF
+  const char* linep;
+  usize linelen;
+  bool ok = true;
+
+  // pkg.root
+  p = decode_bytes_untilchar(DEC_ARGS, &linep, &linelen, ':');
+  if UNLIKELY(
+    pkg->root.len > 0 && coverbose &&
+    (pkg->root.len != linelen || memcmp(pkg->root.p, linep, linelen) != 0) )
+  {
+    elog("[astdecoder] warning: %s: unexpected pkg root \"%.*s\" (expected \"%s\")",
+      relpath(d->srcname), (int)linelen, linep, pkg->root.p);
+  }
+  pkg->root.len = 0;
+  ok &= str_appendlen(&pkg->root, linep, linelen);
+
+  // pkg.path
+  p = decode_bytes_untilchar(DEC_ARGS, &linep, &linelen, '\n');
+  if UNLIKELY(
+    pkg->path.len > 0 &&
+    (pkg->path.len != linelen || memcmp(pkg->path.p, linep, linelen) != 0) )
+  {
+    d->err = ErrInvalid;
+    if (coverbose) {
+      elog("[astdecoder] error: %s: unexpected pkg path \"%.*s\" (expected \"%s\")",
+        relpath(d->srcname), (int)linelen, linep, pkg->path.p);
+    }
+    return p;
+  }
+  pkg->path.len = 0;
+  ok &= str_appendlen(&pkg->path, linep, linelen);
+
+  // pkg.dir
+  pkg->dir.len = 0;
+  ok &= pkg_dir_of_root_and_path(&pkg->dir, str_slice(pkg->root), str_slice(pkg->path));
+
+  if UNLIKELY(!ok)
+    return DEC_ERROR(ErrNoMem, "OOM");
+  return p;
+}
+
+
+static const u8* decode_srcfiles(DEC_PARAMS, pkg_t* pkg) {
   if (d->srccount == 0)
     return p;
 
@@ -1674,7 +1713,7 @@ static const u8* decode_srctab(DEC_PARAMS, pkg_t* pkg) {
   for (u32 i = 0; i < d->srccount; i++) {
     const char* linep;
     usize linelen;
-    p = decode_line(DEC_ARGS, &linep, &linelen);
+    p = decode_bytes_untilchar(DEC_ARGS, &linep, &linelen, '\n');
 
     // allocate or retrieve srcfile for pkg
     srcfile_t* srcfile = pkg_add_srcfile(pkg, linep, linelen, NULL);
@@ -1682,7 +1721,7 @@ static const u8* decode_srctab(DEC_PARAMS, pkg_t* pkg) {
       return DEC_ERROR(ErrNoMem, "pkg_add_srcfile OOM");
 
     // intern in locmap, resulting in our "local" srcfileid
-    u32 srcfileid = locmap_intern_srcfileid(d->locmap, srcfile, d->ma);
+    u32 srcfileid = locmap_intern_srcfileid(&d->c->locmap, srcfile, d->ma);
     if UNLIKELY(srcfileid == 0)
       return DEC_ERROR(ErrNoMem, "locmap_srcfileid OOM");
 
@@ -1693,91 +1732,39 @@ static const u8* decode_srctab(DEC_PARAMS, pkg_t* pkg) {
 }
 
 
-static const u8* decode_srcinfo(DEC_PARAMS, pkg_t* pkg) {
-  // srcinfo   = pkgpath? LF
-  //             srcdir? LF
-  //             srccount LF (srcfile LF){srccount}
-  //             importcount LF (pkgpath LF){importcount}
-  // pkgpath   = filepath
-  // srcdir    = filepath
-  // srccount  = u32x
-  // srcfile   = filepath
-  // mtime     = u64x
+static const u8* decode_imports(DEC_PARAMS, pkg_t* pkg) {
+  pkg_t tmp = {0};
 
-  const char* linep;
-  usize linelen;
+  for (u32 i = 0; i < d->importcount; i++) {
+    tmp.dir.len = 0;
+    tmp.root.len = 0;
+    tmp.path.len = 0;
+    p = decode_pkg(DEC_ARGS, &tmp);
+    if (d->err)
+      break;
 
-  // pkgpath LF
-  p = decode_line(DEC_ARGS, &linep, &linelen);
-  str_t pkgpath = str_makelen(linep, linelen);
+    // Note: we do NOT check if the package actually exists.
+    // That is left for pkgbuild to do as it loads the package.
 
-  // srcdir LF
-  p = decode_line(DEC_ARGS, &linep, &linelen);
-  str_t pkgdir = str_makelen(linep, linelen);
+    // resolve package in compiler's pkgindex
+    pkg_t* dep;
+    err_t err = pkgindex_intern(d->c, str_slice(tmp.dir), str_slice(tmp.path), &dep);
 
-  // check pkg.{path,dir}
-  if UNLIKELY(pkg->path.len > 0 && !streq(pkg->path.p, pkgpath.p)) {
-    d->err = ErrInvalid;
-    if (coverbose) {
-      elog("[astdecoder] error: %s: unexpected pkg path \"%s\" (expected \"%s\")",
-        relpath(d->srcname), pkgpath.p, pkg->path.p);
-    }
-    str_free(pkgpath);
-    str_free(pkgdir);
-    return p;
-  }
-  if UNLIKELY(pkg->dir.len > 0 && !streq(pkg->dir.p, pkgdir.p) && coverbose) {
-    elog("[astdecoder] warning: %s: unexpected pkg dir \"%s\" (expected \"%s\")",
-      relpath(d->srcname), pkgdir.p, pkg->dir.p);
-  }
+    // add dep to pkg->imports
+    if (!err && !pkg_imports_add(pkg, dep, d->c->ma))
+      err = ErrNoMem;
 
-  // set pkg.{path,dir}
-  str_free(pkg->path); pkg->path = pkgpath;
-  str_free(pkg->dir); pkg->dir = pkgdir;
-
-  // set or check pkg.root
-  if (pkg->root.len == 0) {
-    assertf(string_endswithn(
-      pkg->dir.p, pkg->dir.len, pkg->path.p, pkg->path.len),
-      "dir=%s path=%s", pkg->dir.p, pkg->path.p);
-    str_free(pkg->root);
-    pkg->root = str_makelen(pkg->dir.p, pkg->dir.len - pkg->path.len - 1);
-  } else if (coverbose) {
-    str_t pkgroot = str_makelen(pkg->dir.p, pkg->dir.len - pkg->path.len - 1);
-    if UNLIKELY(!streq(pkg->root.p, pkgroot.p)) {
-      elog("[astdecoder] warning: %s: unexpected pkg root \"%s\" (expected \"%s\")",
-        relpath(d->srcname), pkgroot.p, pkg->root.p);
+    if UNLIKELY(err) {
+      dlog("OOM");
+      p = pend;
+      d->err = err;
+      break;
     }
   }
 
-  if UNLIKELY(pkg->path.cap == 0 || pkg->dir.cap == 0 || pkg->root.cap == 0)
-    return DEC_ERROR(ErrNoMem);
-
-  // srccount LF (srcfile LF){srccount}
-  p = dec_u32x(DEC_ARGS, &d->srccount);
-  p = dec_byte(DEC_ARGS, '\n');
-  p = decode_srctab(DEC_ARGS, pkg);
-
-  // importcount LF (pkgpath LF){importcount}
-  u32 importcount;
-  p = dec_u32x(DEC_ARGS, &importcount);
-  p = dec_byte(DEC_ARGS, '\n');
-  for (u32 i = 0; i < importcount; i++) {
-    p = decode_line(DEC_ARGS, &linep, &linelen);
-    panic("TODO import %.*s", (int)linelen, linep);
-    //
-    // TODO: imports
-    //
-    // This is a little tricky: we can't simply popluate pkg->imports
-    // since that would require us to resolve packages up front, here and now,
-    // which would be slow.
-    //
-    // Another aspect of this is that the AST we're decoding is referencing
-    // nodes of the imported packages, which we need to resolve.
-    //
-    // See import_resolve_pkg
-    //
-  }
+  str_free(tmp.dir);
+  str_free(tmp.root);
+  str_free(tmp.path);
 
   return p;
 }
@@ -1941,18 +1928,17 @@ static void dec_tmptabs_free(astdecoder_t* d) {
 
 
 astdecoder_t* nullable astdecoder_open(
-  memalloc_t  ma,
+  compiler_t* c,
   memalloc_t  ast_ma,
-  locmap_t*   locmap,
   const char* srcname,
   const u8*   src,
   usize       srclen)
 {
-  astdecoder_t* d = mem_alloct(ma, astdecoder_t);
+  astdecoder_t* d = mem_alloct(c->ma, astdecoder_t);
   if (d) {
     d->ast_ma = ast_ma;
-    d->ma = ma;
-    d->locmap = locmap;
+    d->ma = c->ma;
+    d->c = c;
     d->srcname = srcname;
     d->pstart = src;
     d->pend = src + srclen;
@@ -1987,8 +1973,9 @@ err_t astdecoder_decode_header(astdecoder_t* d, pkg_t* pkg) {
   if (!dec_tmptabs_alloc(d))
     goto end;
 
-  // decode srcinfo
-  p = decode_srcinfo(DEC_ARGS, pkg);
+  p = decode_pkg(DEC_ARGS, pkg);
+  p = decode_srcfiles(DEC_ARGS, pkg);
+  p = decode_imports(DEC_ARGS, pkg);
 
 end:
   d->pcurr = p;

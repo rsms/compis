@@ -1,4 +1,7 @@
-pub fun hello(x int) int { x * x }
+// import double from "examples/import3"
+import "examples/import3"
+pub fun hello(x int) int { import3.double(x) }
+
 // pub type A {
 //   x int
 //   // y f64 = 1.2

@@ -553,8 +553,7 @@ open_metafile:
     relpath(metafile.p), (double)(unixtime_now() - meta_mtime) / 1000000.0);
 
   // open an AST decoder
-  astdec = astdecoder_open(
-    pb->c->ma, pb->ast_ma, &pb->c->locmap, metafile.p, encdata, metast.st_size);
+  astdec = astdecoder_open(pb->c, pb->ast_ma, metafile.p, encdata, metast.st_size);
   if (!astdec) {
     err = ErrNoMem;
     goto end;
@@ -567,11 +566,32 @@ open_metafile:
   if (( err = astdecoder_decode_header(astdec, pkg) ))
     goto end;
 
+  // update pkg->mtime to mtime of metafile
+  pkg->mtime = unixtime_of_stat_mtime(&metast);
+
   // unless we just built the package, check source files and load imports
   if (!did_buildpkg) {
     // check if source files have been modified
-    unixtime_t meta_mtime = unixtime_of_stat_mtime(&metast);
-    if (!check_pkg_src_uptodate(pkg, meta_mtime)) {
+    bool isuptodate = check_pkg_src_uptodate(pkg, pkg->mtime);
+
+    // load dependencies
+    if (isuptodate) for (u32 i = 0; i < pkg->imports.len; i++) {
+      pkg_t* dep = pkg->imports.v[i];
+      if (( err = load_pkg(pb, dep) ))
+        goto end;
+      if (dep->mtime > pkg->mtime) {
+        dlog("[%s] dep \"%s\" is newer", pkg->path.p, relpath(dep->dir.p));
+        isuptodate = false;
+        break;
+      }
+    }
+
+    // rebuild if not up to date
+    if (!isuptodate) {
+      // must clear any srcfiles & imports loaded from (possibly stale) metafile
+      pkg->srcfiles.len = 0;
+      pkg->imports.len = 0;
+
       // at least one source file has been modified since metafile was modified
       did_buildpkg = true;
       if (( err = build_pkg1(pb, pkg) ))
@@ -585,14 +605,7 @@ open_metafile:
       goto open_metafile;
     } else {
       // up to date (all source files are older than metafile)
-      dlog("source files are up to date");
-    }
-
-    // load dependencies
-    for (u32 i = 0; i < pkg->imports.len; i++) {
-      pkg_t* dep = pkg->imports.v[i];
-      if (( err = load_pkg(pb, dep) ))
-        goto end;
+      dlog("source files & dependencies are up to date");
     }
   }
 
@@ -630,7 +643,7 @@ err_t pkgbuild_import(pkgbuild_t* pb) {
   // import_pkgs
   // 1. finds all unique imports across units
   // 2. resolves each imported package
-  err_t err = import_pkgs(pb->c, pb->pkg, pb->unitv, pb->unitc, &pb->pkg->imports);
+  err_t err = import_pkgs(pb->c, pb->pkg, pb->unitv, pb->unitc);
   if (err)
     return err;
 
@@ -751,14 +764,14 @@ err_t pkgbuild_metagen(pkgbuild_t* pb) {
   buf_t outbuf = buf_make(pb->c->ma);
 
   // create AST encoder
-  astencoder_t* astenc = astencoder_create(pb->c->ma);
+  astencoder_t* astenc = astencoder_create(pb->c);
   if (!astenc) {
     err = ErrNoMem;
     goto end;
   }
 
   // encoders can be reused, so we need to tell it to start an encoding session
-  astencoder_begin(astenc, &pb->c->locmap, pb->pkg);
+  astencoder_begin(astenc, pb->pkg);
 
   // add top-level declarations from pkg->api
   for (u32 i = 0; i < pb->pkg->api.len && err == 0; i++)

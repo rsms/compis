@@ -230,6 +230,10 @@ int main_build(int argc, char* argv[]) {
                      ;
   for (u32 i = 0; i < pkgc; i++) {
     pkg_t* pkg = &pkgv[i];
+    if (( err = pkgindex_add(&c, pkg) )) {
+      dlog("pkgindex_add(pkg_t{dir=\"%s\"}) failed: %s", pkg->dir.p, err_str(err));
+      break;
+    }
     if (( err = build_pkg(pkg, &c, opt_out, pkgbuild_flags) )) {
       dlog("error while building pkg %s: %s", pkg->path.p, err_str(err));
       break;

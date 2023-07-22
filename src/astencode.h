@@ -6,7 +6,7 @@ An encoder can be used multiple times, e.g.
 
   astenc = astencoder_create(ma);
   for ( ... ) {
-    astencoder_begin(astenc, locmap);
+    astencoder_begin(astenc, compiler);
     astencoder_add_ast(astenc, node, flags);
     astencoder_encode(astenc, outbuf);
   }
@@ -34,10 +34,10 @@ ASSUME_NONNULL_BEGIN
 
 typedef struct astencoder_ astencoder_t;
 
-astencoder_t* nullable astencoder_create(memalloc_t ma);
+astencoder_t* nullable astencoder_create(compiler_t* c);
 void astencoder_free(astencoder_t* a);
 
-void astencoder_begin(astencoder_t* a, locmap_t* locmap, const pkg_t* pkg);
+void astencoder_begin(astencoder_t* a, const pkg_t* pkg);
 err_t astencoder_add_ast(astencoder_t* a, const node_t* n, u32 flags);
 err_t astencoder_add_srcfileid(astencoder_t* a, u32 srcfileid);
 err_t astencoder_add_srcfile(astencoder_t* a, const srcfile_t* srcfile);
@@ -51,9 +51,8 @@ err_t astencoder_encode(astencoder_t* a, buf_t* outbuf);
 typedef struct astdecoder_ astdecoder_t;
 
 astdecoder_t* nullable astdecoder_open(
-  memalloc_t  ma,
+  compiler_t* c,
   memalloc_t  ast_ma,
-  locmap_t*   locmap,
   const char* srcname,
   const u8*   src,
   usize       srclen);

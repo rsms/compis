@@ -1031,8 +1031,9 @@ usize strim_end(const char* s, usize len, char trimc);
 
 // string_startswith returns true if null-terminated string s begins with prefix
 bool string_startswith(const char* s, const char* prefix);
-inline static bool string_startswithn(const char* s, usize len, const char* prefix) {
-  usize prefixlen = strlen(prefix);
+inline static bool string_startswithn(
+  const char* s, usize len, const char* prefix, usize prefixlen)
+{
   return len >= prefixlen && memcmp(s, prefix, prefixlen) == 0;
 }
 
