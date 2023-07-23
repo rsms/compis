@@ -6,9 +6,17 @@ ASSUME_NONNULL_BEGIN
 
 // flags
 #define PKGBUILD_NOLINK (1u << 0)
+#define PKGBUILD_DEP    (1u << 1) // building a dependency (not a top-level) package
+#define PKGBUILD_EXE    (1u << 2) // building an executable
+
+typedef struct pkgcell_ pkgcell_t;
+typedef struct pkgcell_ {
+  pkgcell_t* nullable parent;
+  pkg_t*              pkg;
+} pkgcell_t;
 
 typedef struct {
-  pkg_t*      pkg;
+  pkgcell_t   pkgc;
   compiler_t* c;
   bgtask_t*   bgt;
   memalloc_t  ast_ma;
@@ -21,7 +29,7 @@ typedef struct {
 } pkgbuild_t;
 
 
-err_t pkgbuild_init(pkgbuild_t* pb, pkg_t* pkg, compiler_t* c, u32 flags);
+err_t pkgbuild_init(pkgbuild_t* pb, pkgcell_t pkgc, compiler_t* c, u32 flags);
 void pkgbuild_dispose(pkgbuild_t* pb);
 
 err_t pkgbuild_locate_sources(pkgbuild_t* pb);
@@ -35,6 +43,7 @@ err_t pkgbuild_await_compilation(pkgbuild_t* pb);
 err_t pkgbuild_link(pkgbuild_t* pb, const char* outfile/*can be empty*/);
 
 // higher-level functionality
-err_t build_pkg(pkg_t* pkg, compiler_t* c, const char* outfile, u32 pkgbuild_flags);
+err_t build_toplevel_pkg(
+  pkg_t* pkg, compiler_t* c, const char* outfile, u32 pkgbuild_flags);
 
 ASSUME_NONNULL_END

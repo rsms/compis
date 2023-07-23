@@ -1,11 +1,18 @@
 import
   "examples/import2" as im2
-  "./import2" as im3
-  // "foo" as f
-  // x, y as why from "bar"
-  // * from "cat"
-  // "cat"
+  // "std/runtime" as rt
+  // "./import2" as im3
+  // "examples/import3"
 
-fun main() {
+// import "foo" as f
+// import x, y as why from "bar"
+// import * from "cat"
+// import "cat"
+
+pub "C" fun say_hello() void // defined in std/runtime/runtime.c
+
+pub fun main() {
+  // import3.double(3)
+  say_hello()
   im2.hello(3)
 }

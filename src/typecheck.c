@@ -390,13 +390,14 @@ inline static locmap_t* locmap(typecheck_t* a) {
 // const origin_t to_origin(typecheck_t*, T origin)
 // where T is one of: origin_t | loc_t | node_t* (default)
 #define to_origin(a, origin) ({ \
-  __typeof__(origin)* __tmp = &origin; \
+  __typeof__(origin) __tmp1 = origin; \
+  __typeof__(origin)* __tmp = &__tmp1; \
   const origin_t __origin = _Generic(__tmp, \
           origin_t*:  *(origin_t*)__tmp, \
     const origin_t*:  *(origin_t*)__tmp, \
           loc_t*:     origin_make(locmap(a), *(loc_t*)__tmp), \
     const loc_t*:     origin_make(locmap(a), *(loc_t*)__tmp), \
-          default:    node_origin(locmap(a), *(node_t**)__tmp) \
+          default:    ast_origin(locmap(a), *(node_t**)__tmp) \
   ); \
   __origin; \
 })
@@ -1115,8 +1116,8 @@ static type_t* check_retval(typecheck_t* a, const void* originptr, expr_t*nullab
       } else {
         error(a, origin, "invalid function result type: %s", fmtnode(a, 0, t));
       }
-      if (loc_line(ft->resultloc)) {
-        help(a, ft->resultloc, "function %s%sreturns %s",
+      if (loc_line(a->fun->resultloc)) {
+        help(a, a->fun->resultloc, "function %s%sreturns %s",
           (a->fun->name ? a->fun->name : ""), (a->fun->name ? " " : ""),
           fmtnode(a, 1, ft->result));
       }
@@ -1136,15 +1137,16 @@ static void main_fun(typecheck_t* a, fun_t* n) {
 
   funtype_t* ft = (funtype_t*)n->type;
 
-  if UNLIKELY(ft->result != type_void) {
-    error(a, ft->resultloc, "special \"main\" function should not return a result");
-    if (loc_line(ft->resultloc))
-      help(a, ft->resultloc, "remove return type or replace with 'void'");
-    return;
+  // there should be no input parameters
+  if UNLIKELY(ft->params.len > 0) {
+    error(a, fun_params_origin(locmap(a), n),
+      "special \"main\" function should not accept any input parameters");
   }
 
-  // make sure main function is at least visible to the package
-  node_upgrade_visibility((node_t*)n, NF_VIS_PKG);
+  // there should be no output result
+  if UNLIKELY(ft->result != type_void) {
+    error(a, n->resultloc, "special \"main\" function should not return a result");
+  }
 }
 
 
@@ -1239,13 +1241,9 @@ static void fun(typecheck_t* a, fun_t* n) {
       }
     }
 
-    // is this the "main.main" function?
-    if (!n->recvt &&
-        n->name == sym_main &&
-        assertnotnull(n->nsparent)->kind == NODE_UNIT)
-    {
+    // is this the "main" function?
+    if (ast_is_main_fun(n))
       main_fun(a, n);
-    }
   } else {
     node_upgrade_visibility((node_t*)n, NF_VIS_PKG);
   }

@@ -595,11 +595,12 @@ ASSUME_NONNULL_END
 #define vlog(fmt, args...) (coverbose && printf(fmt "\n", ##args))
 
 // debug-build only CLI options (build.c)
-#if DEBUG
+#ifdef DEBUG
   extern bool opt_trace_scan;
   extern bool opt_trace_parse;
   extern bool opt_trace_typecheck;
   extern bool opt_trace_comptime;
+  extern bool opt_trace_import;
   extern bool opt_trace_ir;
   extern bool opt_trace_cgen;
   extern bool opt_trace_subproc;
@@ -608,6 +609,7 @@ ASSUME_NONNULL_END
   #define opt_trace_parse     false
   #define opt_trace_typecheck false
   #define opt_trace_comptime  false
+  #define opt_trace_import    false
   #define opt_trace_ir        false
   #define opt_trace_cgen      false
   #define opt_trace_subproc   false

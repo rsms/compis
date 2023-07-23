@@ -146,13 +146,13 @@ typedef u64 loc_t;
 // locmap_t maps loc_t to srcfile_t.
 // All locmap_ functions are thread safe.
 typedef struct {
-  array_type(srcfile_t*) m;  // {loc_t => srcfile_t*} (slot 0 is always NULL)
-  rwmutex_t              mu; // guards access to m
+  array_type(const srcfile_t*) m; // {loc_t => srcfile_t*} (slot 0 is always NULL)
+  rwmutex_t mu; // guards access to m
 } locmap_t;
 
 // origin_t describes the origin of diagnostic message (usually derived from loc_t)
 typedef struct origin_t {
-  srcfile_t* nullable file;
+  const srcfile_t* nullable file;
   u32 line;      // 0 if unknown (if so, other fields below are invalid)
   u32 column;
   u32 width;     // >0 if it's a range (starting at line & column)
@@ -207,6 +207,9 @@ typedef struct pkg_t {
   nsexpr_t* nullable api_ns;  // set by pkgbuild after loading api
   unixtime_t         mtime;
 } pkg_t;
+
+#define PKG_METAFILE_NAME "pub.coast"
+#define PKG_APIHFILE_NAME "pub.h"
 
 typedef struct {
   u32    cap;  // capacity of ptr (in number of entries)
@@ -384,10 +387,10 @@ typedef struct {
 typedef struct {
   usertype_t;
   type_t*     result;
-  loc_t       resultloc;    // location of result
-  nodearray_t params;       // local_t*[]
-  loc_t       paramsloc;    // location of "(" ...
-  loc_t       paramsendloc; // location of ")"
+  nodearray_t params; // local_t*[]
+  loc_t       xxx_paramsloc;    // location of "(" ...
+  loc_t       xxx_paramsendloc; // location of ")"
+  loc_t       xxx_resultloc;    // location of result
 } funtype_t;
 
 typedef struct {
@@ -509,6 +512,9 @@ typedef struct fun_t { // fun is a declaration (stmt) or an expression depending
   block_t* nullable body;         // NULL if function is a prototype
   type_t* nullable  recvt;        // non-NULL for type functions (type of "this")
   char* nullable    mangledname;  // mangled name, created in ast_ma by typecheck
+  loc_t             paramsloc;    // location of "(" ...
+  loc_t             paramsendloc; // location of ")"
+  loc_t             resultloc;    // location of result
   abi_t             abi;      // TODO: move to nodeflag_t
   node_t* nullable  nsparent; // TODO: generalize to just "parent"
 } fun_t;
@@ -667,10 +673,13 @@ typedef struct {
   #endif
 } typecheck_t;
 
+#define CGEN_EXE (1u << 0) // generating code for an executable
+
 typedef struct {
   compiler_t*  compiler;
   const pkg_t* pkg;
   memalloc_t   ma;         // compiler->ma
+  u32          flags;      // CGEN_*
   buf_t        outbuf;
   buf_t        headbuf;
   usize        headoffs;
@@ -691,7 +700,7 @@ typedef struct {
 
 typedef struct {
   slice_t pub_header;   // .h file data of public statements (ref cgen_t.outbuf)
-  mem_t   pkg_header;   // statements for all units of the package
+  str_t   pkg_header;   // statements for all units of the package
   map_t   pkg_typedefs; // type definitions for all PKG- & PUB-visibility interfaces
   // note: pkgapidata and pkgtypedefs are allocated in cgen_t.ma, it's the
   // responsibility of the cgen_pkgapi caller to free these with cgen_pkgapi_dispose.
@@ -736,6 +745,7 @@ typedef struct compiler {
   bool opt_genasm : 1;
   bool opt_nolibc : 1;
   bool opt_nolibcxx : 1;
+  bool opt_nostdruntime : 1;
   u8   opt_verbose; // 0=off 1=on 2=extra
 
   // data created during parsing & analysis
@@ -743,8 +753,9 @@ typedef struct compiler {
   locmap_t locmap; // maps loc_t => srcfile_t*
 
   // package index
-  rwmutex_t pkgindex_mu; // guards access to pkgindex
-  map_t     pkgindex;    // const char* abs_fspath -> pkg_t*
+  rwmutex_t       pkgindex_mu;    // guards access to pkgindex
+  map_t           pkgindex;       // const char* abs_fspath -> pkg_t*
+  pkg_t* nullable stdruntime_pkg; // std/runtime package
 } compiler_t;
 
 typedef struct { // compiler_config_t
@@ -765,6 +776,7 @@ typedef struct { // compiler_config_t
   bool verbose;
   bool nolibc;
   bool nolibcxx;
+  bool nostdruntime; // do not include or link with std/runtime
 
   // sysver sets the minimum system version. Ignored if NULL or "".
   // Currently only supported for macos via -mmacosx-version-min=sysver.
@@ -814,10 +826,15 @@ err_t pkg_find_files(pkg_t* pkg); // updates pkg->files, sets sf.mtime
 unixtime_t pkg_source_mtime(const pkg_t* pkg); // max(f.mtime for f in files)
 bool pkg_is_built(const pkg_t* pkg, const compiler_t* c);
 bool pkg_dir_of_root_and_path(str_t* dst, slice_t root, slice_t path);
-str_t pkg_builddir(const pkg_t* pkg, const compiler_t* c);
-str_t pkg_buildfile(const pkg_t* pkg, const compiler_t* c, const char* filename);
-bool pkg_buildfilea(
+
+// exe: "{builddir}/bin/{basename(pkg.path)}"
+// lib: "{pkgbuilddir}/lib{basename(pkg.path)}.a"
+bool pkg_builddir(const pkg_t* pkg, const compiler_t* c, str_t* dst);
+bool pkg_buildfile(
   const pkg_t* pkg, const compiler_t* c, str_t* dst, const char* filename);
+bool pkg_libfile(const pkg_t* pkg, const compiler_t* c, str_t* dst);
+bool pkg_exefile(const pkg_t* pkg, const compiler_t* c, str_t* dst);
+
 node_t* nullable pkg_def_get(pkg_t* pkg, sym_t name);
 err_t pkg_def_set(pkg_t* pkg, memalloc_t ma, sym_t name, node_t* n);
 err_t pkg_def_add(pkg_t* pkg, memalloc_t ma, sym_t name, node_t** np_inout);
@@ -924,7 +941,8 @@ bool irfmt_dot(compiler_t*, const pkg_t*, buf_t*, const irunit_t*);
 bool irfmt_fun(compiler_t*, const pkg_t*, buf_t*, const irfun_t*);
 
 // C code generator
-bool cgen_init(cgen_t* g, compiler_t* c, const pkg_t*, memalloc_t out_ma);
+bool cgen_init(
+  cgen_t* g, compiler_t* c, const pkg_t*, memalloc_t out_ma, u32 flags);
 void cgen_dispose(cgen_t* g);
 err_t cgen_unit_impl(
   cgen_t* g, const unit_t* unit, const cgen_pkgapi_t* nullable pkgapi);
@@ -968,8 +986,8 @@ const char* nodekind_fmt(nodekind_t); // e.g. "variable"
 err_t node_fmt(buf_t* buf, const node_t* nullable n, u32 depth); // e.g. i32, x, "foo"
 err_t node_repr(buf_t* buf, const node_t* n); // S-expr AST tree
 err_t ast_fmt_pkg(buf_t* buf, const pkg_t* pkg, const unit_t*const* unitv, u32 unitc);
-origin_t node_origin(locmap_t*, const node_t*); // compute source origin of node
 node_t* nullable ast_mknode(memalloc_t ast_ma, usize size, nodekind_t kind);
+bool ast_is_main_fun(const fun_t* fn);
 node_t* clone_node(parser_t* p, const node_t* n);
 local_t* nullable lookup_struct_field(structtype_t* st, sym_t name);
 fun_t* nullable lookup_method(parser_t* p, type_t* recv, sym_t name);
@@ -1192,13 +1210,13 @@ const char* syslib_filename(const target_t* target, syslib_t);
 err_t locmap_init(locmap_t* lm);
 void locmap_dispose(locmap_t* lm, memalloc_t);
 void locmap_clear(locmap_t* lm);
-u32 locmap_intern_srcfileid(locmap_t* lm, srcfile_t*, memalloc_t);
+u32 locmap_intern_srcfileid(locmap_t* lm, const srcfile_t*, memalloc_t);
 u32 locmap_lookup_srcfileid(locmap_t* lm, const srcfile_t*); // 0 = not found
-srcfile_t* nullable locmap_srcfile(locmap_t* lm, u32 srcfileid);
+const srcfile_t* nullable locmap_srcfile(locmap_t* lm, u32 srcfileid);
 
 static loc_t loc_make(u32 srcfileid, u32 line, u32 col, u32 width);
 
-srcfile_t* nullable loc_srcfile(loc_t p, locmap_t*);
+const srcfile_t* nullable loc_srcfile(loc_t p, locmap_t*);
 static u32 loc_line(loc_t p);
 static u32 loc_col(loc_t p);
 static u32 loc_width(loc_t p);
@@ -1239,6 +1257,15 @@ origin_t _origin_make2(locmap_t* m, loc_t loc);
 origin_t _origin_make3(locmap_t* m, loc_t loc, u32 focus_col);
 
 origin_t origin_union(origin_t a, origin_t b);
+
+// ast_origin returns the source origin of an AST node
+origin_t ast_origin(locmap_t*, const node_t*);
+
+// funtype_params_origin returns the origin of parameters, e.g.
+//   fun foo(x, y int) int
+//          ~~~~~~~~~~
+origin_t fun_params_origin(locmap_t*, const fun_t* fn);
+origin_t funtype_params_origin(locmap_t*, const funtype_t* ft);
 
 
 //—————————————————————————————————————————————————————

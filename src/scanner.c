@@ -1017,6 +1017,7 @@ void scanner_next(scanner_t* s) {
   s->tokend = s->inp;
   scan0(s);
 
+  #ifdef DEBUG
   if (opt_trace_scan) {
     char locstr[128];
     loc_fmt(s->loc, locstr, sizeof(locstr), &s->compiler->locmap);
@@ -1033,4 +1034,5 @@ void scanner_next(scanner_t* s) {
       FMTCOL_FMT("%-12s") " \"%s\"\t%llu\t0x%llx\t%s",
       FMTCOL_ARG(s->tok, tok_name(s->tok)), litstr, s->litint, s->litint, locstr);
   }
+  #endif
 }

@@ -1,1 +1,6 @@
-pub fun double(x int) int { x * x }
+// import "examples/import2"
+pub fun double(x int) int { x * 2 }
+
+pub fun main() {
+  double(3)
+}

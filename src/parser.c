@@ -13,7 +13,7 @@
 
 
 //——————————————————————— AST stats ———————————————————————
-#ifdef DEBUG
+#ifdef CO_DEBUG_AST_STATS
 typedef struct { const char* name; usize size; } ast_typeinfo_t;
 
 static int sort_ast_typeinfo(
@@ -59,7 +59,7 @@ __attribute__((constructor)) static void print_ast_stats() {
   printf("——————————————————————— AST stats ———————————————————————\n");
 
 
-  #ifdef CO_DEBUG_AST_STATS
+  // #ifdef CO_DEBUG_AST_STATS
   {
     usize size_avg = 0;
     usize size_max = 0;
@@ -79,9 +79,9 @@ __attribute__((constructor)) static void print_ast_stats() {
 
     printf("\n");
   }
-  #else
-    printf("(build with -DCO_DEBUG_AST_STATS for more details)\n");
-  #endif
+  // #else
+  //   printf("(build with -DCO_DEBUG_AST_STATS for more details)\n");
+  // #endif
 
 
   usize histogram_labels[countof(ast_types)] = {0};
@@ -108,7 +108,7 @@ __attribute__((constructor)) static void print_ast_stats() {
   buf_dispose(&buf);
   printf("—————————————————————————————————————————————————————————\n");
 } // print_ast_stats
-#endif // DEBUG
+#endif // CO_DEBUG_AST_STATS
 //——————————————————————— end AST stats ———————————————————————
 
 
@@ -306,14 +306,14 @@ struct no_origin { int x; };
 // const origin_t to_origin(parser_t* p, T origin)
 // where T is one of: origin_t | loc_t | node_t* (default)
 #define to_origin(p, origin) ({ \
-  __typeof__(origin) __tmp1 = origin; \
+  __typeof__(origin) __tmp1 = (origin); \
   __typeof__(origin)* __tmp = &__tmp1; \
   const origin_t __origin = _Generic(__tmp, \
           origin_t*:  *(origin_t*)__tmp, \
     const origin_t*:  *(origin_t*)__tmp, \
           loc_t*:     origin_make(locmap(p), *(loc_t*)__tmp), \
     const loc_t*:     origin_make(locmap(p), *(loc_t*)__tmp), \
-    default: (*__tmp ? node_origin(locmap(p), *(node_t**)__tmp) : curr_origin(p)) \
+    default: (*__tmp ? ast_origin(locmap(p), *(node_t**)__tmp) : curr_origin(p)) \
   ); \
   __origin; \
 })
@@ -1993,23 +1993,23 @@ static funtype_t* funtype(parser_t* p, loc_t loc, type_t* nullable recvt) {
   ft->result = type_void;
 
   // parameters
-  ft->paramsloc = currloc(p);
+  ft->xxx_paramsloc = currloc(p);
   if UNLIKELY(!expect(p, TLPAREN, "for parameters")) {
     fastforward(p, (const tok_t[]){ TLBRACE, TSEMI, 0 });
     return ft;
   }
   if (currtok(p) != TRPAREN)
     funtype_params(p, ft, recvt);
-  ft->paramsendloc = currloc(p);
+  ft->xxx_paramsendloc = currloc(p);
   expect(p, TRPAREN, "to match '('");
 
   // result type
   // no result type implies "void", e.g. "fun foo()" == "fun foo() void"
   if (currtok(p) != TLBRACE && currtok(p) != TSEMI) {
-    ft->resultloc = currloc(p);
+    ft->xxx_resultloc = currloc(p);
     ft->result = type(p, PREC_MEMBER);
     if (loc_line(ft->result->loc) && ft->result->loc > ft->loc)
-      ft->resultloc = ft->result->loc;
+      ft->xxx_resultloc = ft->result->loc;
     bubble_flags(ft, ft->result);
   }
 
@@ -2200,8 +2200,14 @@ static fun_t* fun(parser_t* p, nodeflag_t fl, type_t* nullable recvt, bool requi
   }
 
   // parameters and result type
-  n->type = (type_t*)funtype(p, n->loc, n->recvt);
+  funtype_t* ft = funtype(p, n->loc, n->recvt);
+  n->type = (type_t*)ft;
   bubble_flags(n, n->type);
+
+  // copy source locations (funtype may be interned, so we keep local copies of these)
+  n->paramsloc = ft->xxx_paramsloc;       // location of "(" ...
+  n->paramsendloc = ft->xxx_paramsendloc; // location of ")"
+  n->resultloc = ft->xxx_resultloc;       // location of result
 
   // define named function
   if (n->name && n->type->kind != NODE_BAD && !n->recvt)
@@ -2212,14 +2218,16 @@ static fun_t* fun(parser_t* p, nodeflag_t fl, type_t* nullable recvt, bool requi
     return n;
 
   // define named parameters
-  funtype_t* ft = (funtype_t*)n->type;
   if (ft->flags & NF_NAMEDPARAMS) {
     enter_scope(p);
     for (u32 i = 0; i < ft->params.len; i++)
       define(p, ((local_t*)ft->params.v[i])->name, ft->params.v[i]);
   } else if UNLIKELY(ft->params.len > 0) {
     error(p, "function without named parameters can't have a body");
-    help_at(p, ft->paramsloc, "name parameter%s \"_\"", ft->params.len > 1 ? "s" : "");
+    origin_t origin = fun_params_origin(locmap(p), n);
+    _diag(p, origin, DIAG_HELP, "name parameter%s \"_\"", ft->params.len > 1 ? "s" : "");
+    // TODO: fix to_origin macro so that this works:
+    // help_at(p, origin, "name parameter%s \"_\"", ft->params.len > 1 ? "s" : "");
   }
 
   fun_body(p, n, fl);

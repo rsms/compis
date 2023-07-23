@@ -377,7 +377,7 @@ char** nullable path_parselist(memalloc_t ma, const char* pathlist) {
     if (slen) {
       *slistp++ = strp;
       memcpy(strp, &pathlist[start], slen);
-      usize n = path_cleanx(strp, slen, strp, slen);
+      UNUSED usize n = path_cleanx(strp, slen, strp, slen);
       assert(n <= slen);
       strp += slen;
       *strp++ = 0;

@@ -18,11 +18,14 @@ typedef struct { usize v[2]; } sizetuple_t;
 #define trace(fmt, va...)  _trace(opt_trace_cgen, 6, "cgen", fmt, ##va)
 
 
-bool cgen_init(cgen_t* g, compiler_t* c, const pkg_t* pkg, memalloc_t out_ma) {
+bool cgen_init(
+  cgen_t* g, compiler_t* c, const pkg_t* pkg, memalloc_t out_ma, u32 flags)
+{
   memset(g, 0, sizeof(*g));
   g->compiler = c;
   g->pkg = pkg;
   g->ma = c->ma;
+  g->flags = flags;
   buf_init(&g->outbuf, out_ma);
   buf_init(&g->headbuf, out_ma);
 
@@ -123,7 +126,7 @@ static bool startloc(cgen_t* g, loc_t loc) {
       CHAR('\n');
     PRINTF("#line %u", lineno);
     if (!inputok) {
-      srcfile_t* sf = assertnotnull(loc_srcfile(loc, locmap(g)));
+      const srcfile_t* sf = assertnotnull(loc_srcfile(loc, locmap(g)));
       g->srcfileid = loc_srcfileid(loc);
       // ` "pkgdir/file.co"`
       PRINT(" \"");
@@ -2293,6 +2296,7 @@ static void gen_imports(cgen_t* g, const unit_t* unit) {
     return;
   }
   u32 depc = 0;
+  bool include_stdruntime = !g->compiler->opt_nostdruntime;
 
   for (const import_t* im = unit->importlist; im; ) {
     pkg_t* pkg = assertnotnull(im->pkg);
@@ -2301,23 +2305,41 @@ static void gen_imports(cgen_t* g, const unit_t* unit) {
         goto next;
     }
     depv[depc++] = pkg;
+    if (include_stdruntime && pkg == g->compiler->stdruntime_pkg) {
+      // package explicitly imports std/runtime
+      include_stdruntime = false;
+    }
   next:
     im = im->next_import;
   }
 
-  str_t path = {0};
+  str_t headerfile = {0};
+
+  // include API headers for std/runtime
+  if (include_stdruntime) {
+    assertnotnull(g->compiler->stdruntime_pkg); // should have been loaded by pkgbuild
+    if UNLIKELY(!pkg_buildfile(
+        g->compiler->stdruntime_pkg, g->compiler, &headerfile, PKG_APIHFILE_NAME))
+    {
+      g->err = ErrNoMem;
+      goto end;
+    }
+    PRINTF("#include \"%s\"\n", headerfile.p);
+  }
+
+  // include API headers for each imported package
   for (u32 i = 0; i < depc; i++) {
-    path.len = 0;
-    if (!pkg_buildfilea(depv[i], g->compiler, &path, "pub.h")) {
-      str_free(path);
+    headerfile.len = 0;
+    if UNLIKELY(!pkg_buildfile(depv[i], g->compiler, &headerfile, PKG_APIHFILE_NAME)) {
       g->err = ErrNoMem;
       goto end;
     }
     PRINTF("// import \"%s\"\n", depv[i]->path.p);
-    PRINTF("#include \"%s\"\n", path.p);
+    PRINTF("#include \"%s\"\n", headerfile.p);
   }
 
 end:
+  str_free(headerfile);
   mem_freex(g->ma, MEM(depv, sizeof(void*) * (usize)g->pkg->imports.len));
 }
 
@@ -2370,7 +2392,7 @@ static void unit_impl(cgen_t* g, const unit_t* unit) {
           break;
         startline(g, fn->loc);
         fun(g, fn);
-        if (fn->name == sym_main)
+        if (ast_is_main_fun(fn))
           g->mainfun = fn;
         // nested functions
         for (u32 i = 0; i < g->funqueue.len; i++) {
@@ -2501,7 +2523,6 @@ static err_t finalize(cgen_t* g, usize headstart) {
 
 
 err_t cgen_unit_impl(cgen_t* g, const unit_t* u, const cgen_pkgapi_t* nullable pkgapi) {
-  // cgen_t* g, const unit_t* u, const map_t* nullable existing_typedefs, mem_t pkgapidata)
   reset(g);
 
   if (pkgapi) {
@@ -2515,10 +2536,10 @@ err_t cgen_unit_impl(cgen_t* g, const unit_t* u, const cgen_pkgapi_t* nullable p
 
   // Include pre-generated package API.
   // This data is usually a copy of g->outbuf after callint cgen_pkg_api
-  if (pkgapi && pkgapi->pkg_header.size > 0) {
+  if (pkgapi && pkgapi->pkg_header.len > 0) {
     PRINT("\n// ------ begin package api ------\n");
-    buf_append(&g->outbuf, pkgapi->pkg_header.p, pkgapi->pkg_header.size);
-    if ( ((u8*)pkgapi->pkg_header.p)[pkgapi->pkg_header.size-1] != '\n' )
+    buf_append(&g->outbuf, pkgapi->pkg_header.p, pkgapi->pkg_header.len);
+    if ( ((u8*)pkgapi->pkg_header.p)[pkgapi->pkg_header.len-1] != '\n' )
       CHAR('\n');
     PRINT("// ------ end package api ------\n");
   }
@@ -2527,7 +2548,7 @@ err_t cgen_unit_impl(cgen_t* g, const unit_t* u, const cgen_pkgapi_t* nullable p
 
   unit_impl(g, u);
 
-  if (g->mainfun && !g->compiler->opt_nomain)
+  if (g->mainfun && (g->flags & CGEN_EXE))
     gen_main(g);
 
   return finalize(g, headstart);
@@ -2535,8 +2556,7 @@ err_t cgen_unit_impl(cgen_t* g, const unit_t* u, const cgen_pkgapi_t* nullable p
 
 
 void cgen_pkgapi_dispose(cgen_t* g, cgen_pkgapi_t* pkgapi) {
-  if (pkgapi->pkg_header.p)
-    mem_free(g->ma, &pkgapi->pkg_header);
+  str_free(pkgapi->pkg_header);
   map_dispose(&pkgapi->pkg_typedefs, g->ma);
 }
 
@@ -2582,12 +2602,9 @@ err_t cgen_pkgapi(cgen_t* g, const unit_t** unitv, u32 unitc, cgen_pkgapi_t* res
   // Package-internal API is outbuf[headstart:]
   // We must copy this since it will be reused with cgen_unit_impl,
   // which in turn recycles outbuf.
-  result->pkg_header = mem_alloc(g->ma, g->outbuf.len - headstart);
-  if (!result->pkg_header.p) {
+  result->pkg_header = str_makelen(g->outbuf.p + headstart, g->outbuf.len - headstart);
+  if (result->pkg_header.cap == 0)
     err = ErrNoMem;
-  } else {
-    memcpy(result->pkg_header.p, g->outbuf.p + headstart, result->pkg_header.size);
-  }
 
   if (err)
     cgen_pkgapi_dispose(g, result);

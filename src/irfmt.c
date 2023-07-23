@@ -113,7 +113,7 @@ static void val(fmtctx_t* ctx, const irval_t* v, bool isdot) {
 
   if (loc_line(v->loc)) {
     TABULATE(start, COMMENT_COL + 25);
-    srcfile_t* sf = loc_srcfile(v->loc, &ctx->c->locmap);
+    const srcfile_t* sf = loc_srcfile(v->loc, &ctx->c->locmap);
     if (sf) {
       PRINTF(" %s:%u:%u", sf->name.p, loc_line(v->loc), loc_col(v->loc));
     } else {

@@ -1,0 +1,1 @@
+pub fun half(x int) int { x / 2 }

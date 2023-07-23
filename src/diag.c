@@ -164,7 +164,8 @@ static void add_srcline(
 
 
 static void add_srclines(compiler_t* c, origin_t origin, abuf_t* s) {
-  srcfile_t* srcfile = assertnotnull(origin.file);
+  // note: we're doing a const cast for srcfile_open
+  srcfile_t* srcfile = (srcfile_t*)assertnotnull(origin.file);
 
   if (abuf_avail(s) < 4 || origin.line == 0 || srcfile->size == 0)
     return;

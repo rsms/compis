@@ -14,7 +14,7 @@ str_t str_makelen(const char* p, usize len);
 static str_t str_make(const char* cstr);
 static str_t str_copy(const str_t str);
 str_t str_makeempty(usize cap);
-inline void str_free(str_t);
+static void str_free(str_t);
 
 // str_ensure_avail makes sure there is >= minavail free bytes at p+len
 bool str_ensure_avail(str_t*, usize minavail);
@@ -37,7 +37,7 @@ bool str_push(str_t*, char c);
 // str_appendlen appends len characters from src to end of s,
 // plus a terminating null char.
 // Caution: Does not check if src contains null characters.
-bool str_appendlen(str_t* s, const char* src, usize len);
+bool str_appendlen(str_t* s, const char* nullable src, usize len);
 
 // str_appendstr appends another string `src` to the end of s
 static bool str_appendstr(str_t* s, const str_t src);
@@ -52,7 +52,7 @@ bool str_appendstrings(str_t* s, char glue, usize count, ...);
 // str_prependlen appends src characters from src to beginning of s.
 // Ensures that s is terminated with a null char.
 // Caution: Does not check if src contains null characters.
-bool str_prependlen(str_t* s, const char* src, usize len);
+bool str_prependlen(str_t* s, const char* nullable src, usize len);
 
 inline static bool str_startswith(str_t s, const char* prefix) {
   usize prefixlen = strlen(prefix);
@@ -92,7 +92,7 @@ inline static str_t str_copy(const str_t str) {
   return str_makelen(str.p, str.len);
 }
 
-#define str_free(s) mem_free(STR_MEMALLOC, (mem_t*)&(s))
+inline static void str_free(str_t s) { mem_free(STR_MEMALLOC, (mem_t*)&s); }
 
 inline static bool str_appendstr(str_t* s, const str_t src) {
   return str_appendlen(s, src.p, src.len);

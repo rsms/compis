@@ -30,9 +30,9 @@ static bool opt_printast = false;
 static bool opt_printir = false;
 static bool opt_genirdot = false;
 static bool opt_genasm = false;
-static bool opt_logld = false;
 static bool opt_nolink = false;
 static bool opt_nomain = false;
+static bool opt_nostdruntime = false;
 static bool opt_version = false;
 static const char* opt_builddir = "build";
 #if DEBUG
@@ -41,6 +41,7 @@ static const char* opt_builddir = "build";
   bool opt_trace_parse = false;
   bool opt_trace_typecheck = false;
   bool opt_trace_comptime = false;
+  bool opt_trace_import = false;
   bool opt_trace_ir = false;
   bool opt_trace_cgen = false;
   bool opt_trace_subproc = false;
@@ -58,22 +59,23 @@ static const char* opt_builddir = "build";
   S( &opt_genasm, 'S', "write-asm",     "Write machine assembly sources to build dir")\
   S( &opt_help,   'h', "help",          "Print help on stdout and exit")\
   /* advanced options (long form only) */ \
-  LV(&opt_targetstr,"target", "<target>", "Build for <target> instead of host")\
-  LV(&opt_builddir, "build-dir", "<dir>", "Use <dir> instead of ./build")\
-  L( &opt_printast, "print-ast",    "Print AST to stderr")\
-  L( &opt_printir,  "print-ir",     "Print IR to stderr")\
-  L( &opt_genirdot, "write-ir-dot", "Write IR as Graphviz .dot file to build dir")\
-  L( &opt_logld,    "print-ld-cmd", "Print linker invocation to stderr")\
-  L( &opt_nolink,   "no-link",      "Only compile, don't link")\
-  L( &opt_nomain,   "no-auto-main", "Don't auto-generate C ABI \"main\" for main.main")\
-  L( &opt_vverbose, "vv",           "Extra verbose mode") \
-  L( &opt_version,  "version",      "Print Compis version on stdout and exit")\
+  LV(&opt_targetstr,    "target", "<target>", "Build for <target> instead of host")\
+  LV(&opt_builddir,     "build-dir", "<dir>", "Use <dir> instead of ./build")\
+  L( &opt_printast,     "print-ast",          "Print AST to stderr")\
+  L( &opt_printir,      "print-ir",           "Print IR to stderr")\
+  L( &opt_genirdot,     "write-ir-dot",       "Write IR as Graphviz .dot file to build dir")\
+  L( &opt_nolink,       "no-link",            "Only compile, don't link")\
+  L( &opt_nomain,       "no-main",            "Don't auto-generate C ABI \"main\" for main.main")\
+  L( &opt_nostdruntime, "no-stdruntime",      "Don't automatically import std/runtime")\
+  L( &opt_vverbose,     "vv",                 "Extra verbose mode") \
+  L( &opt_version,      "version",            "Print Compis version on stdout and exit")\
   /* debug-only options */\
   DEBUG_L( &opt_trace_all,       "trace",           "Trace everything")\
   DEBUG_L( &opt_trace_scan,      "trace-scan",      "Trace lexical scanning")\
   DEBUG_L( &opt_trace_parse,     "trace-parse",     "Trace parsing")\
   DEBUG_L( &opt_trace_typecheck, "trace-typecheck", "Trace type checking")\
   DEBUG_L( &opt_trace_comptime,  "trace-comptime",  "Trace comptime eval")\
+  DEBUG_L( &opt_trace_import,    "trace-import",    "Trace importing of packages")\
   DEBUG_L( &opt_trace_ir,        "trace-ir",        "Trace IR")\
   DEBUG_L( &opt_trace_cgen,      "trace-cgen",      "Trace code generation")\
   DEBUG_L( &opt_trace_subproc,   "trace-subproc",   "Trace subprocess execution")\
@@ -95,10 +97,6 @@ static void help(const char* prog) {
   print_options();
   exit(0);
 }
-
-
-static err_t build_pkg(
-  pkg_t* pkg, compiler_t* c, const char* outfile, u32 pkgbuild_flags);
 
 
 static void set_comaxproc() {
@@ -126,13 +124,19 @@ int main_build(int argc, char* argv[]) {
   if (optind < 0)
     return 1;
 
-  coverbose = MAX(coverbose, (u8)opt_verbose + (u8)opt_vverbose);
+  if (opt_vverbose && coverbose < 2) {
+    coverbose = 2;
+  } else if (opt_verbose && coverbose < 1) {
+    coverbose = 1;
+  }
+
   #if DEBUG
     // --co-trace turns on all trace flags
     opt_trace_scan |= opt_trace_all;
     opt_trace_parse |= opt_trace_all;
     opt_trace_typecheck |= opt_trace_all;
     opt_trace_comptime |= opt_trace_all;
+    opt_trace_import |= opt_trace_all;
     opt_trace_ir |= opt_trace_all;
     opt_trace_cgen |= opt_trace_all;
     opt_trace_subproc |= opt_trace_all;
@@ -176,18 +180,9 @@ int main_build(int argc, char* argv[]) {
   err_t err = 0;
   if (( err = pkgs_for_argv(argc, argv, &pkgv, &pkgc) ))
     return 1;
-  #if DEBUG
-    dlog("building %u package%s:", pkgc, pkgc != 1 ? "s" : "");
-    for (u32 i = 0; i < pkgc; i++)
-      dlog("  %s (dir %s, root %s)", pkgv[i].path.p, pkgv[i].dir.p, pkgv[i].root.p);
-    printf("\n");
-  #endif
   assert(pkgc > 0);
 
-  // // for now we limit ourselves to building one package per compis invocation
-  // if (pkgc > 1) {
-  //   errx(1, "more than one package requested; please only specify one package");
-  // }
+  // -o <path> makes no sense when building multiple packages
   if (pkgc > 1 && *opt_out)
     errx(1, "cannot specify -o option when building multiple packages");
 
@@ -206,6 +201,7 @@ int main_build(int argc, char* argv[]) {
     .genasm = opt_genasm,
     .verbose = coverbose,
     .nomain = opt_nomain,
+    .nostdruntime = opt_nostdruntime,
   };
   if (err || ( err = compiler_configure(&c, &ccfg) )) {
     dlog("compiler_configure: %s", err_str(err));
@@ -225,16 +221,16 @@ int main_build(int argc, char* argv[]) {
   // }
 
   // build packages
-  u32 pkgbuild_flags = 0
-                     | (opt_nolink ? PKGBUILD_NOLINK : 0)
-                     ;
+  u32 pkgbuild_flags = 0;
+  if (opt_nolink) pkgbuild_flags |= PKGBUILD_NOLINK;
+
   for (u32 i = 0; i < pkgc; i++) {
     pkg_t* pkg = &pkgv[i];
     if (( err = pkgindex_add(&c, pkg) )) {
       dlog("pkgindex_add(pkg_t{dir=\"%s\"}) failed: %s", pkg->dir.p, err_str(err));
       break;
     }
-    if (( err = build_pkg(pkg, &c, opt_out, pkgbuild_flags) )) {
+    if (( err = build_toplevel_pkg(pkg, &c, opt_out, pkgbuild_flags) )) {
       dlog("error while building pkg %s: %s", pkg->path.p, err_str(err));
       break;
     }
@@ -261,7 +257,7 @@ int main_build(int argc, char* argv[]) {
 //   ccfg.genasm = false;
 //   ccfg.nomain = false;
 //
-//   err_t err = build_pkg(&pkg, &ccfg, "", /*flags*/0);
+//   err_t err = build_toplevel_pkg(&pkg, &ccfg, "", /*flags*/0);
 //   if (err)
 //     dlog("error while building pkg %s: %s", pkg.name.p, err_str(err));
 //

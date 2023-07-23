@@ -1,5 +1,6 @@
 // import double from "examples/import3"
 import "examples/import3"
+import "examples/import4"
 pub fun hello(x int) int { import3.double(x) }
 
 // pub type A {

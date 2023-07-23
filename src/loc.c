@@ -41,7 +41,7 @@ end:
 }
 
 
-u32 locmap_intern_srcfileid(locmap_t* lm, srcfile_t* sf, memalloc_t ma) {
+u32 locmap_intern_srcfileid(locmap_t* lm, const srcfile_t* sf, memalloc_t ma) {
   assertnotnull(sf);
   rwmutex_lock(&lm->mu);
 
@@ -54,7 +54,7 @@ u32 locmap_intern_srcfileid(locmap_t* lm, srcfile_t* sf, memalloc_t ma) {
   }
 
   if (lm->m.len == 0) {
-    if UNLIKELY(!array_reserve(srcfile_t*, (array_t*)lm, ma, 8)) {
+    if UNLIKELY(!array_reserve(const srcfile_t*, (array_t*)lm, ma, 8)) {
       dlog("out of memory");
       id = 0;
     } else {
@@ -63,7 +63,7 @@ u32 locmap_intern_srcfileid(locmap_t* lm, srcfile_t* sf, memalloc_t ma) {
       lm->m.len = 2;
       id = 1;
     }
-  } else if UNLIKELY(!array_push(srcfile_t*, (array_t*)lm, ma, sf)) {
+  } else if UNLIKELY(!array_push(const srcfile_t*, (array_t*)lm, ma, sf)) {
     dlog("out of memory");
     id = 0;
   } else {
@@ -76,15 +76,15 @@ end:
 }
 
 
-srcfile_t* nullable locmap_srcfile(locmap_t* lm, u32 srcfileid) {
+const srcfile_t* nullable locmap_srcfile(locmap_t* lm, u32 srcfileid) {
   rwmutex_rlock(&lm->mu);
-  srcfile_t* sf = lm->m.len > srcfileid ? lm->m.v[srcfileid] : NULL;
+  const srcfile_t* sf = lm->m.len > srcfileid ? lm->m.v[srcfileid] : NULL;
   rwmutex_runlock(&lm->mu);
   return sf;
 }
 
 
-srcfile_t* nullable loc_srcfile(loc_t p, locmap_t* lm) {
+const srcfile_t* nullable loc_srcfile(loc_t p, locmap_t* lm) {
   return locmap_srcfile(lm, loc_srcfileid(p));
 }
 
@@ -129,7 +129,7 @@ loc_t loc_union(loc_t a, loc_t b) {
 
 
 usize loc_fmt(loc_t p, char* buf, usize bufcap, locmap_t* lm) {
-  srcfile_t* sf = loc_srcfile(p, lm);
+  const srcfile_t* sf = loc_srcfile(p, lm);
   if (sf && loc_line(p) == 0)
     return snprintf(buf, bufcap, "%s", sf->name.p);
   return snprintf(buf, bufcap, "%s:%u:%u",

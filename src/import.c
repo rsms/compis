@@ -7,6 +7,10 @@
 #include <string.h>
 
 
+#define trace_import(fmt, va...) \
+  _trace(opt_trace_import, 2, "import", "%*s" fmt, /*indent*/0, "", ##va)
+
+
 #ifdef DEBUG
   static void assert_path_is_clean(const char* path) {
     str_t s = str_make(path);
@@ -262,7 +266,7 @@ err_t import_resolve_fspath(str_t* fspath, usize* rootlen_out) {
   // special "std/" prefix
   if (str_startswith(*fspath, "std/")) {
     // note: coroot is guaranteed to be absolute and path_clean'ed (coroot_init)
-    int fspathlen = (int)MIN(fspath->len, (usize)I32_MAX); // for vlog
+    usize fspathlen = MIN(fspath->len, (usize)I32_MAX); // for vlog
     usize corootlen = strlen(coroot);
     isize i = string_lastindexof(coroot, corootlen, PATH_SEP);
     assert(i > -1);
@@ -276,7 +280,12 @@ err_t import_resolve_fspath(str_t* fspath, usize* rootlen_out) {
     }
     fspath->p[corootlen] = PATH_SEP;
     *rootlen_out = corootlen;
-    vlog("looking for package \"%.*s\" at \"%s\"", fspathlen, fspath->p, fspath->p);
+
+    vlog("looking for package \"%.*s\" at \"%s\"",
+      (int)fspathlen,
+      fspath->p + (fspath->len - fspathlen),
+      fspath->p);
+
     goto checked_return;
   }
 
@@ -311,13 +320,21 @@ end:
 }
 
 
-static void pkgindex_dlog_added(const pkg_t* pkg) {
-  dlog("added compiler.pkgindex[%s] = pkg_t{", pkg->dir.p);
-  dlog("  .path = \"%s\"", pkg->path.p);
-  dlog("  .root = \"%s\"", pkg->root.p);
-  dlog("  .dir  = \"%s\"", pkg->dir.p);
-  dlog("}");
-}
+#ifdef DEBUG
+  static void trace_pkgindex_add(const pkg_t* pkg) {
+    trace_import(
+      "pkgindex add pkg_t{\n"
+      "  .path = \"%s\"\n"
+      "  .root = \"%s\"\n"
+      "  .dir  = \"%s\"\n"
+      "}",
+      pkg->path.p,
+      pkg->root.p,
+      pkg->dir.p);
+  }
+#else
+  #define trace_pkgindex_add(pkg) ((void)0)
+#endif
 
 
 err_t pkgindex_add(compiler_t* c, pkg_t* pkg) {
@@ -332,7 +349,7 @@ err_t pkgindex_add(compiler_t* c, pkg_t* pkg) {
   } else {
     *pkgp = pkg;
     err = 0;
-    pkgindex_dlog_added(pkg);
+    trace_pkgindex_add(pkg);
   }
 
   rwmutex_unlock(&c->pkgindex_mu);
@@ -384,7 +401,7 @@ err_t pkgindex_intern(compiler_t* c, slice_t pkgdir, slice_t pkgpath, pkg_t** re
     ent->key = pkg->dir.p;
     ent->keysize = pkg->dir.len;
     ent->value = pkg;
-    pkgindex_dlog_added(pkg);
+    trace_pkgindex_add(pkg);
     goto end;
   }
 

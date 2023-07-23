@@ -69,7 +69,7 @@ AST encoding format:
 
 #define FILE_MAGIC "cAST"
 
-#define AST_ENC_VERSION 1u
+#define AST_ENC_VERSION 1
 
 
 // DEBUG_LOG_ENCODE_STATS: define to dlog some encoder stats
@@ -179,13 +179,16 @@ static const ae_field_t g_fieldsof_import_t[] = {
 // end EXPR_FIELDS
 static const ae_field_t g_fieldsof_fun_t[] = {
   EXPR_FIELDS,
-  FIELD(fun_t, type,        NODEZ),
-  FIELD(fun_t, name,        SYMZ),
-  FIELD(fun_t, nameloc,     LOC),
-  FIELD(fun_t, body,        NODEZ),
-  FIELD(fun_t, recvt,       NODEZ),
-  FIELD(fun_t, mangledname, STRZ),
-  FIELD(fun_t, abi,         U32),
+  FIELD(fun_t, type,         NODEZ),
+  FIELD(fun_t, name,         SYMZ),
+  FIELD(fun_t, nameloc,      LOC),
+  FIELD(fun_t, body,         NODEZ),
+  FIELD(fun_t, recvt,        NODEZ),
+  FIELD(fun_t, mangledname,  STRZ),
+  FIELD(fun_t, paramsloc,    LOC),
+  FIELD(fun_t, paramsendloc, LOC),
+  FIELD(fun_t, resultloc,    LOC),
+  FIELD(fun_t, abi,          U32),
 };
 static const ae_field_t g_fieldsof_block_t[] = {
   EXPR_FIELDS,
@@ -297,11 +300,8 @@ static const ae_field_t g_fieldsof_arraytype_t[] = {
 };
 static const ae_field_t g_fieldsof_funtype_t[] = {
   TYPE_FIELDS,
-  FIELD(funtype_t, result,       NODE),
-  FIELD(funtype_t, resultloc,    LOC),
-  FIELD(funtype_t, params,       NODEARRAY),
-  FIELD(funtype_t, paramsloc,    LOC),
-  FIELD(funtype_t, paramsendloc, LOC),
+  FIELD(funtype_t, result, NODE),
+  FIELD(funtype_t, params, NODEARRAY),
 };
 static const ae_field_t g_fieldsof_ptrtype_t[] = {
   #define PTRTYPE_FIELDS /* ptrtype_t */ \
@@ -743,7 +743,7 @@ static void encode_pkg(astencoder_t* a, buf_t* outbuf, const pkg_t* pkg) {
 
 static void encode_srcfiles(astencoder_t* a, buf_t* outbuf) {
   for (u32 i = 0; i < a->srcfileids.len; i++) {
-    srcfile_t* srcfile = locmap_srcfile(&a->c->locmap, a->srcfileids.v[i]);
+    const srcfile_t* srcfile = locmap_srcfile(&a->c->locmap, a->srcfileids.v[i]);
     encode_filepath(a, outbuf, srcfile->name.p, srcfile->name.len);
     outbuf->chars[outbuf->len++] = '\n';
 
@@ -797,7 +797,7 @@ static usize enc_preallocsize(astencoder_t* a) {
 
   // add space needed to encode srcfiles
   for (u32 i = 0; i < a->srcfileids.len; i++) {
-    srcfile_t* srcfile = locmap_srcfile(&a->c->locmap, a->srcfileids.v[i]);
+    const srcfile_t* srcfile = locmap_srcfile(&a->c->locmap, a->srcfileids.v[i]);
     assertnotnull(srcfile);
     a->oom |= check_add_overflow(nbyte, srcfile->name.len + 1, &nbyte);
   }
@@ -1123,9 +1123,16 @@ err_t astencoder_add_srcfileid(astencoder_t* a, u32 srcfileid) {
 
 
 err_t astencoder_add_srcfile(astencoder_t* a, const srcfile_t* srcfile) {
-  u32 srcfileid = locmap_lookup_srcfileid(&a->c->locmap, srcfile);
-  if (srcfileid == 0)
-    return ErrNotFound;
+  // u32 srcfileid = locmap_lookup_srcfileid(&a->c->locmap, srcfile);
+  // if (srcfileid == 0)
+  //   return ErrNotFound;
+
+  u32 srcfileid = locmap_intern_srcfileid(&a->c->locmap, srcfile, a->c->ma);
+  if UNLIKELY(srcfileid == 0) {
+    dlog("locmap_srcfileid OOM");
+    return ErrNoMem;
+  }
+
   if (!u32array_sortedset_add(&a->srcfileids, a->ma, srcfileid))
     return ErrNoMem;
   return 0;
@@ -1609,7 +1616,7 @@ static const u8* decode_header(DEC_PARAMS) {
   p = dec_u32x(DEC_ARGS, &d->version);
   p = dec_whitespace(DEC_ARGS);
 
-  if (d->version != 1 && !d->err) {
+  if (d->version != AST_ENC_VERSION && !d->err) {
     dlog("unsupported version: %u", d->version);
     d->err = ErrNotSupported;
   }
@@ -1903,7 +1910,7 @@ static bool dec_tmptabs_alloc(astdecoder_t* d) {
   nbyte = ALIGN2(nbyte, sizeof(void*));
 
   void* p = mem_alloc(d->ma, nbyte).p;
-  if (!p) {
+  if (!p && nbyte > 0) {
     d->err = ErrNoMem;
     return false;
   }
@@ -1963,15 +1970,19 @@ err_t astdecoder_decode_header(astdecoder_t* d, pkg_t* pkg) {
 
   // decode header
   p = decode_header(DEC_ARGS);
-  if (d->err)
+  if (d->err) {
+    dlog("decode_header: %s", err_str(d->err));
     goto end;
+  }
 
   // dlog("header: symcount %u, nodecount %u, rootcount %u",
   //   d->symcount, d->nodecount, d->rootcount);
 
   // allocate memory for temporary tables
-  if (!dec_tmptabs_alloc(d))
+  if (!dec_tmptabs_alloc(d)) {
+    dlog("dec_tmptabs_alloc: %s", err_str(d->err));
     goto end;
+  }
 
   p = decode_pkg(DEC_ARGS, pkg);
   p = decode_srcfiles(DEC_ARGS, pkg);

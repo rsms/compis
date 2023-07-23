@@ -8,14 +8,26 @@
 #include <sys/stat.h>
 
 
-err_t pkgbuild_init(pkgbuild_t* pb, pkg_t* pkg, compiler_t* c, u32 flags) {
+#define trace_import(fmt, va...) \
+  _trace(opt_trace_import, 2, "import", "%*s" fmt, /*indent*/0, "", ##va)
+
+#define trace_import_indented(indent, fmt, va...) \
+  _trace(opt_trace_import, 2, "import", "%*s" fmt, (indent), "", ##va)
+
+
+static err_t build_pkg(
+  pkgcell_t pkgc, compiler_t* c, const char* outfile, u32 pkgbuild_flags);
+static err_t load_dependency(pkgbuild_t* pb, pkgcell_t pkgc);
+
+
+err_t pkgbuild_init(pkgbuild_t* pb, pkgcell_t pkgc, compiler_t* c, u32 flags) {
   memset(pb, 0, sizeof(*pb));
-  pb->pkg = pkg;
+  pb->pkgc = pkgc;
   pb->c = c;
   pb->flags = flags;
 
   // package lives inside the builtins namespace
-  pkg->defs.parent = &c->builtins;
+  pkgc.pkg->defs.parent = &c->builtins;
 
   // configure a bgtask for communicating status to the user
   int taskflags = (c->opt_verbose > 0) ? BGTASK_NOFANCY : 0;
@@ -23,7 +35,7 @@ err_t pkgbuild_init(pkgbuild_t* pb, pkg_t* pkg, compiler_t* c, u32 flags) {
   tasklen += (u32)!!c->opt_verbose; // metagen
   tasklen += (u32)!!c->opt_verbose; // cgen
   tasklen += (u32)!(flags & PKGBUILD_NOLINK); // link
-  pb->bgt = bgtask_open(c->ma, pkg->path.p, tasklen, taskflags);
+  pb->bgt = bgtask_open(c->ma, pkgc.pkg->path.p, tasklen, taskflags);
   // note: bgtask_open currently panics on OOM; change that, make it return NULL
 
   // create AST allocator
@@ -42,7 +54,7 @@ err_t pkgbuild_init(pkgbuild_t* pb, pkg_t* pkg, compiler_t* c, u32 flags) {
 
 static void assert_promises_completed(pkgbuild_t* pb) {
   // catches missing (or broken) call to pkgbuild_await_compilation
-  if (pb->promisev) for (u32 i = 0; i < pb->pkg->srcfiles.len; i++)
+  if (pb->promisev) for (u32 i = 0; i < pb->pkgc.pkg->srcfiles.len; i++)
     assertf(pb->promisev[i].await == NULL, "promisev[%u] was not awaited", i);
 }
 
@@ -50,8 +62,8 @@ static void assert_promises_completed(pkgbuild_t* pb) {
 void pkgbuild_dispose(pkgbuild_t* pb) {
   // srcfiles may have been opened if diagnostics were reported during
   // typecheck or cgen, so let's make sure they are all closed
-  for (u32 i = 0; i < pb->pkg->srcfiles.len; i++)
-    srcfile_close(&pb->pkg->srcfiles.v[i]);
+  for (u32 i = 0; i < pb->pkgc.pkg->srcfiles.len; i++)
+    srcfile_close(&pb->pkgc.pkg->srcfiles.v[i]);
 
   bgtask_close(pb->bgt);
   memalloc_bump_in_dispose(pb->ast_ma);
@@ -59,7 +71,7 @@ void pkgbuild_dispose(pkgbuild_t* pb) {
   strlist_dispose(&pb->ofiles);
   if (pb->promisev) {
     assert_promises_completed(pb);
-    mem_freetv(pb->c->ma, pb->promisev, (usize)pb->pkg->srcfiles.len);
+    mem_freetv(pb->c->ma, pb->promisev, (usize)pb->pkgc.pkg->srcfiles.len);
   }
 }
 
@@ -101,9 +113,9 @@ static err_t dump_pkg_ast(const pkg_t* pkg, unit_t*const* unitv, u32 unitc) {
 static void build_ofiles_and_cfiles(pkgbuild_t* pb, str_t builddir) {
   str_t s = {0};
 
-  for (u32 i = 0; i < pb->pkg->srcfiles.len; i++) {
+  for (u32 i = 0; i < pb->pkgc.pkg->srcfiles.len; i++) {
     // {builddir}/{srcfile}.o  (note that builddir includes pkgname)
-    srcfile_t* srcfile = &pb->pkg->srcfiles.v[i];
+    srcfile_t* srcfile = &pb->pkgc.pkg->srcfiles.v[i];
 
     s.len = 0;
 
@@ -133,7 +145,9 @@ oom:
 
 // prepare_builddir creates output dir and builds cfiles & ofiles
 static err_t prepare_builddir(pkgbuild_t* pb) {
-  str_t builddir = pkg_builddir(pb->pkg, pb->c);
+  str_t builddir = {0};
+  if (!pkg_builddir(pb->pkgc.pkg, pb->c, &builddir))
+    return ErrNoMem;
   err_t err = fs_mkdirs(builddir.p, 0770, FS_VERBOSE);
   if (pb->cfiles.len == 0)
     build_ofiles_and_cfiles(pb, builddir);
@@ -157,9 +171,9 @@ static const char* cfile_of_srcfile_id(pkgbuild_t* pb, u32 srcfile_id) {
 
 
 static const char* cfile_of_unit(pkgbuild_t* pb, const unit_t* unit) {
-  assert(pb->cfiles.len == pb->pkg->srcfiles.len);
+  assert(pb->cfiles.len == pb->pkgc.pkg->srcfiles.len);
   assertnotnull(unit->srcfile);
-  isize srcfile_idx = srcfilearray_indexof(&pb->pkg->srcfiles, unit->srcfile);
+  isize srcfile_idx = srcfilearray_indexof(&pb->pkgc.pkg->srcfiles, unit->srcfile);
   assert(srcfile_idx > -1);
   return cfile_of_srcfile_id(pb, (u32)srcfile_idx);
 }
@@ -175,7 +189,7 @@ static err_t compile_c_source(
   // Use package as working directory for subprocesses.
   // ofile must not be relative because of this.
   assert(path_isabs(ofile));
-  const char* wdir = pb->pkg->dir.p;
+  const char* wdir = pb->pkgc.pkg->dir.p;
 
   // subprocs attached to promise
   subprocs_t* subprocs = subprocs_create_promise(c->ma, promise);
@@ -196,7 +210,7 @@ static err_t compile_c_source(
 
 
 err_t pkgbuild_locate_sources(pkgbuild_t* pb) {
-  pkg_t* pkg = pb->pkg;
+  pkg_t* pkg = pb->pkgc.pkg;
 
   if (pkg->srcfiles.len == 0)
     pkg_find_files(pkg);
@@ -233,7 +247,7 @@ err_t pkgbuild_locate_sources(pkgbuild_t* pb) {
 
 
 err_t pkgbuild_begin_early_compilation(pkgbuild_t* pb) {
-  pkg_t* pkg = pb->pkg;
+  pkg_t* pkg = pb->pkgc.pkg;
 
   // find first C srcfile or bail out if there are no C sources in the package
   u32 i = 0;
@@ -300,7 +314,7 @@ end:
 
 static err_t pkgbuild_parse(pkgbuild_t* pb) {
   compiler_t* c = pb->c;
-  pkg_t* pkg = pb->pkg;
+  pkg_t* pkg = pb->pkgc.pkg;
 
   // count number of compis source files
   u32 ncosrc = 0;
@@ -341,19 +355,6 @@ static err_t pkgbuild_parse(pkgbuild_t* pb) {
 
   return err;
 }
-
-
-static err_t build_pkg1(pkgbuild_t* pb, pkg_t* pkg) {
-  dlog("███████████████████████████████████████████████████████");
-  err_t err = build_pkg(pkg, pb->c, /*outfile*/"", /*pkgbuildflags*/0);
-  dlog("███████████████████████████████████████████████████████");
-  if (err)
-    dlog("error while building pkg %s: %s", pkg->path.p, err_str(err));
-  return err;
-}
-
-
-static err_t load_pkg(pkgbuild_t* pb, pkg_t* pkg);
 
 
 // check_pkg_src_uptodate stats pkg->files and compares their mtime to product_mtime.
@@ -494,7 +495,8 @@ static err_t load_pkg_api(pkgbuild_t* pb, pkg_t* pkg, astdecoder_t* astdec) {
     dlog("astdecode error: %s", err_str(err));
     return err;
   }
-  dlog("[%s] decoded %u node%s", __FUNCTION__, nodec, nodec == 1 ? "" : "s");
+  // dlog("[%s \"%s\"] decoded %u node%s",
+  //   __FUNCTION__, pkg->path.p, nodec, nodec == 1 ? "" : "s");
 
   // add declarations to pkg->api
   pkg->api.v = nodev;
@@ -505,24 +507,55 @@ static err_t load_pkg_api(pkgbuild_t* pb, pkg_t* pkg, astdecoder_t* astdec) {
 }
 
 
-// load_pkg1
+static err_t build_dependency(pkgbuild_t* pb, pkgcell_t pkgc) {
+  trace_import("\"%s\" building dependency \"%s\"",
+    pkgc.parent->pkg->path.p, pkgc.pkg->path.p);
+  u32 pkgbuildflags = PKGBUILD_DEP;
+  err_t err = build_pkg(pkgc, pb->c, /*outfile*/"", pkgbuildflags);
+  if (err)
+    dlog("error while building pkg %s: %s", pkgc.pkg->path.p, err_str(err));
+  return err;
+}
+
+
+// load_dependency0
 //
 // 1. check if there's a valid metafile, and if so, load it, and:
 //    1. parse header of metafile
 //    2. compare mtime of sources to metafile; if a src is newer, we must rebuild
 //
-static err_t load_pkg1(pkgbuild_t* pb, pkg_t* pkg) {
+static err_t load_dependency0(pkgbuild_t* pb, pkgcell_t pkgc) {
   err_t err;
-  str_t metafile;       // path to metafile
+  str_t metafile = {0}; // path to metafile
+  unixtime_t libmtime;  // mtime of package library file
   const void* encdata;  // contents of metafile
-  struct stat metast;       // status of metafile
+  struct stat metast;   // status of metafile
   astdecoder_t* astdec = NULL;
-  bool did_buildpkg = false; // true if we have tried to build_pkg1
+  bool did_buildpkg = false; // true if we have called build_dependency
+  pkg_t* pkg = pkgc.pkg;
+
+  // get library file mtime
+  str_t libfile = {0};
+  if (!pkg_libfile(pkg, pb->c, &libfile))
+    return ErrNoMem;
+  libmtime = fs_mtime(libfile.p);
+  vlog("load library package \"%s\" (%s)", pkgc.pkg->path.p, relpath(libfile.p));
+  str_free(libfile);
 
   // construct metafile path
-  metafile = pkg_buildfile(pkg, pb->c, "pub.coast");
-  if (metafile.cap == 0)
+  if (!pkg_buildfile(pkg, pb->c, &metafile, PKG_METAFILE_NAME))
     return ErrNoMem;
+
+  // if no libfile exist, build
+  if (libmtime == 0) {
+    dlog("NO LIBFILE");
+    did_buildpkg = true;
+    if (( err = build_dependency(pb, pkgc) )) {
+      dlog("build_dependency: %s", err_str(err));
+      encdata = NULL;
+      goto end;
+    }
+  }
 
   // try to open metafile in read-only mode
 open_metafile:
@@ -542,20 +575,20 @@ open_metafile:
 
     // build package and then try opening metafile again
     did_buildpkg = true;
-    if (( err = build_pkg1(pb, pkg) ))
+    if (( err = build_dependency(pb, pkgc) )) {
+      dlog("build_dependency: %s", err_str(err));
       goto end;
+    }
     goto open_metafile;
   }
 
   // when we get here, the metafile is open for reading
-  unixtime_t meta_mtime = unixtime_of_stat_mtime(&metast);
-  dlog("opened metafile %s (modified %.2f seconds ago)",
-    relpath(metafile.p), (double)(unixtime_now() - meta_mtime) / 1000000.0);
 
   // open an AST decoder
   astdec = astdecoder_open(pb->c, pb->ast_ma, metafile.p, encdata, metast.st_size);
   if (!astdec) {
     err = ErrNoMem;
+    dlog("astdecoder_open: %s", err_str(err));
     goto end;
   }
 
@@ -563,26 +596,40 @@ open_metafile:
   // - decpkg.{path,dir,root} (+ verifies they match prior input values of pkg)
   // - decpkg.files via pkg_add_srcfile
   // - decpkg.imports
-  if (( err = astdecoder_decode_header(astdec, pkg) ))
-    goto end;
-
-  // update pkg->mtime to mtime of metafile
-  pkg->mtime = unixtime_of_stat_mtime(&metast);
+  if (( err = astdecoder_decode_header(astdec, pkg) )) {
+    dlog("astdecoder_decode_header: %s", err_str(err));
+    if (!did_buildpkg && err == ErrNotSupported) {
+      // the encoded file is of an unsupported format
+      pkg->mtime = 0;
+    } else {
+      goto end;
+    }
+  } else {
+    // update pkg->mtime to mtime of metafile
+    pkg->mtime = unixtime_of_stat_mtime(&metast);
+  }
 
   // unless we just built the package, check source files and load imports
   if (!did_buildpkg) {
     // check if source files have been modified
-    bool isuptodate = check_pkg_src_uptodate(pkg, pkg->mtime);
+    bool isuptodate;
+    if (pkg->mtime == 0) {
+      isuptodate = false;
+    } else {
+      isuptodate = check_pkg_src_uptodate(pkg, pkg->mtime);
+    }
 
     // load dependencies
-    if (isuptodate) for (u32 i = 0; i < pkg->imports.len; i++) {
-      pkg_t* dep = pkg->imports.v[i];
-      if (( err = load_pkg(pb, dep) ))
-        goto end;
-      if (dep->mtime > pkg->mtime) {
-        dlog("[%s] dep \"%s\" is newer", pkg->path.p, relpath(dep->dir.p));
-        isuptodate = false;
-        break;
+    if (isuptodate) {
+      for (u32 i = 0; i < pkg->imports.len; i++) {
+        pkg_t* dep = pkg->imports.v[i];
+        if (( err = load_dependency(pb, (pkgcell_t){&pkgc,dep}) ))
+          goto end;
+        if (dep->mtime > pkg->mtime) {
+          // dlog("[%s] dep \"%s\" is newer", pkg->path.p, relpath(dep->dir.p));
+          isuptodate = false;
+          break;
+        }
       }
     }
 
@@ -594,7 +641,7 @@ open_metafile:
 
       // at least one source file has been modified since metafile was modified
       did_buildpkg = true;
-      if (( err = build_pkg1(pb, pkg) ))
+      if (( err = build_dependency(pb, pkgc) ))
         goto end;
 
       // close old metafile and associated resources
@@ -603,13 +650,10 @@ open_metafile:
 
       // open the new metafile
       goto open_metafile;
-    } else {
-      // up to date (all source files are older than metafile)
-      dlog("source files & dependencies are up to date");
     }
   }
 
-  // When we get here, pkg is loaded & current.
+  // When we get here, pkg is loaded & up-to-date.
   // We now need to load the package's API.
   err = load_pkg_api(pb, pkg, astdec);
 
@@ -623,54 +667,179 @@ end:
 }
 
 
-static err_t load_pkg(pkgbuild_t* pb, pkg_t* pkg) {
-  dlog("%s %s", __FUNCTION__, pkg->path.p);
+static err_t load_dependency(pkgbuild_t* pb, pkgcell_t pkgc) {
   err_t err;
-  if (future_acquire(&pkg->loadfut)) {
-    err = load_pkg1(pb, pkg);
-    future_finalize(&pkg->loadfut, err);
+  if (future_acquire(&pkgc.pkg->loadfut)) {
+    err = load_dependency0(pb, pkgc);
+    future_finalize(&pkgc.pkg->loadfut, err);
   } else {
-    dlog("[%s] future_wait", __FUNCTION__);
-    err = future_wait(&pkg->loadfut);
+    dlog("%s %s (waiting...)", __FUNCTION__, pkgc.pkg->path.p);
+    err = future_wait(&pkgc.pkg->loadfut);
   }
   return err;
 }
 
 
+static bool report_import_cycle(pkgbuild_t* pb, const pkg_t* pkg) {
+  elog("import cycle not allowed; import stack:");
+  pkgcell_t pkgc = pb->pkgc;
+  elog("  %s\t(%s)", pkg->path.p, pkg->dir.p);
+  for (;;) {
+    elog("  %s\t(%s)", pkgc.pkg->path.p, pkgc.pkg->dir.p);
+    if (pkgc.parent == NULL /*|| pkg == pkgc.pkg*/)
+      break;
+    pkgc = *pkgc.parent;
+  }
+  return false;
+}
+
+
+static bool check_import_cycle(pkgbuild_t* pb, const pkg_t* pkg) {
+  pkgcell_t pkgc = pb->pkgc;
+  for (;;) {
+    if UNLIKELY(pkg == pkgc.pkg)
+      return report_import_cycle(pb, pkg);
+    if (pkgc.parent == NULL)
+      break;
+    pkgc = *pkgc.parent;
+  }
+  return true;
+}
+
+
+UNUSED static void trace_dependencies(const pkg_t* pkg, int indent) {
+  for (u32 i = 0; i < pkg->imports.len; i++) {
+    const pkg_t* dep = pkg->imports.v[i];
+    trace_import_indented(indent*2, "%s", dep->path.p);
+    trace_dependencies(dep, indent + 1);
+  }
+}
+
+
+static err_t get_runtime_pkg(pkgbuild_t* pb, pkg_t** rt_pkg) {
+  // we cache the std/runtime package at compiler_t.stdruntime_pkg
+  rwmutex_rlock(&pb->c->pkgindex_mu);
+  *rt_pkg = pb->c->stdruntime_pkg;
+  rwmutex_runlock(&pb->c->pkgindex_mu);
+  if (*rt_pkg) // found in cache
+    return 0;
+
+  err_t err;
+  slice_t rt_pkgpath = slice_cstr("std/runtime");
+  str_t rt_pkgdir = str_makelen(rt_pkgpath.chars, rt_pkgpath.len);
+  usize rt_rootlen;
+
+  // Resolve package
+  // This will fail if it's not found on disk
+  if (( err = import_resolve_fspath(&rt_pkgdir, &rt_rootlen) ))
+    goto end;
+
+  // check sanity of import_resolve_fspath
+  assertf(
+    strcmp(rt_pkgpath.chars, rt_pkgdir.p + rt_rootlen + 1) == 0,
+    "import_resolve_fspath returned rootlen=%zu, dir='%s'",
+    rt_rootlen, rt_pkgdir.p);
+
+  // intern package in pkgindex
+  err = pkgindex_intern(pb->c, str_slice(rt_pkgdir), rt_pkgpath, rt_pkg);
+
+end:
+  str_free(rt_pkgdir);
+  rwmutex_lock(&pb->c->pkgindex_mu);
+  pb->c->stdruntime_pkg = *rt_pkg;
+  rwmutex_unlock(&pb->c->pkgindex_mu);
+  return err;
+}
+
+
 err_t pkgbuild_import(pkgbuild_t* pb) {
-  assert(pb->pkg->imports.len == 0);
+  pkg_t* pkg = pb->pkgc.pkg;
+  err_t err;
+
+  assert(pkg->imports.len == 0);
+
+  // add "std/runtime" dependency (for top-level packages only)
+  if ((pb->flags & PKGBUILD_DEP) == 0 && pb->c->opt_nostdruntime == false) {
+    pkg_t* rt_pkg;
+    if (( err = get_runtime_pkg(pb, &rt_pkg) ))
+      return err;
+    // note: "rt_pkg!=pkg" guards std/runtime from importing itself
+    if (rt_pkg != pkg && !ptrarray_push(&pkg->imports, pb->c->ma, rt_pkg)) {
+      err = ErrNoMem;
+      return err;
+    }
+  }
 
   // import_pkgs
   // 1. finds all unique imports across units
   // 2. resolves each imported package
-  err_t err = import_pkgs(pb->c, pb->pkg, pb->unitv, pb->unitc);
-  if (err)
+  if (( err = import_pkgs(pb->c, pkg, pb->unitv, pb->unitc) ))
     return err;
 
   // stop now if no packages are imported
-  if (pb->pkg->imports.len == 0)
+  if (pkg->imports.len == 0)
     return 0;
 
   // at this point all packages at pkg->imports ...
   // - are verified to exist (have a valid pkg->path, pkg->dir & pkg->root)
   // - may or may not be ready for use (may need to be built before it can be used)
 
-  dlog("imported packages:");
-  for (u32 i = 0; i < pb->pkg->imports.len; i++) {
-    pkg_t* dep = pb->pkg->imports.v[i];
-    dlog("  %s (root %s)", dep->path.p, dep->root.p);
+  // trace imported packages
+  #ifdef DEBUG
+  if (opt_trace_import) {
+    trace_import("\"%s\" importing %u packages:", pkg->path.p, pkg->imports.len);
+    for (u32 i = 0; i < pkg->imports.len; i++) {
+      pkg_t* dep = pkg->imports.v[i];
+      trace_import("  %s (root %s)", dep->path.p, dep->root.p);
+    }
   }
+  #endif
 
   // load imported packages (which might cause us to build them)
-  for (u32 i = 0; i < pb->pkg->imports.len && !err; i++) {
-    pkg_t* pkg = pb->pkg->imports.v[i];
-    err = load_pkg(pb, pkg);
+  for (u32 i = 0; i < pkg->imports.len && !err; i++) {
+    pkg_t* dep = pkg->imports.v[i];
+    if (!check_import_cycle(pb, dep)) {
+      err = ErrCanceled;
+    } else {
+      err = load_dependency(pb, (pkgcell_t){&pb->pkgc, dep});
+      if (err)
+        dlog("load_dependency: %s", err_str(err));
+    }
   }
 
   // trim excess space of imports array since we'll be keeping it around
-  ptrarray_shrinkwrap(&pb->pkg->imports, pb->c->ma);
+  ptrarray_shrinkwrap(&pkg->imports, pb->c->ma);
+
+  #ifdef DEBUG
+  if (opt_trace_import) {
+    trace_import("dependency tree for package \"%s\":", pkg->path.p);
+    trace_dependencies(pkg, 1);
+  }
+  #endif
 
   return err;
+}
+
+
+static err_t report_bad_mainfun(pkgbuild_t* pb, const fun_t* fn) {
+  // There's a "main" function but it doesn't qualify for being THE main function.
+  // Note that we know that the issue is missing "pub" qualifier, since typecheck
+  // has already verified that a "pub fun main(..." has the correct signature.
+  const funtype_t* ft = assertnotnull((funtype_t*)fn->type);
+
+  if (ft->params.len == 0 && ft->result == type_void) {
+    report_diag(pb->c, ast_origin(&pb->c->locmap, (node_t*)fn), DIAG_ERR,
+      "program's main function is not public");
+    report_diag(pb->c, origin_make(&pb->c->locmap, fn->loc), DIAG_HELP,
+      "mark function as `pub` (or build with --no-main flag)");
+  } else {
+    report_diag(pb->c, ast_origin(&pb->c->locmap, (node_t*)fn), DIAG_ERR,
+      "invalid signature of program's main function");
+    report_diag(pb->c, origin_make(&pb->c->locmap, fn->loc), DIAG_HELP,
+      "change signature to `pub fun main()` (or build with --no-main flag)");
+  }
+
+  return ErrCanceled;
 }
 
 
@@ -687,27 +856,27 @@ err_t pkgbuild_typecheck(pkgbuild_t* pb) {
   }
 
   // typecheck
-  err_t err = typecheck(c, pb->ast_ma, pb->pkg, pb->unitv, pb->unitc);
+  err_t err = typecheck(c, pb->ast_ma, pb->pkgc.pkg, pb->unitv, pb->unitc);
   if (err)
     return err;
   if (compiler_errcount(c) > 0) {
     dlog("typecheck failed with %u diagnostic errors", compiler_errcount(c));
     if (!opt_trace_parse && c->opt_printast)
-      dump_pkg_ast(pb->pkg, pb->unitv, pb->unitc);
+      dump_pkg_ast(pb->pkgc.pkg, pb->unitv, pb->unitc);
     return ErrCanceled;
   }
 
   // trace & dlog
   if (opt_trace_typecheck && c->opt_printast) {
     dlog("————————— AST after typecheck —————————");
-    dump_pkg_ast(pb->pkg, pb->unitv, pb->unitc);
+    dump_pkg_ast(pb->pkgc.pkg, pb->unitv, pb->unitc);
   }
 
   // dlog("abort");abort(); // XXX
 
   // analyze
   dlog_if(opt_trace_ir, "————————— IR —————————");
-  err = analyze(c, pb->ast_ma, pb->pkg, pb->unitv, pb->unitc);
+  err = analyze(c, pb->ast_ma, pb->pkgc.pkg, pb->unitv, pb->unitc);
   if (err) {
     dlog("IR analyze: err=%s", err_str(err));
     return err;
@@ -724,7 +893,7 @@ err_t pkgbuild_typecheck(pkgbuild_t* pb) {
       // so let's print a header to make it easier to distinguish what is what
       dlog("————————— AST after analyze —————————");
     }
-    dump_pkg_ast(pb->pkg, pb->unitv, pb->unitc);
+    dump_pkg_ast(pb->pkgc.pkg, pb->unitv, pb->unitc);
   }
 
   // create public namespace for package, at pkg->api
@@ -736,14 +905,29 @@ err_t pkgbuild_typecheck(pkgbuild_t* pb) {
       nmembers += (u32)!!(decls.v[i]->flags & NF_VIS_PUB);
   }
   // create & populate api array
-  assert(pb->pkg->api.len == 0);
-  if (!nodearray_reserve_exact(&pb->pkg->api, pb->ast_ma, nmembers))
+  pkg_t* pkg = pb->pkgc.pkg;
+  assert(pkg->api.len == 0);
+  if (!nodearray_reserve_exact(&pkg->api, pb->ast_ma, nmembers))
     return ErrNoMem;
   for (u32 i = 0; i < pb->unitc; i++) {
     nodearray_t decls = pb->unitv[i]->children;
     for (u32 i = 0; i < decls.len; i++) {
       if (decls.v[i]->flags & NF_VIS_PUB)
-        pb->pkg->api.v[pb->pkg->api.len++] = decls.v[i];
+        pkg->api.v[pkg->api.len++] = decls.v[i];
+    }
+  }
+
+  // Determine if we are building an executable or a library.
+  // (Note that non-top-level packages (i.e dependencies) are flagged PKGBUILD_DEP)
+  assertf((pb->flags & PKGBUILD_EXE) == 0, "PKGBUILD_EXE flag is set");
+  if ((pb->flags & PKGBUILD_DEP) == 0 && pb->c->opt_nomain == false) {
+    // check if there's a main function
+    const fun_t** mainfunp = (const fun_t**)map_lookup_ptr(&pkg->defs, sym_main);
+    if (mainfunp && (*mainfunp)->kind == EXPR_FUN) {
+      if UNLIKELY(!ast_is_main_fun(*mainfunp))
+        return report_bad_mainfun(pb, *mainfunp);
+      // we have a proper "main" function
+      pb->flags |= PKGBUILD_EXE;
     }
   }
 
@@ -753,9 +937,10 @@ err_t pkgbuild_typecheck(pkgbuild_t* pb) {
 
 err_t pkgbuild_metagen(pkgbuild_t* pb) {
   err_t err = 0;
+  pkg_t* pkg = pb->pkgc.pkg;
 
-  str_t filename = pkg_buildfile(pb->pkg, pb->c, "pub.coast");
-  if (filename.cap == 0)
+  str_t filename = {0};
+  if (!pkg_buildfile(pkg, pb->c, &filename, PKG_METAFILE_NAME))
     return ErrNoMem;
 
   if (pb->c->opt_verbose)
@@ -771,11 +956,14 @@ err_t pkgbuild_metagen(pkgbuild_t* pb) {
   }
 
   // encoders can be reused, so we need to tell it to start an encoding session
-  astencoder_begin(astenc, pb->pkg);
+  astencoder_begin(astenc, pkg);
 
   // add top-level declarations from pkg->api
-  for (u32 i = 0; i < pb->pkg->api.len && err == 0; i++)
-    err = astencoder_add_ast(astenc, pb->pkg->api.v[i], ASTENCODER_PUB_API);
+  for (u32 i = 0; i < pkg->api.len && err == 0; i++) {
+    err = astencoder_add_ast(astenc, pkg->api.v[i], ASTENCODER_PUB_API);
+    if (err)
+      dlog("astencoder_add_ast: %s", err_str(err));
+  }
 
   // Register all source files.
   // This is needed since, even though astencoder_add_ast implicitly registers source
@@ -785,8 +973,11 @@ err_t pkgbuild_metagen(pkgbuild_t* pb) {
   // Note that it does not matter if we call astencoder_add_srcfile before or after
   // calling astencoder_add_ast, as source files are ordered by the encoder, so the
   // results are the same no matter the order we call these functions.
-  for (u32 i = 0; i < pb->pkg->srcfiles.len && err == 0; i++)
-    err = astencoder_add_srcfile(astenc, &pb->pkg->srcfiles.v[i]);
+  for (u32 i = 0; i < pkg->srcfiles.len && err == 0; i++) {
+    err = astencoder_add_srcfile(astenc, &pkg->srcfiles.v[i]);
+    if (err)
+      dlog("astencoder_add_srcfile(%s): %s", pkg->srcfiles.v[i].name.p, err_str(err));
+  }
 
   // finalize
   if (!err)
@@ -806,8 +997,8 @@ end:
 
 
 static err_t cgen_api(pkgbuild_t* pb, cgen_t* g, cgen_pkgapi_t* pkgapi) {
-  str_t pubhfile = pkg_buildfile(pb->pkg, pb->c, "pub.h");
-  if UNLIKELY(pubhfile.len == 0)
+  str_t pubhfile = {0};
+  if UNLIKELY(!pkg_buildfile(pb->pkgc.pkg, pb->c, &pubhfile, PKG_APIHFILE_NAME))
     return ErrNoMem;
 
   if (pb->c->opt_verbose)
@@ -838,11 +1029,16 @@ err_t pkgbuild_cgen(pkgbuild_t* pb) {
   compiler_t* c = pb->c;
 
   dlog_if(opt_trace_cgen, "————————— cgen —————————");
-  assert(pb->pkg->srcfiles.len > 0);
+  assert(pb->pkgc.pkg->srcfiles.len > 0);
 
   // create C code generator
   cgen_t g;
-  if (!cgen_init(&g, c, pb->pkg, c->ma)) {
+  u32 cgen_flags = 0;
+  if ((pb->flags & PKGBUILD_EXE)) {
+    assert(pb->c->opt_nomain == false); // checked before setting PKGBUILD_EXE
+    cgen_flags |= CGEN_EXE;
+  }
+  if (!cgen_init(&g, c, pb->pkgc.pkg, c->ma, cgen_flags)) {
     dlog("cgen_init: %s", err_str(ErrNoMem));
     return ErrNoMem;
   }
@@ -884,14 +1080,16 @@ end:
 
 
 err_t pkgbuild_begin_late_compilation(pkgbuild_t* pb) {
-  if (pb->pkg->srcfiles.len == 0)
+  pkg_t* pkg = pb->pkgc.pkg;
+
+  if (pkg->srcfiles.len == 0)
     return 0;
 
   err_t err = 0;
   assertf(pb->ofiles.len > 0, "prepare_builddir not called");
 
-  for (u32 i = 0; i < pb->pkg->srcfiles.len && err == 0; i++) {
-    srcfile_t* srcfile = &pb->pkg->srcfiles.v[i];
+  for (u32 i = 0; i < pkg->srcfiles.len && err == 0; i++) {
+    srcfile_t* srcfile = &pkg->srcfiles.v[i];
     if (srcfile->type != FILE_CO)
       continue;
     const char* cfile = cfile_of_srcfile_id(pb, i);
@@ -909,7 +1107,7 @@ err_t pkgbuild_begin_late_compilation(pkgbuild_t* pb) {
 
 err_t pkgbuild_await_compilation(pkgbuild_t* pb) {
   err_t err = 0;
-  for (u32 i = 0; i < pb->pkg->srcfiles.len; i++) {
+  for (u32 i = 0; i < pb->pkgc.pkg->srcfiles.len; i++) {
     err_t err1 = promise_await(&pb->promisev[i]);
     if (!err)
       err = err1;
@@ -918,29 +1116,57 @@ err_t pkgbuild_await_compilation(pkgbuild_t* pb) {
 }
 
 
+static bool deplist_add_deps_of(ptrarray_t* deplist, memalloc_t ma, const pkg_t* pkg) {
+  for (u32 i = 0; i < pkg->imports.len; i++) {
+    const pkg_t* dep = pkg->imports.v[i];
+    if (!ptrarray_sortedset_addptr(deplist, ma, dep))
+      return false;
+    if (!deplist_add_deps_of(deplist, ma, dep))
+      return false;
+  }
+  return true;
+}
+
+
 static err_t link_exe(pkgbuild_t* pb, const char* outfile) {
   compiler_t* c = pb->c;
   err_t err = 0;
+  str_t lto_cachedir = {0};
+  ptrarray_t deplist = {0}; // pkg_t*[]
+  ptrarray_t libfiles = {0}; // const char*[]
 
   // TODO: -Llibdir
   // char libflag[PATH_MAX];
   // snprintf(libflag, sizeof(libflag), "-L%s", c->libdir);
 
-  // TODO: libfiles
-  // assert(*c->builddir != 0);
-  const char* libfiles[] = {
-    path_join_alloca(pb->c->builddir, "pkg/std/runtime/libruntime.a"), // XXX FIXME
-  };
+  // build list of (unique) dependencies
+  if (!deplist_add_deps_of(&deplist, pb->c->ma, pb->pkgc.pkg)) {
+    err = ErrNoMem;
+    goto end;
+  }
 
-  assert(pb->ofiles.len > 0);
+  // build list of libfiles for each dependency
+  if (!ptrarray_reserve_exact(&libfiles, pb->c->ma, deplist.len)) {
+    err = ErrNoMem;
+    goto end;
+  }
+  for (u32 i = 0; i < deplist.len; i++) {
+    pkg_t* dep = deplist.v[i];
+    str_t libfile = {0};
+    if (!pkg_libfile(dep, pb->c, &libfile)) {
+      err = ErrNoMem;
+      goto end;
+    }
+    libfiles.v[libfiles.len++] = libfile.p;
+  }
 
   CoLLVMLink link = {
     .target_triple = c->target.triple,
     .outfile = outfile,
     .infilev = (const char*const*)strlist_array(&pb->ofiles),
     .infilec = pb->ofiles.len,
-    .libfilev = libfiles,
-    .libfilec = countof(libfiles),
+    .libfilev = (const char**)libfiles.v,
+    .libfilec = libfiles.len,
     .sysroot = c->sysroot,
     .print_lld_args = coverbose > 1,
     .lto_level = 0,
@@ -948,13 +1174,8 @@ static err_t link_exe(pkgbuild_t* pb, const char* outfile) {
   };
 
   // configure LTO
-  str_t lto_cachedir = {0};
   if (c->buildmode == BUILDMODE_OPT && !target_is_riscv(&c->target)) {
-    lto_cachedir = pkg_builddir(pb->pkg, pb->c);
-    bool ok = lto_cachedir.len > 0;
-    ok &= str_push(&lto_cachedir, PATH_SEP);
-    ok &= str_append(&lto_cachedir, "llvm");
-    if (!ok) {
+    if (!pkg_buildfile(pb->pkgc.pkg, pb->c, &lto_cachedir, "llvm")) {
       err = ErrNoMem;
       goto end;
     }
@@ -967,6 +1188,10 @@ static err_t link_exe(pkgbuild_t* pb, const char* outfile) {
     dlog("llvm_link: %s", err_str(err));
 
 end:
+  for (u32 i = 0; i < libfiles.len; i++)
+    str_free( ((str_t){ libfiles.v[i], strlen((char*)libfiles.v[i]), 0 }) );
+  ptrarray_dispose(&libfiles, pb->c->ma);
+  ptrarray_dispose(&deplist, pb->c->ma);
   str_free(lto_cachedir);
   return err;
 }
@@ -1012,35 +1237,23 @@ err_t pkgbuild_link(pkgbuild_t* pb, const char* outfile) {
 
   assert_promises_completed(pb);
 
-  str_t ofstr = {0};
+  pkg_t* pkg = pb->pkgc.pkg;
+  str_t outfile_str = {0};
   err_t err = 0;
 
-  // build executable if there's a public main function, else build a library
-  bool is_exe = true;
-  void** mainfunp = map_lookup_ptr(&pb->pkg->defs, sym_main);
-  if (!mainfunp || ((expr_t*)*mainfunp)->kind != EXPR_FUN)
-    is_exe = false;
-
-  // if no outfile is given, use the default one:
-  // exe: "{builddir}/bin/{short_pkg_name}"
-  // lib: "{pkgbuilddir}/lib{short_pkg_name}.a"
+  // if no outfile is given, use the default one
   if (*outfile == 0) {
-    bool ok = true;
-    if (is_exe) {
-      ofstr = str_make(pb->c->builddir);
-      ok &= str_append(&ofstr, PATH_SEP_STR "bin" PATH_SEP_STR);
-      ok &= str_append(&ofstr, path_base_cstr(pb->pkg->path.p));
+    bool ok;
+    if (pb->flags & PKGBUILD_EXE) {
+      ok = pkg_exefile(pkg, pb->c, &outfile_str);
     } else {
-      ofstr = pkg_builddir(pb->pkg, pb->c);
-      ok &= str_append(&ofstr, PATH_SEP_STR "lib");
-      ok &= str_append(&ofstr, path_base_cstr(pb->pkg->path.p));
-      ok &= str_append(&ofstr, ".a");
+      ok = pkg_libfile(pkg, pb->c, &outfile_str);
     }
     if (!ok) {
-      str_free(ofstr);
+      str_free(outfile_str);
       return ErrNoMem;
     }
-    outfile = ofstr.p;
+    outfile = outfile_str.p;
   }
 
   pkgbuild_begintask(pb, "link %s", relpath(outfile));
@@ -1049,7 +1262,7 @@ err_t pkgbuild_link(pkgbuild_t* pb, const char* outfile) {
   if (( err = fs_mkdirs(dir, 0755, FS_VERBOSE) ))
     return err;
 
-  if (is_exe) {
+  if (pb->flags & PKGBUILD_EXE) {
     err = link_exe(pb, outfile);
   } else {
     err = link_lib_archive(pb, outfile);
@@ -1059,23 +1272,25 @@ err_t pkgbuild_link(pkgbuild_t* pb, const char* outfile) {
     (pb->flags & PKGBUILD_NOLINK) ? "(compile only)" :
     relpath(outfile));
 
-  str_free(ofstr);
+  str_free(outfile_str);
   return err;
 }
 
 
-err_t build_pkg(
-  pkg_t* pkg, compiler_t* c, const char* outfile, u32 pkgbuild_flags)
+static err_t build_pkg(
+  pkgcell_t pkgc, compiler_t* c, const char* outfile, u32 pkgbuild_flags)
 {
   err_t err;
 
-  if (compiler_errcount(c) > 0) {
-    // TODO: consider returning ErrCanceled in this case
-    dlog("-- WARNING -- build_pkg with a compiler that has encountered hard errors");
+  if UNLIKELY(compiler_errcount(c) > 0) {
+    dlog("-- WARNING -- using a compiler which has encountered errors");
+    return ErrCanceled;
   }
 
+  vlog("building package \"%s\" (%s)", pkgc.pkg->path.p, pkgc.pkg->dir.p);
+
   pkgbuild_t pb;
-  if (( err = pkgbuild_init(&pb, pkg, c, pkgbuild_flags) ))
+  if (( err = pkgbuild_init(&pb, pkgc, c, pkgbuild_flags) ))
     return err;
 
   #define DO_STEP(fn, args...) \
@@ -1118,4 +1333,12 @@ end:
   pkgbuild_dispose(&pb); // TODO: can skip this for top-level package
   #undef DO_STEP
   return err;
+}
+
+
+err_t build_toplevel_pkg(
+  pkg_t* pkg, compiler_t* c, const char* outfile, u32 pkgbuild_flags)
+{
+  assert((pkgbuild_flags & PKGBUILD_DEP) == 0);
+  return build_pkg((pkgcell_t){NULL,pkg}, c, outfile, pkgbuild_flags);
 }

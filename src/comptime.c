@@ -57,7 +57,7 @@ static void seterr(ctx_t* ctx, err_t err) {
     const origin_t*:  *(origin_t*)__tmp, \
           loc_t*:     origin_make(&(ctx)->c->locmap, *(loc_t*)__tmp), \
     const loc_t*:     origin_make(&(ctx)->c->locmap, *(loc_t*)__tmp), \
-          default:    node_origin(&(ctx)->c->locmap, *(node_t**)__tmp) \
+          default:    ast_origin(&(ctx)->c->locmap, *(node_t**)__tmp) \
   ); \
   __origin; \
 })
@@ -534,7 +534,7 @@ bool comptime_eval_uint(compiler_t* c, expr_t* expr, ctimeflag_t flags, u64* res
 
   // error
   if (!(flags & CTIME_NO_DIAG)) {
-    report_diag(c, node_origin(&c->locmap, (node_t*)expr), DIAG_ERR,
+    report_diag(c, ast_origin(&c->locmap, (node_t*)expr), DIAG_ERR,
       "expression does not result in a value of type uint");
   }
   return false;

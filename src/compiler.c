@@ -335,6 +335,7 @@ err_t configure_options(compiler_t* c, const compiler_config_t* config) {
   c->opt_verbose = config->verbose;
   c->opt_nolibc = config->nolibc;
   c->opt_nolibcxx = config->nolibcxx;
+  c->opt_nostdruntime = config->nostdruntime;
   return 0;
 }
 

@@ -182,10 +182,10 @@ inline static locmap_t* locmap(ircons_t* c) {
     const loc_t*:     origin_make(locmap(c), *(loc_t*)__tmp), \
           irval_t**:  origin_make(locmap(c), (*(irval_t**)__tmp)->loc), \
     const irval_t**:  origin_make(locmap(c), (*(irval_t**)__tmp)->loc), \
-          node_t**:   node_origin(locmap(c), *(node_t**)__tmp), \
-    const node_t**:   node_origin(locmap(c), *(node_t**)__tmp), \
-          expr_t**:   node_origin(locmap(c), *(node_t**)__tmp), \
-    const expr_t**:   node_origin(locmap(c), *(node_t**)__tmp) \
+          node_t**:   ast_origin(locmap(c), *(node_t**)__tmp), \
+    const node_t**:   ast_origin(locmap(c), *(node_t**)__tmp), \
+          expr_t**:   ast_origin(locmap(c), *(node_t**)__tmp), \
+    const expr_t**:   ast_origin(locmap(c), *(node_t**)__tmp) \
   ); \
   __origin; \
 })

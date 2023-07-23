@@ -326,9 +326,15 @@ error:
 
 // pkg_resolve_adhoc resolves an "ad-hoc" package made up of individually-provided
 // source files.
-// The path of the package is the path in between cwd and the common path prefix
-// of the source files. If source files are outside of cwd, the package's path
-// will be basename(cwd) and its root dirname(cwd).
+// The path of the package is the path in between cwd and the common path prefix of
+// all source files.
+// If source files are outside of cwd, the package's path will be basename(cwd) and
+// its root dirname(cwd).
+// If a single source file is provided, the source file's name sans extension is
+// appendend to the path.
+// e.g.
+//   co build foo/bar/a.co foo/bar/b.co  =>  pkg_t{path=bar, root=foo}
+//   co build foo/bar/a.co               =>  pkg_t{path=bar/a, root=foo}
 static err_t pkg_resolve_adhoc(
   pkg_t* pkg, const char*const filenamev[], struct stat filestv[], u32 filec)
 {
@@ -401,6 +407,20 @@ static err_t pkg_resolve_adhoc(
     goto end;
   }
 
+  // append single source file name (sans extension) to path
+  if (filec == 1) {
+    const char* filename = filenamev[0];
+    usize len = strlen(filename);
+    filename = path_basen(filename, &len);
+    isize i = string_lastindexof(filename, len, '.');
+    if (i > 0)
+      len = (usize)i;
+    if (!str_push(&pkg->path, '/') || !str_appendlen(&pkg->path, filename, len)) {
+      err = ErrNoMem;
+      goto end;
+    }
+  }
+
   // add srcfiles
   for (u32 i = 0; i < filec; i++) {
     assert(pkg->dir.len+1 < strlen(abspathv[i]));
@@ -448,7 +468,7 @@ err_t pkgs_for_argv(int argc, char* argv[], pkg_t** pkgvp, u32* pkgcp) {
       } else {
         input_type |= 1;
       }
-    } if (S_ISDIR(stv[i].st_mode)) {
+    } else if (S_ISDIR(stv[i].st_mode)) {
       // directory
       input_type |= 2;
     } else if (S_ISREG(stv[i].st_mode)) {
@@ -531,27 +551,67 @@ static bool _append_pkg_builddir(
 }
 
 
-str_t pkg_builddir(const pkg_t* pkg, const compiler_t* c) {
-  str_t s = {0};
-  safecheckx(_append_pkg_builddir(pkg, c, &s, 0));
-  return s;
+bool pkg_builddir(const pkg_t* pkg, const compiler_t* c, str_t* dst) {
+  return _append_pkg_builddir(pkg, c, dst, 0);
 }
 
 
-bool pkg_buildfilea(
+bool pkg_buildfile(
   const pkg_t* pkg, const compiler_t* c, str_t* dst, const char* filename)
 {
   usize filename_len = strlen(filename);
-  bool ok = _append_pkg_builddir(pkg, c, dst, 1 + filename_len);
+  if (!_append_pkg_builddir(pkg, c, dst, 1 + filename_len))
+    return false;
   str_push(dst, PATH_SEP);
-  return ok & str_appendlen(dst, filename, filename_len);
+  str_appendlen(dst, filename, filename_len);
+  return true;
 }
 
 
-str_t pkg_buildfile(const pkg_t* pkg, const compiler_t* c, const char* filename) {
-  str_t apifile = {0};
-  safecheckx(pkg_buildfilea(pkg, c, &apifile, filename));
-  return apifile;
+bool pkg_libfile(const pkg_t* pkg, const compiler_t* c, str_t* dst) {
+  #define PKG_LIBFILE_PREFIX "lib"
+  #define PKG_LIBFILE_SUFFIX ".a"
+
+  // note: not PATH_SEP but "/" since pkg path is always POSIX style
+  isize slashi = string_indexof(pkg->path.p, pkg->path.len, '/') + 1;
+  usize extracap = 1  // "/"
+                 + strlen(PKG_LIBFILE_PREFIX)
+                 + (pkg->path.len - (usize)slashi)
+                 + strlen(PKG_LIBFILE_SUFFIX) ;
+  if (!_append_pkg_builddir(pkg, c, dst, extracap))
+    return false;
+  str_append(dst, PATH_SEP_STR PKG_LIBFILE_PREFIX);
+  str_appendlen(dst, pkg->path.p + slashi, pkg->path.len - (usize)slashi);
+  str_append(dst, PKG_LIBFILE_SUFFIX);
+  return true;
+}
+
+
+bool pkg_exefile(const pkg_t* pkg, const compiler_t* c, str_t* dst) {
+  #define PKG_EXEDIRNAME "bin"
+
+  isize slashi = string_indexof(pkg->path.p, pkg->path.len, '/') + 1;
+
+  slice_t builddir = slice_cstr(c->builddir);
+  slice_t suffix = {0};
+  // TODO: Windows target:
+  // if (c->target.sys == SYS_win32)
+  //   suffix = slice_cstr(".exe");
+
+  usize nbyte = builddir.len
+              + 1 + strlen(PKG_EXEDIRNAME)
+              + 1 + (pkg->path.len - (usize)slashi)
+              + suffix.len;
+
+  if (!str_ensure_avail(dst, nbyte))
+    return false;
+
+  // e.g. builddir/bin/foo.exe
+  str_appendlen(dst, builddir.chars, builddir.len);
+  str_append(dst, PATH_SEP_STR PKG_EXEDIRNAME PATH_SEP_STR);
+  str_appendlen(dst, pkg->path.p + slashi, pkg->path.len - (usize)slashi);
+  str_appendlen(dst, suffix.chars, suffix.len);
+  return true;
 }
 
 
