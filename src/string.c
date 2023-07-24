@@ -55,6 +55,25 @@ isize string_indexof(const char* p, usize len, char c) {
   return pp ? (isize)(uintptr)(pp - p) : -1l;
 }
 
+isize string_indexofstr(
+  const char* haystack, usize haystack_len,
+  const char* needle, usize needle_len)
+{
+  // slow, naive implementation
+  if (haystack_len == 0 || needle_len == 0 || haystack_len < needle_len)
+    return -1;
+  for (usize i = 0; i <= haystack_len - needle_len; i++) {
+    usize j;
+    for (j = 0; j < needle_len; j++) {
+      if (haystack[i + j] != needle[j])
+        break;
+    }
+    if (j == needle_len)
+      return (isize)i;
+  }
+  return -1;
+}
+
 
 const char* strim_begin(const char* s, usize len, char trimc) {
   usize i = 0;

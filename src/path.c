@@ -206,6 +206,24 @@ usize _path_clean(char* buf, usize bufcap, const char* path, usize len, char pat
   usize wl = 0;     // logical bytes written
   usize dotdot = 0; // w offset of most recent ".."
 
+  // Passing a bufcap smaller than (or equal in length to) input can cause unexpeced
+  // results with the last character missing.
+  // For example:
+  //   char* example = strdup("../..");
+  //   path_cleanx(example, strlen(example), example, strlen(example));
+  //   printf("%s\n", example); // "../." <—— note missing "." at end
+  // We have capacity for the terminating NUL byte:
+  //   char* example = strdup("../..");
+  //   path_cleanx(example, strlen(example) + 1, example, strlen(example));
+  //   printf("%s\n", example); // "../.."
+  //
+  #ifdef DEBUG
+  if (bufcap <= len) {
+    dlog("warning: %s called with bufcap smaller than input len", __FUNCTION__);
+    fprint_stacktrace(stderr, /*frame_offset*/1);
+  }
+  #endif
+
   #define DST_APPEND(c) ( buf[w] = c, w += (usize)(w < (bufcap-1)), wl++ )
   #define IS_SEP(c)     ((c) == pathsep)
 
@@ -326,11 +344,11 @@ str_t path_abs(const char* path) {
 
 
 bool path_makeabs(str_t* path) {
-  bool ok = path_clean(path);
   if (path_isabs(path->p))
-    return ok;
+    return path_clean(path);
   // note: initcwd[initcwd_len-1] is always PATH_SEP
-  return str_prependlen(path, initcwd, initcwd_len);
+  bool ok = str_prependlen(path, initcwd, initcwd_len);
+  return ok & path_clean(path);
 }
 
 
@@ -377,7 +395,7 @@ char** nullable path_parselist(memalloc_t ma, const char* pathlist) {
     if (slen) {
       *slistp++ = strp;
       memcpy(strp, &pathlist[start], slen);
-      UNUSED usize n = path_cleanx(strp, slen, strp, slen);
+      UNUSED usize n = path_cleanx(strp, slen + 1, strp, slen);
       assert(n <= slen);
       strp += slen;
       *strp++ = 0;

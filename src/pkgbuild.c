@@ -3,6 +3,7 @@
 #include "pkgbuild.h"
 #include "path.h"
 #include "astencode.h"
+#include "sha256.h"
 #include "llvm/llvm.h"
 
 #include <sys/stat.h>
@@ -65,6 +66,8 @@ void pkgbuild_dispose(pkgbuild_t* pb) {
   for (u32 i = 0; i < pb->pkgc.pkg->srcfiles.len; i++)
     srcfile_close(&pb->pkgc.pkg->srcfiles.v[i]);
 
+  cgen_pkgapi_dispose(&pb->cgen, &pb->pkgapi);
+  cgen_dispose(&pb->cgen);
   bgtask_close(pb->bgt);
   memalloc_bump_in_dispose(pb->ast_ma);
   strlist_dispose(&pb->cfiles);
@@ -531,7 +534,7 @@ static err_t load_dependency0(pkgbuild_t* pb, pkgcell_t pkgc) {
   const void* encdata;  // contents of metafile
   struct stat metast;   // status of metafile
   astdecoder_t* astdec = NULL;
-  bool did_buildpkg = false; // true if we have called build_dependency
+  bool did_build_dependency = false; // true if we have called build_dependency
   pkg_t* pkg = pkgc.pkg;
 
   // get library file mtime
@@ -548,8 +551,7 @@ static err_t load_dependency0(pkgbuild_t* pb, pkgcell_t pkgc) {
 
   // if no libfile exist, build
   if (libmtime == 0) {
-    dlog("NO LIBFILE");
-    did_buildpkg = true;
+    did_build_dependency = true;
     if (( err = build_dependency(pb, pkgc) )) {
       dlog("build_dependency: %s", err_str(err));
       encdata = NULL;
@@ -568,13 +570,13 @@ open_metafile:
 
     // if this is our second attempt and the file is still not showing;
     // something is broken with build_pkg or the file system (or a race happened)
-    if (did_buildpkg) {
+    if (did_build_dependency) {
       elog("%s: failed to build", relpath(metafile.p));
       goto end;
     }
 
     // build package and then try opening metafile again
-    did_buildpkg = true;
+    did_build_dependency = true;
     if (( err = build_dependency(pb, pkgc) )) {
       dlog("build_dependency: %s", err_str(err));
       goto end;
@@ -598,7 +600,7 @@ open_metafile:
   // - decpkg.imports
   if (( err = astdecoder_decode_header(astdec, pkg) )) {
     dlog("astdecoder_decode_header: %s", err_str(err));
-    if (!did_buildpkg && err == ErrNotSupported) {
+    if (!did_build_dependency && err == ErrNotSupported) {
       // the encoded file is of an unsupported format
       pkg->mtime = 0;
     } else {
@@ -606,11 +608,11 @@ open_metafile:
     }
   } else {
     // update pkg->mtime to mtime of metafile
-    pkg->mtime = unixtime_of_stat_mtime(&metast);
+    pkg->mtime = MIN(libmtime, unixtime_of_stat_mtime(&metast));
   }
 
   // unless we just built the package, check source files and load imports
-  if (!did_buildpkg) {
+  if (!did_build_dependency) {
     // check if source files have been modified
     bool isuptodate;
     if (pkg->mtime == 0) {
@@ -621,12 +623,24 @@ open_metafile:
 
     // load dependencies
     if (isuptodate) {
+      usize expect_api_sha256[32/sizeof(usize)];
       for (u32 i = 0; i < pkg->imports.len; i++) {
         pkg_t* dep = pkg->imports.v[i];
+
+        // save "expected" API checksum of dep
+        memcpy(expect_api_sha256, dep->api_sha256, 32);
+
+        // load the dependency
         if (( err = load_dependency(pb, (pkgcell_t){&pkgc,dep}) ))
           goto end;
-        if (dep->mtime > pkg->mtime) {
-          // dlog("[%s] dep \"%s\" is newer", pkg->path.p, relpath(dep->dir.p));
+
+        if (dep->mtime <= pkg->mtime)
+          continue;
+        // The dependency has recently been modified (maybe we just built it.)
+        // Check if its API changed
+        if (memcmp(expect_api_sha256, dep->api_sha256, 32) != 0) {
+          // dep API changed (or was previously unknown)
+          dlog("[%s] dep \"%s\" changed", pkg->path.p, relpath(dep->dir.p));
           isuptodate = false;
           break;
         }
@@ -640,7 +654,7 @@ open_metafile:
       pkg->imports.len = 0;
 
       // at least one source file has been modified since metafile was modified
-      did_buildpkg = true;
+      did_build_dependency = true;
       if (( err = build_dependency(pb, pkgc) ))
         goto end;
 
@@ -741,7 +755,8 @@ static err_t get_runtime_pkg(pkgbuild_t* pb, pkg_t** rt_pkg) {
     rt_rootlen, rt_pkgdir.p);
 
   // intern package in pkgindex
-  err = pkgindex_intern(pb->c, str_slice(rt_pkgdir), rt_pkgpath, rt_pkg);
+  err = pkgindex_intern(
+    pb->c, str_slice(rt_pkgdir), rt_pkgpath, /*api_sha256*/NULL, rt_pkg);
 
 end:
   str_free(rt_pkgdir);
@@ -800,11 +815,11 @@ err_t pkgbuild_import(pkgbuild_t* pb) {
     pkg_t* dep = pkg->imports.v[i];
     if (!check_import_cycle(pb, dep)) {
       err = ErrCanceled;
-    } else {
-      err = load_dependency(pb, (pkgcell_t){&pb->pkgc, dep});
-      if (err)
-        dlog("load_dependency: %s", err_str(err));
+      break;
     }
+    err = load_dependency(pb, (pkgcell_t){&pb->pkgc, dep});
+    if (err)
+      dlog("load_dependency: %s", err_str(err));
   }
 
   // trim excess space of imports array since we'll be keeping it around
@@ -847,6 +862,10 @@ err_t pkgbuild_typecheck(pkgbuild_t* pb) {
   compiler_t* c = pb->c;
 
   pkgbuild_begintask(pb, "typecheck");
+
+  if (pb->unitc == 0)
+    return 0;
+
   dlog_if(opt_trace_typecheck, "————————— typecheck —————————");
 
   // make sure there are no parse errors
@@ -872,8 +891,6 @@ err_t pkgbuild_typecheck(pkgbuild_t* pb) {
     dump_pkg_ast(pb->pkgc.pkg, pb->unitv, pb->unitc);
   }
 
-  // dlog("abort");abort(); // XXX
-
   // analyze
   dlog_if(opt_trace_ir, "————————— IR —————————");
   err = analyze(c, pb->ast_ma, pb->pkgc.pkg, pb->unitv, pb->unitc);
@@ -896,6 +913,11 @@ err_t pkgbuild_typecheck(pkgbuild_t* pb) {
     dump_pkg_ast(pb->pkgc.pkg, pb->unitv, pb->unitc);
   }
 
+  return 0;
+}
+
+
+err_t pkgbuild_setinfo(pkgbuild_t* pb) {
   // create public namespace for package, at pkg->api
   // first, count declarations so we can allocate an array of just the right size
   u32 nmembers = 0;
@@ -912,8 +934,15 @@ err_t pkgbuild_typecheck(pkgbuild_t* pb) {
   for (u32 i = 0; i < pb->unitc; i++) {
     nodearray_t decls = pb->unitv[i]->children;
     for (u32 i = 0; i < decls.len; i++) {
-      if (decls.v[i]->flags & NF_VIS_PUB)
-        pkg->api.v[pkg->api.len++] = decls.v[i];
+      // skip non-public statements
+      if ((decls.v[i]->flags & NF_VIS_PUB) == 0)
+        continue;
+
+      // skip public function _declarations_
+      if (decls.v[i]->kind == EXPR_FUN && ((fun_t*)decls.v[i])->body == NULL)
+        continue;
+
+      pkg->api.v[pkg->api.len++] = decls.v[i];
     }
   }
 
@@ -932,6 +961,97 @@ err_t pkgbuild_typecheck(pkgbuild_t* pb) {
   }
 
   return 0;
+}
+
+
+static err_t pkgbuild_cgen_pub_api(pkgbuild_t* pb) {
+  str_t pubhfile = {0};
+  if UNLIKELY(!pkg_buildfile(pb->pkgc.pkg, pb->c, &pubhfile, PKG_APIHFILE_NAME))
+    return ErrNoMem;
+
+  if (pb->c->opt_verbose)
+    pkgbuild_begintask(pb, "cgen %s", relpath(pubhfile.p));
+
+  err_t err = cgen_pkgapi(&pb->cgen, (const unit_t**)pb->unitv, pb->unitc, &pb->pkgapi);
+  if (err) {
+    dlog("cgen_pkgapi: %s", err_str(err));
+    goto end;
+  }
+
+  if (opt_trace_cgen) {
+    fprintf(stderr, "—————————— cgen API %s ——————————\n", relpath(pubhfile.p));
+    fwrite(pb->pkgapi.pub_header.chars, pb->pkgapi.pub_header.len, 1, stderr);
+    fputs("\n——————————————————————————————————\n", stderr);
+  }
+
+  // compute SHA-256 sum of public API
+  sha256_data(
+    pb->pkgc.pkg->api_sha256,
+    pb->pkgapi.pub_header.p, pb->pkgapi.pub_header.len);
+
+  err = fs_writefile_mkdirs(pubhfile.p, 0660, pb->pkgapi.pub_header);
+
+end:
+  str_free(pubhfile);
+  return err;
+}
+
+
+err_t pkgbuild_cgen_pub(pkgbuild_t* pb) {
+  err_t err;
+  compiler_t* c = pb->c;
+
+  dlog_if(opt_trace_cgen, "————————— cgen —————————");
+  assert(pb->pkgc.pkg->srcfiles.len > 0);
+
+  // create C code generator
+  u32 cgen_flags = 0;
+  if ((pb->flags & PKGBUILD_EXE)) {
+    assert(c->opt_nomain == false); // checked before setting PKGBUILD_EXE
+    cgen_flags |= CGEN_EXE;
+  }
+  if (!cgen_init(&pb->cgen, c, pb->pkgc.pkg, c->ma, cgen_flags)) {
+    dlog("cgen_init: %s", err_str(ErrNoMem));
+    return ErrNoMem;
+  }
+
+  // create output dir and initialize cfiles & ofiles arrays
+  if (( err = prepare_builddir(pb) ))
+    return err;
+
+  // generate package C header
+  if (( err = pkgbuild_cgen_pub_api(pb) ))
+    return err;
+
+  return err;
+}
+
+
+err_t pkgbuild_cgen_pkg(pkgbuild_t* pb) {
+  err_t err = 0;
+
+  // generate one C file for each unit
+  for (u32 i = 0; i < pb->unitc; i++) {
+    unit_t* unit = pb->unitv[i];
+    const char* cfile = cfile_of_unit(pb, unit);
+
+    if (pb->c->opt_verbose)
+      pkgbuild_begintask(pb, "cgen %s", relpath(cfile));
+
+    if (( err = cgen_unit_impl(&pb->cgen, unit, &pb->pkgapi) ))
+      break;
+
+    if (opt_trace_cgen) {
+      fprintf(stderr, "—————————— cgen %s ——————————\n", relpath(cfile));
+      fwrite(pb->cgen.outbuf.p, pb->cgen.outbuf.len, 1, stderr);
+      fputs("\n——————————————————————————————————\n", stderr);
+    }
+
+    if (( err = fs_writefile_mkdirs(cfile, 0660, buf_slice(pb->cgen.outbuf)) ))
+      break;
+  }
+
+  return err;
 }
 
 
@@ -992,89 +1112,6 @@ err_t pkgbuild_metagen(pkgbuild_t* pb) {
 end:
   str_free(filename);
   buf_dispose(&outbuf);
-  return err;
-}
-
-
-static err_t cgen_api(pkgbuild_t* pb, cgen_t* g, cgen_pkgapi_t* pkgapi) {
-  str_t pubhfile = {0};
-  if UNLIKELY(!pkg_buildfile(pb->pkgc.pkg, pb->c, &pubhfile, PKG_APIHFILE_NAME))
-    return ErrNoMem;
-
-  if (pb->c->opt_verbose)
-    pkgbuild_begintask(pb, "cgen %s", relpath(pubhfile.p));
-
-  err_t err = cgen_pkgapi(g, (const unit_t**)pb->unitv, pb->unitc, pkgapi);
-  if (err) {
-    dlog("cgen_pkgapi: %s", err_str(err));
-    goto end;
-  }
-
-  if (opt_trace_cgen) {
-    fprintf(stderr, "—————————— cgen API %s ——————————\n", relpath(pubhfile.p));
-    fwrite(pkgapi->pub_header.chars, pkgapi->pub_header.len, 1, stderr);
-    fputs("\n——————————————————————————————————\n", stderr);
-  }
-
-  err = fs_writefile_mkdirs(pubhfile.p, 0660, pkgapi->pub_header);
-
-end:
-  str_free(pubhfile);
-  return err;
-}
-
-
-err_t pkgbuild_cgen(pkgbuild_t* pb) {
-  err_t err;
-  compiler_t* c = pb->c;
-
-  dlog_if(opt_trace_cgen, "————————— cgen —————————");
-  assert(pb->pkgc.pkg->srcfiles.len > 0);
-
-  // create C code generator
-  cgen_t g;
-  u32 cgen_flags = 0;
-  if ((pb->flags & PKGBUILD_EXE)) {
-    assert(pb->c->opt_nomain == false); // checked before setting PKGBUILD_EXE
-    cgen_flags |= CGEN_EXE;
-  }
-  if (!cgen_init(&g, c, pb->pkgc.pkg, c->ma, cgen_flags)) {
-    dlog("cgen_init: %s", err_str(ErrNoMem));
-    return ErrNoMem;
-  }
-
-  // create output dir and initialize cfiles & ofiles arrays
-  err = prepare_builddir(pb);
-  if (err)
-    goto end;
-
-  // generate package C header
-  cgen_pkgapi_t pkgapi;
-  err = cgen_api(pb, &g, &pkgapi);
-
-  // generate one C file for each unit
-  for (u32 i = 0; i < pb->unitc && !err; i++) {
-    unit_t* unit = pb->unitv[i];
-    const char* cfile = cfile_of_unit(pb, unit);
-
-    if (pb->c->opt_verbose)
-      pkgbuild_begintask(pb, "cgen %s", relpath(cfile));
-
-    if (( err = cgen_unit_impl(&g, unit, &pkgapi) ))
-      break;
-
-    if (opt_trace_cgen) {
-      fprintf(stderr, "—————————— cgen %s ——————————\n", relpath(cfile));
-      fwrite(g.outbuf.p, g.outbuf.len, 1, stderr);
-      fputs("\n——————————————————————————————————\n", stderr);
-    }
-
-    err = fs_writefile_mkdirs(cfile, 0660, buf_slice(g.outbuf));
-  }
-
-  cgen_pkgapi_dispose(&g, &pkgapi);
-end:
-  cgen_dispose(&g);
   return err;
 }
 
@@ -1281,20 +1318,26 @@ static err_t build_pkg(
   pkgcell_t pkgc, compiler_t* c, const char* outfile, u32 pkgbuild_flags)
 {
   err_t err;
+  bool did_await_compilation = false;
 
   if UNLIKELY(compiler_errcount(c) > 0) {
-    dlog("-- WARNING -- using a compiler which has encountered errors");
+    dlog("%s failing immediately (compiler has encountered errors)", __FUNCTION__);
     return ErrCanceled;
   }
 
   vlog("building package \"%s\" (%s)", pkgc.pkg->path.p, pkgc.pkg->dir.p);
 
-  pkgbuild_t pb;
-  if (( err = pkgbuild_init(&pb, pkgc, c, pkgbuild_flags) ))
+  // create pkgbuild_t struct
+  pkgbuild_t* pb = mem_alloct(c->ma, pkgbuild_t);
+  if (!pb)
+    return ErrNoMem;
+  if UNLIKELY(( err = pkgbuild_init(pb, pkgc, c, pkgbuild_flags) )) {
+    mem_freex(c->ma, MEM(pb, sizeof(pkgbuild_t)));
     return err;
+  }
 
   #define DO_STEP(fn, args...) \
-    if (( err = fn(&pb, ##args) )) { \
+    if (( err = fn(pb, ##args) )) { \
       dlog("%s: %s", #fn, err_str(err)); \
       goto end; \
     }
@@ -1314,23 +1357,33 @@ static err_t build_pkg(
   // typecheck package
   DO_STEP(pkgbuild_typecheck);
 
+  // set package info like pkg->api and pb->flags&PKGBUILD_EXE
+  DO_STEP(pkgbuild_setinfo);
+
+  // generate public C API
+  DO_STEP(pkgbuild_cgen_pub);
+
   // generate package metadata (can run in parallel to the rest of these tasks)
   DO_STEP(pkgbuild_metagen);
 
-  // generate C code for package
-  DO_STEP(pkgbuild_cgen);
+  // generate package C code
+  DO_STEP(pkgbuild_cgen_pkg);
 
   // begin compilation of C source files generated from compis sources
   DO_STEP(pkgbuild_begin_late_compilation);
 
   // wait for compilation tasks to finish
+  did_await_compilation = true;
   DO_STEP(pkgbuild_await_compilation);
 
   // link exe or library (does nothing if PKGBUILD_NOLINK flag is set)
   DO_STEP(pkgbuild_link, outfile);
 
 end:
-  pkgbuild_dispose(&pb); // TODO: can skip this for top-level package
+  if (!did_await_compilation)
+    pkgbuild_await_compilation(pb);
+  pkgbuild_dispose(pb); // TODO: can skip this for top-level package
+  mem_freet(c->ma, pb);
   #undef DO_STEP
   return err;
 }

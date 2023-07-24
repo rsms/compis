@@ -45,25 +45,37 @@ void buf_dispose(buf_t* b) {
 
 bool buf_grow(buf_t* b, usize extracap) {
   usize newcap;
+
+  if (b->oom)
+    return false;
+
   if (b->cap == 0) {
     newcap = MAX(256, CEIL_POW2(extracap));
   } else if (b->cap < extracap || check_mul_overflow(b->cap, 2lu, &newcap)) {
     // either the current capacity is less than what we need or cap>USIZE_MAX/2
     if (check_add_overflow(b->cap, CEIL_POW2(extracap), &newcap)) {
       // fall back to exact growth
-      if (check_add_overflow(b->cap, extracap, &newcap))
+      if (check_add_overflow(b->cap, extracap, &newcap)) {
+        b->oom = true;
         return false;
+      }
     }
   }
+
   if (!b->external)
     return mem_resize(b->ma, (mem_t*)b, newcap);
+
   mem_t m = mem_alloc(b->ma, newcap);
-  if (!m.p)
+  if (!m.p) {
+    b->oom = true;
     return false;
+  }
+
   memcpy(m.p, b->p, b->len);
   b->p = m.p;
   b->cap = newcap;
   b->external = false;
+
   return true;
 }
 
@@ -72,8 +84,10 @@ bool buf_reserve(buf_t* b, usize minavail) {
   if (buf_avail(b) >= minavail)
     return true;
   usize newlen;
-  if (check_add_overflow(b->len, minavail, &newlen))
+  if (check_add_overflow(b->len, minavail, &newlen)) {
+    b->oom = true;
     return false;
+  }
   return buf_grow(b, newlen - b->cap);
 }
 
@@ -88,8 +102,11 @@ bool buf_nullterm(buf_t* b) {
 
 void* nullable buf_alloc(buf_t* b, usize len) {
   usize newlen;
-  if (len == 0 || check_add_overflow(b->len, len, &newlen))
+  if (len == 0 || check_add_overflow(b->len, len, &newlen)) {
+    if (len > 0)
+      b->oom = true;
     return NULL;
+  }
   if (newlen > b->cap && UNLIKELY(!buf_grow(b, newlen - b->cap)))
     return NULL;
   u8* p = b->bytes + b->len;

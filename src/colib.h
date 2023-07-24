@@ -1022,6 +1022,8 @@ isize sindexof(const char* s, char c);
 isize slastindexof(const char* s, char c);
 isize string_indexof(const char* p, usize len, char c);
 isize string_lastindexof(const char* s, usize len, char c);
+isize string_indexofstr(
+  const char* p, usize len, const char* needle, usize needlelen);
 
 // strim_begin returns offset into s past any leading trimc characters.
 // e.g. strim_begin("  hello", 7, ' ') => "hello"

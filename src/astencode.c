@@ -26,7 +26,7 @@ AST encoding format:
   nodecount   = u32x
   rootcount   = u32x
 
-  pkg     = pkgroot ":" pkgpath LF
+  pkg     = pkgroot ":" pkgpath (":" sha256x)? LF
   pkgroot = filepath
   pkgpath = filepath
   srcfile = filepath LF
@@ -45,6 +45,7 @@ AST encoding format:
   nodeid    = u32x
   symbolid  = u32x
 
+  sha256x  = hexdigit{64}
   filepath = <byte 0x20..0x39, 0x3B...0xFF>+  // note: 0x40 = ":"
   len      = u32x
   alnum    = digit | <byte 'A'>
@@ -65,6 +66,7 @@ AST encoding format:
 #include "astencode.h"
 #include "path.h"
 #include "hash.h"
+#include "sha256.h"
 
 
 #define FILE_MAGIC "cAST"
@@ -737,6 +739,10 @@ static void encode_pkg(astencoder_t* a, buf_t* outbuf, const pkg_t* pkg) {
   encode_filepath(a, outbuf, pkg->root.p, pkg->root.len);
   outbuf->chars[outbuf->len++] = ':';
   encode_filepath(a, outbuf, pkg->path.p, pkg->path.len);
+  if (!sha256_iszero(pkg->api_sha256)) {
+    outbuf->chars[outbuf->len++] = ':';
+    buf_appendhex(outbuf, pkg->api_sha256, sizeof(pkg->api_sha256));
+  }
   outbuf->chars[outbuf->len++] = '\n';
 }
 
@@ -791,9 +797,10 @@ static usize enc_preallocsize(astencoder_t* a) {
               + 8 + 1  // rootcount LF
   ;
 
-  // add space needed to encode pkg (pkgroot ":" pkgpath LF)
+  // add space needed to encode pkg (pkgroot ":" pkgpath (":" sha256x)? LF)
   a->oom |= check_add_overflow(nbyte, a->pkg->root.len + 1, &nbyte);
   a->oom |= check_add_overflow(nbyte, a->pkg->path.len + 1, &nbyte);
+  a->oom |= check_add_overflow(nbyte, 64ul + 1, &nbyte);
 
   // add space needed to encode srcfiles
   for (u32 i = 0; i < a->srcfileids.len; i++) {
@@ -807,6 +814,7 @@ static usize enc_preallocsize(astencoder_t* a) {
     const pkg_t* dep = a->pkg->imports.v[i];
     a->oom |= check_add_overflow(nbyte, dep->root.len + 1, &nbyte);
     a->oom |= check_add_overflow(nbyte, dep->path.len + 1, &nbyte);
+    a->oom |= check_add_overflow(nbyte, 64ul + 1, &nbyte);
   }
 
   // add space needed to encode symbols
@@ -1657,7 +1665,7 @@ static const u8* decode_bytes_untilchar(
 
 
 static const u8* decode_pkg(DEC_PARAMS, pkg_t* pkg) {
-  // pkg = pkgroot ":" pkgpath LF
+  // pkg = pkgroot ":" pkgpath (":" sha256x)? LF
   const char* linep;
   usize linelen;
   bool ok = true;
@@ -1676,6 +1684,28 @@ static const u8* decode_pkg(DEC_PARAMS, pkg_t* pkg) {
 
   // pkg.path
   p = decode_bytes_untilchar(DEC_ARGS, &linep, &linelen, '\n');
+
+  // decode optional (":" sha256x)?
+  isize coloni = string_lastindexof(linep, linelen, ':');
+  if (coloni > -1) {
+    const u8* hex = (u8*)linep + (coloni + 1);
+    usize taillen = linelen - (usize)coloni - 1;
+    if (taillen != 64)
+      return DEC_ERROR(ErrInvalid, "invalid pkg api hash len (%zu)", taillen);
+    for (usize i = 0; i < 32; i++) {
+      #define DEC_HEXDIGIT(x) ( \
+        ((x) - '0') - \
+        ( (u8)('a' <= (x) && (x) <= 'f') * (('a' - 10) - '0') ) - \
+        ( (u8)('A' <= (x) && (x) <= 'F') * (('A' - 10) - '0') ) \
+      )
+      u8 a = hex[i*2];
+      u8 b = hex[i*2 + 1];
+      pkg->api_sha256[i] = (DEC_HEXDIGIT(a) << 4) | DEC_HEXDIGIT(b);
+    }
+    linelen = (usize)coloni;
+  }
+
+  // check pkg.path
   if UNLIKELY(
     pkg->path.len > 0 &&
     (pkg->path.len != linelen || memcmp(pkg->path.p, linep, linelen) != 0) )
@@ -1755,7 +1785,8 @@ static const u8* decode_imports(DEC_PARAMS, pkg_t* pkg) {
 
     // resolve package in compiler's pkgindex
     pkg_t* dep;
-    err_t err = pkgindex_intern(d->c, str_slice(tmp.dir), str_slice(tmp.path), &dep);
+    err_t err = pkgindex_intern(
+      d->c, str_slice(tmp.dir), str_slice(tmp.path), tmp.api_sha256, &dep);
 
     // add dep to pkg->imports
     if (!err && !pkg_imports_add(pkg, dep, d->c->ma))

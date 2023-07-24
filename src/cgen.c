@@ -3,11 +3,10 @@
 #include "compiler.h"
 #include "abuf.h"
 #include "path.h"
+#include <sys/stat.h>
 
 
-//#define INTERNAL_SEP    "·" // U+00B7 MIDDLE DOT (UTF8: "\xC2\xB7")
-#define CO_TYPE_PREFIX CO_INTERNAL_PREFIX
-#define CO_TYPE_SUFFIX "_t"
+//#define INTERNAL_SEP  "·" // U+00B7 MIDDLE DOT (UTF8: "\xC2\xB7")
 #define ANON_PREFIX    CO_INTERNAL_PREFIX "v"
 #define ANON_FMT       ANON_PREFIX "%x"
 
@@ -40,6 +39,8 @@ bool cgen_init(
 
 
 void cgen_dispose(cgen_t* g) {
+  if (g->ma == NULL)
+    return;
   map_dispose(&g->tmpmap, g->ma);
   map_dispose(&g->typedefmap, g->ma);
   buf_dispose(&g->outbuf);
@@ -55,8 +56,8 @@ inline static locmap_t* locmap(cgen_t* g) {
 
 static void seterr(cgen_t* g, err_t err) {
   #if DEBUG
-  dlog("seterr \"%s\"", err_str(err));
-  fprint_stacktrace(stderr, /*frame_offset*/1);
+    dlog("cgen seterr \"%s\"", err_str(err));
+    //fprint_stacktrace(stderr, /*frame_offset*/1);
   #endif
   if (!g->err)
     g->err = err;
@@ -98,10 +99,10 @@ UNUSED static const char* fmtnode(cgen_t* g, u32 bufindex, const void* nullable 
 #endif
 
 
-#define CHAR(ch)             ( buf_push(&g->outbuf, (ch)), ((void)0) )
-#define PRINT(cstr)          ( buf_print(&g->outbuf, (cstr)), ((void)0) )
-#define PRINTF(fmt, args...) ( buf_printf(&g->outbuf, (fmt), ##args), ((void)0) )
-#define PRINTN(bytes, len)   ( buf_append(&g->outbuf, (bytes), (len)), ((void)0) )
+#define CHAR(ch)             buf_push(&g->outbuf, (ch))
+#define PRINT(cstr)          buf_print(&g->outbuf, (cstr))
+#define PRINTF(fmt, args...) buf_printf(&g->outbuf, (fmt), ##args)
+#define PRINTN(bytes, len)   buf_append(&g->outbuf, (bytes), (len))
 
 
 static char lastchar(cgen_t* g) {
@@ -130,8 +131,10 @@ static bool startloc(cgen_t* g, loc_t loc) {
       g->srcfileid = loc_srcfileid(loc);
       // ` "pkgdir/file.co"`
       PRINT(" \"");
-      PRINTN(sf->pkg->dir.p, sf->pkg->dir.len), CHAR(PATH_SEP);
-      PRINTN(sf->name.p, sf->name.len), CHAR('"');
+      buf_appendrepr(&g->outbuf, sf->pkg->dir.p, sf->pkg->dir.len);
+      CHAR(PATH_SEP);
+      buf_appendrepr(&g->outbuf, sf->name.p, sf->name.len);
+      CHAR('"');
     }
   }
 
@@ -329,10 +332,13 @@ static sym_t intern_typedef(
   g->headnest++;
 
   // generate, appending to g->outbuf
-  startline(g, t->loc);
   sym_t name = gentypename(g, t);
   *vp = name;
+  PRINTF("\n#ifndef __co_DEF_%s", name); g->lineno++;
+  PRINTF("\n#define __co_DEF_%s", name); g->lineno++;
+  startline(g, t->loc);
   gentypedef(g, t, name);
+  PRINT("\n#endif"); g->lineno++;
 
   g->headnest--;
 
@@ -572,8 +578,17 @@ static void ptrtype(cgen_t* g, const ptrtype_t* t) {
 
 static sym_t gen_alias_typename(cgen_t* g, const type_t* t) {
   const aliastype_t* at = (aliastype_t*)t;
+  assertnotnull(at->mangledname);
+  // if (at->mangledname == NULL) {
+  //   str_t name = str_makeempty(strlen(CO_INTERNAL_PREFIX) + strlen(at->name) + 2);
+  //   safecheckf(name.cap > 0, "oom");
+  //   str_append(&name, CO_INTERNAL_PREFIX, at->name, "_t");
+  //   sym_t sym = sym_intern(name.p, name.len);
+  //   str_free(name);
+  //   return sym;
+  //   // return at->name;
+  // }
   return sym_intern(at->mangledname, strlen(at->mangledname));
-  // return ((aliastype_t*)t)->name;
 }
 
 static void gen_alias_typedef(cgen_t* g, const type_t* tp, sym_t typename) {
@@ -653,6 +668,9 @@ static void type(cgen_t* g, const type_t* t) {
     break;
   case TYPE_INT:      return type(g, g->compiler->inttype);
   case TYPE_UINT:     return type(g, g->compiler->uinttype);
+  // case TYPE_INT:      PRINT(CO_TYPE_PREFIX "int"); break;
+  // case TYPE_UINT:     PRINT(CO_TYPE_PREFIX "uint"); break;
+
   case TYPE_FUN:      return funtype(g, (const funtype_t*)t, NULL);
   case TYPE_PTR:      return ptrtype(g, (const ptrtype_t*)t);
   case TYPE_REF:
@@ -716,6 +734,8 @@ static void expr_rvalue(cgen_t* g, const expr_t* n, const type_t* lt) {
         CHAR(',');
         expr(g, n);
         CHAR('}');
+        if (parenwrap)
+          CHAR(')');
         return;
 
       case TYPE_REF: {
@@ -1620,8 +1640,7 @@ static void strlit(cgen_t* g, const strlit_t* n) {
   const type_t* t = n->type;
   if (type_isref(t) && ((reftype_t*)t)->elem->kind == TYPE_ARRAY) {
     PRINTF("(const u8[%llu]){\"", n->len);
-    if UNLIKELY(!buf_appendrepr(&g->outbuf, n->bytes, n->len))
-      seterr(g, ErrNoMem);
+    buf_appendrepr(&g->outbuf, n->bytes, n->len);
     PRINT("\"}");
   } else {
     // string, alias for &[u8]
@@ -1631,8 +1650,7 @@ static void strlit(cgen_t* g, const strlit_t* n) {
     PRINT("(");
     type(g, t);
     PRINTF("){%llu,(const u8[%llu]){\"", n->len, n->len);
-    if UNLIKELY(!buf_appendrepr(&g->outbuf, n->bytes, n->len))
-      seterr(g, ErrNoMem);
+    buf_appendrepr(&g->outbuf, n->bytes, n->len);
     PRINT("\"}}");
   }
 }
@@ -2501,22 +2519,17 @@ static err_t finalize(cgen_t* g, usize headstart) {
   if (g->err)
     return g->err;
 
-  if (g->headbuf.len > 0) {
-    if (!buf_insert(&g->outbuf, headstart, g->headbuf.p, g->headbuf.len)) {
-      dlog("buf_insert: %s", err_str(ErrNoMem));
-      seterr(g, ErrNoMem);
-    }
-  }
+  if (g->headbuf.len > 0)
+    buf_insert(&g->outbuf, headstart, g->headbuf.p, g->headbuf.len);
 
   // make sure outputs ends with LF
   if (g->outbuf.len > 0 && g->outbuf.chars[g->outbuf.len-1] != '\n')
     CHAR('\n');
 
-  // check if we ran out of memory by appending \0 without affecting len
-  if (!buf_nullterm(&g->outbuf)) {
-    dlog("buf_nullterm: %s", err_str(ErrNoMem));
+  buf_nullterm(&g->outbuf);
+
+  if (g->outbuf.oom)
     seterr(g, ErrNoMem);
-  }
 
   return g->err;
 }
@@ -2556,8 +2569,78 @@ err_t cgen_unit_impl(cgen_t* g, const unit_t* u, const cgen_pkgapi_t* nullable p
 
 
 void cgen_pkgapi_dispose(cgen_t* g, cgen_pkgapi_t* pkgapi) {
+  if (g->ma == NULL)
+    return;
   str_free(pkgapi->pkg_header);
   map_dispose(&pkgapi->pkg_typedefs, g->ma);
+}
+
+
+static usize count_linefeeds(const char* p, usize len) {
+  u32 n = 0;
+  for (const char* end = p + len; p < end; p++)
+    n += (u32)(*p == '\n');
+  return n;
+}
+
+
+static void cgen_pkgapi_maybe_add_c_header(cgen_t* g) {
+  #define C_PUB_API_HEADER_FILE "pub-api.co.h"
+
+  str_t hfile = path_join(g->pkg->dir.p, C_PUB_API_HEADER_FILE);
+
+  const void* data;
+  struct stat st;
+  err_t err = mmap_file_ro(hfile.p, &data, &st);
+  if (err) {
+    if (err != ErrNotFound)
+      vlog("ignoring %s (%s)", hfile.p, err_str(err));
+    goto end;
+  }
+  if (st.st_size == 0 || (st.st_size == 1 && *(const u8*)data == '\n')) {
+    vlog("ignoring %s (empty)", hfile.p);
+    goto close;
+  }
+
+  vlog("embedding \"%s\" in " PKG_APIHFILE_NAME, hfile.p);
+
+  // set source file and line info
+  PRINT("\n// ---- begin " C_PUB_API_HEADER_FILE " ----\n"
+        "#line 1 \"");
+  buf_appendrepr(&g->outbuf, hfile.p, hfile.len);
+  PRINT("\"\n");
+
+  // check for relative includes, which are not supported since we are embedding
+  #define LOCAL_CPP_INCLUDE "#include \""
+  isize ipos = string_indexofstr(
+    data, st.st_size, LOCAL_CPP_INCLUDE, strlen(LOCAL_CPP_INCLUDE));
+  if UNLIKELY(ipos != -1) {
+    srcfile_t sf = { .name = hfile, .data = data, .size = st.st_size };
+    origin_t origin = { .file = &sf, .line = count_linefeeds(data, ipos) + 1 };
+    report_diag(g->compiler, origin, DIAG_ERR,
+      "package-local include not supported in " C_PUB_API_HEADER_FILE);
+    seterr(g, ErrCanceled);
+  }
+
+  // copy contents of hfile to outbuf
+  buf_append(&g->outbuf, data, st.st_size);
+  if (g->outbuf.len == 0 || g->outbuf.chars[g->outbuf.len-1] != '\n')
+    buf_push(&g->outbuf, '\n');
+  PRINT("// ---- end " C_PUB_API_HEADER_FILE " ----\n");
+
+  // restore source file and line info
+  u32 lineno = count_linefeeds(g->outbuf.chars, g->outbuf.len) + 2;
+  PRINTF("#line %u \"", lineno);
+  hfile.len = 0; // reuse hfile str_t for apihfile
+  if (!pkg_buildfile(g->pkg, g->compiler, &hfile, PKG_APIHFILE_NAME))
+    seterr(g, ErrNoMem);
+  buf_appendrepr(&g->outbuf, hfile.p, hfile.len);
+  PRINT("\"\n");
+
+close:
+  mmap_unmap(data, st.st_size);
+end:
+  str_free(hfile);
 }
 
 
@@ -2570,6 +2653,8 @@ err_t cgen_pkgapi(cgen_t* g, const unit_t** unitv, u32 unitc, cgen_pkgapi_t* res
   PRINT("#pragma once\n");
   usize headstart = g->outbuf.len;
 
+  cgen_pkgapi_maybe_add_c_header(g);
+
   for (u32 i = 0; i < unitc; i++)
     unit_interface(g, unitv[i], NF_VIS_PUB);
 
@@ -2580,17 +2665,15 @@ err_t cgen_pkgapi(cgen_t* g, const unit_t** unitv, u32 unitc, cgen_pkgapi_t* res
   for (u32 i = 0; i < unitc; i++)
     unit_interface(g, unitv[i], NF_VIS_PKG);
 
-  err_t err = finalize(g, headstart);
+  if (g->err || ( g->err = finalize(g, headstart) ))
+    return g->err;
   pub_header_len += g->headbuf.len;
-
-  if (err)
-    return err;
 
   // Create result map of package-level type definitions by moving g->typedefmap
   // to results and creating a new small empty map for g->typedefmap.
   map_t newtypedefmap;
   if (!map_init(&newtypedefmap, g->ma, 8)) {
-    err = ErrNoMem;
+    g->err = ErrNoMem;
   } else {
     result->pkg_typedefs = g->typedefmap;
     g->typedefmap = newtypedefmap;
@@ -2603,10 +2686,10 @@ err_t cgen_pkgapi(cgen_t* g, const unit_t** unitv, u32 unitc, cgen_pkgapi_t* res
   // We must copy this since it will be reused with cgen_unit_impl,
   // which in turn recycles outbuf.
   result->pkg_header = str_makelen(g->outbuf.p + headstart, g->outbuf.len - headstart);
-  if (result->pkg_header.cap == 0)
-    err = ErrNoMem;
+  if (result->pkg_header.cap == 0 || g->outbuf.oom)
+    seterr(g, ErrNoMem);
 
-  if (err)
+  if (g->err)
     cgen_pkgapi_dispose(g, result);
-  return err;
+  return g->err;
 }

@@ -188,7 +188,6 @@ static void comaxproc_init() {
     if (n == ULONG_MAX || n > U32_MAX || *end || (n == 0 && errno))
       errx(1, "invalid value: COMAXPROC=%s", envvar);
     if (n != 0) {
-      dlog("set comaxproc=%u", (u32)n);
       comaxproc = (u32)n;
       return;
     }

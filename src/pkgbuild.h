@@ -16,16 +16,18 @@ typedef struct pkgcell_ {
 } pkgcell_t;
 
 typedef struct {
-  pkgcell_t   pkgc;
-  compiler_t* c;
-  bgtask_t*   bgt;
-  memalloc_t  ast_ma;
-  u32         flags;
-  u32         unitc;
-  unit_t**    unitv;
-  strlist_t   cfiles;   // ".c" file paths, indexed by pkg->file id
-  strlist_t   ofiles;   // ".o" file paths, indexed by pkg->file id
-  promise_t*  promisev; // one promise for each srcfile, indexed by pkg->file id
+  pkgcell_t     pkgc;
+  compiler_t*   c;
+  bgtask_t*     bgt;
+  memalloc_t    ast_ma;
+  u32           flags;
+  u32           unitc;
+  unit_t**      unitv;
+  strlist_t     cfiles;   // ".c" file paths, indexed by pkg->file id
+  strlist_t     ofiles;   // ".o" file paths, indexed by pkg->file id
+  promise_t*    promisev; // one promise for each srcfile, indexed by pkg->file id
+  cgen_t        cgen;
+  cgen_pkgapi_t pkgapi;
 } pkgbuild_t;
 
 
@@ -37,6 +39,8 @@ err_t pkgbuild_begin_early_compilation(pkgbuild_t* pb);
 err_t pkgbuild_parse(pkgbuild_t* pb);
 err_t pkgbuild_import(pkgbuild_t* pb);
 err_t pkgbuild_typecheck(pkgbuild_t* pb);
+err_t pkgbuild_setinfo(pkgbuild_t* pb);
+err_t pkgbuild_metagen(pkgbuild_t* pb);
 err_t pkgbuild_cgen(pkgbuild_t* pb);
 err_t pkgbuild_begin_late_compilation(pkgbuild_t* pb);
 err_t pkgbuild_await_compilation(pkgbuild_t* pb);

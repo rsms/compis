@@ -3,6 +3,7 @@
 #include "colib.h"
 #include "compiler.h"
 #include "path.h"
+#include "sha256.h"
 
 #include <string.h>
 
@@ -291,9 +292,11 @@ err_t import_resolve_fspath(str_t* fspath, usize* rootlen_out) {
 
   // search COPATH
   // note: copath entries have been path_clean'ed and are never empty.
+  // However, they can still be relative, e.g. "../..".
   for (const char*const* dirp = copath; *dirp;) {
     str_free(tmpstr);
-    if (( tmpstr = path_join(*dirp, fspath->p) ).cap == 0 || !path_makeabs(&tmpstr)) {
+    tmpstr = path_join(*dirp, fspath->p);
+    if (tmpstr.cap == 0 || !path_makeabs(&tmpstr)) {
       err = ErrNoMem;
       goto end;
     }
@@ -357,7 +360,13 @@ err_t pkgindex_add(compiler_t* c, pkg_t* pkg) {
 }
 
 
-err_t pkgindex_intern(compiler_t* c, slice_t pkgdir, slice_t pkgpath, pkg_t** result) {
+err_t pkgindex_intern(
+  compiler_t* c,
+  slice_t pkgdir,
+  slice_t pkgpath,
+  const u8 api_sha256[32],
+  pkg_t** result)
+{
   err_t err = 0;
   pkg_t* pkg = NULL;
 
@@ -384,6 +393,8 @@ err_t pkgindex_intern(compiler_t* c, slice_t pkgdir, slice_t pkgpath, pkg_t** re
   // if package is already indexed, we are done
   if (ent->value) {
     pkg = ent->value;
+    if (api_sha256 && sha256_iszero(pkg->api_sha256))
+      memcpy(pkg->api_sha256, api_sha256, 32);
     goto end;
   }
 
@@ -396,6 +407,8 @@ err_t pkgindex_intern(compiler_t* c, slice_t pkgdir, slice_t pkgpath, pkg_t** re
   pkg->path = str_makelen(pkgpath.chars, pkgpath.len);
   pkg->dir  = str_makelen(pkgdir.chars, pkgdir.len);
   pkg->root = str_makelen(pkgdir.chars, pkgdir.len - pkgpath.len - 1);
+  if (api_sha256)
+    memcpy(pkg->api_sha256, api_sha256, 32);
 
   if LIKELY(pkg->path.cap && pkg->dir.cap && pkg->root.cap) {
     ent->key = pkg->dir.p;
@@ -440,7 +453,7 @@ err_t import_resolve_pkg(
     return err;
   }
 
-  return pkgindex_intern(c, str_slice(*fspath), path, result);
+  return pkgindex_intern(c, str_slice(*fspath), path, /*api_sha256*/NULL, result);
 }
 
 

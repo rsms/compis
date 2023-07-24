@@ -446,7 +446,7 @@ end:
 }
 
 
-err_t pkgs_for_argv(int argc, char* argv[], pkg_t** pkgvp, u32* pkgcp) {
+err_t pkgs_for_argv(int argc, const char*const argv[], pkg_t** pkgvp, u32* pkgcp) {
   // input arguments are either files OR directories:
   // - files builds one ad-hoc package e.g. "build foo/a.co bar/b.c"
   // - directories builds packages e.g. "build foo bar"
@@ -454,6 +454,12 @@ err_t pkgs_for_argv(int argc, char* argv[], pkg_t** pkgvp, u32* pkgcp) {
   err_t err = 0;
   u32 pkgc = 0;
   memalloc_t ma = memalloc_ctx();
+
+  if (argc == 0) {
+    static const char* dot = ".";
+    argv = &dot;
+    argc = 1;
+  }
 
   // check inputs
   struct stat* stv = mem_alloctv(ma, struct stat, (usize)argc);

@@ -63,6 +63,7 @@ usize path_common_dirname(const char*const pathv[], usize pathc);
 
 // path_clean resolves parent paths ("..") and eliminates redundant "/" and "./",
 // reducing 'path' to a clean, canonical form. E.g. "a/b/../c//./d" => "a/c/d"
+// Note: bufcap needs to include space for NUL terminator.
 usize path_cleanx(char* buf, usize bufcap, const char* path, usize pathlen);
 usize path_cleanx_posix(char* buf, usize bufcap, const char* path, usize pathlen);
 bool path_clean(str_t* path); // uses system PATH_SEP

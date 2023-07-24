@@ -86,8 +86,8 @@ static const char* opt_builddir = "build";
 static void help(const char* prog) {
   printf(
     "Compis " CO_VERSION_STR ", your friendly neighborhood compiler\n"
-    "Usage: %s %s [options] [--] <package>\n"
-    "       %s %s [options] [--] <sourcedir>\n"
+    "Usage: %s %s [options] [--] [<sourcedir>]\n"
+    "       %s %s [options] [--] <package>\n"
     "       %s %s [options] [--] <sourcefile> ...\n"
     "Options:\n"
     "",
@@ -119,6 +119,43 @@ static void diaghandler(const diag_t* d, void* nullable userdata) {
 }
 
 
+static void vlog_config(const compiler_t* c) {
+  printf("COMAXPROC: %u\n", comaxproc);
+  printf("COROOT:    %s\n", coroot);
+  printf("COCACHE:   %s\n", cocachedir);
+  printf("COPATH:    ");
+  for (const char*const* p = copath; *p; p++)
+    printf("%s%s", p == copath ? "" : ":", *p);
+  printf("\n");
+
+  char tmpbuf[TARGET_FMT_BUFCAP];
+  target_fmt(opt_target, tmpbuf, sizeof(tmpbuf));
+  printf("target:    %s (%s)\n", tmpbuf, opt_target->triple);
+
+  if (coverbose == 1) {
+    printf("(--vv for more details)\n");
+    return;
+  }
+
+  printf("sysroot:   %s\n", c->sysroot);
+
+  printf("buildmode: ");
+  switch ((enum buildmode)c->buildmode) {
+    case BUILDMODE_DEBUG: printf("debug\n"); break;
+    case BUILDMODE_OPT:   printf("opt\n"); break;
+  }
+
+  printf("buildroot: %s\n", c->buildroot);
+  printf("builddir:  %s\n", c->builddir);
+  printf("ldname:    %s\n", c->ldname);
+  printf("lto:       %s\n", c->lto ? "enabled" : "disabled");
+  printf("addrtype:  %s\n", primtype_name(c->addrtype->kind));
+  printf("uinttype:  %s\n", primtype_name(c->uinttype->kind));
+  printf("inttype:   %s\n", primtype_name(c->inttype->kind));
+
+}
+
+
 int main_build(int argc, char* argv[]) {
   int optind = parse_cli_options(argc, argv, help);
   if (optind < 0)
@@ -147,8 +184,8 @@ int main_build(int argc, char* argv[]) {
     return 0;
   }
 
-  if (optind == argc)
-    errx(1, "no input (see %s %s --help)", coprogname, argv[0]);
+  // if (optind == argc)
+  //   errx(1, "no input (see %s %s --help)", coprogname, argv[0]);
 
   if (*opt_maxproc)
     set_comaxproc();
@@ -168,17 +205,12 @@ int main_build(int argc, char* argv[]) {
     elog("See `%s targets` for a list of supported targets", relpath(coexefile));
     return 1;
   }
-  #if DEBUG
-    char tmpbuf[TARGET_FMT_BUFCAP];
-    target_fmt(opt_target, tmpbuf, sizeof(tmpbuf));
-    dlog("targeting %s (%s)", tmpbuf, opt_target->triple);
-  #endif
 
   // decide what package to build
   pkg_t* pkgv;
   u32 pkgc;
   err_t err = 0;
-  if (( err = pkgs_for_argv(argc, argv, &pkgv, &pkgc) ))
+  if (( err = pkgs_for_argv(argc, (const char*const*)argv, &pkgv, &pkgc) ))
     return 1;
   assert(pkgc > 0);
 
@@ -208,17 +240,14 @@ int main_build(int argc, char* argv[]) {
     return 1;
   }
 
+  if (coverbose)
+    vlog_config(&c);
+
   // build sysroot if needed (only reads compiler attributes; never mutates it)
   if (( err = build_sysroot_if_needed(&c, /*flags*/0) )) {
     dlog("build_sysroot_if_needed: %s", err_str(err));
     return 1;
   }
-
-  // // XXX FIXME
-  // if (!streq(pkgv[0].name.p, "std/runtime")) {
-  //   if (( err = build_dep_pkg(str_make("std/runtime"), &ccfg) ))
-  //     return 1;
-  // }
 
   // build packages
   u32 pkgbuild_flags = 0;
@@ -239,59 +268,3 @@ int main_build(int argc, char* argv[]) {
   // compiler_dispose(&c); // would need to do this if we didn't just exit
   return (int)!!err;
 }
-
-
-// static err_t build_dep_pkg(str_t pkgname, const compiler_config_t* parent_ccfg) {
-//   pkg_t pkg = {
-//     .name = pkgname,
-//   };
-//   if (!pkg_find_dir(&pkg)) {
-//     elog("package not found: %s", pkgname.p);
-//     return ErrNotFound;
-//   }
-//
-//   compiler_config_t ccfg = *parent_ccfg;
-//   ccfg.printast = false;
-//   ccfg.printir = false;
-//   ccfg.genirdot = false;
-//   ccfg.genasm = false;
-//   ccfg.nomain = false;
-//
-//   err_t err = build_toplevel_pkg(&pkg, &ccfg, "", /*flags*/0);
-//   if (err)
-//     dlog("error while building pkg %s: %s", pkg.name.p, err_str(err));
-//
-//   return err;
-// }
-
-
-/*
-static int buildfile_cmp(const buildfile_t* x, const buildfile_t* y, void* nullable _) {
-  int d = memcmp(x->ofile.p, y->ofile.p, MIN(x->ofile.len, y->ofile.len));
-  return d != 0 ? d :
-         x->ofile.len < y->ofile.len ? 1 :
-         y->ofile.len < x->ofile.len ? -1 :
-         0;
-}
-
-
-static err_t pkg_checksum_src(compiler_t* c, buildfile_t* fv, u32 fc, u8 result[32]) {
-  SHA256 state;
-  sha256_init(&state, result);
-
-  co_qsort(fv, fc, sizeof(*fv), (co_qsort_cmp)buildfile_cmp, NULL);
-  for (u32 i = 0; i < fc; i++)
-    sha256_write(&state, fv[i].input->sha256, 32);
-
-  sha256_close(&state);
-
-  #if DEBUG
-    buf_t b = buf_make(c->ma);
-    buf_appendhex(&b, result, 32);
-    if (buf_nullterm(&b))
-      dlog("result: %s", b.chars);
-    buf_dispose(&b);
-  #endif
-
-  return ErrCanceled; // XXX
-}*/

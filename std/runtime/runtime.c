@@ -20,7 +20,7 @@ _Noreturn void __co_panic_null(void) {
   __co_panic(__CO_X_STR(u8"null pointer"));
 }
 
-
-void say_hello() {
-  puts("hello");
+void _print(__co_str_t msg) {
+  fwrite(msg.ptr, msg.len, 1, stdout);
+  fputc('\n', stdout);
 }

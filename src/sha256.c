@@ -234,7 +234,7 @@ void sha256_close(SHA256 *sha_256) {
 }
 
 
-void sha256_data(u8 result[32], const u8* data, usize len) {
+void sha256_data(u8 result[32], const void* data, usize len) {
   SHA256 state;
   sha256_init(&state, result);
   while (len > 0) {
@@ -244,4 +244,10 @@ void sha256_data(u8 result[32], const u8* data, usize len) {
     len -= z;
   }
   sha256_close(&state);
+}
+
+
+bool sha256_iszero(const u8 sha256[32]) {
+  static const usize zero[32/sizeof(usize)] = {0};
+  return memcmp(zero, sha256, 32) == 0;
 }

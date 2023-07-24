@@ -201,6 +201,7 @@ typedef struct pkg_t {
   typefuntab_t    tfundefs; // type functions defined by the package
   fun_t* nullable mainfun;  // fun main(), if any
   ptrarray_t      imports;  // pkg_t*[] -- imported packages (set by import_pkgs)
+  u8              api_sha256[32]; // SHA-256 sum of pub.h
 
   future_t           loadfut;
   nodearray_t        api;     // package-level declarations, available after loadfut
@@ -793,6 +794,8 @@ extern node_t* last_resort_node;
 // name prefix reserved for implementation
 // note: if you change this, also update coprelude.h
 #define CO_INTERNAL_PREFIX "__co_"
+#define CO_TYPE_PREFIX CO_INTERNAL_PREFIX
+#define CO_TYPE_SUFFIX "_t"
 
 // c++ ABI version
 // TODO: condsider making this configurable in compiler_t
@@ -819,7 +822,7 @@ void universe_init();
 // pkg
 err_t pkg_init(pkg_t* pkg, memalloc_t ma);
 void pkg_dispose(pkg_t* pkg, memalloc_t ma);
-err_t pkgs_for_argv(int argc, char* argv[], pkg_t** pkgvp, u32* pkgcp);
+err_t pkgs_for_argv(int argc, const char*const argv[], pkg_t** pkgvp, u32* pkgcp);
 srcfile_t* nullable pkg_add_srcfile(
   pkg_t* pkg, const char* name, usize namelen, bool* nullable added_out);
 err_t pkg_find_files(pkg_t* pkg); // updates pkg->files, sets sf.mtime
@@ -932,7 +935,12 @@ err_t import_resolve_pkg(
   pkg_t** result);
 err_t import_resolve_fspath(str_t* fspath, usize* rootlen_out);
 
-err_t pkgindex_intern(compiler_t* c, slice_t pkgdir, slice_t pkgpath, pkg_t** result);
+err_t pkgindex_intern(
+  compiler_t* c,
+  slice_t pkgdir,
+  slice_t pkgpath,
+  const u8* nullable api_sha256,
+  pkg_t** result);
 err_t pkgindex_add(compiler_t* c, pkg_t* pkg);
 
 // ir

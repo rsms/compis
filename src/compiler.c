@@ -42,10 +42,16 @@ void compiler_dispose(compiler_t* c) {
     pkg_dispose(e->value, c->ma);
   map_dispose(&c->pkgindex, c->ma);
   rwmutex_dispose(&c->pkgindex_mu);
+
+  if (c->strtype.mangledname) {
+    mem_freex(c->ma,
+      MEM(c->strtype.mangledname,
+        strlen(CO_TYPE_PREFIX) + strlen("str") + strlen(CO_TYPE_SUFFIX) + 1));
+  }
 }
 
 
-static void set_secondary_pointer_types(compiler_t* c) {
+static err_t set_secondary_pointer_types(compiler_t* c) {
   // "&[u8]" -- slice of u8 array
   memset(&c->u8stype, 0, sizeof(c->u8stype));
   c->u8stype.kind = TYPE_SLICE;
@@ -62,6 +68,20 @@ static void set_secondary_pointer_types(compiler_t* c) {
   c->strtype.align = c->target.ptrsize;
   c->strtype.name = sym_str;
   c->strtype.elem = (type_t*)&c->u8stype;
+
+  char* mangledname = mem_alloc(c->ma,
+    strlen(CO_TYPE_PREFIX) + strlen("str") + strlen(CO_TYPE_SUFFIX) + 1).p;
+  if (mangledname == NULL)
+    return ErrNoMem;
+  c->strtype.mangledname = mangledname;
+  memcpy(mangledname, CO_TYPE_PREFIX, strlen(CO_TYPE_PREFIX));
+  mangledname += strlen(CO_TYPE_PREFIX);
+  memcpy(mangledname, "str", strlen("str"));
+  mangledname += strlen("str");
+  memcpy(mangledname, CO_TYPE_SUFFIX, strlen(CO_TYPE_SUFFIX));
+  mangledname[strlen(CO_TYPE_SUFFIX)] = 0;
+
+  return 0;
 }
 
 
@@ -89,7 +109,10 @@ static err_t configure_target(compiler_t* c, const compiler_config_t* config) {
       c->uinttype = type_u64;
       c->inttype  = type_i64;
   }
-  set_secondary_pointer_types(c);
+
+  err_t err = set_secondary_pointer_types(c);
+  if (err)
+    return err;
 
   if (c->target.sys == SYS_none) {
     c->opt_nolibc = true;

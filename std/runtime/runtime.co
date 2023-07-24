@@ -1,0 +1,4 @@
+pub "C" fun _print(msg str) void
+
+pub fun print(msg str)
+  _print(msg)

@@ -17,6 +17,9 @@ void sha256_init(SHA256* state, u8 hash_storage[32]);
 void sha256_write(SHA256* state, const void* data, usize len);
 void sha256_close(SHA256* state);
 
-void sha256_data(u8 result[32], const u8* data, usize len);
+void sha256_data(u8 result[32], const void* data, usize len);
+
+// sha256_iszero returns if sha256 is 00000000000000000000000000000000
+bool sha256_iszero(const u8 sha256[32]);
 
 ASSUME_NONNULL_END

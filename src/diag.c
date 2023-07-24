@@ -115,16 +115,29 @@ static void add_srcline_ctx(abuf_t* s, int lnw, u32 ln, slice_t line) {
 static void add_srcline(
   abuf_t* s, int lnw, u32 ln, slice_t line, origin_t origin)
 {
+  bool has_column = origin.column > 0;
+  if (!has_column) {
+    origin.width = 0;
+    if (origin.focus_col > 0) {
+      origin.column = origin.focus_col;
+    } else {
+      origin.column = 1;
+    }
+  }
+
   int indent = (int)origin.column - 1;
   if (origin.width == 0 && origin.focus_col > 0)
     indent = (int)origin.focus_col - 1;
 
   abuf_fmt(s, "%*u → │ ", lnw,ln);
   abuf_append(s, line.chars, line.len);
-  abuf_fmt(s, "\n%*s   │ %*s", lnw,"", indent,"");
+
+  if (has_column)
+    abuf_fmt(s, "\n%*s   │ %*s", lnw,"", indent,"");
 
   if (origin.width == 0) {
-    abuf_str(s, "↑");
+    if (has_column)
+      abuf_str(s, "↑");
     return;
   }
 
@@ -276,7 +289,11 @@ static void _report_diagv(
     if (origin.file) {
       str_t filepath;
       if (origin.file->name.len > 0) {
-        filepath = path_join(relpath(origin.file->pkg->dir.p), origin.file->name.p);
+        if (origin.file->pkg) {
+          filepath = path_join(relpath(origin.file->pkg->dir.p), origin.file->name.p);
+        } else {
+          filepath = str_make(relpath(origin.file->name.p));
+        }
       } else {
         filepath = str_make("<input>");
       }

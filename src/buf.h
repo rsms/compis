@@ -20,6 +20,7 @@ typedef struct {
   usize cap, len;
   memalloc_t ma;
   bool       external; // true if p is external storage, not managed by ma
+  bool       oom;      // true if buffer tried to grow but could not allocate memory
 } buf_t;
 
 // note: buf_t is castable to both mem_t and slice_t
