@@ -50,8 +50,7 @@ bool future_acquire(future_t* p) {
 
 
 void future_finalize(future_t* p, err_t result_err) {
-  err_t status = 1;
-  assertf(AtomicLoadAcq(&p->status) == status, "unbalanced future_begin/finish calls");
+  assertf(AtomicLoadAcq(&p->status) == 1, "unbalanced future_begin/finish calls");
   AtomicStoreRel(&p->status, result_err == 0 ? 2 : result_err);
   sema_signal(&p->sem, 2); // yes, 2 signals
 }
