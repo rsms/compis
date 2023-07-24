@@ -1,6 +1,6 @@
 import
   "examples/import2" as im2
-  // "std/runtime" as rt
+  "std/runtime" as rt
   // "./import2" as im3
   // "examples/import3"
 
@@ -9,10 +9,8 @@ import
 // import * from "cat"
 // import "cat"
 
-pub "C" fun say_hello() void // defined in std/runtime/runtime.c
-
 pub fun main() {
   // import3.double(3)
-  say_hello()
+  rt.print("Hello")
   im2.hello(3)
 }
