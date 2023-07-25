@@ -288,6 +288,17 @@ static const type_t* unwind_aliastypes(const type_t* t) {
 }
 
 
+static void print_mangledname_of_type(cgen_t* g, const type_t* t) {
+  if (t->kind == TYPE_STRUCT) {
+    buf_print(&g->outbuf, assertnotnull(((structtype_t*)t)->mangledname));
+  } else if (t->kind == TYPE_ALIAS) {
+    buf_print(&g->outbuf, assertnotnull(((aliastype_t*)t)->mangledname));
+  } else {
+    compiler_mangle_type(g->compiler, g->pkg, &g->outbuf, t);
+  }
+}
+
+
 typedef sym_t(*gentypename_t)(cgen_t* g, const type_t* t, bool* is_shared);
 typedef void(*gentypedef_t)(cgen_t* g, const type_t* t, sym_t name);
 
@@ -470,18 +481,12 @@ static sym_t gen_slice_typename(cgen_t* g, const type_t* tp, bool* is_shared) {
   PRINT(&"mutslice_"[3lu*(usize)(t->kind == TYPE_SLICE)]);
 
   // use familiar names for common types,
-  // e.g. "__co_u8_slice_t" instead of "__co_h_slice_t" for &[u8]
+  // e.g. "__co_slice_u8_t" instead of "__co_slice_h_t" for &[u8]
   if (nodekind_isprimtype(t->elem->kind)) {
     PRINT(primtype_name(t->elem->kind));
     *is_shared = true;
   } else {
-    if (t->elem->kind == TYPE_STRUCT || t->elem->kind == TYPE_ALIAS)
-      dlog("TODO: use precomputed t->elem->mangledname");
-    if UNLIKELY(!compiler_mangle_type(g->compiler, g->pkg, &g->outbuf, t->elem)) {
-      dlog("compiler_mangle_type failed");
-      seterr(g, ErrNoMem);
-      return sym__;
-    }
+    print_mangledname_of_type(g, t->elem);
   }
 
   PRINT(CO_TYPE_SUFFIX);
@@ -513,13 +518,7 @@ static sym_t gen_darray_typename(cgen_t* g, const type_t* tp, bool* is_shared) {
   const arraytype_t* t = (const arraytype_t*)tp;
   usize len1 = g->outbuf.len;
   PRINT(CO_TYPE_PREFIX "array_");
-  if (t->elem->kind == TYPE_STRUCT || t->elem->kind == TYPE_ALIAS)
-    dlog("TODO: use precomputed t->elem->mangledname");
-  if UNLIKELY(!compiler_mangle_type(g->compiler, g->pkg, &g->outbuf, t->elem)) {
-    dlog("compiler_mangle_type failed");
-    seterr(g, ErrNoMem);
-    return sym__;
-  }
+  print_mangledname_of_type(g, t->elem);
   PRINT(CO_TYPE_SUFFIX);
   sym_t name = sym_intern(&g->outbuf.chars[len1], g->outbuf.len - len1);
   g->outbuf.len = len1;
