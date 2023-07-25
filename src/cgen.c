@@ -288,7 +288,7 @@ static const type_t* unwind_aliastypes(const type_t* t) {
 }
 
 
-typedef sym_t(*gentypename_t)(cgen_t* g, const type_t* t);
+typedef sym_t(*gentypename_t)(cgen_t* g, const type_t* t, bool* is_shared);
 typedef void(*gentypedef_t)(cgen_t* g, const type_t* t, sym_t name);
 
 
@@ -332,13 +332,25 @@ static sym_t intern_typedef(
   g->headnest++;
 
   // generate, appending to g->outbuf
-  sym_t name = gentypename(g, t);
+  bool is_shared = false;
+  sym_t name = gentypename(g, t, &is_shared);
   *vp = name;
-  PRINTF("\n#ifndef __co_DEF_%s", name); g->lineno++;
-  PRINTF("\n#define __co_DEF_%s", name); g->lineno++;
+  // For common types like str_t which appear in many units, we need to guard the
+  // typedef to prevent duplicate definitions when an API header is included in
+  // many units. However, we don't need to do this inside a unit implementation
+  // file since we track package-wide what definitons have been generated in the
+  // shared "package header."
+  if (is_shared) {
+    PRINTF("\n#ifndef __co_DEF_%s", name), g->lineno++;
+    PRINTF("\n#define __co_DEF_%s", name), g->lineno++;
+  }
   startline(g, t->loc);
   gentypedef(g, t, name);
-  PRINT("\n#endif"); g->lineno++;
+  if (is_shared) {
+    PRINT("\n#endif"), g->lineno++;
+  } else {
+    CHAR('\n'), g->lineno++;
+  }
 
   g->headnest--;
 
@@ -395,7 +407,7 @@ static void funtype(cgen_t* g, const funtype_t* t, const char* nullable name) {
 }
 
 
-static sym_t gen_struct_typename(cgen_t* g, const type_t* t) {
+static sym_t gen_struct_typename(cgen_t* g, const type_t* t, bool* is_shared) {
   const structtype_t* st = (const structtype_t*)t;
   if (st->mangledname)
     return sym_intern(st->mangledname, strlen(st->mangledname));
@@ -450,17 +462,21 @@ static void structtype(cgen_t* g, const structtype_t* t) {
 }
 
 
-static sym_t gen_slice_typename(cgen_t* g, const type_t* tp) {
+static sym_t gen_slice_typename(cgen_t* g, const type_t* tp, bool* is_shared) {
   const slicetype_t* t = (const slicetype_t*)tp;
   usize len1 = g->outbuf.len;
 
   PRINT(CO_TYPE_PREFIX);
+  PRINT(&"mutslice_"[3lu*(usize)(t->kind == TYPE_SLICE)]);
 
   // use familiar names for common types,
   // e.g. "__co_u8_slice_t" instead of "__co_h_slice_t" for &[u8]
   if (nodekind_isprimtype(t->elem->kind)) {
     PRINT(primtype_name(t->elem->kind));
+    *is_shared = true;
   } else {
+    if (t->elem->kind == TYPE_STRUCT || t->elem->kind == TYPE_ALIAS)
+      dlog("TODO: use precomputed t->elem->mangledname");
     if UNLIKELY(!compiler_mangle_type(g->compiler, g->pkg, &g->outbuf, t->elem)) {
       dlog("compiler_mangle_type failed");
       seterr(g, ErrNoMem);
@@ -468,8 +484,6 @@ static sym_t gen_slice_typename(cgen_t* g, const type_t* tp) {
     }
   }
 
-  CHAR('_');
-  PRINT(&"mutslice"[3lu*(usize)(t->kind == TYPE_SLICE)]);
   PRINT(CO_TYPE_SUFFIX);
 
   sym_t name = sym_intern(&g->outbuf.chars[len1], g->outbuf.len - len1);
@@ -495,10 +509,12 @@ static void slicetype(cgen_t* g, const slicetype_t* t) {
 }
 
 
-static sym_t gen_darray_typename(cgen_t* g, const type_t* tp) {
+static sym_t gen_darray_typename(cgen_t* g, const type_t* tp, bool* is_shared) {
   const arraytype_t* t = (const arraytype_t*)tp;
   usize len1 = g->outbuf.len;
   PRINT(CO_TYPE_PREFIX "array_");
+  if (t->elem->kind == TYPE_STRUCT || t->elem->kind == TYPE_ALIAS)
+    dlog("TODO: use precomputed t->elem->mangledname");
   if UNLIKELY(!compiler_mangle_type(g->compiler, g->pkg, &g->outbuf, t->elem)) {
     dlog("compiler_mangle_type failed");
     seterr(g, ErrNoMem);
@@ -576,9 +592,10 @@ static void ptrtype(cgen_t* g, const ptrtype_t* t) {
 }
 
 
-static sym_t gen_alias_typename(cgen_t* g, const type_t* t) {
+static sym_t gen_alias_typename(cgen_t* g, const type_t* t, bool* is_shared) {
   const aliastype_t* at = (aliastype_t*)t;
   assertnotnull(at->mangledname);
+  *is_shared = (at == &g->compiler->strtype);
   // if (at->mangledname == NULL) {
   //   str_t name = str_makeempty(strlen(CO_INTERNAL_PREFIX) + strlen(at->name) + 2);
   //   safecheckf(name.cap > 0, "oom");
@@ -602,7 +619,8 @@ static void aliastype(cgen_t* g, const aliastype_t* t) {
 }
 
 
-static sym_t gen_opt_typename(cgen_t* g, const type_t* t) {
+static sym_t gen_opt_typename(cgen_t* g, const type_t* t, bool* is_shared) {
+  // TODO: descriptive name using compiler_mangle_type
   char namebuf[64];
   return sym_snprintf(namebuf, sizeof(namebuf),
     CO_TYPE_PREFIX "opt%x" CO_TYPE_SUFFIX, g->anon_idgen++);
@@ -931,9 +949,9 @@ static void gen_drop_subowners(cgen_t* g, const drop_t* d, const type_t* bt) {
 }
 
 
-static void gen_drop_heapmem(cgen_t* g, const drop_t* d) {
+static void gen_drop_ptr(cgen_t* g, const drop_t* d, const ptrtype_t* pt) {
   startlinex(g);
-  PRINTF("/* " CO_INTERNAL_PREFIX "mem_free(%s,size=?) */", d->name);
+  PRINTF(CO_INTERNAL_PREFIX "mem_free(%s, %llu);", d->name, pt->elem->size);
 }
 
 
@@ -966,7 +984,7 @@ static void gen_drop(cgen_t* g, const drop_t* d) {
     gen_drop_subowners(g, d, bt);
 
   if (type_isptr(d->type)) {
-    gen_drop_heapmem(g, d);
+    gen_drop_ptr(g, d, (ptrtype_t*)d->type);
   } else if (bt->kind == TYPE_ARRAY) {
     gen_drop_darray(g, d, (arraytype_t*)bt);
   }
