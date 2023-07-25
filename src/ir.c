@@ -1089,7 +1089,8 @@ static void move_owner(
   ircons_t* c,
   irval_t*          old_owner,
   irval_t* nullable new_owner,
-  irval_t* nullable replace_owner)
+  irval_t* nullable replace_owner,
+  expr_t*           rvalue_origin)
 {
   if (new_owner) {
     if (replace_owner) {
@@ -1123,16 +1124,34 @@ static void move_owner(
     if (new_owner)
       write_liveness_var(c, new_owner, true);
   }
+
+  // track "dead" members and "partial dead" compound values
+  if (rvalue_origin->kind == EXPR_MEMBER) {
+    dlog("TODO: track extraction of member of owner type %s",
+      fmtnode(0, old_owner->type));
+    // TODO: track "dead" & "partial dead"
+    // 1. check if member is live, error if not
+    // 2. mark member as "dead"
+    // 3. mark receiver as "partially dead", since we can't use receiver anymore,
+    //    though we can access any other fields of it
+    //
+    // Later when dropping the fields of the receiver, we need to check if
+    // a field is live before generating a drop for it.
+  }
 }
 
 
-static void move_owner_outside(ircons_t* c, irval_t* old_owner) {
-  move_owner(c, old_owner, NULL, NULL);
+static void move_owner_outside(ircons_t* c, irval_t* old_owner, expr_t* rvalue_origin) {
+  move_owner(c, old_owner, NULL, NULL, rvalue_origin);
 }
 
 
 static irval_t* move(
-  ircons_t* c, irval_t* rvalue, loc_t loc, irval_t* nullable replace_owner)
+  ircons_t*         c,
+  irval_t*          rvalue,
+  loc_t             loc,
+  irval_t* nullable replace_owner,
+  expr_t*           rvalue_origin)
 {
   if (rvalue->op == OP_PHI) {
     // rvalue is a PHI which means it joins two already-existing moves together
@@ -1164,7 +1183,7 @@ static irval_t* move(
 
   irval_t* v = pushval(c, c->b, OP_MOVE, loc, rvalue->type);
   pusharg(v, rvalue);
-  move_owner(c, rvalue, v, replace_owner);
+  move_owner(c, rvalue, v, replace_owner, rvalue_origin);
   return v;
 }
 
@@ -1178,11 +1197,15 @@ static irval_t* reference(ircons_t* c, irval_t* rvalue, loc_t loc) {
 
 
 static irval_t* move_or_copy(
-  ircons_t* c, irval_t* rvalue, loc_t loc, irval_t* nullable replace_owner)
+  ircons_t*         c,
+  irval_t*          rvalue,
+  loc_t             loc,
+  irval_t* nullable replace_owner,
+  expr_t*           rvalue_origin)
 {
   irval_t* v = rvalue;
   if (type_isowner(rvalue->type)) {
-    v = move(c, rvalue, loc, replace_owner);
+    v = move(c, rvalue, loc, replace_owner, rvalue_origin);
   } else if (type_isref(rvalue->type)) {
     v = reference(c, rvalue, loc);
   }
@@ -1266,7 +1289,7 @@ static irval_t* vardef(ircons_t* c, local_t* n) {
   if (n->init) {
     irval_t* v1 = load_expr(c, n->init);
     v1->type = n->type; // needed in case dst is subtype of v, e.g. "dst ?T <= v T"
-    v = move_or_copy(c, v1, n->loc, NULL);
+    v = move_or_copy(c, v1, n->loc, NULL, n->init);
     if (n->name != sym__) {
       if (v == v1 && v->comment && *v->comment) {
         commentf(c, v, "%s aka %s", v->comment, n->name);
@@ -1329,7 +1352,7 @@ static irval_t* assign(ircons_t* c, binop_t* n) {
   v->type = dst->type; // needed in case dst is subtype of v, e.g. "dst ?T <= v T"
 
   irval_t* curr_owner = var_read(c, varname, v->type, (loc_t){0});
-  v = move_or_copy(c, v, n->loc, curr_owner);
+  v = move_or_copy(c, v, n->loc, curr_owner, n->right);
 
   comment(c, v, varname);
 
@@ -1337,10 +1360,10 @@ static irval_t* assign(ircons_t* c, binop_t* n) {
 }
 
 
-static irval_t* ret(ircons_t* c, irval_t* nullable v, loc_t loc) {
+static irval_t* ret(ircons_t* c, irval_t* nullable v, loc_t loc, expr_t* rvalue) {
   c->b->kind = IR_BLOCK_RET;
   if (v && type_isowner(v->type))
-    move_owner_outside(c, v);
+    move_owner_outside(c, v, rvalue);
   set_control(c, c->b, v);
   owners_unwind_all(c);
   return v ? v : &bad_irval;
@@ -1349,7 +1372,7 @@ static irval_t* ret(ircons_t* c, irval_t* nullable v, loc_t loc) {
 
 static irval_t* retexpr(ircons_t* c, retexpr_t* n) {
   irval_t* v = n->value ? load_expr(c, n->value) : NULL;
-  return ret(c, v, n->loc);
+  return ret(c, v, n->loc, n->value);
 }
 
 
@@ -1417,7 +1440,7 @@ static irval_t* call(ircons_t* c, call_t* n) {
     expr_t* arg = (expr_t*)n->args.v[i];
     irval_t* arg_v = load_expr(c, arg);
     if (type_isowner(arg_v->type))
-      move_owner_outside(c, arg_v);
+      move_owner_outside(c, arg_v, arg);
     // if (arg_v->op != OP_MOVE)
     //   arg_v = move_or_copy(c, arg_v, arg->loc, NULL);
     pusharg(v, arg_v);
@@ -1449,10 +1472,10 @@ static irval_t* blockexpr0(ircons_t* c, block_t* n, bool isfunbody) {
       // fun() will call ret() to generate a return; no need to move_owner() here.
       if (!isfunbody) {
         if (v->op != OP_MOVE)
-          v = move_or_copy(c, v, cn->loc, NULL);
+          v = move_or_copy(c, v, cn->loc, NULL, cn);
         // move to lvalue of block (NULL b/c unknown for now)
         if (type_isowner(v->type))
-          move_owner_outside(c, v);
+          move_owner_outside(c, v, cn);
       }
       commentf(c, v, "b%u", c->b->id);
       return v;
@@ -1829,7 +1852,7 @@ static irval_t* arraylit(ircons_t* c, arraylit_t* n) {
     expr_t* cn = (expr_t*)n->values.v[i];
     irval_t* vv = load_expr(c, cn);
     if (vv->op != OP_MOVE)
-      vv = move_or_copy(c, vv, cn->loc, NULL);
+      vv = move_or_copy(c, vv, cn->loc, NULL, cn);
     pusharg(v, vv);
   }
   comment(c, v, "");
@@ -2027,7 +2050,7 @@ static irfun_t* fun(ircons_t* c, fun_t* n, irfun_t* nullable f) {
   // handle implicit return
   // note: if the block ended with a "return" statement, b->kind is already BLOCK_RET
   if (c->b->kind != IR_BLOCK_RET)
-    ret(c, body != &bad_irval ? body : NULL, n->body->loc);
+    ret(c, body != &bad_irval ? body : NULL, n->body->loc, (expr_t*)n->body);
 
   // leave function scope
   owners_unwind_scope(c, entry_deadset);

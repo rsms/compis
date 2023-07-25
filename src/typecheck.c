@@ -1969,7 +1969,7 @@ static void subscript(typecheck_t* a, subscript_t* n) {
     case TYPE_ARRAY: {
       n->type = recvt->elem;
       arraytype_t* at = (arraytype_t*)recvt;
-      if ((n->index->flags & NF_CONST) && n->index_val >= at->len)
+      if ((n->index->flags & NF_CONST) && at->lenexpr && n->index_val >= at->len)
         error(a, n, "out of bounds: element %llu of array %s",
           n->index_val, fmtnode(a, 0, recvt));
       break;

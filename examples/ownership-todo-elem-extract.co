@@ -1,0 +1,17 @@
+type Foo
+  x int
+
+type Bar
+  a, b, c Foo
+
+fun Foo.drop(mut this) {}
+
+fun extract_one_from_array(xs [Foo]) Foo
+  xs[1] // xs[1] marked as "dead", moved out from array
+  // xs marked as "partially dead"; can only be indexed, not moved/ref'd
+  // xs[0:1], xs[2:] dropped here
+
+fun extract_one_from_struct(bar *Bar) Foo
+  bar.b // bar.b marked as "dead", moved out from array
+  // bar marked as "partially dead"; can read members but not move/ref bar
+  // bar.a & bar.c dropped here
