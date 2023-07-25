@@ -1113,10 +1113,10 @@ static type_t* check_retval(typecheck_t* a, const void* originptr, expr_t*nullab
         if (origin->kind == EXPR_BLOCK)
           loc = ((block_t*)origin)->endloc;
         error(a, loc, "missing return value");
-      } else {
+      } else if (t != type_unknown || !a->reported_error) {
         error(a, origin, "invalid function result type: %s", fmtnode(a, 0, t));
       }
-      if (loc_line(a->fun->resultloc)) {
+      if (loc_line(a->fun->resultloc) && (t != type_unknown || !a->reported_error)) {
         help(a, a->fun->resultloc, "function %s%sreturns %s",
           (a->fun->name ? a->fun->name : ""), (a->fun->name ? " " : ""),
           fmtnode(a, 1, ft->result));
@@ -1923,7 +1923,8 @@ static void member(typecheck_t* a, member_t* n) {
     n->type = target->type;
   } else {
     n->type = a->typectx; // avoid cascading errors
-    error(a, n, "%s has no field or method \"%s\"", fmtnode(a, 0, recvt), n->name);
+    if (recvt != type_unknown || !a->reported_error)
+      error(a, n, "%s has no field or method \"%s\"", fmtnode(a, 0, recvt), n->name);
   }
 }
 
