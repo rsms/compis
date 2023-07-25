@@ -829,6 +829,13 @@ indent_unwind:
       s->indentstack--; // pop
       s->tok = TRBRACE;
       s->insertsemi = true;
+      // Don't insert a trailing semicolon if the current token is the end of a group.
+      // This allows us to write e.g.
+      //   foo(fun (x int) int
+      //     x * 2
+      //   ) // <- "})" rather than "};)"
+      if (*s->indentstack == s->indentdst && (*s->inp == ')' || *s->inp == ']'))
+        s->insertsemi = false;
     }
     if (s->inp < s->inend)
       s->inp = s->linestart;
