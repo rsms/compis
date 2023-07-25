@@ -1126,9 +1126,18 @@ static void move_owner(
   }
 
   // track "dead" members and "partial dead" compound values
-  if (rvalue_origin->kind == EXPR_MEMBER) {
-    dlog("TODO: track extraction of member of owner type %s",
-      fmtnode(0, old_owner->type));
+  if (rvalue_origin->kind == EXPR_MEMBER ||
+      rvalue_origin->kind == EXPR_SUBSCRIPT)
+  {
+    const expr_t* compound_val = NULL;
+    if (rvalue_origin->kind == EXPR_MEMBER) {
+      compound_val = ((member_t*)rvalue_origin)->recv;
+    } else if (rvalue_origin->kind == EXPR_SUBSCRIPT) {
+      compound_val = ((subscript_t*)rvalue_origin)->recv;
+    }
+    dlog("TODO: track extraction of member of type %s (%s) from compound type %s (%s)",
+      fmtnode(0, old_owner->type), nodekind_name(old_owner->type->kind),
+      fmtnode(1, compound_val->type), nodekind_name(compound_val->type->kind));
     // TODO: track "dead" & "partial dead"
     // 1. check if member is live, error if not
     // 2. mark member as "dead"
