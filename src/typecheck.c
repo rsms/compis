@@ -1393,21 +1393,35 @@ static bool fuzzy_visit_scope(const void* key, const void* value, void* ctx) {
 }
 
 
-static int levenshtein(const char* astr, int alen, const char* bstr, int blen) {
-  if (!alen) return blen;
-  if (!blen) return alen;
+static int levenshtein_dist(
+  const char* astr, int alen,
+  const char* bstr, int blen,
+  int* d, int i, int j)
+{
+  if (d[i*(blen+1) + j] >= 0)
+    return d[i*(blen+1) + j];
+  int x;
+  if (i == alen) {
+    x = blen - j;
+  } else if (j == blen) {
+    x = alen - i;
+  } else if (astr[i] == bstr[j]) {
+    x = levenshtein_dist(astr, alen, bstr, blen, d, i + 1, j + 1);
+  } else {
+    x = levenshtein_dist(astr, alen, bstr, blen, d, i + 1, j + 1);
+    int y;
+    if ((y = levenshtein_dist(astr, alen, bstr, blen, d, i, j + 1)) < x) x = y;
+    if ((y = levenshtein_dist(astr, alen, bstr, blen, d, i + 1, j)) < x) x = y;
+    x++;
+  }
+  return d[i*(blen+1) + j] = x;
+}
 
-  if (astr[alen - 1] == bstr[blen - 1])
-    return levenshtein(astr, alen - 1, bstr, blen - 1);
 
-  int a = levenshtein(astr, alen - 1, bstr, blen - 1);
-  int b = levenshtein(astr, alen,     bstr, blen - 1);
-  int c = levenshtein(astr, alen - 1, bstr, blen    );
-
-  if (a > b) a = b;
-  if (a > c) a = c;
-
-  return a + 1;
+static int levenshtein(const char* astr, int alen, const char* bstr, int blen, int* d) {
+  for (int i = 0; i < (alen + 1) * (blen + 1); i++)
+    d[i] = -1;
+  return levenshtein_dist(astr, alen, bstr, blen, d, 0, 0);
 }
 
 
@@ -1416,17 +1430,42 @@ static int fuzzy_sort_cmp(const fuzzyent_t* a, const fuzzyent_t* b, fuzzy_t* fz)
 }
 
 
-static void fuzzy_sort(fuzzy_t* fz) {
-  // score
+static bool fuzzy_sort(fuzzy_t* fz) {
+  bool ok = true;
   int namelen = strlen(fz->name);
+  int dmcap = namelen * 2;
+
+  // allocate memory for edit distance cache
+  mem_t dm = mem_alloc(fz->ma, ((usize)dmcap+1) * ((usize)dmcap+1) * sizeof(int));
+  if (!dm.p)
+    return false;
+
   for (u32 i = 0; i < fz->entries.len; i++) {
+    int ent_namelen = strlen(fz->entries.v[i].name);
+
+    if UNLIKELY(ent_namelen >= dmcap) {
+      dmcap = ent_namelen + 1;
+      usize newsize = (((usize)namelen + 1) * ((usize)ent_namelen + 1)) * sizeof(int);
+      if (!mem_resize(fz->ma, &dm, newsize)) {
+        ok = false;
+        break;
+      }
+    }
+
     fz->entries.v[i].edit_dist = levenshtein(
-      fz->name, namelen, fz->entries.v[i].name, strlen(fz->entries.v[i].name));
+      fz->name, namelen, fz->entries.v[i].name, ent_namelen, dm.p);
   }
+
+  mem_free(fz->ma, &dm);
+
+  if (!ok)
+    return false;
 
   // sort from shortest edit distance to longest
   co_qsort(fz->entries.v, fz->entries.len, sizeof(fz->entries.v[0]),
     (co_qsort_cmp)fuzzy_sort_cmp, fz);
+
+  return true;
 }
 
 
@@ -1452,11 +1491,15 @@ static void unknown_identifier(typecheck_t* a, idexpr_t* n) {
   u32 maxdepth = U32_MAX;
   fuzzy_t fz = { .name = name, .ma = a->ma };
   scope_iterate(&a->scope, maxdepth, fuzzy_visit_scope, &fz);
-  fuzzy_sort(&fz);
-
-  int max_edit_dist = 2;
-  if (fz.entries.len > 0 && fz.entries.v[0].edit_dist <= max_edit_dist) {
-    help(a, fz.entries.v[0].n, "did you mean \"%s\"", fz.entries.v[0].name);
+  if (fuzzy_sort(&fz)) {
+    // note: fuzzy_sort returns false if memory allocation failed, which we ignore
+    // for (u32 i = 0; i < fz.entries.len; i++) {
+    //   dlog("fz.entries.v[%u] = %s (%d)",
+    //     i, fz.entries.v[i].name, fz.entries.v[i].edit_dist);
+    // }
+    int max_edit_dist = 2;
+    if (fz.entries.len > 0 && fz.entries.v[0].edit_dist <= max_edit_dist)
+      help(a, fz.entries.v[0].n, "did you mean \"%s\"", fz.entries.v[0].name);
   }
 
   array_dispose(fuzzyent_t, (array_t*)&fz.entries, fz.ma);
