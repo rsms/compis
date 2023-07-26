@@ -568,7 +568,7 @@ static void define(parser_t* p, sym_t name, node_t* n) {
     out_of_mem(p);
 
   // top-level definitions also goes into package scope
-  if (scope_istoplevel(&p->scope)) {
+  if (scope_istoplevel(&p->scope) && n->kind != NODE_IMPORTID) {
     // trace("define in pkg %s %s", name, nodekind_name(n->kind));
     existing = n;
     err_t err = pkg_def_add(currpkg(p), p->ma, name, /*inout*/&existing);
