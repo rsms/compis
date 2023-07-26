@@ -17,14 +17,18 @@
 
 
 static err_t build_pkg(
-  pkgcell_t pkgc, compiler_t* c, const char* outfile, u32 pkgbuild_flags);
+  pkgcell_t pkgc, compiler_t* c, const char* outfile,
+  memalloc_t api_ma, u32 pkgbuild_flags);
 static err_t load_dependency(pkgbuild_t* pb, pkgcell_t pkgc);
 
 
-err_t pkgbuild_init(pkgbuild_t* pb, pkgcell_t pkgc, compiler_t* c, u32 flags) {
+err_t pkgbuild_init(
+  pkgbuild_t* pb, pkgcell_t pkgc, compiler_t* c, memalloc_t api_ma, u32 flags)
+{
   memset(pb, 0, sizeof(*pb));
   pb->pkgc = pkgc;
   pb->c = c;
+  pb->api_ma = api_ma;
   pb->flags = flags;
 
   // package lives inside the builtins namespace
@@ -430,18 +434,18 @@ static err_t create_pkg_api_ns(pkgbuild_t* pb, pkg_t* pkg) {
   nsexpr_t* ns = NULL;
 
   // allocate namespace type
-  nstype_t* nst = (nstype_t*)ast_mknode(pb->ast_ma, sizeof(nstype_t), TYPE_NS);
+  nstype_t* nst = (nstype_t*)ast_mknode(pb->api_ma, sizeof(nstype_t), TYPE_NS);
   if (!nst)
     goto oom;
   nst->flags |= NF_CHECKED;
-  if (!nodearray_reserve_exact(&nst->members, pb->ast_ma, pkg->api.len))
+  if (!nodearray_reserve_exact(&nst->members, pb->api_ma, pkg->api.len))
     goto oom;
 
   // create package namespace node
-  ns = (nsexpr_t*)ast_mknode(pb->ast_ma, sizeof(nsexpr_t), EXPR_NS);
+  ns = (nsexpr_t*)ast_mknode(pb->api_ma, sizeof(nsexpr_t), EXPR_NS);
   if (!ns)
     goto oom;
-  sym_t* member_names = mem_alloc(pb->ast_ma, sizeof(sym_t) * (usize)pkg->api.len).p;
+  sym_t* member_names = mem_alloc(pb->api_ma, sizeof(sym_t) * (usize)pkg->api.len).p;
   if (!member_names)
     goto oom;
   ns->flags |= NF_CHECKED | NF_PKGNS;
@@ -492,11 +496,11 @@ static err_t create_pkg_api_ns(pkgbuild_t* pb, pkg_t* pkg) {
 
 oom:
   if (nst) {
-    nodearray_dispose(&nst->members, pb->ast_ma);
-    mem_freex(pb->ast_ma, MEM(nst, sizeof(*nst)));
+    nodearray_dispose(&nst->members, pb->api_ma);
+    mem_freex(pb->api_ma, MEM(nst, sizeof(*nst)));
   }
   if (ns)
-    mem_freex(pb->ast_ma, MEM(ns, sizeof(*ns)));
+    mem_freex(pb->api_ma, MEM(ns, sizeof(*ns)));
   return ErrNoMem;
 }
 
@@ -526,7 +530,7 @@ static err_t build_dependency(pkgbuild_t* pb, pkgcell_t pkgc) {
   trace_import("\"%s\" building dependency \"%s\"",
     pkgc.parent->pkg->path.p, pkgc.pkg->path.p);
   u32 pkgbuildflags = PKGBUILD_DEP;
-  err_t err = build_pkg(pkgc, pb->c, /*outfile*/"", pkgbuildflags);
+  err_t err = build_pkg(pkgc, pb->c, /*outfile*/"", pb->api_ma, pkgbuildflags);
   if (err)
     dlog("error while building pkg %s: %s", pkgc.pkg->path.p, err_str(err));
   return err;
@@ -599,7 +603,7 @@ open_metafile:
   // when we get here, the metafile is open for reading
 
   // open an AST decoder
-  astdec = astdecoder_open(pb->c, pb->ast_ma, metafile.p, encdata, metast.st_size);
+  astdec = astdecoder_open(pb->c, pb->api_ma, metafile.p, encdata, metast.st_size);
   if (!astdec) {
     err = ErrNoMem;
     dlog("astdecoder_open: %s", err_str(err));
@@ -1329,7 +1333,8 @@ err_t pkgbuild_link(pkgbuild_t* pb, const char* outfile) {
 
 
 static err_t build_pkg(
-  pkgcell_t pkgc, compiler_t* c, const char* outfile, u32 pkgbuild_flags)
+  pkgcell_t pkgc, compiler_t* c, const char* outfile,
+  memalloc_t api_ma, u32 pkgbuild_flags)
 {
   err_t err;
   bool did_await_compilation = false;
@@ -1345,7 +1350,7 @@ static err_t build_pkg(
   pkgbuild_t* pb = mem_alloct(c->ma, pkgbuild_t);
   if (!pb)
     return ErrNoMem;
-  if UNLIKELY(( err = pkgbuild_init(pb, pkgc, c, pkgbuild_flags) )) {
+  if UNLIKELY(( err = pkgbuild_init(pb, pkgc, c, api_ma, pkgbuild_flags) )) {
     mem_freex(c->ma, MEM(pb, sizeof(pkgbuild_t)));
     return err;
   }
@@ -1407,5 +1412,13 @@ err_t build_toplevel_pkg(
   pkg_t* pkg, compiler_t* c, const char* outfile, u32 pkgbuild_flags)
 {
   assert((pkgbuild_flags & PKGBUILD_DEP) == 0);
-  return build_pkg((pkgcell_t){NULL,pkg}, c, outfile, pkgbuild_flags);
+
+  // create AST allocator for APIs, AST that needs to outlive any one package build
+  memalloc_t api_ma = memalloc_bump_in_zeroed(c->ma, 1024*1024*8lu, /*flags*/0);
+  if (api_ma == memalloc_null()) {
+    dlog("OOM: memalloc_bump_in_zeroed");
+    return ErrNoMem;
+  }
+
+  return build_pkg((pkgcell_t){NULL,pkg}, c, outfile, api_ma, pkgbuild_flags);
 }

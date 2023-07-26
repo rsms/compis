@@ -20,6 +20,7 @@ typedef struct {
   compiler_t*   c;
   bgtask_t*     bgt;
   memalloc_t    ast_ma;
+  memalloc_t    api_ma;
   u32           flags;
   u32           unitc;
   unit_t**      unitv;
@@ -31,7 +32,8 @@ typedef struct {
 } pkgbuild_t;
 
 
-err_t pkgbuild_init(pkgbuild_t* pb, pkgcell_t pkgc, compiler_t* c, u32 flags);
+err_t pkgbuild_init(
+  pkgbuild_t* pb, pkgcell_t pkgc, compiler_t* c, memalloc_t api_ma, u32 flags);
 void pkgbuild_dispose(pkgbuild_t* pb);
 
 err_t pkgbuild_locate_sources(pkgbuild_t* pb);
