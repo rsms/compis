@@ -176,8 +176,8 @@ static const char* cfile_of_srcfile_id(pkgbuild_t* pb, u32 srcfile_id) {
 static const char* cfile_of_unit(pkgbuild_t* pb, const unit_t* unit) {
   assert(pb->cfiles.len == pb->pkgc.pkg->srcfiles.len);
   assertnotnull(unit->srcfile);
-  isize srcfile_idx = ptrarray_sortedset_indexof(&pb->pkgc.pkg->srcfiles, unit->srcfile);
-  assert(srcfile_idx > -1);
+  u32 srcfile_idx = ptrarray_rindexof(&pb->pkgc.pkg->srcfiles, unit->srcfile);
+  assert(srcfile_idx < U32_MAX);
   return cfile_of_srcfile_id(pb, (u32)srcfile_idx);
 }
 
