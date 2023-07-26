@@ -272,7 +272,7 @@ which are only visible within the same source file:
 
 ```
 $ cat foo/a.co
-import print from "std/runtime"
+import "std/runtime" { print }
 // here, "print" is only available in this source file
 fun say_hello()
   print("Hello")
