@@ -194,7 +194,7 @@ typedef struct pkg_t {
   str_t           dir;      // absolute path to source directory
   str_t           root;     // root + path = dir
   bool            isadhoc;  // single-file package
-  ptrarray_t      srcfiles; // source files
+  ptrarray_t      srcfiles; // source files, uniquely sorted by name
   map_t           defs;     // package-level definitions
   rwmutex_t       defs_mu;  // protects access to defs field
   typefuntab_t    tfundefs; // type functions defined by the package
