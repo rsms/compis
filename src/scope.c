@@ -367,3 +367,24 @@ bool scope_define(scope_t* s, memalloc_t ma, const void* key, void* value) {
   trace_state(s);
   return true;
 }
+
+
+void scope_iterate(scope_t* s, u32 maxdepth, scopeit_t it, void* nullable ctx) {
+  u32 i = s->len;
+  u32 base = s->base;
+  while (i > 2) {
+    i--;
+    if (i == base) {
+      if (maxdepth == 0)
+        break;
+      maxdepth--;
+      if (s->ptr[i] == &kStash)
+        i = (u32)(uintptr)s->ptr[i - 1]; // base of stashed scope
+      base = (u32)(uintptr)s->ptr[i];
+    } else {
+      if (!it(s->ptr[i], s->ptr[i - 1], ctx))
+        break;
+      i--;
+    }
+  }
+}

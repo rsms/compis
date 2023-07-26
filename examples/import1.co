@@ -1,8 +1,16 @@
 import
-  "examples/import2" as im2
-  "std/runtime" as rt
+  // hello, A as im2_A from "examples/import2"
+  "examples/import2"
+  hello as im2_hello from "examples/import2"
+  print, * from "std/runtime"
   // "./import2" as im3
   // "examples/import3"
+
+// type print
+//   x int
+
+type A
+  x int
 
 // import "foo" as f
 // import x, y as why from "bar"
@@ -11,6 +19,6 @@ import
 
 pub fun main() {
   // import3.double(3)
-  rt.print("Hello")
-  im2.hello(3)
+  print("Hello")
+  im2_hello(3)
 }

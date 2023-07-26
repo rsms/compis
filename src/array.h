@@ -50,7 +50,8 @@ slice_t array_slice(const array_t a, usize start, usize len);
 // If there's an equivalent element in the array, its pointer is returned instead
 // of allocating a new slot.
 T* nullable array_sortedset_assign(
-  T, array_t* a, memalloc_t, const T* vptr, array_sorted_cmp_t cmpf, void* nullable ctx);
+  T, array_t* a, memalloc_t, const T* vptr,
+  array_sorted_cmp_t cmpf, void* nullable ctx);
 
 // array_sortedset_lookup works like array_sortedset_assign but just looks a value up,
 // it does not add it if its not found. If a value is not found, NULL is returned.
@@ -295,13 +296,15 @@ typedef array_type(void*) ptrarray_t;
 DEF_ARRAY_TYPE_NULLABLEPTR_API(void*, ptrarray)
 u32 ptrarray_rindexof(const ptrarray_t* a, const void* value); // U32_MAX if not found
 u32 u32array_rindexof(const u32array_t* a, u32 value); // U32_MAX if not found
+isize ptrarray_sortedset_indexof(const ptrarray_t* a, const void* value);
 
 // ptrarray_move_to_end is equivalent to ptrarray_move(a, a->len-1, index, index+1)
 void ptrarray_move_to_end(ptrarray_t* a, u32 index);
 
 // returns false if memory allocation failed
 bool ptrarray_sortedset_addcstr(ptrarray_t* a, memalloc_t ma, const char* str);
-bool ptrarray_sortedset_addptr(ptrarray_t* a, memalloc_t ma, const void* ptr);
+bool ptrarray_sortedset_addptr(
+  ptrarray_t* a, memalloc_t ma, const void* ptr, bool* nullable added_out);
 bool u32array_sortedset_add(u32array_t* a, memalloc_t ma, u32 v);
 
 ASSUME_NONNULL_END

@@ -458,9 +458,10 @@ err_t import_resolve_pkg(
 
 
 typedef struct {
-  str_t     path;
-  str_t     fspath;
-  import_t* im;
+  str_t      path;
+  str_t      fspath;
+  import_t*  im;
+  ptrarray_t im_dups; // import_t*[]
 } pkgimp_t;
 
 
@@ -520,6 +521,8 @@ err_t import_pkgs(compiler_t* c, pkg_t* importer_pkg, unit_t* unitv[], u32 unitc
         ip->fspath = fspath;
         ip->im = im;
       } else {
+        // record duplicate package import so that we can set im->pkg for it later
+        ptrarray_push(&ip->im_dups, c->ma, im);
         str_free(path);
         str_free(fspath);
       }
@@ -564,8 +567,13 @@ end_err_nomem:
 
 end:
   str_free(importer_dir);
-  for (u32 i = 0; i < unique_imports.len; i++)
-    str_free(unique_imports.v[i].fspath);
+  for (u32 i = 0; i < unique_imports.len; i++) {
+    pkgimp_t* ip = &unique_imports.v[i];
+    for (u32 j = 0; j < ip->im_dups.len; j++)
+      ((import_t*)ip->im_dups.v[j])->pkg = ip->im->pkg;
+    ptrarray_dispose(&ip->im_dups, c->ma);
+    str_free(ip->fspath);
+  }
   array_dispose(pkgimp_t, (array_t*)&unique_imports, c->ma);
 
   return err;

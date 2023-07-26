@@ -262,6 +262,25 @@ void* _array_sortedset_lookup(
 }
 
 
+isize ptrarray_sortedset_indexof(const ptrarray_t* a, const void* value) {
+  // binary search
+  safecheck((usize)a->len <= ISIZE_MAX);
+  u32 mid, low = 0, high = a->len;
+  while (low < high) {
+    mid = (low + high) / 2;
+    void* existing = a->v[mid];
+    if (existing == value)
+      return (isize)mid;
+    if ((uintptr)existing < (uintptr)value) {
+      high = mid;
+    } else {
+      low = mid + 1;
+    }
+  }
+  return -1;
+}
+
+
 static int str_cmp(const char** a, const char** b, void* ctx) {
   return strcmp(*a, *b);
 }
@@ -281,11 +300,15 @@ static int ptr_cmp(const void** a, const void** b, void* ctx) {
   return *a == *b ? 0 : *a < *b ? -1 : 1;
 }
 
-bool ptrarray_sortedset_addptr(ptrarray_t* a, memalloc_t ma, const void* ptr) {
+bool ptrarray_sortedset_addptr(
+  ptrarray_t* a, memalloc_t ma, const void* ptr, bool* nullable added_out)
+{
   const void** vp = array_sortedset_assign(
     const void*, a, ma, &ptr, (array_sorted_cmp_t)ptr_cmp, NULL);
   if UNLIKELY(!vp)
     return false;
+  if (added_out)
+    *added_out = (*vp == NULL);
   *vp = ptr;
   return true;
 }

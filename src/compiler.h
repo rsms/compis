@@ -12,9 +12,10 @@
 
 // nodekind_t
 #define FOREACH_NODEKIND_NODE(_) /* nodekind_t, TYPE, enctag */ \
-  _( NODE_BAD,     node_t, 'BAD ')/* invalid node; parse error */ \
-  _( NODE_COMMENT, node_t, 'COMN')\
-  _( NODE_UNIT,    unit_t, 'UNIT')\
+  _( NODE_BAD,      node_t,     'BAD ')/* invalid node; parse error */ \
+  _( NODE_COMMENT,  node_t,     'COMN')\
+  _( NODE_UNIT,     unit_t,     'UNIT')\
+  _( NODE_IMPORTID, importid_t, 'IMID')\
 // end FOREACH_NODEKIND
 #define FOREACH_NODEKIND_STMT(_) /* nodekind_t, TYPE, enctag */ \
   /* statements */\
@@ -183,8 +184,6 @@ typedef struct srcfile_t {
   filetype_t           type;   // file type (set by pkg_add_srcfile)
 } srcfile_t;
 
-typedef array_type(srcfile_t) srcfilearray_t;
-
 typedef struct node_ node_t;
 typedef array_type(node_t*) nodearray_t; // cap==len
 DEF_ARRAY_TYPE_API(node_t*, nodearray)
@@ -195,7 +194,7 @@ typedef struct pkg_t {
   str_t           dir;      // absolute path to source directory
   str_t           root;     // root + path = dir
   bool            isadhoc;  // single-file package
-  srcfilearray_t  srcfiles; // source files
+  ptrarray_t      srcfiles; // source files
   map_t           defs;     // package-level definitions
   rwmutex_t       defs_mu;  // protects access to defs field
   typefuntab_t    tfundefs; // type functions defined by the package
@@ -338,11 +337,11 @@ typedef struct import_t {
 } import_t;
 
 typedef struct importid_t {
-  // NOTE: —— importid_t is not an AST node! ——
-  loc_t                loc;
-  sym_t                name;     // e.g. x in "import x from a" (sym__ = "*")
-  sym_t nullable       origname; // e.g. y in "import y as x from a"
-  importid_t* nullable next_id;  // linked-list link
+  node_t;
+  loc_t                orignameloc; // location of "y" in "y as x"
+  sym_t                name;        // e.g. x in "import x from a" (sym__ = "*")
+  sym_t nullable       origname;    // e.g. y in "import y as x from a"
+  importid_t* nullable next_id;     // linked-list link
 } importid_t;
 
 typedef struct {
@@ -440,8 +439,8 @@ typedef struct nsexpr_ {
     sym_t  name; // if not NF_PKGNS
     pkg_t* pkg;  // if NF_PKGNS
   };
-  nodearray_t     members;
-  sym_t*          member_names;
+  nodearray_t members;      // node_t*[]
+  sym_t*      member_names; // index in sync with members array
 } nsexpr_t;
 
 typedef struct {
@@ -654,6 +653,12 @@ typedef struct {
 } parser_t;
 
 typedef struct {
+  sym_t          name;      // available name of decl
+  sym_t nullable othername; // alternate name
+  node_t*        decl;
+} didyoumean_t;
+
+typedef struct {
   compiler_t*     compiler;
   pkg_t*          pkg;
   memalloc_t      ma;        // compiler->ma
@@ -669,6 +674,11 @@ typedef struct {
   map_t           typeidmap;      // sym_t typeid => type_t*
   bool            reported_error; // true if an error diagnostic has been reported
   u32             pubnest;        // NF_VIS_PUB nesting level
+
+  // didyoumean tracks names that we might want to consider for help messages
+  // when an identifier can not be resolved
+  array_type(didyoumean_t) didyoumean;
+
   #if DEBUG
     int traceindent;
   #endif
@@ -849,10 +859,9 @@ bool pkg_imports_add(pkg_t* importer_pkg, pkg_t* dep, memalloc_t ma);
 err_t srcfile_open(srcfile_t* sf);
 void srcfile_close(srcfile_t* sf);
 void srcfile_dispose(srcfile_t* sf);
-isize srcfilearray_indexof(const srcfilearray_t* srcfiles, const srcfile_t* f);
 srcfile_t* nullable srcfilearray_add(
-  srcfilearray_t* srcfiles, const char* name, usize namelen, bool* nullable addedp);
-void srcfilearray_dispose(srcfilearray_t* srcfiles);
+  ptrarray_t* srcfiles, const char* name, usize namelen, bool* nullable addedp);
+void srcfilearray_dispose(ptrarray_t* srcfiles);
 
 // filetype
 filetype_t filetype_guess(const char* filename);
@@ -1200,6 +1209,8 @@ bool scope_define(scope_t* s, memalloc_t ma, const void* key, void* value);
 bool scope_undefine(scope_t* s, memalloc_t ma, const void* key);
 void* nullable scope_lookup(scope_t* s, const void* key, u32 maxdepth);
 inline static bool scope_istoplevel(const scope_t* s) { return s->base == 0; }
+typedef bool(*scopeit_t)(const void* key, const void* value, void* nullable ctx);
+void scope_iterate(scope_t* s, u32 maxdepth, scopeit_t it, void* nullable ctx);
 
 // visibility
 const char* visibility_str(nodeflag_t flags);

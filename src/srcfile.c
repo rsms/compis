@@ -6,48 +6,33 @@
 #include <sys/stat.h>
 
 
-static int srcfile_name_cmp(const srcfile_t* a, const srcfile_t* b, void* ctx) {
-  return strcmp(a->name.p, b->name.p);
-}
-
-static int srcfile_addr_cmp(const srcfile_t* a, const srcfile_t* b, void* ctx) {
-  return a == b ? 0 : a < b ? -1 : 1;
+static int srcfile_name_cmp(const srcfile_t** a, const srcfile_t** b, void* ctx) {
+  return strcmp((*a)->name.p, (*b)->name.p);
 }
 
 
-isize srcfilearray_indexof(const srcfilearray_t* srcfiles, const srcfile_t* f) {
-  u32 index = 0;
-  if (!array_sortedset_lookup(
-    srcfile_t, (array_t*)srcfiles, f, &index,
-    (array_sorted_cmp_t)srcfile_addr_cmp, NULL))
-  {
-    return -1;
-  }
-  assert((usize)index <= (usize)ISIZE_MAX);
-  if ((usize)index > (usize)ISIZE_MAX)
-    return -1;
-  return (isize)index;
-}
-
-
-srcfile_t* srcfilearray_add(
-  srcfilearray_t* srcfiles, const char* name, usize namelen, bool* addedp)
+srcfile_t* nullable srcfilearray_add(
+  ptrarray_t* srcfiles, const char* name, usize namelen, bool* addedp)
 {
   // add to sorted set, or retrieve existing with same name
   srcfile_t tmp = { .name = str_makelen(name, namelen) };
-  srcfile_t* f = array_sortedset_assign(
-    srcfile_t, (array_t*)srcfiles, memalloc_ctx(),
-    &tmp, (array_sorted_cmp_t)srcfile_name_cmp, NULL);
+  srcfile_t* tmp1 = &tmp;
+  srcfile_t** fp = array_sortedset_assign(
+    srcfile_t*, (array_t*)srcfiles, memalloc_ctx(),
+    &tmp1, (array_sorted_cmp_t)srcfile_name_cmp, NULL);
 
-  if (f == NULL || f->name.p != NULL) {
+  if (fp == NULL || *fp != NULL) {
     // memory-allocation failure or file already added
     str_free(tmp.name);
     if (addedp)
       *addedp = false;
-    return f;
+    return *fp;
   }
 
-  // note: array_sortedset_assign returns new entries zero initialized
+  srcfile_t* f = mem_alloct(memalloc_ctx(), srcfile_t);
+  if UNLIKELY(!f)
+    return NULL;
+  *fp = f;
 
   f->pkg = NULL;
   f->name = tmp.name;
@@ -58,10 +43,14 @@ srcfile_t* srcfilearray_add(
 }
 
 
-void srcfilearray_dispose(srcfilearray_t* srcfiles) {
-  for (u32 i = 0; i < srcfiles->len; i++)
-    srcfile_dispose(&srcfiles->v[i]);
-  array_dispose(srcfile_t, (array_t*)srcfiles, memalloc_ctx());
+void srcfilearray_dispose(ptrarray_t* srcfiles) {
+  memalloc_t ma = memalloc_ctx();
+  for (u32 i = 0; i < srcfiles->len; i++) {
+    srcfile_t* f = srcfiles->v[i];
+    srcfile_dispose(f);
+    mem_freet(ma, f);
+  }
+  ptrarray_dispose(srcfiles, ma);
 }
 
 

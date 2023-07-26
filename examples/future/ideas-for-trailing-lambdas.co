@@ -1,0 +1,38 @@
+
+type Thing
+  age int
+
+fun age_of_things(stuff [Thing]) [int]
+  stuff.filter(fun (thing Thing) {
+    thing.age > 0
+  }).map(fun (thing Thing) {
+    thing.age
+  })
+
+fun age_of_things(stuff [Thing]) [int]
+  stuff.filter() fun (thing)
+    thing.age > 0
+  .map() fun (thing)
+    thing.age
+
+fun age_of_things(stuff [Thing]) [int]
+  stuff.filter() thing ->
+    thing.age > 0
+  .map() thing ->
+    thing.age
+
+fun age_of_things(stuff [Thing]) [int]
+  stuff.filter() thing
+    thing.age > 0
+  .map() thing
+    thing.age
+
+// Could allow no parenthesis for calls.
+// Calls would qualify for "invokable bare" if
+// - the call is not an rvalue OR
+// - the call takes at least one argument
+fun age_of_things(stuff [Thing]) [int]
+  stuff.filter thing
+    thing.age > 0
+  .map thing
+    thing.age

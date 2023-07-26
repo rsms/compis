@@ -103,8 +103,10 @@ err_t pkg_find_files(pkg_t* pkg) {
 
 unixtime_t pkg_source_mtime(const pkg_t* pkg) {
   unixtime_t mtime_max = 0;
-  for (u32 i = 0; i < pkg->srcfiles.len; i++)
-    mtime_max = MAX(mtime_max, pkg->srcfiles.v[i].mtime);
+  for (u32 i = 0; i < pkg->srcfiles.len; i++) {
+    srcfile_t* f = pkg->srcfiles.v[i];
+    mtime_max = MAX(mtime_max, f->mtime);
+  }
   return mtime_max;
 }
 
@@ -636,7 +638,7 @@ bool pkg_is_built(const pkg_t* pkg, const compiler_t* c) {
 
 
 bool pkg_imports_add(pkg_t* importer_pkg, pkg_t* dep, memalloc_t ma) {
-  return ptrarray_sortedset_addptr(&importer_pkg->imports, ma, dep);
+  return ptrarray_sortedset_addptr(&importer_pkg->imports, ma, dep, NULL);
 }
 
 

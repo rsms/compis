@@ -64,7 +64,7 @@ void pkgbuild_dispose(pkgbuild_t* pb) {
   // srcfiles may have been opened if diagnostics were reported during
   // typecheck or cgen, so let's make sure they are all closed
   for (u32 i = 0; i < pb->pkgc.pkg->srcfiles.len; i++)
-    srcfile_close(&pb->pkgc.pkg->srcfiles.v[i]);
+    srcfile_close(pb->pkgc.pkg->srcfiles.v[i]);
 
   cgen_pkgapi_dispose(&pb->cgen, &pb->pkgapi);
   cgen_dispose(&pb->cgen);
@@ -118,7 +118,7 @@ static void build_ofiles_and_cfiles(pkgbuild_t* pb, str_t builddir) {
 
   for (u32 i = 0; i < pb->pkgc.pkg->srcfiles.len; i++) {
     // {builddir}/{srcfile}.o  (note that builddir includes pkgname)
-    srcfile_t* srcfile = &pb->pkgc.pkg->srcfiles.v[i];
+    srcfile_t* srcfile = pb->pkgc.pkg->srcfiles.v[i];
 
     s.len = 0;
 
@@ -176,7 +176,7 @@ static const char* cfile_of_srcfile_id(pkgbuild_t* pb, u32 srcfile_id) {
 static const char* cfile_of_unit(pkgbuild_t* pb, const unit_t* unit) {
   assert(pb->cfiles.len == pb->pkgc.pkg->srcfiles.len);
   assertnotnull(unit->srcfile);
-  isize srcfile_idx = srcfilearray_indexof(&pb->pkgc.pkg->srcfiles, unit->srcfile);
+  isize srcfile_idx = ptrarray_sortedset_indexof(&pb->pkgc.pkg->srcfiles, unit->srcfile);
   assert(srcfile_idx > -1);
   return cfile_of_srcfile_id(pb, (u32)srcfile_idx);
 }
@@ -225,8 +225,10 @@ err_t pkgbuild_locate_sources(pkgbuild_t* pb) {
 
   // count number of compis source files
   u32 ncosrc = 0;
-  for (u32 i = 0; i < pkg->srcfiles.len; i++)
-    ncosrc += (u32)(pkg->srcfiles.v[i].type == FILE_CO);
+  for (u32 i = 0; i < pkg->srcfiles.len; i++) {
+    srcfile_t* f = pkg->srcfiles.v[i];
+    ncosrc += (u32)(f->type == FILE_CO);
+  }
 
   // update bgtask
   pb->bgt->ntotal += pkg->srcfiles.len; // "parse foo.co"
@@ -254,9 +256,13 @@ err_t pkgbuild_begin_early_compilation(pkgbuild_t* pb) {
 
   // find first C srcfile or bail out if there are no C sources in the package
   u32 i = 0;
-  for (; i < pkg->srcfiles.len && pkg->srcfiles.v[i].type != FILE_C; i++) {}
-  if (i == pkg->srcfiles.len)
-    return 0; // no C sources
+  while (i < pkg->srcfiles.len) {
+    srcfile_t* f = pkg->srcfiles.v[i];
+    if (f->type == FILE_C)
+      break;
+    if (++i == pkg->srcfiles.len)
+      return 0; // no C sources
+  }
 
   err_t err = 0;
 
@@ -265,7 +271,7 @@ err_t pkgbuild_begin_early_compilation(pkgbuild_t* pb) {
     return err;
 
   for (; i < pkg->srcfiles.len && err == 0; i++) {
-    srcfile_t* srcfile = &pkg->srcfiles.v[i];
+    srcfile_t* srcfile = pkg->srcfiles.v[i];
     if (srcfile->type != FILE_C)
       continue;
     const char* cfile = srcfile->name.p;
@@ -321,8 +327,10 @@ static err_t pkgbuild_parse(pkgbuild_t* pb) {
 
   // count number of compis source files
   u32 ncosrc = 0;
-  for (u32 i = 0; i < pkg->srcfiles.len; i++)
-    ncosrc += (u32)(pkg->srcfiles.v[i].type == FILE_CO);
+  for (u32 i = 0; i < pkg->srcfiles.len; i++) {
+    srcfile_t* f = pkg->srcfiles.v[i];
+    ncosrc += (u32)(f->type == FILE_CO);
+  }
 
   // allocate unit array
   unit_t** unitv = mem_alloctv(pb->ast_ma, unit_t*, (usize)ncosrc);
@@ -336,7 +344,7 @@ static err_t pkgbuild_parse(pkgbuild_t* pb) {
   // parse each file
   err_t err = 0;
   for (u32 i = 0; i < pkg->srcfiles.len && err == 0; i++) {
-    srcfile_t* srcfile = &pkg->srcfiles.v[i];
+    srcfile_t* srcfile = pkg->srcfiles.v[i];
 
     if (srcfile->type != FILE_CO) {
       assertf(srcfile->type == FILE_C, "%s: unrecognized file type", srcfile->name.p);
@@ -372,7 +380,7 @@ static bool check_pkg_src_uptodate(pkg_t* pkg, unixtime_t product_mtime) {
   // Since we "own" pkg here, it's safe to modify its srcfiles array, which we'll
   // do in order to compare cached srcfiles vs actual on-disk srcfiles.
 
-  srcfilearray_t cached_srcfiles = {0};
+  ptrarray_t cached_srcfiles = {0};
   CO_SWAP(cached_srcfiles, pkg->srcfiles);
 
   // populate pkg->srcfiles with source files found on disk
@@ -394,11 +402,13 @@ static bool check_pkg_src_uptodate(pkg_t* pkg, unixtime_t product_mtime) {
   // simply by comparing file by file.
   // We also take this opportunity to check mtime.
   for (u32 i = 0; i < cached_srcfiles.len; i++) {
-    if (!streq(cached_srcfiles.v[i].name.p, pkg->srcfiles.v[i].name.p)) {
-      //dlog("newfound srcfile: %s", pkg->srcfiles.v[i].name.p);
+    srcfile_t* cached_srcfile = cached_srcfiles.v[i];
+    srcfile_t* found_srcfile = pkg->srcfiles.v[i];
+    if (!streq(cached_srcfile->name.p, found_srcfile->name.p)) {
+      //dlog("newfound srcfile: %s", found_srcfile->name.p);
       goto end;
     }
-    if (pkg->srcfiles.v[i].mtime > product_mtime) {
+    if (found_srcfile->mtime > product_mtime) {
       //dlog("modified srcfile: %s", pkg->srcfiles.v[i].name.p);
       goto end;
     }
@@ -408,7 +418,9 @@ static bool check_pkg_src_uptodate(pkg_t* pkg, unixtime_t product_mtime) {
   ok = true;
 
 end:
-  srcfilearray_dispose(&cached_srcfiles);
+  // note: we are NOT using srcfilearray_dispose here since that would dispose
+  // of the srcfile structs as well, which are owned by the pkg->srcfiles array.
+  ptrarray_dispose(&cached_srcfiles, memalloc_ctx());
   return ok;
 }
 
@@ -471,10 +483,10 @@ static err_t create_pkg_api_ns(pkgbuild_t* pb, pkg_t* pkg) {
   assertnull(pkg->api_ns);
   pkg->api_ns = ns;
 
-  if (opt_trace_parse && pb->c->opt_printast) {
-    dlog("————————— AST pkg.api %s —————————", pkg->path.p);
-    dump_ast((node_t*)ns);
-  }
+  // if (opt_trace_parse && pb->c->opt_printast) {
+  //   dlog("————————— AST pkg.api %s —————————", pkg->path.p);
+  //   dump_ast((node_t*)ns);
+  // }
 
   return 0;
 
@@ -542,7 +554,7 @@ static err_t load_dependency0(pkgbuild_t* pb, pkgcell_t pkgc) {
   if (!pkg_libfile(pkg, pb->c, &libfile))
     return ErrNoMem;
   libmtime = fs_mtime(libfile.p);
-  vlog("load library package \"%s\" (%s)", pkgc.pkg->path.p, relpath(libfile.p));
+  vlog("load library package \"%s\"", pkgc.pkg->path.p);
   str_free(libfile);
 
   // construct metafile path
@@ -1094,9 +1106,11 @@ err_t pkgbuild_metagen(pkgbuild_t* pb) {
   // calling astencoder_add_ast, as source files are ordered by the encoder, so the
   // results are the same no matter the order we call these functions.
   for (u32 i = 0; i < pkg->srcfiles.len && err == 0; i++) {
-    err = astencoder_add_srcfile(astenc, &pkg->srcfiles.v[i]);
-    if (err)
-      dlog("astencoder_add_srcfile(%s): %s", pkg->srcfiles.v[i].name.p, err_str(err));
+    err = astencoder_add_srcfile(astenc, pkg->srcfiles.v[i]);
+    if (err) {
+      dlog("astencoder_add_srcfile(%s): %s",
+        ((srcfile_t*)pkg->srcfiles.v[i])->name.p, err_str(err));
+    }
   }
 
   // finalize
@@ -1126,7 +1140,7 @@ err_t pkgbuild_begin_late_compilation(pkgbuild_t* pb) {
   assertf(pb->ofiles.len > 0, "prepare_builddir not called");
 
   for (u32 i = 0; i < pkg->srcfiles.len && err == 0; i++) {
-    srcfile_t* srcfile = &pkg->srcfiles.v[i];
+    srcfile_t* srcfile = pkg->srcfiles.v[i];
     if (srcfile->type != FILE_CO)
       continue;
     const char* cfile = cfile_of_srcfile_id(pb, i);
@@ -1156,7 +1170,7 @@ err_t pkgbuild_await_compilation(pkgbuild_t* pb) {
 static bool deplist_add_deps_of(ptrarray_t* deplist, memalloc_t ma, const pkg_t* pkg) {
   for (u32 i = 0; i < pkg->imports.len; i++) {
     const pkg_t* dep = pkg->imports.v[i];
-    if (!ptrarray_sortedset_addptr(deplist, ma, dep))
+    if (!ptrarray_sortedset_addptr(deplist, ma, dep, NULL))
       return false;
     if (!deplist_add_deps_of(deplist, ma, dep))
       return false;

@@ -748,14 +748,14 @@ static void define(typecheck_t* a, sym_t name, void* n) {
   if (name == sym__)
     return;
 
-  // trace("define \"%s\" => %s", name, fmtnode(a, 0, n));
+  trace("define \"%s\" => %s", name, fmtnode(a, 0, n));
 
   #if DEBUG
     node_t* existing = scope_lookup(&a->scope, name, 0);
-    if (existing) {
+    if UNLIKELY(existing) {
       error(a, n, "duplicate definition \"%s\"", name);
       if (loc_line(existing->loc))
-        warning(a, existing, "previously defined here");
+        warning(a, existing, "\"%s\" previously defined here", name);
       assertf(0, "duplicate definition \"%s\"", name);
     }
   #endif
@@ -1320,14 +1320,154 @@ static void ifexpr(typecheck_t* a, ifexpr_t* n) {
 }
 
 
+static didyoumean_t* didyoumean_add(
+  typecheck_t* a, sym_t name, node_t* decl, sym_t nullable othername)
+{
+  didyoumean_t* dym = array_alloc(didyoumean_t, (array_t*)&a->didyoumean, a->ma, 1);
+  if UNLIKELY(!dym) {
+    if (a->didyoumean.len > 0)
+      return &a->didyoumean.v[0];
+    static didyoumean_t last_resort = {0};
+    return &last_resort;
+  }
+  dym->name = name;
+  dym->othername = othername;
+  dym->decl = decl;
+  return dym;
+}
+
+
+typedef struct {
+  sym_t         name;
+  const node_t* n;
+  int           edit_dist;
+} fuzzyent_t;
+
+typedef struct {
+  sym_t      name; // name that we are looking for
+  memalloc_t ma;
+  array_type(fuzzyent_t) entries;
+} fuzzy_t;
+
+
+static int fuzzyent_cmp(const fuzzyent_t* a, const fuzzyent_t* b, void* ctx) {
+  return a->name == b->name ? 0 : a->name < b->name ? -1 : 1;
+}
+
+
+// return 1 if added, 0 if already registered, <0 on error (an err_t)
+static int fuzzy_add_candidate(fuzzy_t* fz, sym_t name, const node_t* n) {
+  fuzzyent_t lookup = { .name = name };
+  fuzzyent_t* ent = array_sortedset_assign(
+    fuzzyent_t, (array_t*)&fz->entries, fz->ma, &lookup,
+    (array_sorted_cmp_t)fuzzyent_cmp, NULL);
+
+  if UNLIKELY(!ent) // OOM
+    return ErrNoMem;
+
+  if (ent->name != NULL) {
+    // skip definitions which we've seen, which are shadowed. E.g.
+    // type A {}
+    // fun foo() {
+    //   let A = 3
+    //   let B = AA  // here, "type A" is shadowed by "let A" (which we visit first)
+    // }
+    return 0;
+  }
+
+  ent->name = name;
+  ent->n = n;
+  return 1;
+}
+
+
+static bool fuzzy_visit_scope(const void* key, const void* value, void* ctx) {
+  fuzzy_t* fz = ctx;
+  // return true to keep iterating
+  // fuzzy_add_candidate returns <0 on error
+  return fuzzy_add_candidate(fz, key, value) >= 0;
+}
+
+
+static int levenshtein(const char* astr, int alen, const char* bstr, int blen) {
+  if (!alen) return blen;
+  if (!blen) return alen;
+
+  if (astr[alen - 1] == bstr[blen - 1])
+    return levenshtein(astr, alen - 1, bstr, blen - 1);
+
+  int a = levenshtein(astr, alen - 1, bstr, blen - 1);
+  int b = levenshtein(astr, alen,     bstr, blen - 1);
+  int c = levenshtein(astr, alen - 1, bstr, blen    );
+
+  if (a > b) a = b;
+  if (a > c) a = c;
+
+  return a + 1;
+}
+
+
+static int fuzzy_sort_cmp(const fuzzyent_t* a, const fuzzyent_t* b, fuzzy_t* fz) {
+  return a->edit_dist - b->edit_dist;
+}
+
+
+static void fuzzy_sort(fuzzy_t* fz) {
+  // score
+  int namelen = strlen(fz->name);
+  for (u32 i = 0; i < fz->entries.len; i++) {
+    fz->entries.v[i].edit_dist = levenshtein(
+      fz->name, namelen, fz->entries.v[i].name, strlen(fz->entries.v[i].name));
+  }
+
+  // sort from shortest edit distance to longest
+  co_qsort(fz->entries.v, fz->entries.len, sizeof(fz->entries.v[0]),
+    (co_qsort_cmp)fuzzy_sort_cmp, fz);
+}
+
+
+static void unknown_identifier(typecheck_t* a, idexpr_t* n) {
+  sym_t name = n->name;
+
+  error(a, n, "unknown identifier \"%s\"", name);
+
+  // try to find an exact match in didyoumean
+  u32 nsuggestions = 0;
+  for (u32 i = 0; i < a->didyoumean.len; i++) {
+    didyoumean_t* dym = &a->didyoumean.v[i];
+    if (dym->name == name || dym->othername == name) {
+      help(a, dym->decl, "did you mean \"%s\"", dym->name);
+      nsuggestions++;
+    }
+  }
+
+  if (nsuggestions > 0)
+    return;
+
+  // suggest fuzzy matches
+  u32 maxdepth = U32_MAX;
+  fuzzy_t fz = { .name = name, .ma = a->ma };
+  scope_iterate(&a->scope, maxdepth, fuzzy_visit_scope, &fz);
+  fuzzy_sort(&fz);
+
+  int max_edit_dist = 3;
+  if (fz.entries.len > 0 && fz.entries.v[0].edit_dist <= max_edit_dist) {
+    help(a, fz.entries.v[0].n, "did you mean \"%s\"", fz.entries.v[0].name);
+  }
+
+  array_dispose(fuzzyent_t, (array_t*)&fz.entries, fz.ma);
+}
+
+
 static void idexpr(typecheck_t* a, idexpr_t* n) {
   if (!n->ref) {
     n->ref = lookup(a, n->name);
-    if UNLIKELY(!n->ref) {
-      error(a, n, "unknown identifier \"%s\"", n->name);
-      return;
-    }
+    if UNLIKELY(!n->ref)
+      return unknown_identifier(a, n);
   }
+
+  assertf(n->ref->kind != NODE_IMPORTID,
+    "unresolved import '%s'", ((importid_t*)n->ref)->name);
 
   expr(a, n->ref);
 
@@ -2433,6 +2573,15 @@ static void typedef_(typecheck_t* a, typedef_t* n) {
   a->pubnest += (u32)!!(n->flags & NF_VIS_PUB);
   type(a, &n->type);
   a->pubnest -= (u32)!!(n->flags & NF_VIS_PUB);
+
+  sym_t name;
+  if (n->type->kind == TYPE_STRUCT) {
+    name = assertnotnull(((structtype_t*)n->type)->name);
+  } else {
+    assert(n->type->kind == TYPE_ALIAS);
+    name = assertnotnull(((aliastype_t*)n->type)->name);
+  }
+  define(a, name, (node_t*)n->type);
 }
 
 
@@ -2530,6 +2679,8 @@ static void exprp(typecheck_t* a, expr_t** np) {
     return;
   n->flags |= NF_CHECKED;
 
+  assertf(node_isexpr((node_t*)n), "%s", nodekind_name(n->kind));
+
   if UNLIKELY(a->reported_error)
     return;
 
@@ -2579,7 +2730,9 @@ static void exprp(typecheck_t* a, expr_t** np) {
   case NODE_BAD:
   case NODE_COMMENT:
   case NODE_UNIT:
+  case NODE_IMPORTID:
   case STMT_TYPEDEF:
+  case STMT_IMPORT:
   case EXPR_BOOLLIT:
   case TYPE_VOID:
   case TYPE_BOOL:
@@ -2664,8 +2817,8 @@ again:
 }
 
 
-static void import_pkg(typecheck_t* a, import_t* im) {
-  // import package itself
+static void import_whole_pkg(typecheck_t* a, import_t* im) {
+  // e.g. import "foo/bar" as lol
   if (im->idlist == NULL) // just for the side effects
     return;
   assertnull(im->idlist->next_id); // must only be one name
@@ -2678,10 +2831,114 @@ static void import_pkg(typecheck_t* a, import_t* im) {
 }
 
 
+static void report_unknown_import_member(
+  typecheck_t* a, import_t* im, importid_t* imid)
+{
+  sym_t origname = imid->origname ? imid->origname : imid->name;
+  error(a, imid->orignameloc,
+    "no member \"%s\" in package \"%s\"", origname, im->pkg->path.p);
+}
+
+
+static void import_from(typecheck_t* a, import_t* im) {
+  // e.g. import x, y as z from "foo/bar"
+  // e.g. import * from "foo/bar"
+  // e.g. import *, y as z from "foo/bar"
+  assertnotnull(im->idlist);
+
+  const nsexpr_t* api_ns = assertnotnull(im->pkg)->api_ns;
+  importid_t* star_imid = NULL;
+
+  for (importid_t* imid = im->idlist; imid; imid = imid->next_id) {
+    // '*' imports are denoted by the empty name ("_")
+    if (imid->name == sym__) {
+      // note: parser has checked that there's only one '*' member
+      star_imid = imid;
+      continue;
+    }
+
+    // find member in package's API namespace
+    sym_t origname = imid->origname ? imid->origname : imid->name;
+    for (u32 i = 0; ; i++) {
+      if UNLIKELY(i == api_ns->members.len) {
+        report_unknown_import_member(a, im, imid);
+        break;
+      }
+      if (api_ns->member_names[i] == origname) {
+        // note: parser has already checked for duplicate definitions
+        // dlog("importing %s as %s => %s",
+        //   origname, imid->name, nodekind_name(api_ns->members.v[i]->kind));
+        define(a, imid->name, api_ns->members.v[i]);
+        break;
+      }
+    }
+  }
+
+  // we are done if there's no '*' member
+  if (star_imid == NULL)
+    return;
+
+  // import everything from the package, except what has been explicitly specified
+  for (u32 i = 0; i < api_ns->members.len; i++) {
+    sym_t name = api_ns->member_names[i];
+
+    // see if this member has already been explicitly imported
+    bool found = false;
+    for (importid_t* imid = im->idlist; imid; imid = imid->next_id) {
+      sym_t origname = imid->origname ? imid->origname : imid->name;
+      if (origname == name) {
+        if (imid->origname) {
+          // This aids the following case:
+          //   example.co:2:3: error: unknown identifier "print"
+          //   22 → │ print("Hello")
+          //        │ ~~~~~
+          //   example.co:1:12: help: did you mean "p"
+          //    5 → │ print as p from "std/runtime"
+          //        │          ~
+          didyoumean_add(a, imid->name, (node_t*)imid, imid->origname);
+        }
+        found = true;
+        break;
+      }
+    }
+    if (found)
+      continue;
+
+    // Now, the parser has not checked for name collisions because it couldn't;
+    // it didn't know what members the package exported (not known at parse time.)
+    // So we have to check for duplicate definitions here.
+    node_t* existing = scope_lookup(&a->scope, name, 0);
+    if (!existing) // also look in pkg scope
+      existing = pkg_def_get(a->pkg, name);
+    if UNLIKELY(existing) {
+      dlog("existing %s %u", nodekind_name(existing->kind), loc_line(existing->loc));
+      if (scope_lookup(&a->scope, name, 0)) {
+        // Collision comes from another import.
+        // e.g.
+        //   import a from "foo"
+        //   import * from "bar" // bar exports "a"
+        // Without this special case, error(existing) would report the location of
+        // "a" in bar's source, which would be confusing.
+        // TODO: better error message, pointing out what previous import collided.
+        error(a, star_imid, "importing \"%s\" shadows previous import", name);
+      } else {
+        error(a, existing, "duplicate definition \"%s\"", name);
+        if (loc_line(star_imid->loc)) {
+          warning(a, star_imid, "\"%s\" previously imported from package \"%s\"",
+            name, im->pkg->path.p);
+        }
+      }
+    } else {
+      define(a, name, api_ns->members.v[i]);
+    }
+  }
+}
+
+
 static void import(typecheck_t* a, import_t* im) {
-  if (!im->isfrom)
-    return import_pkg(a, im);
-  panic("TODO import package members");
+  if (im->isfrom)
+    return import_from(a, im);
+  return import_whole_pkg(a, im);
 }
 
 
@@ -2732,6 +2989,7 @@ err_t typecheck(
 
   ptrarray_dispose(&a.nspath, a.ma);
   ptrarray_dispose(&a.typectxstack, a.ma);
+  array_dispose(didyoumean_t, (array_t*)&a.didyoumean, a.ma);
   map_dispose(&a.typeidmap, a.ma);
 end2:
   map_dispose(&a.tmpmap, a.ma);

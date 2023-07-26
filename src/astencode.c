@@ -174,6 +174,9 @@ static const ae_field_t g_fieldsof_import_t[] = {
   // TODO: isfrom
   // TODO: next_import
 };
+static const ae_field_t g_fieldsof_importid_t[] = {
+  // never encoded
+};
 
 
 #define EXPR_FIELDS /* expr_t */ \

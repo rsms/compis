@@ -242,7 +242,7 @@ static void fmt(abuf_t* s, const node_t* nullable n, u32 indent, u32 maxdepth) {
   case STMT_TYPEDEF:
     if (n->flags & NF_VIS_PUB)
       abuf_str(s, "pub ");
-    abuf_fmt(s, "type ");
+    abuf_str(s, "type ");
     fmt(s, (node_t*)((typedef_t*)n)->type, indent, maxdepth);
     break;
 
@@ -254,9 +254,15 @@ static void fmt(abuf_t* s, const node_t* nullable n, u32 indent, u32 maxdepth) {
   case EXPR_FIELD:
     return local(s, (const local_t*)n, indent, maxdepth);
 
-  case EXPR_NS:
-    abuf_str(s, "/*TODO nsexpr_t*/");
+  case EXPR_NS: {
+    const nsexpr_t* ns = (nsexpr_t*)n;
+    if (ns->flags & NF_PKGNS) {
+      abuf_fmt(s, "package \"%s\"", ns->pkg ? ns->pkg->path.p : "?");
+    } else {
+      abuf_str(s, "/*TODO nsexpr_t*/");
+    }
     break;
+  }
 
   case EXPR_FUN: {
     if (n->flags & NF_VIS_PUB)

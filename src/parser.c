@@ -1073,8 +1073,9 @@ static stmt_t* stmt_typedef(parser_t* p) {
 
 static bool resolve_id(parser_t* p, idexpr_t* n) {
   n->ref = lookup(p, n->name);
-  if (!n->ref) {
+  if (!n->ref || n->ref->kind == NODE_IMPORTID) {
     trace("identifier \"%s\" not yet known", n->name);
+    n->ref = NULL; // undo setting n->ref
     n->type = type_unknown;
   } else if (node_isexpr(n->ref)) {
     n->type = ((expr_t*)n->ref)->type;
@@ -2324,7 +2325,7 @@ static void infer_import_name(parser_t* p, import_t* im, importid_t* id) {
   id->name = sym_intern(&im->path[start], len - start);
   id->loc = im->pathloc;
   if (len <= U32_MAX) {
-    loc_set_col(&id->loc, loc_col(id->loc) + 1 + (u32)start);
+    loc_set_col(&id->loc, loc_col(id->loc) + (u32)start);
     loc_set_width(&id->loc, (u32)(len - start));
   }
 }
@@ -2366,14 +2367,18 @@ static void infer_import_name(parser_t* p, import_t* im, importid_t* id) {
 static bool parse_import_members(parser_t* p, import_t* im) {
   // "name1, name2 as alias, *"
   importid_t* id_tail = NULL;
+  bool has_star = false;
   for (;;) {
-    importid_t* id = mem_alloc_zeroed(p->ast_ma, sizeof(importid_t)).p;
-    if UNLIKELY(id == NULL)
-      return out_of_mem(p), false;
-    id->loc = currloc(p);
+    importid_t* id = mknode(p, importid_t, NODE_IMPORTID);
+    id->flags |= NF_CHECKED | NF_UNKNOWN;
+    id->orignameloc = id->loc;
 
     if (currtok(p) == TSTAR) {
+      if (has_star)
+        error(p, "duplicate \"*\" import");
+      has_star = true;
       id->name = sym__;
+      loc_set_width(&id->loc, 1); // "*"
     } else {
       id->name = p->scanner.sym;
       if (id->name == sym__)
@@ -2390,13 +2395,23 @@ static bool parse_import_members(parser_t* p, import_t* im) {
 
     // alias ("origname as name")
     if (currtok(p) == TID && p->scanner.sym == sym_as) {
+      if UNLIKELY(id->name == sym__) {
+        // e.g. import * as x from "foo"
+        error(p, "cannot alias \"*\" import");
+      }
       next(p); // consume (ID as)
       expect_token(p, TID, "");
+      if UNLIKELY(p->scanner.sym == sym__) {
+        error(p, "cannot import a member as nothing (\"_\")");
+        help_at(p, id->loc, "remove \"%s\" if you don't want it imported", id->name);
+      }
       id->origname = id->name;
       id->name = p->scanner.sym;
       id->loc = currloc(p);
       next(p); // consume name
     }
+
+    define(p, id->name, (node_t*)id);
 
     // are we done?
     if (currtok(p) != TCOMMA)
@@ -2476,6 +2491,7 @@ static import_t* parse_import1(parser_t* p, import_t* im, import_t* nullable lis
       // "import path"
       infer_import_name(p, im, id);
     }
+    define(p, id->name, (node_t*)id);
   } else if UNLIKELY(currtok(p) == TID && p->scanner.sym == sym_as) {
     // show help for "import x from path as c" -> "import { x from path; path as c }"
     unexpected(p, "expected ';'");
