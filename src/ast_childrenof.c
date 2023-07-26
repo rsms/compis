@@ -231,6 +231,7 @@ astiter_t astiter_of_children(const node_t* n) {
   // no children
   case NODE_BAD:
   case NODE_COMMENT:
+  case NODE_IMPORTID:
   case STMT_IMPORT: // import_t
   case EXPR_BOOLLIT:
   case EXPR_INTLIT:

@@ -2211,7 +2211,9 @@ static irval_t* expr(ircons_t* c, void* expr_node) {
   case NODE_BAD:
   case NODE_COMMENT:
   case NODE_UNIT:
+  case NODE_IMPORTID:
   case STMT_TYPEDEF:
+  case STMT_IMPORT:
   case EXPR_FIELD:
   case TYPE_VOID:
   case TYPE_BOOL:

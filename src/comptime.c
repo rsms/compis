@@ -442,6 +442,7 @@ static void* eval1(ctx_t* ctx, void* np) {
   // —— TODO ——
   case NODE_UNIT:
   case STMT_TYPEDEF:
+  case STMT_IMPORT:
 
   case EXPR_TYPECONS:
   case EXPR_MEMBER:
@@ -451,6 +452,7 @@ static void* eval1(ctx_t* ctx, void* np) {
   case EXPR_DEREF:
   case EXPR_PREFIXOP:
   case EXPR_POSTFIXOP:
+  case EXPR_NS:
 
   case TYPE_VOID:
   case TYPE_BOOL:
@@ -478,11 +480,13 @@ static void* eval1(ctx_t* ctx, void* np) {
   case TYPE_ALIAS:
   case TYPE_UNKNOWN:
   case TYPE_UNRESOLVED:
+  case TYPE_NS:
     return error_not_supported(ctx, n, "%s", nodekind_fmt(n->kind)), n;
 
   // nodes we should never encounter as an expression
   case NODE_BAD:
   case NODE_COMMENT:
+  case NODE_IMPORTID:
   case EXPR_FIELD:
     break;
   }

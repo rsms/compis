@@ -522,12 +522,11 @@ static void fmt(abuf_t* s, const node_t* nullable n, u32 indent, u32 maxdepth) {
     break;
 
   case NODE_BAD:
-    abuf_fmt(s, "/*NODE_BAD*/");
+  case NODE_IMPORTID:
+  case NODE_COMMENT:
+    abuf_fmt(s, "/*%s*/", nodekind_name(n->kind));
     break;
 
-  case NODE_COMMENT:
-    abuf_fmt(s, "/*comment*/");
-    break;
   }
 }
 

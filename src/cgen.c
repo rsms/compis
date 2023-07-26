@@ -2284,6 +2284,7 @@ static void expr(cgen_t* g, const expr_t* n) {
   case NODE_BAD:
   case NODE_COMMENT:
   case NODE_UNIT:
+  case NODE_IMPORTID:
   case STMT_TYPEDEF:
   case STMT_IMPORT:
   case EXPR_FIELD:
