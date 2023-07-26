@@ -777,6 +777,7 @@ static err_t get_runtime_pkg(pkgbuild_t* pb, pkg_t** rt_pkg) {
 end:
   str_free(rt_pkgdir);
   rwmutex_lock(&pb->c->pkgindex_mu);
+  // note: no race because of pkgindex_intern
   pb->c->stdruntime_pkg = *rt_pkg;
   rwmutex_unlock(&pb->c->pkgindex_mu);
   return err;
