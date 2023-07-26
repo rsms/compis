@@ -150,9 +150,10 @@ char* const* strlist_array(strlist_t* a) {
     return a->_ap;
 
   usize len = (usize)a->len + 1 + 1; // +1 for NULL terminator, +1 for alignment padding
-  a->ok &= buf_reserve(&a->buf, len*sizeof(void*));
 
-  if UNLIKELY(!a->ok) {
+  if UNLIKELY(!buf_reserve(&a->buf, len*sizeof(void*))) {
+    safecheckf(0, "OOM");
+    a->ok = false;
     a->len = 0;
     static const char last_resort = 0;
     return (char**)&last_resort;
