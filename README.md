@@ -354,13 +354,17 @@ import "fruit" { apple, banana, citrus, peach as not_a_plum }
 ```
 
 When a package's namespace is imported and no explicit name is given with `as name`,
-the package's identifier is inferred from its last path component.
+the package's identifier is inferred from its last path component:
+
+```co
+import "foo/abc"   // imported as identifier "abc"
+import "foo/a b c" // imported as identifier "c"
+import "foo/a-b-c" // imported as identifier "c"
+```
+
 If the last path component is not a valid identifier `as name` is required:
 
 ```co
-import "foo/abc"         // imported as identifier "abc"
-import "foo/a b c"       // imported as identifier "c"
-import "foo/a-b-c"       // imported as identifier "c"
 import "foo/abc!"        // error: cannot infer package identifier
 import "foo/abc!" as abc // imported as identifier "abc"
 ```
