@@ -254,7 +254,7 @@ let f i8      // error: missing value
 A package in Compis is a directory of files and identified by its file path.
 Declarations in any file is visible in other files of the same package. For example:
 
-```shell
+```
 $ cat foo/a.co
 fun a(x int) int
   x * 2
@@ -270,7 +270,7 @@ $ compis build ./foo
 The only exception to this rule is imported symbols,
 which are only visible within the same source file:
 
-```shell
+```
 $ cat foo/a.co
 import print from "std/runtime"
 // here, "print" is only available in this source file
