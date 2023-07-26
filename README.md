@@ -299,7 +299,7 @@ $ compis build somedir/myprog.co
 ### Importing packages
 
 ```co
-import "foo/bar"            // packae available as "bar"
+import "foo/bar"            // package available as "bar"
 import "foo/bar" as lol     // package available as "lol"
 import "./mysubpackage"     // relative to source file's directory
 import "cat" { x, y }       // import only members x and y
