@@ -729,9 +729,13 @@ static void leave_ns(typecheck_t* a) {
 static node_t* nullable lookup(typecheck_t* a, sym_t name) {
   assert(name != sym__);
   node_t* n = scope_lookup(&a->scope, name, U32_MAX);
+  trace("lookup \"%s\" in scope => %s", name, n ? nodekind_name(n->kind) : "(null)");
   if (!n) {
-    if (!( n = pkg_def_get(a->pkg, name) ))
+    if (!( n = pkg_def_get(a->pkg, name) )) {
+      trace("lookup \"%s\" in pkg => (null)", name);
       return NULL;
+    }
+    trace("lookup \"%s\" in pkg => %s", name, nodekind_name(n->kind));
 
     // mark the node as being used across translations units of the same package
     node_upgrade_visibility(n, NF_VIS_PKG);
@@ -1450,7 +1454,7 @@ static void unknown_identifier(typecheck_t* a, idexpr_t* n) {
   scope_iterate(&a->scope, maxdepth, fuzzy_visit_scope, &fz);
   fuzzy_sort(&fz);
 
-  int max_edit_dist = 3;
+  int max_edit_dist = 2;
   if (fz.entries.len > 0 && fz.entries.v[0].edit_dist <= max_edit_dist) {
     help(a, fz.entries.v[0].n, "did you mean \"%s\"", fz.entries.v[0].name);
   }
