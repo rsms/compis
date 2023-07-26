@@ -262,23 +262,23 @@ void* _array_sortedset_lookup(
 }
 
 
-isize ptrarray_sortedset_indexof(const ptrarray_t* a, const void* value) {
-  // binary search
-  safecheck((usize)a->len <= ISIZE_MAX);
-  u32 mid, low = 0, high = a->len;
-  while (low < high) {
-    mid = (low + high) / 2;
-    void* existing = a->v[mid];
-    if (existing == value)
-      return (isize)mid;
-    if ((uintptr)existing < (uintptr)value) {
-      high = mid;
-    } else {
-      low = mid + 1;
-    }
-  }
-  return -1;
-}
+// isize ptrarray_sortedset_indexof(const ptrarray_t* a, const void* value) {
+//   // binary search
+//   safecheck((usize)a->len <= ISIZE_MAX);
+//   u32 mid, low = 0, high = a->len;
+//   while (low < high) {
+//     mid = (low + high) / 2;
+//     void* existing = a->v[mid];
+//     if (value == existing)
+//       return (isize)mid;
+//     if ((uintptr)value < (uintptr)existing) {
+//       high = mid;
+//     } else {
+//       low = mid + 1;
+//     }
+//   }
+//   return -1;
+// }
 
 
 static int str_cmp(const char** a, const char** b, void* ctx) {
@@ -325,3 +325,39 @@ bool u32array_sortedset_add(u32array_t* a, memalloc_t ma, u32 v) {
   *vp = v;
   return true;
 }
+
+
+#if defined(CO_ENABLE_TESTS) && defined(CO_DEVBUILD)
+__attribute__((constructor)) static void test_array_sortedset() {
+  uintptr insert_data[] = {
+    0x600003098340,
+    0x6000030982c0,
+    0x600003098300,
+    0x600003098280,
+  };
+
+  memalloc_t ma = memalloc_default();
+
+  ptrarray_t a = {0};
+  for (usize i = 0; i < countof(insert_data); i++) {
+    bool added;
+    uintptr v = insert_data[i];
+    bool ok = ptrarray_sortedset_addptr(&a, ma, (const void*)v, &added);
+    safecheck(ok);
+    safecheck(added);
+  }
+
+  for (u32 i = 0; i < a.len; i++) {
+    //log("a[%u] = %p", i, a.v[i]);
+    if (i > 0)
+      safecheck((uintptr)a.v[i] > (uintptr)a.v[i-1]);
+  }
+
+  // for (u32 i = 0; i < a.len; i++)
+  //   safecheck(i == (usize)ptrarray_sortedset_indexof(&a, a.v[i]));
+
+  ptrarray_dispose(&a, ma);
+
+  log("%s PASSED", __FUNCTION__);
+}
+#endif

@@ -296,7 +296,6 @@ typedef array_type(void*) ptrarray_t;
 DEF_ARRAY_TYPE_NULLABLEPTR_API(void*, ptrarray)
 u32 ptrarray_rindexof(const ptrarray_t* a, const void* value); // U32_MAX if not found
 u32 u32array_rindexof(const u32array_t* a, u32 value); // U32_MAX if not found
-isize ptrarray_sortedset_indexof(const ptrarray_t* a, const void* value);
 
 // ptrarray_move_to_end is equivalent to ptrarray_move(a, a->len-1, index, index+1)
 void ptrarray_move_to_end(ptrarray_t* a, u32 index);
