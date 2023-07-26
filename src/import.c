@@ -282,7 +282,7 @@ err_t import_resolve_fspath(str_t* fspath, usize* rootlen_out) {
     fspath->p[corootlen] = PATH_SEP;
     *rootlen_out = corootlen;
 
-    vlog("looking for package \"%.*s\" at \"%s\"",
+    vlog("looking for std package \"%.*s\" at \"%s\"",
       (int)fspathlen,
       fspath->p + (fspath->len - fspathlen),
       fspath->p);
