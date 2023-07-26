@@ -208,10 +208,9 @@ static err_t build_libc_musl(const compiler_t* c) {
       srcdirs[i].p + strlen(coroot), dstdir.p + strlen(c->sysroot));
     if (( err = fs_copyfile(srcdirs[i].p, dstdir.p, 0) ))
       break;
-    str_free(srcdirs[i]);
   }
-  if (c->target.arch != ARCH_any)
-    str_free(srcdirs[1]);
+  for (usize i = 0; i < countof(srcdirs); i++)
+    str_free(srcdirs[i]);
   str_free(dstdir);
 
   // build library
