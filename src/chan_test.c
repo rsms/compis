@@ -2,7 +2,7 @@
 #include "chan.h"
 #include "thread.h"
 
-#if defined(CO_ENABLE_TESTS) && defined(CO_DEVBUILD) // set to 1 to enable test
+#if defined(CO_ENABLE_TESTS) && defined(CO_DEVBUILD)
 ASSUME_NONNULL_BEGIN
 
 // silence dlog
