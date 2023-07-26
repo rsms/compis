@@ -299,21 +299,23 @@ $ compis build somedir/myprog.co
 ### Importing packages
 
 ```co
-import "foo/bar"         // packae available as "bar"
-import "foo/bar" as lol  // package available as "lol"
-import "./mysubpackage"  // relative to source file's directory
-import "cat" x, y        // import only members x and y
-import "cat" x, y as y2  // change name of some members
-import "cat" as c, x, y  // import package and some members
-import "html" *          // import all members
-import "html" *, a as A  // import all members, change name of some
+import "foo/bar"            // packae available as "bar"
+import "foo/bar" as lol     // package available as "lol"
+import "./mysubpackage"     // relative to source file's directory
+import "cat" { x, y }       // import only members x and y
+import "cat" { x, y as y2 } // change name of some members
+import "cat" as c { x, y }  // import both package and some members
+import "html" { * }         // import all members
+import "html" { *, a as A } // import all members, change name of some
 ```
 
-List of members to import can be written as a block rather than a list.
+List of members is a block which contains lists (comma separated names),
+which allows us to write it in different ways depending on the amount of members
+we are importing. This can help readability and improved version control diffs.
 The following three are equivalent:
 
 ```co
-import "fruit" apple, banana, citrus, peach as not_a_plum
+import "fruit" { apple, banana, citrus, peach as not_a_plum }
 
 import "fruit"
   apple
@@ -327,15 +329,15 @@ import "fruit" { apple,
 }
 ```
 
-As a convenience, imports can be grouped:
+Similarly—as a convenience—imports themselves can be grouped in a block:
 
 ```co
 import
   "foo/bar"
   "foo/bar" as lol
   "./mysubpackage"
-  "cat" x, y as y2
-  "html" *
+  "cat" { x, y as y2 }
+  "html" { * }
   "fruit"
     apple
     banana
@@ -346,9 +348,9 @@ import
 import "foo/bar"
 import "foo/bar" as lol
 import "./mysubpackage"
-import "cat" x, y as y2
-import "html" *
-import "fruit" apple, banana, citrus, peach as not_a_plum
+import "cat" { x, y as y2 }
+import "html" { * }
+import "fruit" { apple, banana, citrus, peach as not_a_plum }
 ```
 
 When a package's namespace is imported and no explicit name is given with `as name`,
@@ -361,6 +363,13 @@ import "foo/a b c"       // imported as identifier "c"
 import "foo/a-b-c"       // imported as identifier "c"
 import "foo/abc!"        // error: cannot infer package identifier
 import "foo/abc!" as abc // imported as identifier "abc"
+```
+
+To import a package only for its side effects, without introducing any identifiers
+into the source file scope, name it `_`:
+
+```co
+"test/check-that-random-works" as _
 ```
 
 Examples of invalid import paths:
@@ -378,12 +387,10 @@ Imports syntax specification:
 ```abnf
 importstmt  = "import" (importgroup | importspec) ";"
 importgroup = "{" (importspec ";")+ "}"
-importspec  = posixpath (membergroup | memberlist)?
-            | posixpath "as" id (membergroup | "," memberlist)?
-membergroup = "{" member (("," | ";") member)* "}"
+importspec  = posixpath ("as" id)? membergroup?
+membergroup = "{" (memberlist ";")+ "}"
 memberlist  = member ("," member)*
-member      = "*"
-            | id ("as" id)?
+member      = "*" | id ("as" id)?
 ```
 
 

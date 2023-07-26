@@ -1,9 +1,9 @@
 import "foo/bar"
-import "foo/bar" as lol, bottle
+import "foo/bar" as lol { bottle }
 // import "./bad-name." // error: cannot infer package identifier
 import "./bad-name." as custom_name
 import "./s-o-s"
-import "cat" x, y as y2
+import "cat" { x, y as y2 }
 import "fruit" { apple,
   banana, citrus,
   peach as not_a_plum

@@ -1,11 +1,10 @@
 import
   // "examples/import2" { hello, A as im2_A }
   "examples/import2"
-  "examples/import2"
     hello as im2_hello
-  "std/runtime" as rt { print, * }
+  "std/runtime" { print }
   // "./import2" as im3
-  // "examples/import3"
+  "examples/import3" as _
 
 type A
   x int
