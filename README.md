@@ -249,6 +249,143 @@ let f i8      // error: missing value
 > FUTURE: support deferred binding, e.g. `let x i8; x = 8`
 
 
+## Packages
+
+A package in Compis is a directory of files and identified by its file path.
+Declarations in any file is visible in other files of the same package. For example:
+
+```shell
+$ cat foo/a.co
+fun a(x int) int
+  x * 2
+
+$ cat foo/b.co
+fun b(x int) int
+  a(x) // the "a" function is visible here
+
+$ compis build ./foo
+[foo 6/6] build/opt-x86_64-linux/bin/foo
+```
+
+The only exception to this rule is imported symbols,
+which are only visible within the same source file:
+
+```shell
+$ cat foo/a.co
+import print from "std/runtime"
+// here, "print" is only available in this source file
+fun say_hello()
+  print("Hello")
+
+$ cat foo/b.co
+pub fun main()
+  say_hello()    // ok; say_hello is available
+  print("Hello") // error; print is not available here
+
+$ compis build ./foo
+foo/b.co:3:3: error: unknown identifier "print"
+3 → │   print("Hello") // error; print is not available here
+    │   ~~~~~
+```
+
+As a convenience, Compis can build "ad-hoc packages" out of arbitrary source files:
+
+```shell
+$ compis build somedir/myprog.co
+[somedir/myprog 4/4] build/opt-x86_64-macos.10/bin/myprog
+```
+
+
+### Importing packages
+
+```co
+import "foo/bar"         // packae available as "bar"
+import "foo/bar" as lol  // package available as "lol"
+import "./mysubpackage"  // relative to source file's directory
+import "cat" x, y        // import only members x and y
+import "cat" x, y as y2  // change name of some members
+import "cat" as c, x, y  // import package and some members
+import "html" *          // import all members
+import "html" *, a as A  // import all members, change name of some
+```
+
+List of members to import can be written as a block rather than a list.
+The following three are equivalent:
+
+```co
+import "fruit" apple, banana, citrus, peach as not_a_plum
+
+import "fruit"
+  apple
+  banana
+  citrus
+  peach as not_a_plum
+
+import "fruit" { apple,
+  banana, citrus,
+  peach as not_a_plum
+}
+```
+
+As a convenience, imports can be grouped:
+
+```co
+import
+  "foo/bar"
+  "foo/bar" as lol
+  "./mysubpackage"
+  "cat" x, y as y2
+  "html" *
+  "fruit"
+    apple
+    banana
+    citrus
+    peach as not_a_plum
+
+// equivalent to:
+import "foo/bar"
+import "foo/bar" as lol
+import "./mysubpackage"
+import "cat" x, y as y2
+import "html" *
+import "fruit" apple, banana, citrus, peach as not_a_plum
+```
+
+When a package's namespace is imported and no explicit name is given with `as name`,
+the package's identifier is inferred from its last path component.
+If the last path component is not a valid identifier `as name` is required:
+
+```co
+import "foo/abc"         // imported as identifier "abc"
+import "foo/a b c"       // imported as identifier "c"
+import "foo/a-b-c"       // imported as identifier "c"
+import "foo/abc!"        // error: cannot infer package identifier
+import "foo/abc!" as abc // imported as identifier "abc"
+```
+
+Examples of invalid import paths:
+
+```co
+import ""   // error: invalid import path (empty path)
+import "/"  // error: invalid import path (absolute path)
+import "."  // error: invalid import path (cannot import itself)
+import " "  // error: invalid import path (leading whitespace)
+import "a:" // error: invalid import path (invalid character)
+```
+
+Imports syntax specification:
+
+```abnf
+importstmt  = "import" (importgroup | importspec) ";"
+importgroup = "{" (importspec ";")+ "}"
+importspec  = posixpath (membergroup | memberlist)?
+            | posixpath "as" id (membergroup | "," memberlist)?
+membergroup = "{" member (("," | ";") member)* "}"
+memberlist  = member ("," member)*
+member      = "*"
+            | id ("as" id)?
+```
+
 
 
 # Building

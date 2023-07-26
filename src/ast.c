@@ -213,7 +213,7 @@ static void repr_importid(RPARAMS, const importid_t* id) {
   if (id->name == sym__) {
     CHAR('*');
   } else {
-    PRINT(id->name);
+    PRINT(id->name ? id->name : "{null}");
   }
 }
 
@@ -222,7 +222,9 @@ static void repr_import(RPARAMS, const import_t* im) {
   CHAR('"');
   buf_appendrepr(&r->outbuf, im->path, strlen(im->path));
   CHAR('"');
-  if (im->isfrom) {
+  if (im->name != sym__)
+    PRINT(" as "), PRINT(im->name);
+  if (im->idlist) {
     PRINT(" (members");
     for (const importid_t* id = im->idlist; id; id = id->next_id) {
       REPR_BEGIN('(', "IMPORT ");
@@ -230,8 +232,6 @@ static void repr_import(RPARAMS, const import_t* im) {
       REPR_END(')');
     }
     CHAR(')');
-  } else if (im->idlist) {
-    PRINT(" as "), PRINT(im->idlist->name);
   }
   if (im->pkg && im->pkg->api_ns)
     repr(RARGS, (node_t*)im->pkg->api_ns);

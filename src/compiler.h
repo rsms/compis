@@ -327,12 +327,13 @@ typedef struct {
 } expr_t;
 
 typedef struct import_t {
-  stmt_t;
+  stmt_t;                           // .loc is location of "import" keyword
   char*                path;        // e.g. "foo/lolcat"
   loc_t                pathloc;     // source location of path
+  sym_t                name;        // package identifier (sym__ if pkg is not imported)
+  loc_t                nameloc;     // source location of name
   importid_t* nullable idlist;      // imported identifiers (list head)
   pkg_t* nullable      pkg;         // resolved package (set by import_pkgs)
-  bool                 isfrom;      // true if idlist denotes items to import (not pkg)
   import_t* nullable   next_import; // linked-list link
 } import_t;
 

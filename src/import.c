@@ -49,7 +49,7 @@ bool import_validate_path(const char* path, const char** errmsgp, usize* erroffs
   if UNLIKELY(*path == '.' && (path[1] != '/' && (path[1] != '.' || path[2] != '/'))) {
     if (path[1] == 0) {
       // "."
-      *errmsgp = "cannot import a package into itself";
+      *errmsgp = "cannot import itself";
     } else {
       *errmsgp = "must start with \"./\" or \"../\" when first character is '.'";
       *erroffsp = 1;

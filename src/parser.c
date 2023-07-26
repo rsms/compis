@@ -568,7 +568,9 @@ static void define(parser_t* p, sym_t name, node_t* n) {
     out_of_mem(p);
 
   // top-level definitions also goes into package scope
-  if (scope_istoplevel(&p->scope) && n->kind != NODE_IMPORTID) {
+  if (scope_istoplevel(&p->scope) &&
+      n->kind != NODE_IMPORTID && n->kind != STMT_IMPORT)
+  {
     // trace("define in pkg %s %s", name, nodekind_name(n->kind));
     existing = n;
     err_t err = pkg_def_add(currpkg(p), p->ma, name, /*inout*/&existing);
@@ -1074,7 +1076,7 @@ static stmt_t* stmt_typedef(parser_t* p) {
 
 static bool resolve_id(parser_t* p, idexpr_t* n) {
   n->ref = lookup(p, n->name);
-  if (!n->ref || n->ref->kind == NODE_IMPORTID) {
+  if (!n->ref || n->ref->kind == NODE_IMPORTID || n->ref->kind == STMT_IMPORT) {
     trace("identifier \"%s\" not yet known", n->name);
     n->ref = NULL; // undo setting n->ref
     n->type = type_unknown;
@@ -2303,7 +2305,7 @@ static stmt_t* stmt_pub(parser_t* p) {
 //   "foo"         => "foo"
 //   "foo/lol-cat" => "cat"
 //   "foo!"        error: cannot infer imported name from path
-static void infer_import_name(parser_t* p, import_t* im, importid_t* id) {
+static void infer_import_name(parser_t* p, import_t* im) {
   usize len = strlen(im->path);
   usize start = len;
 
@@ -2318,56 +2320,44 @@ static void infer_import_name(parser_t* p, import_t* im, importid_t* id) {
   }
 
   if UNLIKELY(start == len) {
-    id->name = sym__;
-    error_at(p, im->pathloc,
-      "cannot infer imported name from path; specify by appending `as name`");
+    error_at(p, im->pathloc, "cannot infer package identifier from path");
+    loc_t helploc = im->pathloc;
+    if (loc_line(helploc)) {
+      loc_set_col(&helploc, loc_col(helploc) + loc_width(helploc) + 1); // +1 for '"'
+      loc_set_width(&helploc, 0);
+      help_at(p, helploc, "add `as name` here");
+    }
   }
 
-  id->name = sym_intern(&im->path[start], len - start);
-  id->loc = im->pathloc;
+  im->name = sym_intern(&im->path[start], len - start);
+  im->nameloc = im->pathloc;
   if (len <= U32_MAX) {
-    loc_set_col(&id->loc, loc_col(id->loc) + (u32)start);
-    loc_set_width(&id->loc, (u32)(len - start));
+    loc_set_col(&im->nameloc, loc_col(im->nameloc) + (u32)start);
+    loc_set_width(&im->nameloc, (u32)(len - start));
   }
 }
 
 
 // parse_imports
 //
-// import  = "import" (importm | import1) ";"
-// importm = "{" (import1 ";")+ "}"
-// import1 = (path "as" id | members? path)
-// members = ("*" | names) "from"
-// names   = name ("," name)*
-// name    = id ("as" id)?
-//
-// e.g.
-//   import "foo/cat"
-//   import "foo/cat" as c
-//   import x from "foo/cat"
-//   import x as ex, y from "foo/cat"
-//   import * from "foo/cat"
-//   import {
-//     "foo/cat"
-//     "foo/cat" as c
-//     x from "foo/cat"
-//     x as ex, y from "foo/cat"
-//     * from "foo/cat"
-//   }
-//
-// token examples:
-//   import "foo/cat"             | TIMPORT TSTRLIT
-//   import "foo/cat" as c        | TIMPORT TSTRLIT (TID as) (TID c)
-//   import x from "foo/cat"      | TIMPORT (TID x) (TID from) TSTRLIT
-//   import x as y from "foo/cat" | TIMPORT (TID x) (TID as) (TID y) (TID from) TSTRLIT
-//   import * from "foo/cat"      | TIMPORT TSTAR (TID from) TSTRLIT
-//   import { "foo" }             | TIMPORT TLBRACK TSTRLIT TSEMI TRBRACK
-//                                + TSEMI
-//
+// importstmt  = "import" (importgroup | importspec) ";"
+// importgroup = "{" (importspec ";")+ "}"
+// importspec  = path (membergroup | memberlist)?
+//             | path "as" id (membergroup | "," memberlist)?
+// membergroup = "{" member (("," | ";") member)* "}"
+// memberlist  = member ("," member)*
+// member      = "*"
+//             | id ("as" id)?
 
-static bool parse_import_members(parser_t* p, import_t* im) {
+
+// membergroup = "{" member (("," | ";") member)* "}"
+// memberlist  = member ("," member)*
+// member      = "*"
+//             | id ("as" id)?
+static importid_t* nullable parse_import_members(
+  parser_t* p, import_t* im, importid_t* nullable id_tail)
+{
   // "name1, name2 as alias, *"
-  importid_t* id_tail = NULL;
   bool has_star = false;
   for (;;) {
     importid_t* id = mknode(p, importid_t, NODE_IMPORTID);
@@ -2380,12 +2370,30 @@ static bool parse_import_members(parser_t* p, import_t* im) {
       has_star = true;
       id->name = sym__;
       loc_set_width(&id->loc, 1); // "*"
+      // special case for '*' which does not produce an automatic ';'.
+      // e.g.
+      //   import "foo" *
+      //   import "bar"
+      // scans as:
+      //   IMPORT STRLIT("foo") STAR  // <— note: no ';'
+      //   IMPORT STRLIT("bar")
+      // so after parsing a trailing STAR, we convert it to a semicolon:
+      // scans as:
+      //   IMPORT STRLIT("foo") STAR SEMI
+      //   IMPORT STRLIT("bar")
+      tok_t nexttok = lookahead(p, 1);
+      if (nexttok != TCOMMA && nexttok != TSEMI && nexttok != TID) {
+        // transform TSTAR -> TSEMI
+        p->scanner.tok = TSEMI;
+      } else {
+        next(p); // consume TSTAR
+      }
     } else {
       id->name = p->scanner.sym;
       if (id->name == sym__)
         error(p, "invalid member \"_\" in import statement");
+      next(p); // consume TID
     }
-    next(p); // consume TID or TSTAR
 
     // add to list
     if (id_tail) {
@@ -2414,6 +2422,8 @@ static bool parse_import_members(parser_t* p, import_t* im) {
 
     define(p, id->name, (node_t*)id);
 
+    id_tail = id;
+
     // are we done?
     if (currtok(p) != TCOMMA)
       break;
@@ -2423,31 +2433,25 @@ static bool parse_import_members(parser_t* p, import_t* im) {
     if (currtok(p) != TID && currtok(p) != TSTAR) {
       unexpected(p, "expected identifier or '*'");
       fastforward_semi(p);
-      return false;
+      return NULL;
     }
-    id_tail = id;
   }
 
-  return true;
+  return id_tail;
 }
 
 
-static import_t* parse_import1(parser_t* p, import_t* im, import_t* nullable list_tail) {
-  // parse anything after the "import" keyword
-
-  if (currtok(p) == TID || currtok(p) == TSTAR) {
-    // "x, y as z from"
-    im->isfrom = true;
-    if (!parse_import_members(p, im))
-      return im;
-    // expect (ID "from")
-    if UNLIKELY(currtok(p) != TID || p->scanner.sym != sym_from) {
-      unexpected(p, "expected keyword 'from'");
-      fastforward_semi(p);
-      return im;
-    }
-    next(p);
-  }
+// importspec  = path (membergroup | memberlist)?
+//             | path "as" id (membergroup | "," memberlist)?
+// membergroup = "{" member (("," | ";") member)* "}"
+// memberlist  = member ("," member)*
+// member      = "*"
+//             | id ("as" id)?
+static import_t* parse_import_spec(
+  parser_t* p, import_t* im, import_t* nullable list_tail)
+{
+  im->flags |= NF_CHECKED;
+  im->name = sym__;
 
   // path e.g. "foo/cat" in "import foo/cat"
   if (!expect_token(p, TSTRLIT, ""))
@@ -2467,45 +2471,86 @@ static import_t* parse_import1(parser_t* p, import_t* im, import_t* nullable lis
     if (erroffs <= (usize)U32_MAX)
       origin.focus_col = origin.column + (u32)erroffs;
     _diag(p, origin, DIAG_ERR, "invalid import path (%s)", errmsg);
+    fastforward_semi(p);
+    return im;
   }
   next(p);
 
-  // package name
-  if (im->idlist == NULL) {
-    // "import path as name"
-    // "import path"
-    importid_t* id = mknode(p, importid_t, NODE_IMPORTID);
-    im->idlist = id;
-    if (currtok(p) == TID && p->scanner.sym == sym_as) {
-      // "import path as name"
-      next(p); // consume "as"
-      if (!expect_token(p, TID, ""))
-        return im;
-      id->name = p->scanner.sym;
-      id->loc = currloc(p);
-      loc_set_width(&id->loc, (u32)strlen(id->name));
-      next(p); // consume identifier
-    } else {
-      // "import path"
-      infer_import_name(p, im, id);
-    }
-    define(p, id->name, (node_t*)id);
-  } else if UNLIKELY(currtok(p) == TID && p->scanner.sym == sym_as) {
-    // show help for "import x from path as c" -> "import { x from path; path as c }"
-    unexpected(p, "expected ';'");
-    loc_t helploc = loc_make(loc_srcfileid(currloc(p)), loc_line(currloc(p)), 1, 0);
-    next(p);
-    if (currtok(p) == TID) {
-      buf_t* pathlit = tmpbuf_get(0);
-      buf_appendrepr(pathlit, im->path, strlen(im->path));
-      buf_nullterm(pathlit);
-      help_at(p, helploc, "add a separate package import: `import \"%s\" as %s`",
-        pathlit->chars, p->scanner.sym);
-      next(p);
-    }
-    fastforward_semi(p);
+  // just `import "path"`?
+  if (currtok(p) == TSEMI) {
+    infer_import_name(p, im);
+    define(p, im->name, (node_t*)im);
+    goto end;
   }
 
+  // ("as" id)?
+  if (currtok(p) == TID && p->scanner.sym == sym_as) {
+    next(p); // consume "as"
+    if (!expect_token(p, TID, ""))
+      return im;
+    im->name = p->scanner.sym;
+    im->nameloc = currloc(p);
+    loc_set_width(&im->nameloc, (u32)strlen(im->name));
+    next(p); // consume identifier
+    define(p, im->name, (node_t*)im);
+
+    // next, we expect one of the following:
+    // - ";" to end the import, e.g. `import "foo" as bar`
+    // - "," to begin a list of specific members
+    // - "{" to begin a group of list of specific members
+    switch (currtok(p)) {
+      case TCOMMA:  next(p); break;
+      case TLBRACE: break;
+      case TSEMI: goto end;
+      default:
+        unexpected(p, "expected end of import statement or ', member'");
+        if (currtok(p) == TID || currtok(p) == TSTAR) {
+          // provide helpful error for the following case:
+          //   import "foo" as bar x  // user likely intended "x" to name a member
+          loc_t helploc = im->nameloc;
+          loc_set_col(&helploc, loc_col(helploc) + loc_width(helploc));
+          loc_set_width(&helploc, 0);
+          help_at(p, helploc, "add a comma ',' here");
+        }
+        fastforward_semi(p);
+        return im;
+    }
+  }
+
+  // importgroup?
+  if (currtok(p) == TLBRACE) {
+    // membergroup = "{" member (("," | ";") member)* "}"
+    // member      = "*"
+    //             | id ("as" id)?
+
+    importid_t* id_tail = NULL;
+
+    next(p); // consume opening "{"
+    if (currtok(p) != TRBRACE) for (;;) {
+      id_tail = parse_import_members(p, im, id_tail);
+      expect2(p, TSEMI, "");
+      if (currtok(p) == TRBRACE) {
+        next(p); // consume closing "}"
+        break;
+      }
+    }
+
+    goto end;
+  } else if (currtok(p) != TSEMI) {
+    // memberlist  = member ("," member)*
+    // member      = "*"
+    //             | id ("as" id)?
+    if (!expect_token(p, TID, ""))
+      return im;
+  }
+
+  if (currtok(p) == TID || currtok(p) == TSTAR) {
+    // "x, y as z"
+    if (!parse_import_members(p, im, /*id_tail*/NULL))
+      return im;
+  }
+
+end:
   // append to list
   if (list_tail == NULL) {
     p->unit->importlist = im;
@@ -2515,25 +2560,28 @@ static import_t* parse_import1(parser_t* p, import_t* im, import_t* nullable lis
   return im;
 }
 
-static import_t* parse_import(parser_t* p, import_t* nullable list_tail) {
+
+static import_t* parse_import_stmt(parser_t* p, import_t* nullable list_tail) {
   import_t* im = mknode(p, import_t, STMT_IMPORT);
   next(p);
 
-  if (currtok(p) != TLBRACE)
-    return parse_import1(p, im, list_tail);
+  if (currtok(p) != TLBRACE) {
+    // import "path"
+    return parse_import_spec(p, im, list_tail);
+  }
 
-  // import { import1; ... import1; }
+  // import { ... }
   next(p); // consume opening "{"
   if (currtok(p) != TRBRACE) for (;;) {
-    list_tail = parse_import1(p, im, list_tail);
+    list_tail = parse_import_spec(p, im, list_tail);
     expect2(p, TSEMI, "");
     if (currtok(p) == TRBRACE) {
-      next(p); // consume closing "{"
+      next(p); // consume closing "}"
       break;
     }
-    // we are going to parse another import1; allocate memory for it
+    // we are going to parse another importspec; allocate memory for it
     import_t* im2 = mknode(p, import_t, STMT_IMPORT);
-    im2->loc = im->loc;
+    im2->flags |= NF_CHECKED;
     im = im2;
   }
   return im;
@@ -2543,7 +2591,7 @@ static import_t* parse_import(parser_t* p, import_t* nullable list_tail) {
 static void parse_imports(parser_t* p) {
   import_t* tail = NULL;
   while (currtok(p) == TIMPORT) {
-    tail = parse_import(p, tail);
+    tail = parse_import_stmt(p, tail);
     expect2(p, TSEMI, "");
   }
 }

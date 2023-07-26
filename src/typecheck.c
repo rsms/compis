@@ -1470,7 +1470,7 @@ static void idexpr(typecheck_t* a, idexpr_t* n) {
       return unknown_identifier(a, n);
   }
 
-  assertf(n->ref->kind != NODE_IMPORTID,
+  assertf(n->ref->kind != NODE_IMPORTID && n->ref->kind != STMT_IMPORT,
     "unresolved import '%s'", ((importid_t*)n->ref)->name);
 
   expr(a, n->ref);
@@ -2821,20 +2821,6 @@ again:
 }
 
 
-static void import_whole_pkg(typecheck_t* a, import_t* im) {
-  // e.g. import "foo/bar" as lol
-  if (im->idlist == NULL) // just for the side effects
-    return;
-  assertnull(im->idlist->next_id); // must only be one name
-  assertnotnull(im->pkg); // should have been resolved by pkgbuild
-
-  trace("define \"%s\" = namespace of pkg \"%s\"", im->idlist->name, im->pkg->path.p);
-
-  assertnotnull(im->pkg->api_ns);
-  define(a, im->idlist->name, im->pkg->api_ns);
-}
-
-
 static void report_unknown_import_member(
   typecheck_t* a, import_t* im, importid_t* imid)
 {
@@ -2844,7 +2830,7 @@ static void report_unknown_import_member(
 }
 
 
-static void import_from(typecheck_t* a, import_t* im) {
+static void import_members(typecheck_t* a, import_t* im) {
   // e.g. import x, y as z from "foo/bar"
   // e.g. import * from "foo/bar"
   // e.g. import *, y as z from "foo/bar"
@@ -2940,9 +2926,16 @@ static void import_from(typecheck_t* a, import_t* im) {
 
 
 static void import(typecheck_t* a, import_t* im) {
-  if (im->isfrom)
-    return import_from(a, im);
-  return import_whole_pkg(a, im);
+  if (im->name != sym__) {
+    // e.g. import "foo/bar" as lol
+    assertnotnull(im->pkg); // should have been resolved by pkgbuild
+    assertnotnull(im->pkg->api_ns);
+    trace("define \"%s\" = namespace of pkg \"%s\"", im->name, im->pkg->path.p);
+    define(a, im->name, im->pkg->api_ns);
+  }
+
+  if (im->idlist)
+    import_members(a, im);
 }
 
 
