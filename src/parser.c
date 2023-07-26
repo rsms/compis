@@ -558,6 +558,7 @@ static void define(parser_t* p, sym_t name, node_t* n) {
     return;
 
   trace("define %s %s", name, nodekind_name(n->kind));
+  assert(n->kind != NODE_BAD);
 
   node_t* existing = scope_lookup(&p->scope, name, 0);
   if (existing)
@@ -2473,10 +2474,7 @@ static import_t* parse_import1(parser_t* p, import_t* im, import_t* nullable lis
   if (im->idlist == NULL) {
     // "import path as name"
     // "import path"
-    importid_t* id = mem_alloc_zeroed(p->ast_ma, sizeof(importid_t)).p;
-    if UNLIKELY(id == NULL)
-      return out_of_mem(p), im;
-    id->loc = currloc(p);
+    importid_t* id = mknode(p, importid_t, NODE_IMPORTID);
     im->idlist = id;
     if (currtok(p) == TID && p->scanner.sym == sym_as) {
       // "import path as name"
