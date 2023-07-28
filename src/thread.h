@@ -144,9 +144,9 @@ typedef struct {
 } mutex_t;
 err_t mutex_init(mutex_t*);
 void mutex_dispose(mutex_t*);
-static void mutex_lock(mutex_t*);
+void mutex_lock(mutex_t*);
 static bool mutex_trylock(mutex_t*);
-static void mutex_unlock(mutex_t*);
+void mutex_unlock(mutex_t*);
 static bool mutex_islocked(mutex_t*);
 
 
@@ -222,16 +222,6 @@ static void spinmutex_unlock(spinmutex_t* m);
   #define _mutex_lock(mu)    (pthread_mutex_lock(&(mu)->m) == 0)
   #define _mutex_unlock(mu)  (pthread_mutex_unlock(&(mu)->m) == 0)
 #endif
-
-inline static void mutex_lock(mutex_t* mu) {
-  if UNLIKELY(AtomicAdd(&mu->w, 1, memory_order_seq_cst))
-    safecheckxf(_mutex_lock(mu), "mutex_lock");
-}
-
-inline static void mutex_unlock(mutex_t* mu) {
-  if UNLIKELY(AtomicSub(&mu->w, 1, memory_order_seq_cst) > 1)
-    safecheckxf(_mutex_unlock(mu), "mutex_unlock");
-}
 
 inline static bool mutex_trylock(mutex_t* mu) {
   u32 w = 0;

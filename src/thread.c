@@ -82,11 +82,13 @@ err_t mutex_init(mutex_t* mu) {
 
 void mutex_dispose(mutex_t* mu) {
   #if DEBUG
-  if (mutex_islocked(mu))
-    dlog("warning: mutex_dispose called on locked mutex");
+  if (mutex_islocked(mu)) {
+    dlog("warning: mutex_dispose called on locked mutex (w=%u)", AtomicLoadAcq(&mu->w));
+  }
   #endif
   mtx_destroy(&mu->m);
 }
+
 
 //———————————————————————————————————————————————————————————————————————————————————
 #elif defined(CO_THREAD_PTHREAD)
@@ -101,7 +103,7 @@ void mutex_dispose(mutex_t* mu) {
   if (err == EBUSY) {
     dlog("warning: mutex_dispose called on locked mutex");
   } else {
-    safecheckf(!err, "mutex_dispose (%d)", err);
+    safecheckf(!err, "mutex_dispose (%d) %s", err, err_str(err_errnox(err)));
   }
 }
 
@@ -109,6 +111,19 @@ void mutex_dispose(mutex_t* mu) {
 #elif !defined(CO_THREAD_C11)
   #error TODO implementation
 #endif
+
+
+void mutex_lock(mutex_t* mu) {
+  AtomicAdd(&mu->w, 1, memory_order_seq_cst);
+  safecheckxf(_mutex_lock(mu), "mutex_lock");
+}
+
+void mutex_unlock(mutex_t* mu) {
+  UNUSED u32 w = AtomicSub(&mu->w, 1, memory_order_seq_cst);
+  assertf(w > 0, "unbalanced mutex_unlock");
+  safecheckxf(_mutex_unlock(mu), "mutex_unlock");
+}
+
 
 //———————————————————————————————————————————————————————————————————————————————————
 // rwmutex_t
