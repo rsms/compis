@@ -965,6 +965,7 @@ inline static memalloc_t memalloc_ctx_set(memalloc_t newma) {
 
 WARN_UNUSED_RESULT inline static mem_t mem_alloc(memalloc_t ma, usize size) {
   mem_t m = {0};
+  assertnotnull((const void*)ma->f);
   ma->f(ma, &m, size, false);
   return m;
 }
