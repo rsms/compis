@@ -252,6 +252,7 @@ int main_build(int argc, char* argv[]) {
   // build packages
   u32 pkgbuild_flags = 0;
   if (opt_nolink) pkgbuild_flags |= PKGBUILD_NOLINK;
+  pkgbuild_flags |= PKGBUILD_NOCLEANUP; // since we exit the process after this
 
   for (u32 i = 0; i < pkgc; i++) {
     pkg_t* pkg = &pkgv[i];

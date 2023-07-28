@@ -5,9 +5,10 @@
 ASSUME_NONNULL_BEGIN
 
 // flags
-#define PKGBUILD_NOLINK (1u << 0)
-#define PKGBUILD_DEP    (1u << 1) // building a dependency (not a top-level) package
-#define PKGBUILD_EXE    (1u << 2) // building an executable
+#define PKGBUILD_NOLINK    (1u << 0)
+#define PKGBUILD_NOCLEANUP (1u << 1) // skip cleanup
+#define PKGBUILD_DEP       (1u << 2) // building a dependency (not a top-level) package
+#define PKGBUILD_EXE       (1u << 3) // building an executable
 
 typedef struct pkgcell_ pkgcell_t;
 typedef struct pkgcell_ {

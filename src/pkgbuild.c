@@ -44,7 +44,7 @@ err_t pkgbuild_init(
   // note: bgtask_open currently panics on OOM; change that, make it return NULL
 
   // create AST allocator
-  pb->ast_ma = memalloc_bump_in_zeroed(c->ma, 1024*1024*8lu, /*flags*/0);
+  pb->ast_ma = memalloc_bump2(/*slabsize*/0, /*flags*/0);
   if (pb->ast_ma == memalloc_null()) {
     dlog("OOM: memalloc_bump_in_zeroed");
     return ErrNoMem;
@@ -73,7 +73,7 @@ void pkgbuild_dispose(pkgbuild_t* pb) {
   cgen_pkgapi_dispose(&pb->cgen, &pb->pkgapi);
   cgen_dispose(&pb->cgen);
   bgtask_close(pb->bgt);
-  memalloc_bump_in_dispose(pb->ast_ma);
+  memalloc_bump2_dispose(pb->ast_ma);
   strlist_dispose(&pb->cfiles);
   strlist_dispose(&pb->ofiles);
   if (pb->promisev) {
@@ -1402,8 +1402,10 @@ static err_t build_pkg(
 end:
   if (!did_await_compilation)
     pkgbuild_await_compilation(pb);
-  pkgbuild_dispose(pb); // TODO: can skip this for top-level package
-  mem_freet(c->ma, pb);
+  if ((pkgbuild_flags & PKGBUILD_NOCLEANUP) == 0) {
+    pkgbuild_dispose(pb);
+    mem_freet(c->ma, pb);
+  }
   #undef DO_STEP
   return err;
 }
@@ -1415,11 +1417,16 @@ err_t build_toplevel_pkg(
   assert((pkgbuild_flags & PKGBUILD_DEP) == 0);
 
   // create AST allocator for APIs, AST that needs to outlive any one package build
-  memalloc_t api_ma = memalloc_bump_in_zeroed(c->ma, 1024*1024*8lu, /*flags*/0);
+  memalloc_t api_ma = memalloc_bump2(/*slabsize*/0, /*flags*/0);
   if (api_ma == memalloc_null()) {
     dlog("OOM: memalloc_bump_in_zeroed");
     return ErrNoMem;
   }
 
-  return build_pkg((pkgcell_t){NULL,pkg}, c, outfile, api_ma, pkgbuild_flags);
+  err_t err = build_pkg((pkgcell_t){NULL,pkg}, c, outfile, api_ma, pkgbuild_flags);
+
+  if ((pkgbuild_flags & PKGBUILD_NOCLEANUP) == 0)
+    memalloc_bump2_dispose(api_ma);
+
+  return err;
 }
