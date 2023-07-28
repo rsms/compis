@@ -1120,6 +1120,13 @@ u64 microsleep(u64 microseconds);
 // system info
 u32 sys_ncpu(); // number of available logical CPUs, logs error on failure and returns 1
 const char* sys_homedir();
+usize sys_pagesize(); // size of one vm page, in bytes
+
+// sys_vm_alloc allocates vm pages for at least nbytes
+mem_t sys_vm_alloc(void* nullable at_addr, usize nbytes);
+
+// sys_vm_free deallocates vm pages originating from sys_vm_alloc
+err_t sys_vm_free(mem_t m);
 
 //—————————————————————————————————————————————————————————————————————————————————————
 // files
