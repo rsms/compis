@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "colib.h"
 #include "pkgbuild.h"
-#include "path.h"
 #include "astencode.h"
-#include "sha256.h"
 #include "llvm/llvm.h"
+#include "path.h"
+#include "sha256.h"
+#include "threadpool.h"
 
 #include <sys/stat.h>
 
@@ -697,11 +698,23 @@ end:
 }
 
 
+static void load_dependency_worker(u32 argc, void* argv[]) {
+  pkgbuild_t* pb = argv[0];
+  pkgcell_t pkgc = { .parent = argv[1], .pkg = argv[2] };
+  err_t err = load_dependency0(pb, pkgc);
+  future_finalize(&pkgc.pkg->loadfut, err);
+}
+
+
 static err_t load_dependency(pkgbuild_t* pb, pkgcell_t pkgc) {
   err_t err;
   if (future_acquire(&pkgc.pkg->loadfut)) {
-    err = load_dependency0(pb, pkgc);
-    future_finalize(&pkgc.pkg->loadfut, err);
+    #if 0
+      err = threadpool_submit(load_dependency_worker, pb, pkgc.parent, pkgc.pkg);
+    #else
+      err = load_dependency0(pb, pkgc);
+      future_finalize(&pkgc.pkg->loadfut, err);
+    #endif
   } else {
     dlog("%s %s (waiting...)", __FUNCTION__, pkgc.pkg->path.p);
     err = future_wait(&pkgc.pkg->loadfut);

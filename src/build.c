@@ -6,6 +6,7 @@
 #include "bgtask.h"
 #include "dirwalk.h"
 #include "thread.h"
+#include "threadpool.h"
 #include "hash.h"
 #include "chan.h"
 #include "pkgbuild.h"
@@ -217,6 +218,10 @@ int main_build(int argc, char* argv[]) {
   // -o <path> makes no sense when building multiple packages
   if (pkgc > 1 && *opt_out)
     errx(1, "cannot specify -o option when building multiple packages");
+
+  // initialize thread pool
+  if (( err = threadpool_init() ))
+    elog("failed to initialize thread pool: %s", err_str(err));
 
   // create a compiler instance
   compiler_t c;
