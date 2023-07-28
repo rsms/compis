@@ -326,7 +326,7 @@ inline static bool chan_full(chan_t* c) {
 }
 
 
-static bool _chan_send_direct(chan_t* c, void* srcelemptr, Thr* recvt) {
+static bool _chan_send_direct(chan_t* c, const void* srcelemptr, Thr* recvt) {
   // _chan_send_direct processes a send operation on an empty channel c.
   // element sent by the sender is copied to the receiver recvt.
   // The receiver is then woken up to go on its merry way.
@@ -348,7 +348,7 @@ static bool _chan_send_direct(chan_t* c, void* srcelemptr, Thr* recvt) {
 }
 
 
-inline static bool _chan_send(chan_t* c, void* srcelemptr, bool* nullable closed) {
+inline static bool _chan_send(chan_t* c, const void* srcelemptr, bool* nullable closed) {
   bool block = closed == NULL;
   dlog_send("srcelemptr %p", srcelemptr);
 
@@ -417,7 +417,7 @@ inline static bool _chan_send(chan_t* c, void* srcelemptr, bool* nullable closed
   // park the calling thread. Some recv caller will wake us up.
   // Note that chan_park calls chan_unlock(&c->lock)
   dlog_send("wait... (elemptr %p)", srcelemptr);
-  chan_park(c, &c->sendq, srcelemptr);
+  chan_park(c, &c->sendq, (void*)srcelemptr);
   dlog_send("woke up -- sent elemptr %p", srcelemptr);
   return true;
 }
@@ -707,7 +707,8 @@ void chan_close(chan_t* c) {
 
 
 void chan_free(chan_t* c) {
-  assert(AtomicLoadAcq(&c->closed)); // must close channel before freeing its memory
+  // must close channel before freeing its memory
+  assertf(AtomicLoadAcq(&c->closed), "chan_t not closed");
   chan_lock_dispose(&c->lock);
   usize memsize = chan_memsize_unchecked(c->elemsize, c->qcap);
   #ifdef USE_ALIGNED_ALLOC
@@ -723,7 +724,7 @@ u32 chan_cap(const chan_t* c) {
   return c->qcap;
 }
 
-bool chan_send(chan_t* c, void* elemptr) {
+bool chan_send(chan_t* c, const void* elemptr) {
   return _chan_send(c, elemptr, NULL);
 }
 
@@ -731,7 +732,7 @@ bool chan_recv(chan_t* c, void* elemptr) {
   return _chan_recv(c, elemptr, NULL);
 }
 
-bool chan_trysend(chan_t* c, void* elemptr, bool* closed) {
+bool chan_trysend(chan_t* c, const void* elemptr, bool* closed) {
   return _chan_send(c, elemptr, closed);
 }
 

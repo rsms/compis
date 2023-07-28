@@ -42,7 +42,7 @@ u32 chan_cap(const chan_t* c);
 // chan_send enqueues a message to a channel by copying the value at elemptr
 // to the channel. Blocks until the message is sent or the channel is closed.
 // Returns false if the channel closed.
-bool chan_send(chan_t*, void* elemptr);
+bool chan_send(chan_t*, const void* elemptr);
 
 // chan_recv dequeues a message from a channel by copying a received value to elemptr.
 // Blocks until there's a message available or the channel is closed.
@@ -54,7 +54,7 @@ bool chan_recv(chan_t*, void* elemptr);
 // Unlike chan_send, this function does not return false to indicate that the channel
 // is closed, but instead it returns false if the message was not sent and sets *closed
 // to false if the reason for the failure was a closed channel.
-bool chan_trysend(chan_t*, void* elemptr, bool* closed);
+bool chan_trysend(chan_t*, const void* elemptr, bool* closed);
 
 // chan_tryrecv works like chan_recv but does not block.
 // Returns true if a message was received.
