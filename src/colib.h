@@ -893,9 +893,19 @@ void memalloc_bump_in_dispose(memalloc_t ma);
 usize memalloc_bumpcap(memalloc_t ma);
 usize memalloc_bumpuse(memalloc_t ma);
 #define MEMALLOC_BUMP_OVERHEAD  (sizeof(void*)*6)
-// thread safe bump allocator that uses vm pages and grows automatically
-memalloc_t memalloc_bump2(u32 flags);
+
+// memalloc_bump2 is a thread safe bump allocator that uses vm pages to grow
+// automatically as more memory is requested.
+// If slabsize>0, at least ceil(slabsize/pagesize) vm pages are allocated whenever the
+// allocator grows (including its initial allocation.)
+// If slabsize=0, some default implementation-specific size is chosen.
+// flags is currently unused. Pass 0.
+// Returns memalloc_null() if initial allocation failed.
+memalloc_t memalloc_bump2(usize slabsize, u32 flags);
 void memalloc_bump2_dispose(memalloc_t ma);
+usize memalloc_bump2_cap(memalloc_t ma); // total capacity, in bytes
+usize memalloc_bump2_use(memalloc_t ma); // allocated memory, in bytes
+usize memalloc_bump2_avail(memalloc_t ma); // free memory, in bytes
 
 // memalloc_ctx_set_scope saves the current contextual allocator on the stack
 // and sets newma as the current contextual allocator.

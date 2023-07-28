@@ -10,21 +10,12 @@
 #include "thread.h"
 
 
-memalloc_t memalloc_bump2(u32 flags);
-void memalloc_bump2_dispose(memalloc_t ma);
-usize memalloc_bump2_cap(memalloc_t ma);
-usize memalloc_bump2_use(memalloc_t ma);
-usize memalloc_bump2_avail(memalloc_t ma);
-
-
 // MIN_ALIGNMENT: minimum alignment for allocations
 #define MIN_ALIGNMENT sizeof(void*)
 
 
-// MIN_SLAB_SIZE: minimum size to allocate for new slabs
-#define MIN_SLAB_SIZE (1024ul * 1024ul)
-static_assert(IS_ALIGN2(MIN_SLAB_SIZE, 64 * 1024ul),
-  "must be 64kiB aligned (64k is largest expected page size)");
+// DEFAULT_SLABSIZE: minimum size to allocate for new slabs
+#define DEFAULT_SLABSIZE (1024ul * 1024ul)
 
 
 // ALWAYS_ISZERO is defined if the target we are building for always and
@@ -90,8 +81,8 @@ static bool bump_alloc_grow(bump_allocator_t* a, usize size) {
   // include space for the slab header
   size += sizeof(slab_t);
 
-  // allocate at least MIN_SLAB_SIZE/sys_pagesize() pages
-  size = MAX(size, MIN_SLAB_SIZE);
+  // allocate at least a->head.size/sys_pagesize() pages
+  size = MAX(size, a->head.size);
 
   // calculate ideal address for new pages, just after our current range
   void* at_addr = (void*)oldtail + oldtail->size;
@@ -212,17 +203,23 @@ static bool _memalloc_bump_impl(void* ma, mem_t* m, usize size, bool zeroed) {
 }
 
 
-memalloc_t memalloc_bump2(u32 flags) {
+memalloc_t memalloc_bump2(usize slabsize, u32 flags) {
   assert(flags == 0); // no flags, for now
 
+  // adjust slabsize
+  usize pagesize = sys_pagesize();
+  if (slabsize == 0)
+    slabsize = DEFAULT_SLABSIZE;
+  slabsize = ALIGN2(slabsize, pagesize);
+
   // map initial vm pages
-  mem_t m = sys_vm_alloc(NULL, MIN_SLAB_SIZE);
+  mem_t m = sys_vm_alloc(NULL, slabsize);
   if (!m.p) {
-    dlog("%s: sys_vm_alloc(%zu) failed", __FUNCTION__, MIN_SLAB_SIZE);
+    dlog("%s: sys_vm_alloc(%zu) failed", __FUNCTION__, slabsize);
     return &_memalloc_null;
   }
   safecheckf(m.size > sizeof(bump_allocator_t),
-    "requested %zu, got %zu", MIN_SLAB_SIZE, m.size);
+    "requested %zu, got %zu", slabsize, m.size);
 
   // the allocator's book-keeping data lives at the beginning of the first page
   bump_allocator_t* a = m.p;
@@ -247,11 +244,12 @@ memalloc_t memalloc_bump2(u32 flags) {
 void memalloc_bump2_dispose(memalloc_t ma) {
   if (ma == &_memalloc_null)
     return;
-  err_t err;
+  assert(ma->f == _memalloc_bump_impl);
   bump_allocator_t* a = BUMPALLOC_OF_MEMALLOC(ma);
 
   mutex_dispose(&a->tailmu);
 
+  err_t err;
   slab_t* slab = a->tail;
   slab_t* head = &a->head;
   slab_t* prev_slab;
@@ -356,11 +354,15 @@ ATTR_FORMAT(printf, 1, 2) UNUSED static void _tlog(const char* fmt, ...) {
 
 __attribute__((constructor)) static void test_memalloc_bump2() {
   u32 flags = 0;
-  memalloc_t ma = memalloc_bump2(flags);
+  usize slabsize = 1; // make slabs as small as possible
+  memalloc_t ma = memalloc_bump2(slabsize, flags);
+  bump_allocator_t* a = BUMPALLOC_OF_MEMALLOC(ma);
+
+  //dlog("effective slabsize: %zu", a->head.size);
 
   assert(memalloc_bump2_use(ma) == 0);
-  assert(memalloc_bump2_cap(ma) == MIN_SLAB_SIZE - sizeof(bump_allocator_t));
-  assert(memalloc_bump2_avail(ma) == MIN_SLAB_SIZE - sizeof(bump_allocator_t));
+  assert(memalloc_bump2_cap(ma) == a->head.size - sizeof(bump_allocator_t));
+  assert(memalloc_bump2_avail(ma) == a->head.size - sizeof(bump_allocator_t));
 
   mem_t m;
   usize avail = memalloc_bump2_avail(ma);
@@ -400,7 +402,6 @@ __attribute__((constructor)) static void test_memalloc_bump2() {
   // This should cause bump_alloc_grow to allocate a non-contiguous slab
   mem_t page;
   {
-    bump_allocator_t* a = BUMPALLOC_OF_MEMALLOC(ma);
     void* at_addr = (void*)a->tail + a->tail->size;
     page = sys_vm_alloc(at_addr, 1);
     assertf(page.p != NULL, "sys_vm_alloc_at(%p) failed", at_addr);
@@ -469,7 +470,7 @@ __attribute__((constructor)) static void test_memalloc_bump2_mt() {
 
   // create a bump2 allocator
   u32 flags = 0;
-  memalloc_t ma = memalloc_bump2(flags);
+  memalloc_t ma = memalloc_bump2(/*slabsize*/0, flags);
 
   // create sync semaphores.
   // this approach maximizes our chances for races
