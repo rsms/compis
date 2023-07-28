@@ -893,6 +893,9 @@ void memalloc_bump_in_dispose(memalloc_t ma);
 usize memalloc_bumpcap(memalloc_t ma);
 usize memalloc_bumpuse(memalloc_t ma);
 #define MEMALLOC_BUMP_OVERHEAD  (sizeof(void*)*6)
+// thread safe bump allocator that uses vm pages and grows automatically
+memalloc_t memalloc_bump2(u32 flags);
+void memalloc_bump2_dispose(memalloc_t ma);
 
 // memalloc_ctx_set_scope saves the current contextual allocator on the stack
 // and sets newma as the current contextual allocator.
