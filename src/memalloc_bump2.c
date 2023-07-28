@@ -24,7 +24,7 @@
 // bool ISZERO(const bump_allocator_t* a)
 // Returns true if the OS returns zeroed pages from mmap(MAP_ANONYMOUS)
 //
-#if defined(__linux__) || defined(__APPLE__) || \
+#if defined(__linux__) || \
     defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__) || \
     defined(__hpux)
   // https://man7.org/linux/man-pages/man2/mmap.2.html
@@ -443,6 +443,7 @@ static int test_thread(test_thread_t* t) {
 
   // check that we actually got zeroed memory
   static_assert(MIN_ALIGNMENT >= sizeof(uintptr), "");
+  assert(IS_ALIGN2(m.size, sizeof(uintptr)));
   for (uintptr* p = m.p; p < (uintptr*)(m.p + m.size); p++)
     assert(*p == 0);
 
