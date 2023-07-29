@@ -19,11 +19,14 @@ typedef struct {
 
 
 typedef struct {
-  threadpool_fun_t fn;
-  void*            argv[THREADPOOL_MAX_ARGS];
-  u32              argc;
+  _threadpool_fun_t fn;
+  const void* a;
+  const void* b;
+  const void* c;
+  const void* d;
+  const void* e;
   #ifdef CO_TRACE_THREADPOOL
-  u32              trace_id;
+  u32 trace_id;
   #endif
 } message_t;
 
@@ -59,15 +62,16 @@ static int worker_thread(worker_thread_t* t) {
 
   #ifdef CO_TRACE_THREADPOOL
     u32 worker_id = worker_trace_id(t);
-    trace("worker#%u start", worker_id);
   #endif
 
   // receive messages and call job functions until g_workch is closed
   for (;;) {
+    trace("worker#%u waiting for a job...", worker_id);
     if (!chan_recv(g_workch, &msg))
       break; // channel closed
-    trace("worker#%u got job#%u", worker_id, msg.trace_id);
-    msg.fn(msg.argc, msg.argv);
+    trace("worker#%u got job#%u (%p,%p,%p,%p,%p)",
+      worker_id, msg.trace_id, msg.a, msg.b, msg.c, msg.d, msg.e);
+    msg.fn(msg.a, msg.b, msg.c, msg.d, msg.e);
     AtomicSub(&g_inflightcount, 1, memory_order_release);
   }
 
@@ -76,16 +80,14 @@ static int worker_thread(worker_thread_t* t) {
 }
 
 
-err_t threadpool_submitv(threadpool_fun_t fn, u32 argc, void* argv[]) {
-  if (argc > THREADPOOL_MAX_ARGS) {
-    dlog("%s: argc(%u) > THREADPOOL_MAX_ARGS(%u)",
-      __FUNCTION__, argc, THREADPOOL_MAX_ARGS);
-    return ErrOverflow;
-  }
+err_t _threadpool_submit(
+  _threadpool_fun_t fn,
+  const void* a, const void* b, const void* c, const void* d, const void* e)
+{
+  if (g_threadcap == 0)
+    return ErrNotSupported;
 
-  message_t msg = { .fn = fn, .argc = argc };
-  memcpy(msg.argv, argv, (usize)argc * sizeof(void*));
-
+  message_t msg = { .fn=fn, .a=a, .b=b, .c=c, .d=d, .e=e };
   #ifdef CO_TRACE_THREADPOOL
     msg.trace_id = AtomicAdd(&g_trace_idgen, 1, memory_order_relaxed);
   #endif
@@ -157,8 +159,12 @@ err_t threadpool_submitv(threadpool_fun_t fn, u32 argc, void* argv[]) {
 err_t threadpool_init() {
   err_t err = 0;
 
+  // note: comaxproc is always >0
+  if (comaxproc == 1)
+    return 0;
+
   // initially, start at most 4 threads
-  g_threadcap = sys_ncpu();
+  g_threadcap = comaxproc;
   g_threadlen = MIN(4, g_threadcap);
 
   // initialize g_spawnmu
@@ -168,7 +174,8 @@ err_t threadpool_init() {
   }
 
   // open a channel
-  g_workch = chan_open(memalloc_default(), sizeof(message_t), g_threadcap);
+  u32 chan_bufcap = g_threadcap; // + SPAWN_THRESHOLD;
+  g_workch = chan_open(memalloc_default(), sizeof(message_t), chan_bufcap);
   if (!g_workch) {
     elog("%s chan_open failed", __FUNCTION__);
     return ErrNoMem;
@@ -231,67 +238,61 @@ err_t threadpool_init() {
 
 //———————————————————————————————————————————————————————————————————————————————————————
 #ifdef CO_ENABLE_TESTS
-  static void test_work_fun(u32 argc, void* argv[]) {
-    // dlog("%s: argc=%u", __FUNCTION__, argc);
-    chan_t* ch = argv[0];
-    uintptr result = 0;
-    for (u32 i = 1; i < argc; i++) {
-      // dlog("  argv[%u] = %p", i, argv[i]);
-      result = i > 1 ? result*(uintptr)argv[i] : (uintptr)argv[i];
-    }
-    chan_send(ch, &result);
+
+static void test_work_fun(chan_t* ch, u32 a, u32 b, u32 c) {
+  u32 result = a * b * c;
+  chan_send(ch, &result);
+}
+
+static void test_threadpool() {
+  trace("begin test");
+
+  err_t err;
+  bool ok;
+  u32 result, sum;
+
+  u32 nwork = g_threadlen + SPAWN_THRESHOLD;
+
+  // note: our channel must have a buffer that can fit nwork, otherwise we might
+  // deadlock in case the threadpool g_threadcap is less than nwork.
+  chan_t* ch = chan_open(memalloc_default(), sizeof(u32), nwork);
+  assertnotnull(ch);
+
+  // submit nwork jobs to force spawning of additional threads
+  for (u32 i = 0; i < nwork; i++) {
+    err = threadpool_submit(test_work_fun, ch, 2u, 3u, 4u);
+    assertf(!err, "%s", err_str(err));
   }
 
-  static void test_threadpool() {
-    err_t err;
-    bool ok;
-    chan_t* ch = chan_open(memalloc_default(), sizeof(uintptr), 0);
-    assertnotnull(ch);
-    uintptr result, sum;
-
-    trace("begin test");
-
-
-    // submit nwork jobs to force spawning of additional threads
-    u32 nwork = g_threadlen + SPAWN_THRESHOLD;
-    for (u32 i = 0; i < nwork; i++) {
-      err = threadpool_submit(test_work_fun, ch,
-        (void*)(uintptr)2, (void*)(uintptr)3, (void*)(uintptr)4);
-      assertf(!err, "%s", err_str(err));
-    }
-
-    // wait for results and sum them
-    sum = 0;
-    for (u32 i = 0; i < nwork; i++) {
-      ok = chan_recv(ch, &result); assert(ok);
-      sum += result;
-    }
-
-    assertf(sum == (uintptr)nwork * 2*3*4,
-      "%lu == %lu", sum, (uintptr)nwork * 2*3*4);
-
-
-    // submit work again, this time no extra threads should be spawned
-    for (u32 i = 0; i < nwork; i++) {
-      err = threadpool_submit(test_work_fun, ch,
-        (void*)(uintptr)2, (void*)(uintptr)3, (void*)(uintptr)4);
-      assertf(!err, "%s", err_str(err));
-    }
-    sum = 0;
-    for (u32 i = 0; i < nwork; i++) {
-      ok = chan_recv(ch, &result); assert(ok);
-      sum += result;
-    }
-    assertf(sum == (uintptr)nwork * 2*3*4,
-      "%lu == %lu", sum, (uintptr)nwork * 2*3*4);
-
-
-    chan_close(ch);
-    chan_free(ch);
-
-    trace("end test");
-    log("%s PASSED", __FUNCTION__);
+  // wait for results and sum them
+  sum = 0;
+  for (u32 i = 0; i < nwork; i++) {
+    ok = chan_recv(ch, &result); assert(ok);
+    sum += result;
   }
+
+  assertf(sum == (uintptr)nwork * 2*3*4, "%u == %u", sum, nwork * 2*3*4);
+
+  // submit work again, this time no extra threads should be spawned
+  for (u32 i = 0; i < nwork; i++) {
+    err = threadpool_submit(test_work_fun, ch, 2u, 3u, 4u);
+    assertf(!err, "%s", err_str(err));
+  }
+  sum = 0;
+  for (u32 i = 0; i < nwork; i++) {
+    ok = chan_recv(ch, &result); assert(ok);
+    sum += result;
+  }
+  assertf(sum == nwork * 2*3*4, "%u == %u", sum, nwork * 2*3*4);
+
+
+  chan_close(ch);
+  chan_free(ch);
+
+  trace("end test");
+  log("%s PASSED", __FUNCTION__);
+}
+
 #else
-  #define test_threadpool() ((void)0)
+#define test_threadpool() ((void)0)
 #endif // CO_ENABLE_TESTS

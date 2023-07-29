@@ -187,12 +187,13 @@ static void comaxproc_init() {
     unsigned long n = strtoul(envvar, &end, 10);
     if (n == ULONG_MAX || n > U32_MAX || *end || (n == 0 && errno))
       errx(1, "invalid value: COMAXPROC=%s", envvar);
-    if (n != 0) {
+    if (n > 0) {
       comaxproc = (u32)n;
       return;
     }
   }
   comaxproc = sys_ncpu();
+  assert(comaxproc > 0);
 }
 
 

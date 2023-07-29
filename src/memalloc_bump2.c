@@ -41,8 +41,8 @@
 // slab_t is the header of each region of vm pages allocated by bump_allocator_t
 typedef struct slab_ slab_t;
 typedef struct slab_ {
-  usize   size;
-  slab_t* prev;
+  usize            size;
+  _Atomic(slab_t*) prev;
 } slab_t;
 
 // bump_alloc_grow assumes that sizeof(slab_t) is an even multiple of MIN_ALIGNMENT
@@ -100,7 +100,7 @@ static bool bump_alloc_grow(bump_allocator_t* a, usize size) {
 
   slab_t* slab = m.p;
   slab->size = m.size;
-  slab->prev = assertnotnull(oldtail);
+  ATOMIC_STORE(&slab->prev, assertnotnull(oldtail));
 
   ATOMIC_STORE(&a->tail, slab);
 
@@ -113,7 +113,7 @@ static bool bump_alloc_grow(bump_allocator_t* a, usize size) {
   ATOMIC_STORE(&a->end, end);
   ATOMIC_STORE(&a->ptr, ptr);
 
-  assertnotnull(ATOMIC_LOAD(&a->tail)->prev);
+  assertnotnull(ATOMIC_LOAD(&ATOMIC_LOAD(&a->tail)->prev));
   // dlog("stored tail %p, prev %p", slab, slab->prev);
 
   mutex_unlock(&a->tailmu);
@@ -254,7 +254,7 @@ void memalloc_bump2_dispose(memalloc_t ma) {
   slab_t* head = &a->head;
   slab_t* prev_slab;
   for (;;) {
-    prev_slab = slab->prev;
+    prev_slab = ATOMIC_LOAD(&slab->prev);
     if (( err = sys_vm_free(MEM(slab, slab->size)) ))
       dlog("%s: sys_vm_free failed: %s", __FUNCTION__, err_str(err));
     if (slab == head)
@@ -272,7 +272,7 @@ usize memalloc_bump2_cap(memalloc_t ma) {
     cap += slab->size;
     if (slab == &a->head)
       break;
-    slab = slab->prev;
+    slab = ATOMIC_LOAD(&slab->prev);
   }
   return cap - sizeof(bump_allocator_t);
 }
@@ -297,12 +297,12 @@ usize memalloc_bump2_use(memalloc_t ma) {
 
   // count all preceding slabs as being fully in use
   if (tail != &a->head) {
-    const slab_t* slab = tail->prev;
+    const slab_t* slab = ATOMIC_LOAD(&tail->prev);
     for (;;) {
       use += slab->size;
       if (slab == &a->head)
         break;
-      slab = slab->prev;
+      slab = ATOMIC_LOAD(&slab->prev);
     }
   }
 
@@ -524,7 +524,7 @@ __attribute__((constructor)) static void test_memalloc_bump2_mt() {
       if (slab == &a->head) {
         // reached the end; not found
         tlog("%p not found. The following %zu slabs exist in ma:", m1.p, nslabs);
-        for (slab_t* slab = a->tail; ; slab = slab->prev) {
+        for (slab_t* slab = a->tail; ; slab = ATOMIC_LOAD(&slab->prev)) {
           tlog("  slab %3zu: %p .. %p", nslabs--, slab, (void*)slab + slab->size);
           if (slab == &a->head)
             break;
@@ -533,8 +533,9 @@ __attribute__((constructor)) static void test_memalloc_bump2_mt() {
         break;
       }
 
-      assertf(slab->prev != NULL, "slab(%p)->prev is NULL", slab);
-      slab = slab->prev;
+      slab_t* slab_prev = ATOMIC_LOAD(&slab->prev);
+      assertf(slab_prev != NULL, "slab(%p)->prev is NULL", slab);
+      slab = slab_prev;
     }
   }
 

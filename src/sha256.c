@@ -136,8 +136,8 @@ static inline void consume_chunk(u32 *h, const u8 *p) {
  * Public functions. See header file for documentation.
  */
 
-void sha256_init(SHA256 *sha_256, u8 hash[SIZE_OF_SHA_256_HASH]) {
-  sha_256->hash = hash;
+void sha256_init(SHA256 *sha_256, sha256_t* hash) {
+  sha_256->hash = (u8*)hash;
   sha_256->chunk_pos = sha_256->chunk;
   sha_256->space_left = SHA256_CHUNK_SIZE;
   sha_256->total_len = 0;
@@ -234,7 +234,7 @@ void sha256_close(SHA256 *sha_256) {
 }
 
 
-void sha256_data(u8 result[32], const void* data, usize len) {
+void sha256_data(sha256_t* result, const void* data, usize len) {
   SHA256 state;
   sha256_init(&state, result);
   while (len > 0) {
@@ -247,7 +247,7 @@ void sha256_data(u8 result[32], const void* data, usize len) {
 }
 
 
-bool sha256_iszero(const u8 sha256[32]) {
+bool sha256_iszero(const sha256_t* sha256) {
   static const usize zero[32/sizeof(usize)] = {0};
   return memcmp(zero, sha256, 32) == 0;
 }

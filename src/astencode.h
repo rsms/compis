@@ -61,8 +61,9 @@ void astdecoder_close(astdecoder_t*);
 const char* astdecoder_srcname(const astdecoder_t*);
 memalloc_t astdecoder_ast_ma(const astdecoder_t*);
 
-err_t astdecoder_decode_header(astdecoder_t* d, pkg_t* pkg);
-// u32 astdecoder_imports(astdecoder_t* d, const char*const** importvp);
+err_t astdecoder_decode_header(astdecoder_t* d, pkg_t* pkg, u32* importcount);
+err_t astdecoder_decode_imports(
+  astdecoder_t* d, pkg_t* pkg, sha256_t* nullable api_sha256v);
 err_t astdecoder_decode_ast(astdecoder_t* d, node_t** resultv[], u32* resultc);
 
 

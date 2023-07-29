@@ -12,8 +12,8 @@ ASSUME_NONNULL_BEGIN
 
 typedef struct pkgcell_ pkgcell_t;
 typedef struct pkgcell_ {
-  pkgcell_t* nullable parent;
-  pkg_t*              pkg;
+  const pkgcell_t* nullable parent;
+  pkg_t* pkg;
 } pkgcell_t;
 
 typedef struct {

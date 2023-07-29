@@ -1215,7 +1215,7 @@ extern u8 coverbose;
 
 // comaxproc: max thread concurrency (defaults to sys_ncpu, can be set with -j)
 // Can be overridden with env var COMAXPROC
-extern u32 comaxproc;
+extern u32 comaxproc; // invariant: >=1
 
 void print_co_version();
 

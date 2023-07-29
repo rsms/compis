@@ -2880,6 +2880,7 @@ static void import_members(typecheck_t* a, import_t* im) {
   assertnotnull(im->idlist);
 
   const nsexpr_t* api_ns = assertnotnull(im->pkg)->api_ns;
+  assertf(api_ns, "pkg(%s)", im->pkg->path.p);
   importid_t* star_imid = NULL;
 
   for (importid_t* imid = im->idlist; imid; imid = imid->next_id) {

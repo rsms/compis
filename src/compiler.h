@@ -9,6 +9,7 @@
 #include "target.h"
 #include "thread.h"
 #include "future.h"
+#include "sha256.h"
 
 // nodekind_t
 #define FOREACH_NODEKIND_NODE(_) /* nodekind_t, TYPE, enctag */ \
@@ -200,7 +201,7 @@ typedef struct pkg_t {
   typefuntab_t    tfundefs; // type functions defined by the package
   fun_t* nullable mainfun;  // fun main(), if any
   ptrarray_t      imports;  // pkg_t*[] -- imported packages (set by import_pkgs)
-  u8              api_sha256[32]; // SHA-256 sum of pub.h
+  sha256_t        api_sha256; // SHA-256 sum of pub.h
 
   future_t           loadfut;
   nodearray_t        api;     // package-level declarations, available after loadfut
@@ -949,7 +950,7 @@ err_t pkgindex_intern(
   compiler_t* c,
   slice_t pkgdir,
   slice_t pkgpath,
-  const u8* nullable api_sha256,
+  const sha256_t* nullable api_sha256,
   pkg_t** result);
 err_t pkgindex_add(compiler_t* c, pkg_t* pkg);
 

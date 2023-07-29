@@ -742,9 +742,9 @@ static void encode_pkg(astencoder_t* a, buf_t* outbuf, const pkg_t* pkg) {
   encode_filepath(a, outbuf, pkg->root.p, pkg->root.len);
   outbuf->chars[outbuf->len++] = ':';
   encode_filepath(a, outbuf, pkg->path.p, pkg->path.len);
-  if (!sha256_iszero(pkg->api_sha256)) {
+  if (!sha256_iszero(&pkg->api_sha256)) {
     outbuf->chars[outbuf->len++] = ':';
-    buf_appendhex(outbuf, pkg->api_sha256, sizeof(pkg->api_sha256));
+    buf_appendhex(outbuf, &pkg->api_sha256, sizeof(pkg->api_sha256));
   }
   outbuf->chars[outbuf->len++] = '\n';
 }
@@ -1696,6 +1696,7 @@ static const u8* decode_pkg(DEC_PARAMS, pkg_t* pkg) {
     usize taillen = linelen - (usize)coloni - 1;
     if (taillen != 64)
       return DEC_ERROR(ErrInvalid, "invalid pkg api hash len (%zu)", taillen);
+    u8* api_sha256_bytes = (u8*)&pkg->api_sha256;
     for (usize i = 0; i < 32; i++) {
       #define DEC_HEXDIGIT(x) ( \
         ((x) - '0') - \
@@ -1704,7 +1705,7 @@ static const u8* decode_pkg(DEC_PARAMS, pkg_t* pkg) {
       )
       u8 a = hex[i*2];
       u8 b = hex[i*2 + 1];
-      pkg->api_sha256[i] = (DEC_HEXDIGIT(a) << 4) | DEC_HEXDIGIT(b);
+      api_sha256_bytes[i] = (DEC_HEXDIGIT(a) << 4) | DEC_HEXDIGIT(b);
     }
     linelen = (usize)coloni;
   }
@@ -1773,7 +1774,7 @@ static const u8* decode_srcfiles(DEC_PARAMS, pkg_t* pkg) {
 }
 
 
-static const u8* decode_imports(DEC_PARAMS, pkg_t* pkg) {
+static const u8* decode_imports(DEC_PARAMS, pkg_t* pkg, sha256_t* api_sha256v) {
   pkg_t tmp = {0};
 
   for (u32 i = 0; i < d->importcount; i++) {
@@ -1784,13 +1785,15 @@ static const u8* decode_imports(DEC_PARAMS, pkg_t* pkg) {
     if (d->err)
       break;
 
+    memcpy(&api_sha256v[i], &tmp.api_sha256, sizeof(*api_sha256v));
+
     // Note: we do NOT check if the package actually exists.
     // That is left for pkgbuild to do as it loads the package.
 
     // resolve package in compiler's pkgindex
     pkg_t* dep;
     err_t err = pkgindex_intern(
-      d->c, str_slice(tmp.dir), str_slice(tmp.path), tmp.api_sha256, &dep);
+      d->c, str_slice(tmp.dir), str_slice(tmp.path), &tmp.api_sha256, &dep);
 
     // add dep to pkg->imports
     if (!err && !pkg_imports_add(pkg, dep, d->c->ma))
@@ -1998,7 +2001,7 @@ void astdecoder_close(astdecoder_t* d) {
 }
 
 
-err_t astdecoder_decode_header(astdecoder_t* d, pkg_t* pkg) {
+err_t astdecoder_decode_header(astdecoder_t* d, pkg_t* pkg, u32* importcount) {
   // DEC_ARGS
   const u8* p = d->pcurr;
   const u8* pend = d->pend;
@@ -2021,10 +2024,21 @@ err_t astdecoder_decode_header(astdecoder_t* d, pkg_t* pkg) {
 
   p = decode_pkg(DEC_ARGS, pkg);
   p = decode_srcfiles(DEC_ARGS, pkg);
-  p = decode_imports(DEC_ARGS, pkg);
 
 end:
   d->pcurr = p;
+  *importcount = d->importcount;
+  return d->err;
+}
+
+
+err_t astdecoder_decode_imports(astdecoder_t* d, pkg_t* pkg, sha256_t* api_sha256v) {
+  // DEC_ARGS
+  const u8* p = d->pcurr;
+  const u8* pend = d->pend;
+
+  d->pcurr = decode_imports(DEC_ARGS, pkg, api_sha256v);
+
   return d->err;
 }
 

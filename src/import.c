@@ -9,7 +9,7 @@
 
 
 #define trace_import(fmt, va...) \
-  _trace(opt_trace_import, 2, "import", "%*s" fmt, /*indent*/0, "", ##va)
+  _trace(opt_trace_import, 3, "import", "%*s" fmt, /*indent*/0, "", ##va)
 
 
 #ifdef DEBUG
@@ -364,7 +364,7 @@ err_t pkgindex_intern(
   compiler_t* c,
   slice_t pkgdir,
   slice_t pkgpath,
-  const u8 api_sha256[32],
+  const sha256_t* nullable api_sha256,
   pkg_t** result)
 {
   err_t err = 0;
@@ -393,8 +393,8 @@ err_t pkgindex_intern(
   // if package is already indexed, we are done
   if (ent->value) {
     pkg = ent->value;
-    if (api_sha256 && sha256_iszero(pkg->api_sha256))
-      memcpy(pkg->api_sha256, api_sha256, 32);
+    if (api_sha256 && sha256_iszero(&pkg->api_sha256))
+      memcpy(&pkg->api_sha256, api_sha256, sizeof(*api_sha256));
     goto end;
   }
 
@@ -408,7 +408,7 @@ err_t pkgindex_intern(
   pkg->dir  = str_makelen(pkgdir.chars, pkgdir.len);
   pkg->root = str_makelen(pkgdir.chars, pkgdir.len - pkgpath.len - 1);
   if (api_sha256)
-    memcpy(pkg->api_sha256, api_sha256, 32);
+    memcpy(&pkg->api_sha256, api_sha256, sizeof(*api_sha256));
 
   if LIKELY(pkg->path.cap && pkg->dir.cap && pkg->root.cap) {
     ent->key = pkg->dir.p;

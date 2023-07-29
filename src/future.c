@@ -4,6 +4,7 @@
 
 
 err_t future_init(future_t* p) {
+  p->status = 0;
   return sema_init(&p->sem, 0);
 }
 

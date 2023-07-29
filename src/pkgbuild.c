@@ -11,16 +11,18 @@
 
 
 #define trace_import(fmt, va...) \
-  _trace(opt_trace_import, 2, "import", "%*s" fmt, /*indent*/0, "", ##va)
+  _trace(opt_trace_import, 3, "import", "%*s" fmt, /*indent*/0, "", ##va)
 
 #define trace_import_indented(indent, fmt, va...) \
-  _trace(opt_trace_import, 2, "import", "%*s" fmt, (indent), "", ##va)
+  _trace(opt_trace_import, 3, "import", "%*s" fmt, (indent), "", ##va)
 
 
 static err_t build_pkg(
   pkgcell_t pkgc, compiler_t* c, const char* outfile,
   memalloc_t api_ma, u32 pkgbuild_flags);
-static err_t load_dependency(pkgbuild_t* pb, pkgcell_t pkgc);
+
+static void load_dependency(
+  compiler_t* c, memalloc_t api_ma, const pkgcell_t* parent, pkg_t* pkg, bool sync);
 
 
 err_t pkgbuild_init(
@@ -291,16 +293,28 @@ err_t pkgbuild_begin_early_compilation(pkgbuild_t* pb) {
 }
 
 
-static err_t parse_co_file(
-  pkg_t* pkg, compiler_t* c, srcfile_t* srcfile, memalloc_t ast_ma, unit_t** result)
+typedef struct {
+  sema_t           sem;
+  _Atomic(unit_t*) unit;
+  _Atomic(err_t)   err;
+} parseres_t;
+
+
+static void parse_co_file(
+  pkg_t*      pkg,
+  compiler_t* c,
+  srcfile_t*  srcfile,
+  memalloc_t  ast_ma,
+  parseres_t* result)
 {
   err_t err;
+  parser_t parser;
+
   if (( err = srcfile_open(srcfile) )) {
     elog("%s: %s", srcfile->name.p, err_str(err));
-    return err;
+    goto end;
   }
 
-  parser_t parser;
   if (!parser_init(&parser, c)) {
     dlog("parser_init failed");
     err = ErrNoMem;
@@ -309,7 +323,11 @@ static err_t parse_co_file(
 
   dlog_if(opt_trace_parse, "————————— parse %s —————————",
     relpath(path_join(pkg->dir.p, srcfile->name.p).p)); // leaking memory :-/
-  err = parser_parse(&parser, ast_ma, srcfile, result);
+
+  unit_t* unit;
+  err = parser_parse(&parser, ast_ma, srcfile, &unit);
+  AtomicStoreRel(&result->unit, unit);
+
   if (!err && parser_errcount(&parser) > 0) {
     dlog("syntax errors");
     err = ErrCanceled;
@@ -317,12 +335,15 @@ static err_t parse_co_file(
 
   if (opt_trace_parse && c->opt_printast) {
     dlog("————————— AST after parse —————————");
-    dump_ast((node_t*)assertnotnull(*result));
+    dump_ast(assertnotnull((node_t*)result->unit));
   }
+
+  parser_dispose(&parser);
 
 end:
   srcfile_close(srcfile);
-  return err;
+  AtomicStoreRel(&result->err, err);
+  sema_signal(&result->sem, 1);
 }
 
 
@@ -338,17 +359,30 @@ static err_t pkgbuild_parse(pkgbuild_t* pb) {
   }
 
   // allocate unit array
-  unit_t** unitv = mem_alloctv(pb->ast_ma, unit_t*, (usize)ncosrc);
+  unit_t** unitv = mem_alloctv(pb->ast_ma, unit_t*, ncosrc);
   if (!unitv) {
-    dlog("out of memory");
+    dlog("mem_alloctv OOM");
     return ErrNoMem;
   }
   pb->unitv = unitv;
   pb->unitc = ncosrc;
 
+  // allocate result array
+  parseres_t result_st[8];
+  parseres_t* resultv = result_st;
+  if (ncosrc > countof(result_st)) {
+    resultv = mem_alloctv(pb->c->ma, parseres_t, ncosrc);
+    if UNLIKELY(!resultv) {
+      dlog("mem_alloctv OOM");
+      mem_freetv(pb->c->ma, unitv, ncosrc);
+      pb->unitc = 0;
+      return ErrNoMem;
+    }
+  }
+
   // parse each file
   err_t err = 0;
-  for (u32 i = 0; i < pkg->srcfiles.len && err == 0; i++) {
+  for (u32 i = 0, resultidx = 0; i < pkg->srcfiles.len && err == 0; i++) {
     srcfile_t* srcfile = pkg->srcfiles.v[i];
 
     if (srcfile->type != FILE_CO) {
@@ -357,14 +391,40 @@ static err_t pkgbuild_parse(pkgbuild_t* pb) {
     }
 
     pkgbuild_begintask(pb, "parse %s", relpath(srcfile->name.p));
-    err = parse_co_file(pkg, c, srcfile, pb->ast_ma, unitv);
-    unitv++;
+
+    parseres_t* result = &resultv[resultidx++];
+    result->unit = NULL;
+    result->err = 0;
+    safecheckx(sema_init(&result->sem, 0) == 0);
+
+    if (opt_trace_parse || comaxproc == 1 || resultidx == ncosrc-1) {
+      // Parse sources serially when tracing is enabled or if there're no threads.
+      // Also, parse last one on the current thread to make the most of what we have.
+      parse_co_file(pkg, c, srcfile, pb->ast_ma, result);
+    } else {
+      threadpool_submit(parse_co_file, pkg, c, srcfile, pb->ast_ma, result);
+    }
+  }
+
+  // wait for results
+  for (u32 i = 0; i < ncosrc; i++) {
+    safecheckx(sema_wait(&resultv[i].sem));
+    err_t err1 = AtomicLoadAcq(&resultv[i].err);
+    if (err1 && !err) {
+      err = err1;
+    } else {
+      unitv[i] = AtomicLoadAcq(&resultv[i].unit);
+    }
+    sema_dispose(&resultv[i].sem);
   }
 
   #if DEBUG
   for (u32 i = 0; i < pb->unitc && err == 0; i++)
     assertnotnull(pb->unitv[i]);
   #endif
+
+  if (resultv != result_st)
+    mem_freetv(pb->c->ma, resultv, ncosrc);
 
   if (err)
     return err;
@@ -431,22 +491,22 @@ end:
 
 
 // create_pkg_api_ns creates pkg->api_ns from pkg->api
-static err_t create_pkg_api_ns(pkgbuild_t* pb, pkg_t* pkg) {
+static err_t create_pkg_api_ns(memalloc_t api_ma, pkg_t* pkg) {
   nsexpr_t* ns = NULL;
 
   // allocate namespace type
-  nstype_t* nst = (nstype_t*)ast_mknode(pb->api_ma, sizeof(nstype_t), TYPE_NS);
+  nstype_t* nst = (nstype_t*)ast_mknode(api_ma, sizeof(nstype_t), TYPE_NS);
   if (!nst)
     goto oom;
   nst->flags |= NF_CHECKED;
-  if (!nodearray_reserve_exact(&nst->members, pb->api_ma, pkg->api.len))
+  if (!nodearray_reserve_exact(&nst->members, api_ma, pkg->api.len))
     goto oom;
 
   // create package namespace node
-  ns = (nsexpr_t*)ast_mknode(pb->api_ma, sizeof(nsexpr_t), EXPR_NS);
+  ns = (nsexpr_t*)ast_mknode(api_ma, sizeof(nsexpr_t), EXPR_NS);
   if (!ns)
     goto oom;
-  sym_t* member_names = mem_alloc(pb->api_ma, sizeof(sym_t) * (usize)pkg->api.len).p;
+  sym_t* member_names = mem_alloc(api_ma, sizeof(sym_t) * (usize)pkg->api.len).p;
   if (!member_names)
     goto oom;
   ns->flags |= NF_CHECKED | NF_PKGNS;
@@ -488,7 +548,7 @@ static err_t create_pkg_api_ns(pkgbuild_t* pb, pkg_t* pkg) {
   assertnull(pkg->api_ns);
   pkg->api_ns = ns;
 
-  // if (opt_trace_parse && pb->c->opt_printast) {
+  // if (opt_trace_parse && c->opt_printast) {
   //   dlog("————————— AST pkg.api %s —————————", pkg->path.p);
   //   dump_ast((node_t*)ns);
   // }
@@ -497,17 +557,17 @@ static err_t create_pkg_api_ns(pkgbuild_t* pb, pkg_t* pkg) {
 
 oom:
   if (nst) {
-    nodearray_dispose(&nst->members, pb->api_ma);
-    mem_freex(pb->api_ma, MEM(nst, sizeof(*nst)));
+    nodearray_dispose(&nst->members, api_ma);
+    mem_freex(api_ma, MEM(nst, sizeof(*nst)));
   }
   if (ns)
-    mem_freex(pb->api_ma, MEM(ns, sizeof(*ns)));
+    mem_freex(api_ma, MEM(ns, sizeof(*ns)));
   return ErrNoMem;
 }
 
 
 // load_pkg_api decodes AST from astdec and assigns it to pkg->api
-static err_t load_pkg_api(pkgbuild_t* pb, pkg_t* pkg, astdecoder_t* astdec) {
+static err_t load_pkg_api(memalloc_t api_ma, pkg_t* pkg, astdecoder_t* astdec) {
   node_t** nodev;
   u32 nodec;
   err_t err = astdecoder_decode_ast(astdec, &nodev, &nodec);
@@ -523,18 +583,71 @@ static err_t load_pkg_api(pkgbuild_t* pb, pkg_t* pkg, astdecoder_t* astdec) {
   pkg->api.cap = nodec;
   pkg->api.len = nodec;
 
-  return create_pkg_api_ns(pb, pkg);
+  return create_pkg_api_ns(api_ma, pkg);
 }
 
 
-static err_t build_dependency(pkgbuild_t* pb, pkgcell_t pkgc) {
+static err_t build_dependency(compiler_t* c, memalloc_t api_ma, pkgcell_t pkgc) {
   trace_import("\"%s\" building dependency \"%s\"",
     pkgc.parent->pkg->path.p, pkgc.pkg->path.p);
   u32 pkgbuildflags = PKGBUILD_DEP;
-  err_t err = build_pkg(pkgc, pb->c, /*outfile*/"", pb->api_ma, pkgbuildflags);
+  err_t err = build_pkg(pkgc, c, /*outfile*/"", api_ma, pkgbuildflags);
   if (err)
     dlog("error while building pkg %s: %s", pkgc.pkg->path.p, err_str(err));
   return err;
+}
+
+
+static bool load_dependency1(
+  compiler_t* c, memalloc_t api_ma, pkgcell_t pkgc,
+  const sha256_t* old_api_sha256v, err_t* errp)
+{
+  pkg_t* pkg = pkgc.pkg;
+
+  // check if source files have been modified
+  if (pkg->mtime == 0)
+    return false;
+  if (!check_pkg_src_uptodate(pkg, pkg->mtime))
+    return false;
+
+  err_t err = 0;
+  bool is_uptodate = true;
+
+  // load sub-dependencies packages (which might cause us to build them.)
+  for (u32 i = 0; i < pkg->imports.len; i++) {
+    pkg_t* dep = pkg->imports.v[i];
+    // load last one sync to make full use of the current thread
+    bool use_curr_thread = (i == pkg->imports.len - 1);
+    load_dependency(c, api_ma, &pkgc, dep, use_curr_thread);
+  }
+
+  // wait for dependencies to finish loading and check their status
+  for (u32 i = 0; i < pkg->imports.len; i++) {
+    pkg_t* dep = pkg->imports.v[i];
+    trace_import("%s: waiting for pkg(%s) to load...", __FUNCTION__, dep->path.p);
+    if (( err = future_wait(&dep->loadfut) ))
+      goto end;
+
+    // if the dependency was modified earlier than the dependant, it's up to date
+    if (dep->mtime <= pkg->mtime)
+      continue;
+
+    // The dependency has recently been modified (maybe we just built it.)
+    // Check if its API changed
+    if (memcmp(&old_api_sha256v[i], &dep->api_sha256, 32) != 0) {
+      // dep API changed (or was previously unknown)
+      trace_import("[%s] dep \"%s\" changed", pkg->path.p, relpath(dep->dir.p));
+
+      // note: it's okay to stop early and not future_wait all dependencies since
+      // load_dependency0 will call build_dependency when we return false, which in turn
+      // will future_wait all its dependencies.
+      is_uptodate = false;
+      break;
+    }
+  }
+
+end:
+  return is_uptodate && err == 0;
 }
 
 
@@ -544,32 +657,40 @@ static err_t build_dependency(pkgbuild_t* pb, pkgcell_t pkgc) {
 //    1. parse header of metafile
 //    2. compare mtime of sources to metafile; if a src is newer, we must rebuild
 //
-static err_t load_dependency0(pkgbuild_t* pb, pkgcell_t pkgc) {
+static void load_dependency0(
+  compiler_t* c, memalloc_t api_ma, const pkgcell_t* parent, pkg_t* pkg)
+{
   err_t err;
-  str_t metafile = {0}; // path to metafile
-  unixtime_t libmtime;  // mtime of package library file
-  const void* encdata;  // contents of metafile
-  struct stat metast;   // status of metafile
+  str_t metafile = {0};       // path to metafile
+  unixtime_t libmtime = 0;    // mtime of package library file
+  const void* encdata = NULL; // contents of metafile
+  struct stat metast;         // status of metafile
   astdecoder_t* astdec = NULL;
-  bool did_build_dependency = false; // true if we have called build_dependency
-  pkg_t* pkg = pkgc.pkg;
+  bool did_build = false; // true if we have called build_dependency
+  pkgcell_t pkgc = { .parent = parent, .pkg = pkg };
+  sha256_t* imports_api_sha256v = NULL;
+  u32 imports_api_sha256c = 0;
 
   // get library file mtime
   str_t libfile = {0};
-  if (!pkg_libfile(pkg, pb->c, &libfile))
-    return ErrNoMem;
+  if (!pkg_libfile(pkg, c, &libfile)) {
+    err = ErrNoMem;
+    goto end;
+  }
   libmtime = fs_mtime(libfile.p);
-  vlog("load library package \"%s\"", pkgc.pkg->path.p);
+  vlog("load dependency \"%s\"", pkgc.pkg->path.p);
   str_free(libfile);
 
   // construct metafile path
-  if (!pkg_buildfile(pkg, pb->c, &metafile, PKG_METAFILE_NAME))
-    return ErrNoMem;
+  if (!pkg_buildfile(pkg, c, &metafile, PKG_METAFILE_NAME)) {
+    err = ErrNoMem;
+    goto end;
+  }
 
   // if no libfile exist, build
   if (libmtime == 0) {
-    did_build_dependency = true;
-    if (( err = build_dependency(pb, pkgc) )) {
+    did_build = true;
+    if (( err = build_dependency(c, api_ma, pkgc) )) {
       dlog("build_dependency: %s", err_str(err));
       encdata = NULL;
       goto end;
@@ -587,14 +708,14 @@ open_metafile:
 
     // if this is our second attempt and the file is still not showing;
     // something is broken with build_pkg or the file system (or a race happened)
-    if (did_build_dependency) {
+    if (did_build) {
       elog("%s: failed to build", relpath(metafile.p));
       goto end;
     }
 
     // build package and then try opening metafile again
-    did_build_dependency = true;
-    if (( err = build_dependency(pb, pkgc) )) {
+    did_build = true;
+    if (( err = build_dependency(c, api_ma, pkgc) )) {
       dlog("build_dependency: %s", err_str(err));
       goto end;
     }
@@ -604,7 +725,7 @@ open_metafile:
   // when we get here, the metafile is open for reading
 
   // open an AST decoder
-  astdec = astdecoder_open(pb->c, pb->api_ma, metafile.p, encdata, metast.st_size);
+  astdec = astdecoder_open(c, api_ma, metafile.p, encdata, metast.st_size);
   if (!astdec) {
     err = ErrNoMem;
     dlog("astdecoder_open: %s", err_str(err));
@@ -614,112 +735,108 @@ open_metafile:
   // decode package information; astdecoder_decode_header populates ...
   // - decpkg.{path,dir,root} (+ verifies they match prior input values of pkg)
   // - decpkg.files via pkg_add_srcfile
-  // - decpkg.imports
-  if (( err = astdecoder_decode_header(astdec, pkg) )) {
+  // - length of decpkg.imports
+  u32 importcount;
+  if (( err = astdecoder_decode_header(astdec, pkg, &importcount) )) {
     dlog("astdecoder_decode_header: %s", err_str(err));
-    if (!did_build_dependency && err == ErrNotSupported) {
-      // the encoded file is of an unsupported format
-      pkg->mtime = 0;
-    } else {
-      goto end;
-    }
   } else {
     // update pkg->mtime to mtime of metafile
     pkg->mtime = MIN(libmtime, unixtime_of_stat_mtime(&metast));
+
+    // allocate memory for memorized API checksums
+    if (importcount > 0) {
+      void* p = mem_resizev(
+        c->ma, imports_api_sha256v, imports_api_sha256c, importcount, sizeof(sha256_t));
+      if (!p) {
+        dlog("mem_resizev(%p,%u,%u) OOM",
+          imports_api_sha256v, imports_api_sha256c, importcount);
+        err = ErrNoMem;
+        goto end;
+      }
+      imports_api_sha256v = p;
+    }
+    imports_api_sha256c = importcount;
+
+    // decode imports
+    if (( err = astdecoder_decode_imports(astdec, pkg, imports_api_sha256v)) )
+      dlog("astdecoder_decode_imports: %s", err_str(err));
   }
 
-  // unless we just built the package, check source files and load imports
-  if (!did_build_dependency) {
-    // check if source files have been modified
-    bool isuptodate;
-    if (pkg->mtime == 0) {
-      isuptodate = false;
-    } else {
-      isuptodate = check_pkg_src_uptodate(pkg, pkg->mtime);
-    }
+  // check for decoding errors
+  if (err) {
+    if (did_build)
+      goto end;
+    // try building; maybe the metafile is b0rked
+    pkg->mtime = 0;
+    err = 0;
+  }
 
-    // load dependencies
-    if (isuptodate) {
-      usize expect_api_sha256[32/sizeof(usize)];
-      for (u32 i = 0; i < pkg->imports.len; i++) {
-        pkg_t* dep = pkg->imports.v[i];
+  // unless we just built the package, check source files and load sub-dependencies
+  if (!did_build && pkg->mtime > 0 &&
+      !load_dependency1(c, api_ma, pkgc, imports_api_sha256v, &err))
+  {
+    if (err)
+      goto end;
+    // source files have been modified
+    // must clear any srcfiles & imports loaded from (possibly stale) metafile
+    pkg->srcfiles.len = 0;
+    pkg->imports.len = 0;
 
-        // save "expected" API checksum of dep
-        memcpy(expect_api_sha256, dep->api_sha256, 32);
+    // at least one source file has been modified since metafile was modified
+    did_build = true;
+    if (( err = build_dependency(c, api_ma, pkgc) ))
+      goto end;
 
-        // load the dependency
-        if (( err = load_dependency(pb, (pkgcell_t){&pkgc,dep}) ))
-          goto end;
+    // close old metafile and associated resources
+    astdecoder_close(astdec); astdec = NULL;
+    mmap_unmap((void*)encdata, metast.st_size); encdata = NULL;
 
-        if (dep->mtime <= pkg->mtime)
-          continue;
-        // The dependency has recently been modified (maybe we just built it.)
-        // Check if its API changed
-        if (memcmp(expect_api_sha256, dep->api_sha256, 32) != 0) {
-          // dep API changed (or was previously unknown)
-          dlog("[%s] dep \"%s\" changed", pkg->path.p, relpath(dep->dir.p));
-          isuptodate = false;
-          break;
-        }
-      }
-    }
-
-    // rebuild if not up to date
-    if (!isuptodate) {
-      // must clear any srcfiles & imports loaded from (possibly stale) metafile
-      pkg->srcfiles.len = 0;
-      pkg->imports.len = 0;
-
-      // at least one source file has been modified since metafile was modified
-      did_build_dependency = true;
-      if (( err = build_dependency(pb, pkgc) ))
-        goto end;
-
-      // close old metafile and associated resources
-      astdecoder_close(astdec); astdec = NULL;
-      mmap_unmap((void*)encdata, metast.st_size); encdata = NULL;
-
-      // open the new metafile
-      goto open_metafile;
-    }
+    // open the new metafile
+    goto open_metafile;
   }
 
   // When we get here, pkg is loaded & up-to-date.
   // We now need to load the package's API.
-  err = load_pkg_api(pb, pkg, astdec);
+  err = load_pkg_api(api_ma, pkg, astdec);
 
 end:
+
+  future_finalize(&pkg->loadfut, err);
+  if (err) {
+    trace_import("loaded package \"%s\" error: %s", pkg->path.p, err_str(err));
+  } else {
+    trace_import("loaded package \"%s\" OK", pkg->path.p);
+  }
+
   if (astdec)
     astdecoder_close(astdec);
   if (encdata)
     mmap_unmap((void*)encdata, metast.st_size);
+  if (imports_api_sha256v)
+    mem_freetv(c->ma, imports_api_sha256v, imports_api_sha256c);
   str_free(metafile);
-  return err;
 }
 
 
-static void load_dependency_worker(u32 argc, void* argv[]) {
-  pkgbuild_t* pb = argv[0];
-  pkgcell_t pkgc = { .parent = argv[1], .pkg = argv[2] };
-  err_t err = load_dependency0(pb, pkgc);
-  future_finalize(&pkgc.pkg->loadfut, err);
-}
-
-
-static err_t load_dependency(pkgbuild_t* pb, pkgcell_t pkgc) {
-  err_t err;
-  if (future_acquire(&pkgc.pkg->loadfut)) {
-    #if 0
-      err = threadpool_submit(load_dependency_worker, pb, pkgc.parent, pkgc.pkg);
-    #else
-      err = load_dependency0(pb, pkgc);
-      future_finalize(&pkgc.pkg->loadfut, err);
-    #endif
-  } else {
-    dlog("%s %s (waiting...)", __FUNCTION__, pkgc.pkg->path.p);
-    err = future_wait(&pkgc.pkg->loadfut);
+static void load_dependency(
+  compiler_t* c, memalloc_t api_ma, const pkgcell_t* parent, pkg_t* pkg, bool sync)
+{
+  if (!future_acquire(&pkg->loadfut)) {
+    // already loaded or it's currently in the process of being loaded
+    return;
   }
-  return err;
+
+  // if COMAXPROC is set to 1 or there is only one CPU available, don't use threads
+  if (comaxproc == 1 || sync) {
+    load_dependency0(c, api_ma, parent, pkg);
+    return;
+  }
+
+  UNUSED err_t err;
+  err = threadpool_submit(load_dependency0, c, api_ma, parent, pkg);
+  // threadpool_submit only fails if we pass more than THREADPOOL_MAX_ARGS, which is
+  // checked at compile time when using threadpool_submit instead of threadpool_submitv.
+  assertf(!err, "threadpool_submit: %s", err_str(err));
 }
 
 
@@ -825,6 +942,9 @@ err_t pkgbuild_import(pkgbuild_t* pb) {
   if (pkg->imports.len == 0)
     return 0;
 
+  // trim excess space of imports array since we'll be keeping it around
+  ptrarray_shrinkwrap(&pkg->imports, pb->c->ma);
+
   // at this point all packages at pkg->imports ...
   // - are verified to exist (have a valid pkg->path, pkg->dir & pkg->root)
   // - may or may not be ready for use (may need to be built before it can be used)
@@ -840,20 +960,30 @@ err_t pkgbuild_import(pkgbuild_t* pb) {
   }
   #endif
 
-  // load imported packages (which might cause us to build them)
-  for (u32 i = 0; i < pkg->imports.len && !err; i++) {
+  // check for early import cycles
+  for (u32 i = 0; i < pkg->imports.len; i++) {
     pkg_t* dep = pkg->imports.v[i];
-    if (!check_import_cycle(pb, dep)) {
-      err = ErrCanceled;
-      break;
-    }
-    err = load_dependency(pb, (pkgcell_t){&pb->pkgc, dep});
-    if (err)
-      dlog("load_dependency: %s", err_str(err));
+    if (!check_import_cycle(pb, dep))
+      return ErrCanceled;
   }
 
-  // trim excess space of imports array since we'll be keeping it around
-  ptrarray_shrinkwrap(&pkg->imports, pb->c->ma);
+  // load imported packages (which might cause us to build them.)
+  for (u32 i = 0; i < pkg->imports.len; i++) {
+    pkg_t* dep = pkg->imports.v[i];
+
+    // load last one sync to make full use of the current thread
+    bool use_curr_thread = (i == pkg->imports.len - 1);
+    load_dependency(pb->c, pb->api_ma, &pb->pkgc, dep, use_curr_thread);
+  }
+
+  // wait for imported packages to load
+  for (u32 i = 0; i < pkg->imports.len; i++) {
+    pkg_t* dep = pkg->imports.v[i];
+    trace_import("%s: waiting for pkg(%s) to load...", __FUNCTION__, dep->path.p);
+    // note: it's okay to stop early and not future_wait all dependencies
+    if (( err = future_wait(&dep->loadfut) ))
+      break;
+  }
 
   #ifdef DEBUG
   if (opt_trace_import) {
@@ -1016,7 +1146,7 @@ static err_t pkgbuild_cgen_pub_api(pkgbuild_t* pb) {
 
   // compute SHA-256 sum of public API
   sha256_data(
-    pb->pkgc.pkg->api_sha256,
+    &pb->pkgc.pkg->api_sha256,
     pb->pkgapi.pub_header.p, pb->pkgapi.pub_header.len);
 
   err = fs_writefile_mkdirs(pubhfile.p, 0660, pb->pkgapi.pub_header);
