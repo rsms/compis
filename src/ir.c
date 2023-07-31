@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "colib.h"
+#include "ir.h"
 #include "bits.h"
 #include "compiler.h"
+
 #include <stdlib.h> // for debug_graphviz hack
 
 

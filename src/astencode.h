@@ -30,9 +30,16 @@ and decoding the AST (which refers to the imported packages.)
 
 */
 #pragma once
+#include "ast.h"
 ASSUME_NONNULL_BEGIN
 
 typedef struct astencoder_ astencoder_t;
+typedef struct astdecoder_ astdecoder_t;
+
+
+// flags for astencoder_add_ast
+#define ASTENCODER_PUB_API (1u << 0) // encode a public API
+
 
 astencoder_t* nullable astencoder_create(compiler_t* c);
 void astencoder_free(astencoder_t* a);
@@ -43,12 +50,6 @@ err_t astencoder_add_srcfileid(astencoder_t* a, u32 srcfileid);
 err_t astencoder_add_srcfile(astencoder_t* a, const srcfile_t* srcfile);
 err_t astencoder_encode(astencoder_t* a, buf_t* outbuf);
 
-// flags for astencoder_add_ast
-#define ASTENCODER_PUB_API (1u << 0) // encode a public API
-
-
-
-typedef struct astdecoder_ astdecoder_t;
 
 astdecoder_t* nullable astdecoder_open(
   compiler_t* c,

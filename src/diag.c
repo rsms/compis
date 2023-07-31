@@ -1,6 +1,7 @@
 // diagnostics reporting
 // SPDX-License-Identifier: Apache-2.0
 #include "colib.h"
+#include "diag.h"
 #include "compiler.h"
 #include "abuf.h"
 #include "path.h"

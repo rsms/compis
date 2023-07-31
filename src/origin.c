@@ -5,9 +5,9 @@
 
 
 origin_t funtype_params_origin(locmap_t* lm, const funtype_t* ft) {
-  origin_t origin = origin_make(lm, ft->xxx_paramsloc);
-  if (loc_line(ft->xxx_paramsloc) == loc_line(ft->xxx_paramsendloc))
-    origin.width = loc_col(ft->xxx_paramsendloc) - origin.column + 1; // +1 for ")"
+  origin_t origin = origin_make(lm, ft->paramsloc);
+  if (loc_line(ft->paramsloc) == loc_line(ft->paramsendloc))
+    origin.width = loc_col(ft->paramsendloc) - origin.column + 1; // +1 for ")"
   return origin;
 }
 
@@ -90,6 +90,12 @@ origin_t ast_origin(locmap_t* lm, const node_t* n) {
   case TYPE_SLICE: {
     const slicetype_t* t = (slicetype_t*)n;
     r = origin_union(r, ast_origin(lm, (node_t*)t->elem));
+    r = origin_union(r, origin_make(lm, t->endloc));
+    break;
+  }
+
+  case TYPE_TEMPLATE: {
+    const templatetype_t* t = (templatetype_t*)n;
     r = origin_union(r, origin_make(lm, t->endloc));
     break;
   }

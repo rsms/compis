@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "colib.h"
-#include "compiler.h"
+#include "loc.h"
+#include "srcfile.h"
 
 
 err_t locmap_init(locmap_t* lm) {

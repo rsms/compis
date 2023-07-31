@@ -2579,6 +2579,27 @@ static void call(typecheck_t* a, call_t** np) {
 }
 
 
+static void templatetype(typecheck_t* a, templatetype_t** tp) {
+  // e.g.
+  //   var x T<int>
+  //         ~~~~~~
+  dlog("TODO templatetype");
+  //dlog("typeid %s", typeid((type_t*)*tp) );
+  error(a, *tp, "TODO templatetype");
+  return;
+}
+
+
+static void placeholdertype(typecheck_t* a, placeholdertype_t** tp) {
+  // e.g.
+  //   type Foo<T>
+  //     x T   <—— visiting T
+  //       ~
+  dlog("TODO templatescope");
+  return;
+}
+
+
 static void unresolvedtype(typecheck_t* a, unresolvedtype_t** tp) {
   if ((*tp)->resolved) {
     *(type_t**)tp = (*tp)->resolved;
@@ -2664,6 +2685,11 @@ static void _type(typecheck_t* a, type_t** tp) {
     return;
   t->flags |= NF_CHECKED;
 
+  // if UNLIKELY(t->flags & NF_TEMPLATE) {
+  //   trace("not checking templatized type %s", nodekind_name(t->kind));
+  //   return;
+  // }
+
   TRACE_NODE(a, "", tp);
   switch ((*tp)->kind) {
     case TYPE_VOID:
@@ -2695,10 +2721,12 @@ static void _type(typecheck_t* a, type_t** tp) {
     case TYPE_MUTSLICE:
       return type(a, &((ptrtype_t*)(*tp))->elem);
 
-    case TYPE_OPTIONAL:   return type(a, &((opttype_t*)(*tp))->elem);
-    case TYPE_STRUCT:     return structtype(a, (structtype_t**)tp);
-    case TYPE_ALIAS:      return aliastype(a, (aliastype_t**)tp);
-    case TYPE_UNRESOLVED: return unresolvedtype(a, (unresolvedtype_t**)tp);
+    case TYPE_OPTIONAL:    return type(a, &((opttype_t*)(*tp))->elem);
+    case TYPE_STRUCT:      return structtype(a, (structtype_t**)tp);
+    case TYPE_ALIAS:       return aliastype(a, (aliastype_t**)tp);
+    case TYPE_TEMPLATE:    return templatetype(a, (templatetype_t**)tp);
+    case TYPE_PLACEHOLDER: return placeholdertype(a, (placeholdertype_t**)tp);
+    case TYPE_UNRESOLVED:  return unresolvedtype(a, (unresolvedtype_t**)tp);
   }
   assertf(0, "unexpected %s", nodekind_name((*tp)->kind));
 }

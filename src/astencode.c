@@ -62,17 +62,16 @@ AST encoding format:
 
 */
 #include "colib.h"
-#include "compiler.h"
 #include "astencode.h"
+#include "ast_field.h"
+#include "compiler.h"
 #include "path.h"
 #include "hash.h"
 #include "sha256.h"
 
 
 #define FILE_MAGIC "cAST"
-
 #define AST_ENC_VERSION 1
-
 
 // DEBUG_LOG_ENCODE_STATS: define to dlog some encoder stats
 //#define DEBUG_LOG_ENCODE_STATS
@@ -80,13 +79,6 @@ AST encoding format:
 #if defined(DEBUG_LOG_ENCODE_STATS) && !defined(DEBUG)
   #undef DEBUG_LOG_ENCODE_STATS
 #endif
-
-// nodekind_t => u8 sizeof(struct_type)
-static const u8 g_nodekindsizetab[NODEKIND_COUNT] = {
-  #define _(kind, TYPE, tag, ...) [kind] = sizeof(TYPE),
-  FOREACH_NODEKIND(_)
-  #undef _
-};
 
 // nodekind_t => u32 tag
 static const u32 g_nodekindtagtab[NODEKIND_COUNT] = {
@@ -120,273 +112,6 @@ UNUSED __attribute__((constructor)) static void check_nodekindtagtab() {
 }
 #endif
 
-//———————————————————————————————————————————————————————————————————————————————————————
-
-typedef u8 ae_fieldtype_t;
-enum ae_fieldtype {
-  AFT_UNDEF = (ae_fieldtype_t)0,
-  AFT_U8,
-  AFT_U16,
-  AFT_U32,
-  AFT_U64,
-  AFT_F64,
-  AFT_LOC,               // loc_t
-  AFT_SYM,  AFT_SYMZ,  // sym_t, sym_t nullable
-  AFT_NODE, AFT_NODEZ, // node_t*, node_t* nullable
-  AFT_STR,  AFT_STRZ,  // u8*, u8* nullable
-  AFT_NODEARRAY, // nodearray_t
-  AFT_CUSTOM,
-};
-
-typedef struct {
-  u16            offs; // offset in struct
-  ae_fieldtype_t type;
-  //u8           unused;
-  #if DEBUG
-    const char* name;
-  #endif
-} ae_field_t;
-
-#if DEBUG
-  #define FIELD(STRUCT_TYPE, field_name, FIELD_TYPE) \
-    { offsetof(STRUCT_TYPE, field_name), AFT_##FIELD_TYPE, #field_name }
-#else
-  #define FIELD(STRUCT_TYPE, field_name, FIELD_TYPE) \
-    { offsetof(STRUCT_TYPE, field_name), AFT_##FIELD_TYPE }
-#endif
-
-
-// per-AST-struct field tables
-static const ae_field_t g_fieldsof_node_t[0] = {};
-static const ae_field_t g_fieldsof_unit_t[] = {
-  FIELD(unit_t, children, NODEARRAY),
-  // TODO: srcfile
-  // TODO: tfuns
-  // TODO: importlist
-};
-static const ae_field_t g_fieldsof_typedef_t[] = {
-  FIELD(typedef_t, type, NODE),
-};
-static const ae_field_t g_fieldsof_import_t[] = {
-  FIELD(import_t, path, STR),
-  FIELD(import_t, pathloc, LOC),
-  // TODO: idlist
-  // TODO: isfrom
-  // TODO: next_import
-};
-static const ae_field_t g_fieldsof_importid_t[] = {
-  // never encoded
-};
-
-
-#define EXPR_FIELDS /* expr_t */ \
-  FIELD(expr_t, type, NODEZ) \
-// end EXPR_FIELDS
-static const ae_field_t g_fieldsof_fun_t[] = {
-  EXPR_FIELDS,
-  FIELD(fun_t, type,         NODEZ),
-  FIELD(fun_t, name,         SYMZ),
-  FIELD(fun_t, nameloc,      LOC),
-  FIELD(fun_t, body,         NODEZ),
-  FIELD(fun_t, recvt,        NODEZ),
-  FIELD(fun_t, mangledname,  STRZ),
-  FIELD(fun_t, paramsloc,    LOC),
-  FIELD(fun_t, paramsendloc, LOC),
-  FIELD(fun_t, resultloc,    LOC),
-  FIELD(fun_t, abi,          U32),
-};
-static const ae_field_t g_fieldsof_block_t[] = {
-  EXPR_FIELDS,
-  FIELD(block_t, children, NODEARRAY),
-  //TODO: FIELD(block_t, drops, DROPARRAY), // drop_t[]
-  FIELD(block_t, endloc, LOC),
-};
-static const ae_field_t g_fieldsof_call_t[] = {
-  EXPR_FIELDS,
-  FIELD(call_t, recv, NODE),
-  FIELD(call_t, args, NODEARRAY),
-  FIELD(call_t, argsendloc, LOC),
-};
-static const ae_field_t g_fieldsof_typecons_t[] = {
-  EXPR_FIELDS,
-  // TODO
-};
-static const ae_field_t g_fieldsof_nsexpr_t[] = {
-  EXPR_FIELDS,
-  FIELD(nsexpr_t, name, SYM),
-  FIELD(nsexpr_t, members, NODEARRAY),
-};
-static const ae_field_t g_fieldsof_idexpr_t[] = {
-  EXPR_FIELDS,
-  FIELD(idexpr_t, name, SYM),
-  FIELD(idexpr_t, ref, NODEZ),
-};
-static const ae_field_t g_fieldsof_local_t[] = {
-  EXPR_FIELDS,
-  FIELD(local_t, name,    SYM),
-  FIELD(local_t, nameloc, LOC),
-  FIELD(local_t, offset,  U64),
-  FIELD(local_t, init,    NODEZ),
-};
-static const ae_field_t g_fieldsof_member_t[] = { // member_t
-  EXPR_FIELDS,
-  FIELD(member_t, recv, NODE),
-  FIELD(member_t, name, SYM),
-  FIELD(member_t, target, NODEZ),
-};
-static const ae_field_t g_fieldsof_subscript_t[] = { // subscript_t
-  EXPR_FIELDS,
-  FIELD(subscript_t, recv, NODE),
-  FIELD(subscript_t, index, NODE),
-  FIELD(subscript_t, index_val, U64),
-  FIELD(subscript_t, endloc, LOC),
-};
-static const ae_field_t g_fieldsof_unaryop_t[] = {
-  EXPR_FIELDS,
-  FIELD(unaryop_t, op, U8), // op_t
-  FIELD(unaryop_t, expr, NODE),
-};
-static const ae_field_t g_fieldsof_binop_t[] = {
-  EXPR_FIELDS,
-  FIELD(binop_t, op, U8), // op_t
-  FIELD(binop_t, left, NODE),
-  FIELD(binop_t, right, NODE),
-};
-static const ae_field_t g_fieldsof_ifexpr_t[] = {
-  EXPR_FIELDS,
-  FIELD(ifexpr_t, cond, NODE),
-  FIELD(ifexpr_t, thenb, NODE),
-  FIELD(ifexpr_t, elseb, NODEZ),
-};
-static const ae_field_t g_fieldsof_forexpr_t[] = {
-  EXPR_FIELDS,
-  FIELD(forexpr_t, start, NODEZ),
-  FIELD(forexpr_t, cond, NODE),
-  FIELD(forexpr_t, body, NODE),
-  FIELD(forexpr_t, end, NODEZ),
-};
-static const ae_field_t g_fieldsof_retexpr_t[] = {
-  EXPR_FIELDS,
-  FIELD(retexpr_t, value, NODEZ),
-};
-static const ae_field_t g_fieldsof_intlit_t[] = {
-  EXPR_FIELDS,
-  FIELD(intlit_t, intval, U64),
-};
-static const ae_field_t g_fieldsof_floatlit_t[] = {
-  EXPR_FIELDS,
-  FIELD(floatlit_t, f64val, F64),
-};
-static const ae_field_t g_fieldsof_strlit_t[] = {
-  EXPR_FIELDS,
-  FIELD(strlit_t, bytes, STR),
-  FIELD(strlit_t, len,   U64),
-};
-static const ae_field_t g_fieldsof_arraylit_t[] = {
-  EXPR_FIELDS,
-  FIELD(arraylit_t, endloc, LOC),
-  FIELD(arraylit_t, values, NODEARRAY),
-};
-
-
-static const ae_field_t g_fieldsof_type_t[] = {
-  #define TYPE_FIELDS /* type_t */ \
-    FIELD(type_t, size,  U64), \
-    FIELD(type_t, align, U8), \
-    FIELD(type_t, tid,   SYMZ) \
-  // end TYPE_FIELDS
-  TYPE_FIELDS,
-};
-static const ae_field_t g_fieldsof_arraytype_t[] = {
-  TYPE_FIELDS,
-  FIELD(arraytype_t, endloc,  LOC),
-  FIELD(arraytype_t, len,     U64),
-  FIELD(arraytype_t, lenexpr, NODEZ),
-};
-static const ae_field_t g_fieldsof_funtype_t[] = {
-  TYPE_FIELDS,
-  FIELD(funtype_t, result, NODE),
-  FIELD(funtype_t, params, NODEARRAY),
-};
-static const ae_field_t g_fieldsof_ptrtype_t[] = {
-  #define PTRTYPE_FIELDS /* ptrtype_t */ \
-    TYPE_FIELDS, \
-    FIELD(ptrtype_t, elem, NODE) \
-  // end PTRTYPE_FIELDS
-  PTRTYPE_FIELDS,
-};
-static const ae_field_t g_fieldsof_reftype_t[] = {
-  PTRTYPE_FIELDS,
-};
-static const ae_field_t g_fieldsof_slicetype_t[] = {
-  PTRTYPE_FIELDS,
-  FIELD(slicetype_t, endloc, LOC),
-};
-static const ae_field_t g_fieldsof_opttype_t[] = {
-  PTRTYPE_FIELDS,
-};
-static const ae_field_t g_fieldsof_structtype_t[] = {
-  TYPE_FIELDS,
-  FIELD(structtype_t, name,        SYMZ),
-  FIELD(structtype_t, mangledname, STRZ),
-  FIELD(structtype_t, fields,      NODEARRAY),
-};
-static const ae_field_t g_fieldsof_aliastype_t[] = {
-  TYPE_FIELDS,
-  FIELD(aliastype_t, name,        SYM),
-  FIELD(aliastype_t, elem,        NODE),
-  FIELD(aliastype_t, mangledname, STRZ),
-};
-static const ae_field_t g_fieldsof_nstype_t[] = {
-  TYPE_FIELDS,
-  FIELD(nstype_t, members, NODEARRAY),
-};
-static const ae_field_t g_fieldsof_unresolvedtype_t[] = {
-  TYPE_FIELDS,
-  FIELD(unresolvedtype_t, name, SYM),
-  FIELD(unresolvedtype_t, resolved, NODEZ),
-};
-
-#undef FIELD
-#undef EXPR_FIELDS
-#undef TYPE_FIELDS
-#undef PTRTYPE_FIELDS
-
-// g_fieldtab maps nodekind_t => ae_field_t[]
-static const ae_field_t* g_fieldtab[NODEKIND_COUNT] = {
-  #define _(kind, TYPE, tag, ...) [kind] = g_fieldsof_##TYPE,
-  FOREACH_NODEKIND(_)
-  #undef _
-};
-
-// g_fieldlentab maps nodekind_t => countof(ae_field_t[])
-static const u8 g_fieldlentab[NODEKIND_COUNT] = {
-  #define _(kind, TYPE, tag, ...) [kind] = countof(g_fieldsof_##TYPE),
-  FOREACH_NODEKIND(_)
-  #undef _
-};
-
-
-UNUSED static const char* ae_fieldtype_str(ae_fieldtype_t t) {
-  switch ((enum ae_fieldtype)t) {
-    case AFT_UNDEF:     return "UNDEF";
-    case AFT_U8:        return "U8";
-    case AFT_U16:       return "U16";
-    case AFT_U32:       return "U32";
-    case AFT_U64:       return "U64";
-    case AFT_F64:       return "F64";
-    case AFT_LOC:       return "LOC";
-    case AFT_SYM:       return "SYM";
-    case AFT_SYMZ:      return "SYMZ";
-    case AFT_NODE:      return "NODE";
-    case AFT_NODEZ:     return "NODEZ";
-    case AFT_STR:       return "STR";
-    case AFT_STRZ:      return "STRZ";
-    case AFT_NODEARRAY: return "NODEARRAY";
-    case AFT_CUSTOM:    return "CUSTOM";
-  }
-  return "??";
-}
 
 // Conversion of f64 <-> u64
 // Currently assumes f64 is represented as IEEE 754 binary64
@@ -488,7 +213,7 @@ try_string_repr:
 
 
 static void encode_field_nodearray(
-  astencoder_t* a, buf_t* outbuf, const void* fp, ae_field_t f)
+  astencoder_t* a, buf_t* outbuf, const void* fp, ast_field_t f)
 {
   // We have space for max possible node IDs, so no bounds checks needed here
   const nodearray_t* na = fp;
@@ -506,8 +231,30 @@ static void encode_field_nodearray(
 }
 
 
+static void encode_field_nodelist(
+  astencoder_t* a, buf_t* outbuf, const void* fp, ast_field_t f)
+{
+  // same encoding as nodearray
+  char* p = outbuf->chars + outbuf->len;
+
+  u32 len = 0;
+  for (const void* ent = *(void**)fp; ent; ent = *(void**)(ent + f.listoffs))
+    len++;
+
+  *p++ = '*';
+  p += sfmtu64(p, len, 16);
+
+  for (const void* ent = *(void**)fp; ent; ent = *(void**)(ent + f.listoffs)) {
+    *p++ = ' ';
+    p += sfmtu64(p, encoded_node_index(a, ent), 16);
+  }
+
+  buf_setlenp(outbuf, p);
+}
+
+
 static void encode_field_str(
-  astencoder_t* a, buf_t* outbuf, const void* fp, ae_field_t f)
+  astencoder_t* a, buf_t* outbuf, const void* fp, ast_field_t f)
 {
   const char* str = *(const char**)fp;
   usize len = strlen(str);
@@ -516,7 +263,7 @@ static void encode_field_str(
 
 
 static void encode_field_custom(
-  astencoder_t* a, buf_t* outbuf, const void* fp, ae_field_t f)
+  astencoder_t* a, buf_t* outbuf, const void* fp, ast_field_t f)
 {
   dlog("TODO %s", __FUNCTION__);
 }
@@ -545,47 +292,54 @@ static loc_t enc_remap_loc(astencoder_t* a, loc_t loc) {
 
 
 // field_encsize calculates the space needed to encode a field
-static usize field_encsize(astencoder_t* a, const void* fp, ae_field_t f) {
+static usize field_encsize(astencoder_t* a, const void* fp, ast_field_t f) {
   usize z = 1; // leading SP
 again:
-  switch ((enum ae_fieldtype)f.type) {
-    case AFT_NODEZ:
-    case AFT_SYMZ:
-    case AFT_STRZ:
+  switch ((enum ast_fieldtype)f.type) {
+    case AST_FIELD_NODEZ:
+    case AST_FIELD_SYMZ:
+    case AST_FIELD_STRZ:
       if (*(void**)fp == NULL) return z + 1; // "_"
-      f.type--; // e.g. AFT_NODEZ -> AFT_NODE
+      f.type--; // e.g. AST_FIELD_NODEZ -> AST_FIELD_NODE
       goto again;
 
-    case AFT_U8:   return z + ndigits16(*(u8*)fp);
-    case AFT_U16:  return z + ndigits16(*(u16*)fp);
-    case AFT_U32:  return z + ndigits16(*(u32*)fp);
-    case AFT_U64:  return z + ndigits16(*(u64*)fp);
-    case AFT_F64:  return z + 16; // TODO FIXME
-    case AFT_LOC:  return z + ndigits16(*(loc_t*)fp);
-    case AFT_SYM:
+    case AST_FIELD_U8:   return z + ndigits16(*(u8*)fp);
+    case AST_FIELD_U16:  return z + ndigits16(*(u16*)fp);
+    case AST_FIELD_U32:  return z + ndigits16(*(u32*)fp);
+    case AST_FIELD_U64:  return z + ndigits16(*(u64*)fp);
+    case AST_FIELD_F64:  return z + 16; // TODO FIXME
+    case AST_FIELD_LOC:  return z + ndigits16(*(loc_t*)fp);
+    case AST_FIELD_SYM:
       return z + 1 + ndigits16(encoded_sym_index(a, *(sym_t*)fp)); // "#" u32x
-    case AFT_NODE:
+    case AST_FIELD_NODE:
       return z + 1 + ndigits16(encoded_node_index(a, *(node_t**)fp)); // "&" u32x
 
-    case AFT_STR: { // '"' strdata '"'
+    case AST_FIELD_STR: { // '"' strdata '"'
       // optimistic guess: the string does not need escaping
       usize len = strlen(*(const char**)fp);
       //return z + 3ul + ndigits16(len) + len; // e.g. "B hello world"
       return z + 2 + len; // e.g. "hello world"
     }
 
-    case AFT_NODEARRAY: { // "*" len (SP u32x){len}
+    case AST_FIELD_NODEARRAY: { // "*" len (SP u32x){len}
       // conservative guess: node indices are max, e.g. *2 FFFFFFFF FFFFFFFF
       // This trades some memory slack for a simpler implementation
       const nodearray_t* na = fp;
       return z + 1ul + ndigits16(na->len) + (na->len * (1 + 9));
     }
 
-    case AFT_CUSTOM:
+    case AST_FIELD_NODELIST: { // "*" len (SP u32x){len}  (same as nodearray)
+      u32 len = 0;
+      for (const void* ent = *(void**)fp; ent; ent = *(void**)(ent + f.listoffs))
+        len++;
+      return z + 1ul + ndigits16(len) + (len * (1 + 9));
+    }
+
+    case AST_FIELD_CUSTOM:
       // can't guess; will have to check bounds when encoding
       return z;
 
-    case AFT_UNDEF:
+    case AST_FIELD_UNDEF:
       break;
   }
   UNREACHABLE;
@@ -593,8 +347,8 @@ again:
 }
 
 
-static void encode_field(astencoder_t* a, buf_t* outbuf, const void* fp, ae_field_t f) {
-  //dlog("  %-12s %-9s  +%u", f.name, ae_fieldtype_str(f.type), f.offs);
+static void encode_field(astencoder_t* a, buf_t* outbuf, const void* fp, ast_field_t f) {
+  //dlog("  %-12s %-9s  +%u", f.name, ast_fieldtype_str(f.type), f.offs);
 
   // set fp to point to the field's data
   fp += f.offs;
@@ -613,22 +367,23 @@ static void encode_field(astencoder_t* a, buf_t* outbuf, const void* fp, ae_fiel
   u64 u64val;
   outbuf->chars[outbuf->len++] = ' ';
 
-  switch ((enum ae_fieldtype)f.type) {
-    case AFT_U8:        u64val = *(u8*)fp; goto enc_u64x;
-    case AFT_U16:       u64val = *(u16*)fp; goto enc_u64x;
-    case AFT_U32:       u64val = *(u32*)fp; goto enc_u64x;
-    case AFT_U64:       u64val = *(u64*)fp; goto enc_u64x;
-    case AFT_F64:       u64val = f64_to_u64(*(f64*)fp); goto enc_u64x;
-    case AFT_LOC:       u64val = enc_remap_loc(a, *(loc_t*)fp); goto enc_u64x;
-    case AFT_SYM:       goto enc_sym;
-    case AFT_SYMZ:      if (*(void**)fp) goto enc_sym; goto enc_none;
-    case AFT_NODE:      goto enc_node;
-    case AFT_NODEZ:     if (*(void**)fp) goto enc_node; goto enc_none;
-    case AFT_STR:       goto enc_str;
-    case AFT_STRZ:      if (*(void**)fp) goto enc_str; goto enc_none;
-    case AFT_NODEARRAY: MUSTTAIL return encode_field_nodearray(a, outbuf, fp, f);
-    case AFT_CUSTOM:    MUSTTAIL return encode_field_custom(a, outbuf, fp, f);
-    case AFT_UNDEF:     break;
+  switch ((enum ast_fieldtype)f.type) {
+  case AST_FIELD_U8:        u64val = *(u8*)fp; goto enc_u64x;
+  case AST_FIELD_U16:       u64val = *(u16*)fp; goto enc_u64x;
+  case AST_FIELD_U32:       u64val = *(u32*)fp; goto enc_u64x;
+  case AST_FIELD_U64:       u64val = *(u64*)fp; goto enc_u64x;
+  case AST_FIELD_F64:       u64val = f64_to_u64(*(f64*)fp); goto enc_u64x;
+  case AST_FIELD_LOC:       u64val = enc_remap_loc(a, *(loc_t*)fp); goto enc_u64x;
+  case AST_FIELD_SYM:       goto enc_sym;
+  case AST_FIELD_SYMZ:      if (*(void**)fp) goto enc_sym; goto enc_none;
+  case AST_FIELD_NODE:      goto enc_node;
+  case AST_FIELD_NODEZ:     if (*(void**)fp) goto enc_node; goto enc_none;
+  case AST_FIELD_STR:       goto enc_str;
+  case AST_FIELD_STRZ:      if (*(void**)fp) goto enc_str; goto enc_none;
+  case AST_FIELD_NODEARRAY: MUSTTAIL return encode_field_nodearray(a, outbuf, fp, f);
+  case AST_FIELD_NODELIST:  MUSTTAIL return encode_field_nodelist(a, outbuf, fp, f);
+  case AST_FIELD_CUSTOM:    MUSTTAIL return encode_field_custom(a, outbuf, fp, f);
+  case AST_FIELD_UNDEF:     break;
   }
   UNREACHABLE;
 
@@ -676,7 +431,7 @@ static void encode_node(astencoder_t* a, buf_t* outbuf, const node_t* n) {
   memcpy(p, &g_nodekindtagtab[n->kind], 4); p += 4;
 
   // get field table for kind
-  const ae_field_t* fieldtab = g_fieldtab[n->kind];
+  const ast_field_t* fieldtab = g_ast_fieldtab[n->kind];
 
   // check for universal type
   if (fieldtab == g_fieldsof_type_t) {
@@ -694,7 +449,7 @@ static void encode_node(astencoder_t* a, buf_t* outbuf, const node_t* n) {
     buf_setlenp(outbuf, p);
 
     // encode fields
-    for (u8 i = 0; i < g_fieldlentab[n->kind]; i++) {
+    for (u8 i = 0; i < g_ast_fieldlentab[n->kind]; i++) {
       encode_field(a, outbuf, n, fieldtab[i]);
       if (a->oom)
         return;
@@ -931,6 +686,7 @@ static void reg_syms(astencoder_t* a, const node_t* n) {
   case EXPR_LET:
   case EXPR_FIELD:      return ADDSYM(((local_t*)n)->name);
 
+  case NODE_TPLPARAM:   return ADDSYM(((templateparam_t*)n)->name);
   case EXPR_PARAM:      return ADDSYMZ(((local_t*)n)->name);
   case EXPR_ID:         return ADDSYM(((idexpr_t*)n)->name);
   case EXPR_NS:         return ADDSYM(((nsexpr_t*)n)->name);
@@ -978,9 +734,11 @@ static void reg_syms(astencoder_t* a, const node_t* n) {
   case TYPE_MUTSLICE:
   case TYPE_NS:
   case TYPE_OPTIONAL:
+  case TYPE_PLACEHOLDER:
   case TYPE_PTR:
   case TYPE_REF:
   case TYPE_SLICE:
+  case TYPE_TEMPLATE:
   case TYPE_U16:
   case TYPE_U32:
   case TYPE_U64:
@@ -1011,7 +769,7 @@ static void* nullable enc_tmpalloc(astencoder_t* a, usize size) {
 
 
 static void* nullable clone_node_shallow(astencoder_t* a, const node_t* n) {
-  usize nodesize = g_nodekindsizetab[n->kind];
+  usize nodesize = g_ast_sizetab[n->kind];
   node_t* n2 = enc_tmpalloc(a, nodesize);
   if LIKELY(n2)
     memcpy(n2, n, nodesize);
@@ -1262,6 +1020,7 @@ typedef struct astdecoder_ {
   sym_t*      symtab;      // ID => sym_t
   node_t**    nodetab;     // ID => node_t*
   u32*        srctab;      // ID => srcfileid (document local ID => global ID)
+  nodearray_t tmpnodearray;
   memalloc_t  ma;
   memalloc_t  ast_ma;
   compiler_t* c;
@@ -1506,7 +1265,7 @@ end_invalid:
 }
 
 
-static const u8* dec_nodearray(DEC_PARAMS, nodearray_t* dstp) {
+static const u8* dec_nodearray1(DEC_PARAMS, nodearray_t* dstp, memalloc_t ma) {
   // nodearray = "*" len (SP u32x){len}
   if UNLIKELY(DEC_DATA_AVAIL < 2 || *p != '*')
     return DEC_ERROR(ErrInvalid, "expected '*N'");
@@ -1525,7 +1284,7 @@ static const u8* dec_nodearray(DEC_PARAMS, nodearray_t* dstp) {
   }
 
   // allocate memory for array
-  mem_t m = mem_alloc(d->ast_ma, (usize)len * sizeof(void*));
+  mem_t m = mem_alloc(ma, (usize)len * sizeof(void*));
   if UNLIKELY(m.p == NULL)
     return DEC_ERROR(ErrNoMem, "mem_alloc %zu B", (usize)len * sizeof(void*));
   node_t** v = m.p;
@@ -1552,30 +1311,63 @@ static const u8* dec_nodearray(DEC_PARAMS, nodearray_t* dstp) {
 }
 
 
-static const u8* decode_field(DEC_PARAMS, void* fp, ae_field_t f) {
-  // dlog("  %-12s %-9s  +%u", f.name, ae_fieldtype_str(f.type), f.offs);
+static const u8* dec_nodearray(DEC_PARAMS, nodearray_t* dstp) {
+  return dec_nodearray1(DEC_ARGS, dstp, d->ast_ma);
+}
+
+
+static const u8* dec_nodelist(DEC_PARAMS, u16 listoffs, void** listhead) {
+  // same encoding as nodearray
+  d->tmpnodearray.len = 0;
+  p = dec_nodearray1(DEC_ARGS, &d->tmpnodearray, d->ma);
+
+  if (d->tmpnodearray.len == 0) {
+    *listhead = NULL;
+    return p;
+  }
+
+  for (u32 i = 0, lasti = d->tmpnodearray.len - 1; ; i++) {
+    void* entry = d->tmpnodearray.v[i];
+    if (i == 0)
+      *listhead = entry;
+    // advance entry to its "next" field
+    entry += listoffs;
+    if (i == lasti) {
+      *(void**)entry = NULL;
+      break;
+    }
+    *(void**)entry = d->tmpnodearray.v[i + 1];
+  }
+
+  return p;
+}
+
+
+static const u8* decode_field(DEC_PARAMS, void* fp, ast_field_t f) {
+  // dlog("  %-12s %-9s  +%u", f.name, ast_fieldtype_str(f.type), f.offs);
 
   // set fp to point to the field of the node_t
   fp += f.offs;
 
   p = dec_byte(DEC_ARGS, ' ');
 
-  switch ((enum ae_fieldtype)f.type) {
-    case AFT_U8:        return dec_u8x(DEC_ARGS, fp);
-    case AFT_U16:       return dec_u16x(DEC_ARGS, fp);
-    case AFT_U32:       return dec_u32x(DEC_ARGS, fp);
-    case AFT_U64:       return dec_u64x(DEC_ARGS, fp);
-    case AFT_F64:       return dec_f64x(DEC_ARGS, fp);
-    case AFT_LOC:       return dec_loc(DEC_ARGS, fp);
-    case AFT_SYM:       return dec_symref(DEC_ARGS, fp, /*allow_null*/false); break;
-    case AFT_SYMZ:      return dec_symref(DEC_ARGS, fp, /*allow_null*/true); break;
-    case AFT_NODE:      return dec_noderef(DEC_ARGS, fp, /*allow_null*/false); break;
-    case AFT_NODEZ:     return dec_noderef(DEC_ARGS, fp, /*allow_null*/true); break;
-    case AFT_STR:       return dec_str(DEC_ARGS, fp, /*allow_null*/false); break;
-    case AFT_STRZ:      return dec_str(DEC_ARGS, fp, /*allow_null*/true); break;
-    case AFT_NODEARRAY: return dec_nodearray(DEC_ARGS, fp); break;
-    case AFT_CUSTOM:    panic("TODO decode CUSTOM field"); break;
-    case AFT_UNDEF:     UNREACHABLE; break;
+  switch ((enum ast_fieldtype)f.type) {
+  case AST_FIELD_U8:        return dec_u8x(DEC_ARGS, fp);
+  case AST_FIELD_U16:       return dec_u16x(DEC_ARGS, fp);
+  case AST_FIELD_U32:       return dec_u32x(DEC_ARGS, fp);
+  case AST_FIELD_U64:       return dec_u64x(DEC_ARGS, fp);
+  case AST_FIELD_F64:       return dec_f64x(DEC_ARGS, fp);
+  case AST_FIELD_LOC:       return dec_loc(DEC_ARGS, fp);
+  case AST_FIELD_SYM:       return dec_symref(DEC_ARGS, fp, /*allow_null*/false); break;
+  case AST_FIELD_SYMZ:      return dec_symref(DEC_ARGS, fp, /*allow_null*/true); break;
+  case AST_FIELD_NODE:      return dec_noderef(DEC_ARGS, fp, /*allow_null*/false); break;
+  case AST_FIELD_NODEZ:     return dec_noderef(DEC_ARGS, fp, /*allow_null*/true); break;
+  case AST_FIELD_STR:       return dec_str(DEC_ARGS, fp, /*allow_null*/false); break;
+  case AST_FIELD_STRZ:      return dec_str(DEC_ARGS, fp, /*allow_null*/true); break;
+  case AST_FIELD_NODEARRAY: return dec_nodearray(DEC_ARGS, fp); break;
+  case AST_FIELD_NODELIST:  return dec_nodelist(DEC_ARGS, f.listoffs, fp); break;
+  case AST_FIELD_CUSTOM:    panic("TODO decode CUSTOM field"); break;
+  case AST_FIELD_UNDEF:     UNREACHABLE; break;
   }
 
   return p;
@@ -1877,7 +1669,7 @@ static const u8* decode_node(DEC_PARAMS, u32 node_id) {
     return DEC_ERROR(ErrInvalid, "invalid node kind '%.4s'", p), pend;
 
   // get field table for kind
-  const ae_field_t* fieldtab = g_fieldtab[kind];
+  const ast_field_t* fieldtab = g_ast_fieldtab[kind];
 
   // intercept universal types, singletons compared by address,
   // by looking for nodes that are represented solely by type_t
@@ -1885,7 +1677,7 @@ static const u8* decode_node(DEC_PARAMS, u32 node_id) {
     return decode_universal_node(DEC_ARGS, node_id, kind);
 
   // decode standard node, starting by allocating memory for the node struct
-  usize nodesize = g_nodekindsizetab[kind];
+  usize nodesize = g_ast_sizetab[kind];
   node_t* n = mem_alloc_zeroed(d->ast_ma, nodesize).p;
   if UNLIKELY(!n)
     return DEC_ERROR(ErrNoMem), pend;
@@ -1908,7 +1700,7 @@ static const u8* decode_node(DEC_PARAMS, u32 node_id) {
   p = dec_loc(DEC_ARGS, &n->loc);
 
   // read fields
-  for (u8 i = 0; i < g_fieldlentab[n->kind]; i++) {
+  for (u8 i = 0; i < g_ast_fieldlentab[n->kind]; i++) {
     p = decode_field(DEC_ARGS, n, fieldtab[i]);
     if (d->err)
       return pend;
@@ -1997,6 +1789,8 @@ void astdecoder_close(astdecoder_t* d) {
   if (d->srctab)
     mem_freex(d->ma, MEM(d->srctab, (usize)d->srccount * sizeof(*d->srctab)));
   dec_tmptabs_free(d);
+  nodearray_dispose(&d->tmpnodearray, d->ma);
+
   mem_freet(d->ma, d);
 }
 

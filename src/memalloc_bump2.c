@@ -51,12 +51,33 @@ static_assert(IS_ALIGN2(sizeof(slab_t), MIN_ALIGNMENT), "");
 // bump_allocator_t contains book-keeping data for the allocator
 typedef struct {
   slab_t           head;   // caution: cyclic; head->prev initially points to &head
-  _Atomic(slab_t*) tail;   // caution: cyclic; tail initially points to &head
   mutex_t          tailmu; // guards modifications to tail
-  _Atomic(void*)   end;    // end of backing memory (== tail + tail->size)
+
+  #if defined(DEBUG) && defined(__SIZEOF_INT128__)
+  union { struct {
+  #endif
+
+  _Atomic(slab_t*) tail;   // caution: cyclic; tail initially points to &head
   _Atomic(void*)   ptr;    // next allocation (>= tail)
+
+  #if defined(DEBUG) && defined(__SIZEOF_INT128__)
+  }; _Atomic(__uint128_t) u128; };
+  #endif
+
+  _Atomic(void*)   end;    // end of backing memory (== tail + tail->size)
   struct memalloc  ma;
 } bump_allocator_t;
+
+
+#if defined(DEBUG) && defined(__SIZEOF_INT128__)
+typedef union {
+  struct {
+    _Atomic(slab_t*) tail;   // caution: cyclic; tail initially points to &head
+    _Atomic(void*)   ptr;    // next allocation (>= tail)
+  };
+  _Atomic(__uint128_t) u128;
+} tail_and_ptr_t;
+#endif
 
 
 // bump_allocator_t* BUMPALLOC_OF_MEMALLOC(memalloc_t ma)
@@ -141,11 +162,25 @@ static bool bump_alloc(bump_allocator_t* a, mem_t* m, usize size, bool zeroed) {
     } else {
       newptr = oldptr + size;
       if LIKELY(AtomicCASAcqRel(&a->ptr, &oldptr, newptr)) {
+
+        #if defined(DEBUG) && defined(__SIZEOF_INT128__)
+        {
+          tail_and_ptr_t tail_and_ptr = { .u128 = ATOMIC_LOAD(&a->u128) };
+          slab_t* tail = tail_and_ptr.tail;
+          void* ptr = tail_and_ptr.ptr;
+          if (ptr == newptr) {
+            assertf(
+              ptr >= (void*)tail + sizeof(slab_t) || ptr + size < (void*)tail,
+              "tail=%p, ptr=%p..%p", tail, ptr, ptr+size);
+          }
+        }
+        #endif
+
         m->p = oldptr;
         m->size = size;
-        a->ptr = newptr;
         if (zeroed && !ISZERO(a))
           memset(m->p, 0, size);
+
         return true;
       }
       // another thread raced us and won
@@ -255,6 +290,7 @@ void memalloc_bump2_dispose(memalloc_t ma) {
   slab_t* prev_slab;
   for (;;) {
     prev_slab = ATOMIC_LOAD(&slab->prev);
+    assertnotnull(prev_slab);
     if (( err = sys_vm_free(MEM(slab, slab->size)) ))
       dlog("%s: sys_vm_free failed: %s", __FUNCTION__, err_str(err));
     if (slab == head)
@@ -273,6 +309,7 @@ usize memalloc_bump2_cap(memalloc_t ma) {
     if (slab == &a->head)
       break;
     slab = ATOMIC_LOAD(&slab->prev);
+    assertnotnull(slab);
   }
   return cap - sizeof(bump_allocator_t);
 }
@@ -299,6 +336,7 @@ usize memalloc_bump2_use(memalloc_t ma) {
   if (tail != &a->head) {
     const slab_t* slab = ATOMIC_LOAD(&tail->prev);
     for (;;) {
+      assertnotnull(slab);
       use += slab->size;
       if (slab == &a->head)
         break;
@@ -525,6 +563,7 @@ __attribute__((constructor)) static void test_memalloc_bump2_mt() {
         // reached the end; not found
         tlog("%p not found. The following %zu slabs exist in ma:", m1.p, nslabs);
         for (slab_t* slab = a->tail; ; slab = ATOMIC_LOAD(&slab->prev)) {
+          assertnotnull(slab);
           tlog("  slab %3zu: %p .. %p", nslabs--, slab, (void*)slab + slab->size);
           if (slab == &a->head)
             break;

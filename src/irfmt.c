@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "colib.h"
+#include "ir.h"
 #include "compiler.h"
 
 

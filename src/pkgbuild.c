@@ -98,7 +98,7 @@ static void pkgbuild_begintask(pkgbuild_t* pb, const char* fmt, ...) {
 
 static err_t dump_ast(const node_t* ast) {
   buf_t buf = buf_make(memalloc_ctx());
-  err_t err = node_repr(&buf, ast);
+  err_t err = ast_repr(&buf, ast);
   if (!err) {
     fwrite(buf.chars, buf.len, 1, stderr);
     fputc('\n', stderr);
@@ -110,7 +110,7 @@ static err_t dump_ast(const node_t* ast) {
 
 static err_t dump_pkg_ast(const pkg_t* pkg, unit_t*const* unitv, u32 unitc) {
   buf_t buf = buf_make(memalloc_ctx());
-  err_t err = ast_fmt_pkg(&buf, pkg, (const unit_t*const*)unitv, unitc);
+  err_t err = ast_repr_pkg(&buf, pkg, (const unit_t*const*)unitv, unitc);
   if (!err) {
     fwrite(buf.chars, buf.len, 1, stderr);
     fputc('\n', stderr);
@@ -644,6 +644,8 @@ static bool load_dependency1(
       is_uptodate = false;
       break;
     }
+
+    trace_import("[%s] API of \"%s\" unchanged", pkg->path.p, dep->path.p);
   }
 
 end:

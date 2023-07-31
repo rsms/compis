@@ -5,16 +5,8 @@ _Noreturn void __co_panic(__co_str_t);
 _Noreturn void __co_panic_out_of_bounds(void);
 _Noreturn void __co_panic_null(void);
 
-inline static void* __co_mem_dup(const void* src, __co_uint size) {
-  void* ptr = __builtin_memcpy(__builtin_malloc(size), src, size);
-  // __builtin_printf("__co_mem_dup(%p, %lu) => %p\n", src, size, ptr);
-  return ptr;
-}
-
-inline static void __co_mem_free(void* ptr, __co_uint size) {
-  // __builtin_printf("__co_mem_free(%p, %lu)\n", ptr, size);
-  __builtin_free(ptr);
-}
+void* __co_mem_dup(const void* src, __co_uint size);
+void __co_mem_free(void* ptr, __co_uint size);
 
 inline static void __co_checkbounds(u64 len, u64 index) {
   if (__builtin_expect(index >= len, false))

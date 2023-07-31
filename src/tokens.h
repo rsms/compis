@@ -1,4 +1,22 @@
 // SPDX-License-Identifier: Apache-2.0
+#ifndef CO_DEFINE_TOKENS
+#define CO_DEFINE_TOKENS
+  typedef u8 tok_t;
+  enum tok {
+    #define _(NAME, ...) NAME,
+    #define KEYWORD(str, NAME) NAME,
+    #include "tokens.h"
+    #undef _
+    #undef KEYWORD
+  };
+  enum { TOK_COUNT = (0lu
+    #define _(...) + 1lu
+    #define KEYWORD(...) + 1lu
+    #include "tokens.h"
+    #undef _
+    #undef KEYWORD
+  ) };
+#else //—————————————————————————————————————————————————————————————————————————————————
 
 _( TEOF, "eof" )
 _( TSEMI, ";" )
@@ -76,3 +94,5 @@ KEYWORD( "var",    TVAR )
 
 #undef  KEYWORD_MAXLEN
 #define KEYWORD_MAXLEN 6
+
+#endif // CO_DEFINE_TOKENS

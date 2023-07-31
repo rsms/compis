@@ -722,7 +722,7 @@ static void scan1(scanner_t* s) {
   case '!': s->tok = TNOT; break;
   case '~': s->tok = TTILDE; break;
   case '<': OP2( TLT,      '<', TSHL); break;
-  case '>': OP2( TGT,      '>', TSHR); break;
+  case '>': OP2( TGT,      '>', TSHR); s->insertsemi = true; break;
   case '=': OP2( TASSIGN,  '=', TEQ); break;
   case '*': OP2( TSTAR,    '=', TMULASSIGN); break;
   case '%': OP2( TPERCENT, '=', TMODASSIGN); break;

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "colib.h"
-#include "compiler.h"
+#include "sym.h"
+#include "map.h"
+#include "ast.h"
 
 #if DEBUG
 #include "abuf.h"
@@ -25,7 +27,7 @@ sym_t sym_from; // "from"
 FOREACH_NODEKIND_PRIMTYPE(_)
 #undef _
 
-sym_t _primtype_nametab[PRIMTYPE_COUNT] = {0};
+sym_t _sym_primtype_nametab[PRIMTYPE_COUNT] = {0};
 
 
 sym_t sym_intern(const char* key, usize keylen) {
@@ -114,7 +116,7 @@ void sym_init(memalloc_t ma) {
   #define _(kind, TYPE, enctag, NAME, size) \
     sym_##NAME = def_static_sym(#NAME); \
     sym_##NAME##_typeid = def_static_symn(typeid_symtab[kind - TYPE_VOID], 1); \
-    _primtype_nametab[kind - TYPE_VOID] = sym_##NAME;
+    _sym_primtype_nametab[kind - TYPE_VOID] = sym_##NAME;
   FOREACH_NODEKIND_PRIMTYPE(_)
   #undef _
 }

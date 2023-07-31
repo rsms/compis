@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "colib.h"
-#include "compiler.h"
+#include "tmpbuf.h"
 
 static _Thread_local buf_t _tmpbuf[2];
 

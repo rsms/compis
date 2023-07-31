@@ -498,6 +498,18 @@ static type_t* mkunresolvedtype(parser_t* p, sym_t name, loc_t loc) {
 }
 
 
+static type_t* mkplaceholdertype(
+  parser_t* p, templateparam_t* templateparam, loc_t loc)
+{
+  placeholdertype_t* t = mknode(p, placeholdertype_t, TYPE_PLACEHOLDER);
+  t->flags |= NF_UNKNOWN;
+  t->templateparam = templateparam;
+  if (loc)
+    t->loc = loc;
+  return (type_t*)t;
+}
+
+
 node_t* clone_node(parser_t* p, const node_t* n) {
   switch (n->kind) {
   case EXPR_FIELD:
@@ -512,6 +524,98 @@ node_t* clone_node(parser_t* p, const node_t* n) {
 
 
 // —————————————————————————————————————————————————————————————————————————————————————
+// pnodearray
+
+
+
+
+static bool nodearray_copy(nodearray_t* dst, memalloc_t ma, const nodearray_t* src) {
+  if (src->len == 0) {
+    dst->len = 0;
+  } else {
+    if UNLIKELY(dst->cap != 0)
+      mem_freex(ma, MEM(dst->v, (usize)dst->cap * sizeof(void*)));
+    usize nbyte = (usize)src->len * sizeof(void*);
+    void* v = mem_alloc(ma, nbyte).p;
+    if UNLIKELY(!v)
+      return false;
+    memcpy(v, src->v, nbyte);
+    dst->v = v;
+    dst->len = src->len;
+    dst->cap = src->len;
+  }
+  return true;
+}
+
+static nodearray_t pnodearray_alloc(parser_t* p) {
+  if (p->free_nodearrays.cap <= p->free_nodearrays.len) {
+    if (p->free_nodearrays.cap == 0) {
+      usize cap = 64/sizeof(nodearray_t);
+      // dlog("alloc %zu initial nodearrays", cap);
+      p->free_nodearrays.v = mem_alloctv(p->ma, nodearray_t, cap);
+      if UNLIKELY(!p->free_nodearrays.v)
+        goto last_resort;
+      p->free_nodearrays.cap = (u32)cap;
+    } else {
+      usize oldcount = p->free_nodearrays.cap;
+      usize newcount = oldcount + 1;
+      // dlog("alloc an extra nodearray");
+      void* v = mem_resizev(
+        p->ma, p->free_nodearrays.v, oldcount, newcount, sizeof(nodearray_t));
+      if (!v)
+        goto last_resort;
+      p->free_nodearrays.v = v;
+      p->free_nodearrays.cap += 1;
+    }
+  } else {
+    // dlog("recycle nodearray with cap %u",
+    //   p->free_nodearrays.v[p->free_nodearrays.len].cap);
+    p->free_nodearrays.v[p->free_nodearrays.len].len = 0;
+  }
+  return p->free_nodearrays.v[p->free_nodearrays.len++];
+last_resort:
+  return (nodearray_t){0};
+}
+
+static void pnodearray_dispose(parser_t* p, nodearray_t* na) {
+  if (p->free_nodearrays.len == 0) {
+    nodearray_dispose(na, p->ma);
+  } else {
+    p->free_nodearrays.v[--p->free_nodearrays.len] = *na;
+  }
+}
+
+static bool pnodearray_push(parser_t* p, nodearray_t* na, void* n) {
+  bool ok = nodearray_push(na, p->ma, n);
+  if UNLIKELY(!ok)
+    out_of_mem(p);
+  return ok;
+}
+
+static bool pnodearray_assignto(parser_t* p, nodearray_t* na, nodearray_t* dst) {
+  bool ok = nodearray_copy(dst, p->ast_ma, na);
+  if UNLIKELY(!ok)
+    out_of_mem(p);
+  pnodearray_dispose(p, na);
+  return ok;
+}
+
+static void pnodearray_assign1(parser_t* p, nodearray_t* dst, void* n1) {
+  if UNLIKELY(dst->cap != 0)
+    mem_freex(p->ast_ma, MEM(dst->v, (usize)dst->cap * sizeof(void*)));
+  usize nbyte = sizeof(void*);
+  node_t** v = mem_alloc(p->ast_ma, nbyte).p;
+  if UNLIKELY(!v)
+    return;
+  *v = n1;
+  dst->v = v;
+  dst->len = 1;
+  dst->cap = 1;
+}
+
+
+// —————————————————————————————————————————————————————————————————————————————————————
+// scope
 
 
 static void enter_scope(parser_t* p) {
@@ -529,9 +633,14 @@ static node_t* nullable lookup(parser_t* p, sym_t name) {
   node_t* n = scope_lookup(&p->scope, name, U32_MAX);
   // if not found locally, look in package scope and its parent universe scope
   if (!n) {
-    trace("lookup \"%s\" in package", name);
-    if ((n = pkg_def_get(currpkg(p), name)))
+    if ((n = pkg_def_get(currpkg(p), name))) {
       node_upgrade_visibility(n, NF_VIS_PKG);
+      trace("lookup \"%s\" in package => %s", name, nodekind_name(n->kind));
+    } else {
+      trace("lookup \"%s\" in package (not found)", name);
+    }
+  } else {
+    trace("lookup \"%s\" in scope => %s", name, nodekind_name(n->kind));
   }
   return n;
 }
@@ -686,9 +795,19 @@ static type_t* type(parser_t* p, prec_t prec) {
 
 static type_t* named_type(parser_t* p, sym_t name, loc_t loc) {
   const node_t* t = lookup(p, name);
-  if UNLIKELY(!t || !node_istype(t))
-    return mkunresolvedtype(p, name, loc);
-  return (type_t*)t;
+  if (!t)
+    goto unresolved;
+
+  if (node_istype(t))
+    return (type_t*)t;
+
+  if (t->kind == NODE_TPLPARAM)
+    return mkplaceholdertype(p, (templateparam_t*)t, loc);
+
+  trace("expected named type but found %s", nodekind_name(t->kind));
+
+unresolved:
+  return mkunresolvedtype(p, name, loc);
 }
 
 
@@ -696,6 +815,34 @@ static type_t* type_id(parser_t* p) {
   type_t* t = named_type(p, p->scanner.sym, 0);
   next(p);
   return t;
+}
+
+
+// templatetype = type "<" type ("," type)* ","? ">"
+static type_t* type_template_expansion_infix(parser_t* p, prec_t prec, type_t* recv) {
+  templatetype_t* tt = mknode(p, templatetype_t, TYPE_TEMPLATE);
+  tt->recv = recv;
+  next(p); // consume "<"
+
+  // args
+  nodearray_t args = pnodearray_alloc(p);
+  for (;;) {
+    type_t* arg = type(p, PREC_COMMA);
+    if (!pnodearray_push(p, &args, arg))
+      break; // OOM
+    if (currtok(p) != TCOMMA)
+      break;
+    next(p); // consume ","
+    // allow trailing comma
+    if (currtok(p) == TGT)
+      break;
+  }
+  pnodearray_assignto(p, &args, &tt->args);
+
+  tt->endloc = currloc(p);
+  expect(p, TGT, ""); // consume ">"
+
+  return (type_t*)tt;
 }
 
 
@@ -725,91 +872,6 @@ local_t* nullable lookup_struct_field(structtype_t* st, sym_t name) {
       return f;
   }
   return NULL;
-}
-
-
-static bool nodearray_copy(nodearray_t* dst, memalloc_t ma, const nodearray_t* src) {
-  if (src->len == 0) {
-    dst->len = 0;
-  } else {
-    if UNLIKELY(dst->cap != 0)
-      mem_freex(ma, MEM(dst->v, (usize)dst->cap * sizeof(void*)));
-    usize nbyte = (usize)src->len * sizeof(void*);
-    void* v = mem_alloc(ma, nbyte).p;
-    if UNLIKELY(!v)
-      return false;
-    memcpy(v, src->v, nbyte);
-    dst->v = v;
-    dst->len = src->len;
-    dst->cap = src->len;
-  }
-  return true;
-}
-
-static nodearray_t pnodearray_alloc(parser_t* p) {
-  if (p->free_nodearrays.cap <= p->free_nodearrays.len) {
-    if (p->free_nodearrays.cap == 0) {
-      usize cap = 64/sizeof(nodearray_t);
-      // dlog("alloc %zu initial nodearrays", cap);
-      p->free_nodearrays.v = mem_alloctv(p->ma, nodearray_t, cap);
-      if UNLIKELY(!p->free_nodearrays.v)
-        goto last_resort;
-      p->free_nodearrays.cap = (u32)cap;
-    } else {
-      usize oldcount = p->free_nodearrays.cap;
-      usize newcount = oldcount + 1;
-      // dlog("alloc an extra nodearray");
-      void* v = mem_resizev(
-        p->ma, p->free_nodearrays.v, oldcount, newcount, sizeof(nodearray_t));
-      if (!v)
-        goto last_resort;
-      p->free_nodearrays.v = v;
-      p->free_nodearrays.cap += 1;
-    }
-  } else {
-    // dlog("recycle nodearray with cap %u",
-    //   p->free_nodearrays.v[p->free_nodearrays.len].cap);
-    p->free_nodearrays.v[p->free_nodearrays.len].len = 0;
-  }
-  return p->free_nodearrays.v[p->free_nodearrays.len++];
-last_resort:
-  return (nodearray_t){0};
-}
-
-static void pnodearray_dispose(parser_t* p, nodearray_t* na) {
-  if (p->free_nodearrays.len == 0) {
-    nodearray_dispose(na, p->ma);
-  } else {
-    p->free_nodearrays.v[--p->free_nodearrays.len] = *na;
-  }
-}
-
-static bool pnodearray_push(parser_t* p, nodearray_t* na, void* n) {
-  bool ok = nodearray_push(na, p->ma, n);
-  if UNLIKELY(!ok)
-    out_of_mem(p);
-  return ok;
-}
-
-static bool pnodearray_assignto(parser_t* p, nodearray_t* na, nodearray_t* dst) {
-  bool ok = nodearray_copy(dst, p->ast_ma, na);
-  if UNLIKELY(!ok)
-    out_of_mem(p);
-  pnodearray_dispose(p, na);
-  return ok;
-}
-
-static void pnodearray_assign1(parser_t* p, nodearray_t* dst, void* n1) {
-  if UNLIKELY(dst->cap != 0)
-    mem_freex(p->ast_ma, MEM(dst->v, (usize)dst->cap * sizeof(void*)));
-  usize nbyte = sizeof(void*);
-  node_t** v = mem_alloc(p->ast_ma, nbyte).p;
-  if UNLIKELY(!v)
-    return;
-  *v = n1;
-  dst->v = v;
-  dst->len = 1;
-  dst->cap = 1;
 }
 
 
@@ -932,7 +994,7 @@ static fun_t* fun(parser_t*, nodeflag_t, type_t* nullable recvt, bool requirenam
 // struct parser that prohibits inline "fun" definitions in struct
 static type_t* type_struct1(parser_t* p, structtype_t* st) {
   bool reported_fun = false;
-  nodearray_t nary = pnodearray_alloc(p); // fields are accumulated in p->nodearray
+  nodearray_t nary = pnodearray_alloc(p);
   while (currtok(p) != TRBRACE) {
     if UNLIKELY(currtok(p) == TFUN) {
       if (!reported_fun) {
@@ -1028,6 +1090,56 @@ static type_t* type_optional(parser_t* p) {
 }
 
 
+// templateparams = "<" tparam ("," tparam)* ","? ">"
+// tparam         = name ("=" (expr | type))
+static templateparam_t* parse_templateparams(parser_t* p) {
+  assert(currtok(p) == TLT);
+  next(p); // consume "<"
+
+  templateparam_t* listhead;
+  templateparam_t* tail = NULL;
+
+  for (;;) {
+    templateparam_t* tparam = mknode(p, templateparam_t, NODE_TPLPARAM);
+    tparam->flags |= NF_UNKNOWN;
+    tparam->name = p->scanner.sym;
+    if (!expect2(p, TID, "")) {
+      tparam->name = sym__;
+      break;
+    }
+
+    // add to list
+    if (tail) {
+      tail->next_templateparam = tparam;
+    } else {
+      listhead = tparam;
+    }
+    tail = tparam;
+
+    // optional "=" init
+    if (currtok(p) == TEQ) {
+      panic("TODO ... = init");
+    }
+    if (currtok(p) != TCOMMA)
+      break;
+    next(p); // consume ","
+    // allow trailing comma
+    if (currtok(p) == TGT)
+      break;
+    // parse another parameter
+  }
+
+  expect(p, TGT, ""); // consume ">"
+  return listhead;
+}
+
+
+static void define_templateparams(parser_t* p, templateparam_t* nullable listhead) {
+  for (templateparam_t* tparam = listhead; tparam; tparam = tparam->next_templateparam)
+    define(p, tparam->name, (node_t*)tparam);
+}
+
+
 // typedef = "type" id type
 static stmt_t* stmt_typedef(parser_t* p) {
   // "type"
@@ -1040,35 +1152,62 @@ static stmt_t* stmt_typedef(parser_t* p) {
   if (!expect(p, TID, ""))
     name = sym__;
 
-  // type
+  // generic? parse template parameters
+  templateparam_t* templateparams = NULL;
+  if (currtok(p) == TLT)
+    templateparams = parse_templateparams(p);
+
+  // next is either a type definition or an alias
+
   if (currtok(p) == TLBRACE) {
+    // e.g. "type Foo { x, y int }"
     // special path for struct to avoid (typedef (alias x (struct x))),
     // instead we simply get (typedef (struct x))
     structtype_t* t = mknode(p, structtype_t, TYPE_STRUCT);
-    n->type = (type_t*)t;
+    t->templateparams = templateparams;
     define(p, name, (node_t*)t);
     t->name = name;
     next(p);
+
+    n->type = (type_t*)t;
+
+    if (templateparams) {
+      enter_scope(p);
+      define_templateparams(p, templateparams);
+    }
     type_struct1(p, t);
+
     bubble_flags(n, t);
-    return (stmt_t*)n;
+  } else {
+    // e.g. "type Foo int"
+    // e.g. "type Foo [int]"
+    // e.g. "type Foo &[int]"
+    aliastype_t* t = mknode(p, aliastype_t, TYPE_ALIAS);
+    t->templateparams = templateparams;
+    define(p, name, (node_t*)t);
+    t->loc = nameloc;
+    t->name = name;
+
+    n->type = (type_t*)t;
+
+    if (templateparams) {
+      enter_scope(p);
+      define_templateparams(p, templateparams);
+    }
+    t->elem = type(p, PREC_COMMA);
+
+    bubble_flags(n, t->elem);
+    if UNLIKELY(type_isopt(t->elem)) {
+      error_at(p, t->elem,
+        "cannot define optional aliased type;"
+        " instead, mark as optional at use sites with ?%s", name);
+    }
   }
 
-  aliastype_t* t = mknode(p, aliastype_t, TYPE_ALIAS);
-  n->type = (type_t*)t;
-  define(p, name, (node_t*)t);
-  t->loc = nameloc;
-  t->name = name;
-  t->elem = type(p, PREC_COMMA);
-  bubble_flags(n, t->elem);
-  if UNLIKELY(type_isopt(t->elem)) {
-    error_at(p, t->elem,
-      "cannot define optional aliased type;"
-      " instead, mark as optional at use sites with ?%s", name);
+  if (templateparams) {
+    leave_scope(p);
+    n->type->flags |= NF_TEMPLATE;
   }
-
-  // if (t->elem->kind == TYPE_STRUCT && ((structtype_t*)t->elem)->name == NULL)
-  //   ((structtype_t*)t->elem)->name = t->name;
 
   return (stmt_t*)n;
 }
@@ -1997,23 +2136,23 @@ static funtype_t* funtype(parser_t* p, loc_t loc, type_t* nullable recvt) {
   ft->result = type_void;
 
   // parameters
-  ft->xxx_paramsloc = currloc(p);
+  ft->paramsloc = currloc(p);
   if UNLIKELY(!expect(p, TLPAREN, "for parameters")) {
     fastforward(p, (const tok_t[]){ TLBRACE, TSEMI, 0 });
     return ft;
   }
   if (currtok(p) != TRPAREN)
     funtype_params(p, ft, recvt);
-  ft->xxx_paramsendloc = currloc(p);
+  ft->paramsendloc = currloc(p);
   expect(p, TRPAREN, "to match '('");
 
   // result type
   // no result type implies "void", e.g. "fun foo()" == "fun foo() void"
   if (currtok(p) != TLBRACE && currtok(p) != TSEMI) {
-    ft->xxx_resultloc = currloc(p);
+    ft->resultloc = currloc(p);
     ft->result = type(p, PREC_MEMBER);
     if (loc_line(ft->result->loc) && ft->result->loc > ft->loc)
-      ft->xxx_resultloc = ft->result->loc;
+      ft->resultloc = ft->result->loc;
     bubble_flags(ft, ft->result);
   }
 
@@ -2209,9 +2348,9 @@ static fun_t* fun(parser_t* p, nodeflag_t fl, type_t* nullable recvt, bool requi
   bubble_flags(n, n->type);
 
   // copy source locations (funtype may be interned, so we keep local copies of these)
-  n->paramsloc = ft->xxx_paramsloc;       // location of "(" ...
-  n->paramsendloc = ft->xxx_paramsendloc; // location of ")"
-  n->resultloc = ft->xxx_resultloc;       // location of result
+  n->paramsloc = ft->paramsloc;       // location of "(" ...
+  n->paramsendloc = ft->paramsendloc; // location of ")"
+  n->resultloc = ft->resultloc;       // location of result
 
   // define named function
   if (n->name && n->type->kind != NODE_BAD && !n->recvt)
@@ -2717,6 +2856,8 @@ static const type_parselet_t type_parsetab[TOK_COUNT] = {
   [TAND]      = {type_ref, NULL, 0},      // &T
   [TMUT]      = {type_mut, NULL, 0},      // mut&T
   [TQUESTION] = {type_optional, NULL, 0}, // ?T
+
+  [TLT] = {NULL, type_template_expansion_infix, PREC_MEMBER}, // x<y...>
 };
 
 
