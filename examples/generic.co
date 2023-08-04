@@ -1,17 +1,13 @@
-//type Bad<X,Y=int,Z> {} // error: required parameter after optional
+// type Bad<X,Y=int,Z> {} // error: required parameter following optional
 
-type Lol { x int }
-
-type Foo<X,Y=int> // template def
+type Template<X,Y=int> // template def
   x X
   y Y
 
-type Bar
-  x Foo<i32,u32> // template use
-  y Foo<i32,u32> // template use
-  z Foo<int,Foo<u8,int>> // template use
+type Default
+  x Template<uint/* Y defaults to int */>
 
-pub fun main() {
-  var bar Bar
-  let x i32 = bar.x.x
-}
+type Instance
+  x Template<int,uint> // template use
+  y Template<int,uint> // template use
+  z Template<int,Template<u8,int>> // template use

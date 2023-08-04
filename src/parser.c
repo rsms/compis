@@ -837,31 +837,31 @@ static void expect_closing_gt(parser_t* p) {
 }
 
 
-// templatetype = type "<" type ("," type)* ","? ">"
+// templatetype = type "<" (type ("," type)* ","?)? ">"
 static type_t* type_template_expansion_infix(parser_t* p, prec_t prec, type_t* recv) {
   templatetype_t* tt = mknode(p, templatetype_t, TYPE_TEMPLATE);
   tt->recv = (usertype_t*)recv; assert(node_isusertype((node_t*)recv));
   next(p); // consume "<"
 
-  // args
-  nodearray_t args = pnodearray_alloc(p);
-  for (;;) {
-    type_t* arg = type(p, PREC_COMMA);
-    if (!pnodearray_push(p, &args, arg))
-      break; // OOM
+  if (currtok(p) != TGT && currtok(p) != TSHR) {
+    nodearray_t args = pnodearray_alloc(p);
+    for (;;) {
+      type_t* arg = type(p, PREC_COMMA);
+      if (!pnodearray_push(p, &args, arg))
+        break; // OOM
 
-    if (currtok(p) != TCOMMA)
-      break;
-    next(p); // consume ","
-    // allow trailing comma
-    if (currtok(p) == TGT || currtok(p) == TSHR)
-      break;
+      if (currtok(p) != TCOMMA)
+        break;
+      next(p); // consume ","
+      // allow trailing comma
+      if (currtok(p) == TGT || currtok(p) == TSHR)
+        break;
+    }
+    pnodearray_assignto(p, &args, &tt->args);
   }
-  pnodearray_assignto(p, &args, &tt->args);
-
-  tt->endloc = currloc(p);
 
   // consume closing ">"
+  tt->endloc = currloc(p);
   expect_closing_gt(p);
 
   return (type_t*)tt;
@@ -1149,7 +1149,16 @@ static void parse_templateparams(parser_t* p, nodearray_t* templateparams) {
       // For now, assume type
       tparam->init = (node_t*)type(p, PREC_COMMA);
     } else if (optional_started) {
-      error_at(p, tparam, "required parameter after optional parameter");
+      error_at(p, tparam, "required parameter following optional parameter");
+      if (tparam->loc) {
+        // help pointing to just after the parameter name
+        origin_t origin = origin_make(locmap(p), tparam->loc);
+        origin.width = 0;
+        origin.column += strlen(tparam->name);
+        _diag(p, origin, DIAG_HELP,
+          "make %s optional by adding a default value e.g. %s=int",
+          tparam->name, tparam->name);
+      }
     }
 
     if (currtok(p) != TCOMMA)

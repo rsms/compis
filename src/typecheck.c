@@ -2643,44 +2643,37 @@ static void call(typecheck_t* a, call_t** np) {
 
 typedef struct {
   typecheck_t*      a;
-  templateparam_t** paramv; // index in sync with argv, count == argc
-  node_t**          argv;   // index in sync with paramv
-  u32               argc;
+  templateparam_t** paramv; // index in sync with args.v, count == args.len
+  nodearray_t       args;
   err_t             err;
 } instancectx_t;
 
 
-static node_t* nullable instantiate_transformer(node_t* n, void* nullable ctxp) {
+static node_t* nullable instantiate_transformerfn(node_t* n, void* nullable ctxp) {
   instancectx_t* ctx = ctxp;
   typecheck_t* a = ctx->a;
 
-  if (n->kind == TYPE_PLACEHOLDER) {
-    // replace placeholder parameter with arg
-    templateparam_t* templateparam = ((placeholdertype_t*)n)->templateparam;
-    for (u32 i = 0; i < ctx->argc; i++) {
-      if (ctx->paramv[i] == templateparam) {
-        trace("template: replace parameter %s with arg %s",
-          templateparam->name, nodekind_name(ctx->argv[i]->kind));
-        // TODO: check any constraints on parameter vs arg
-        return ctx->argv[i];
-      }
+  if (n->kind != TYPE_PLACEHOLDER)
+    return n;
+
+  // replace placeholder parameter with arg
+  templateparam_t* templateparam = ((placeholdertype_t*)n)->templateparam;
+  for (u32 i = 0; i < ctx->args.len; i++) {
+    if (ctx->paramv[i] == templateparam) {
+      trace("template: replace parameter %s with arg %s",
+        templateparam->name, nodekind_name(ctx->args.v[i]->kind));
+      // TODO: check any constraints on parameter vs arg
+      return ctx->args.v[i];
     }
-    assertf(0, "param not found");
   }
 
-  // // XXX testing
-  // if (n->kind == EXPR_INTLIT) {
-  //   intlit_t* n2 = (intlit_t*)ast_mknode(a->ast_ma, sizeof(intlit_t), EXPR_INTLIT);
-  //   n2->type = ((intlit_t*)n)->type;
-  //   n2->intval = 9;
-  //   return (node_t*)n2;
-  // }
-
+  assertf(0, "param %s %p not found", templateparam->name, templateparam);
+  UNREACHABLE;
   return n;
 }
 
 
-static void instantiate_transformer_postvisit(
+static void instantiate_transformerfn_postvisit(
   node_t* n, const node_t* orign, void* nullable ctxp)
 {
   // if (n != orign) {
@@ -2697,25 +2690,38 @@ static void instantiate_transformer_postvisit(
 static void instantiate_templatetype(typecheck_t* a, templatetype_t** tp) {
   templatetype_t* tt = *tp;
   usertype_t* template = tt->recv;
-  assert(tt->args.len == template->templateparams.len);
+  assert(tt->args.len <= template->templateparams.len);
 
   trace("instantiating templatetype");
 
   // instantiation state
   instancectx_t ctx = {
     .a = a,
-    .argc = tt->args.len,
-    .argv = tt->args.v,
     .paramv = (templateparam_t**)template->templateparams.v,
   };
+
+  // copy args if there are default values involved
+  if (tt->args.len == template->templateparams.len) {
+    ctx.args = tt->args;
+  } else {
+    if (!nodearray_reserve_exact(&ctx.args, a->ast_ma, template->templateparams.len))
+      return out_of_mem(a);
+    memcpy(ctx.args.v, tt->args.v, tt->args.len * sizeof(node_t*));
+    ctx.args.len += tt->args.len;
+    for (u32 i = ctx.args.len; i < template->templateparams.len; i++) {
+      templateparam_t* tparam = (templateparam_t*)template->templateparams.v[i];
+      assertnotnull(tparam->init);
+      ctx.args.v[ctx.args.len++] = tparam->init;
+    }
+  }
 
   // instantiate template
   usertype_t* instance = NULL;
   err_t err = ast_transform(
     (node_t*)template,
     a->ast_ma,
-    instantiate_transformer,
-    instantiate_transformer_postvisit,
+    instantiate_transformerfn,
+    instantiate_transformerfn_postvisit,
     &ctx,
     (node_t**)&instance);
 
@@ -2739,7 +2745,7 @@ static void instantiate_templatetype(typecheck_t* a, templatetype_t** tp) {
 
   // convert instance to NF_TEMPLATEI
   instance->flags = (instance->flags & ~NF_TEMPLATE) | NF_TEMPLATEI;
-  instance->templateparams = tt->args;
+  instance->templateparams = ctx.args;
   instance->_typeid = NULL; // scrub cached typeid
 
   // typecheck the instance
@@ -2760,10 +2766,41 @@ static void templatetype(typecheck_t* a, templatetype_t** tp) {
   templatetype_t* tt = *tp;
   usertype_t* template = tt->recv;
 
-  if UNLIKELY(tt->args.len != template->templateparams.len) {
-    return error(a, tt, "%s template parameters; want %u",
-      tt->args.len > template->templateparams.len ? "too many" : "not enough",
-      template->templateparams.len);
+  // must check template, in case use preceeds definition
+  type(a, (type_t**)&template);
+
+  // count number of required template parameters
+  u32 nrequired = 0;
+  u32 ntotal = template->templateparams.len;
+  for (u32 i = 0; i < ntotal; i++) {
+    templateparam_t* tparam = (templateparam_t*)template->templateparams.v[i];
+    nrequired += (u32)!tparam->init;
+  }
+
+  // stop now if we encountered errors
+  if (nrequired != ntotal) {
+    if (compiler_errcount(a->compiler))
+      return;
+  }
+
+  // check args arity
+  if UNLIKELY(tt->args.len < nrequired || tt->args.len > ntotal) {
+    error(a, tt, "%s template parameters; want%s %u",
+      tt->args.len > ntotal ? "too many" : "not enough",
+      nrequired < ntotal ? " at least" : "",
+      nrequired);
+    templateparam_t** paramv = (templateparam_t**)template->templateparams.v;
+    if (ntotal > 0 && paramv[0]->loc) {
+      origin_t origin = origin_make(locmap(a), paramv[0]->loc);
+      for (u32 i = 1; i < ntotal; i++) {
+        if (paramv[i]->loc) {
+          origin_t origin2 = origin_make(locmap(a), paramv[i]->loc);
+          origin = origin_union(origin, origin2);
+        }
+      }
+      help(a, origin, "template parameter%s defined here", ntotal == 1 ? "" : "s");
+    }
+    return;
   }
 
   // resolve args
@@ -2876,6 +2913,24 @@ static void aliastype(typecheck_t* a, aliastype_t** tp) {
 }
 
 
+static void check_template(typecheck_t* a, usertype_t** tp) {
+  usertype_t* t = *tp;
+  assert(nodekind_isusertype(t->kind));
+  for (u32 i = 0; i < t->templateparams.len; i++) {
+    templateparam_t* tparam = (templateparam_t*)t->templateparams.v[i];
+    if (!tparam->init)
+      continue;
+    if (nodekind_istype(tparam->init->kind)) {
+      type(a, (type_t**)&tparam->init);
+    } else if (nodekind_isexpr(tparam->init->kind)) {
+      exprp(a, (expr_t**)&tparam->init);
+    } else {
+      assert_nodekind(tparam->init, NODE_TPLPARAM);
+    }
+  }
+}
+
+
 // end call
 // —————————————————————————————————————————————————————————————————————————————————
 
@@ -2887,7 +2942,10 @@ static void _type(typecheck_t* a, type_t** tp) {
     return;
   t->flags |= NF_CHECKED;
 
-  a->templatenest += (u32)!!(t->flags & NF_TEMPLATE);
+  if (t->flags & NF_TEMPLATE) {
+    a->templatenest++;
+    check_template(a, (usertype_t**)tp);
+  }
 
   TRACE_NODE(a, "", tp);
   switch ((enum nodekind)(*tp)->kind) {
