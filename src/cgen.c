@@ -309,7 +309,7 @@ static sym_t intern_typedef(
   assertf(type_is_interned_def(t), "update type_is_interned_def");
   const void* key = t;
   if (t->kind == TYPE_OPTIONAL)
-    key = typeid((type_t*)t);
+    key = (void*)(uintptr)typeid_intern((type_t*)t);
 
   sym_t* vp = (sym_t*)map_assign_ptr(&g->typedefmap, g->ma, key);
   if UNLIKELY(!vp)
@@ -430,7 +430,7 @@ static sym_t gen_struct_typename(cgen_t* g, const type_t* t, bool* is_shared) {
 
 static void gen_struct_typedef(cgen_t* g, const type_t* tp, sym_t typename) {
   const structtype_t* n = (const structtype_t*)tp;
-  PRINT("typedef struct {");
+  PRINTF("typedef struct %s {", typename);
   if (n->fields.len == 0) {
     PRINT("u8 _unused;");
   } else {
@@ -2234,6 +2234,12 @@ static void forexpr(cgen_t* g, const forexpr_t* n) {
 static void typedef_(cgen_t* g, const typedef_t* n) {
   gentypename_t gentypename;
   gentypedef_t gentypedef;
+
+  if (n->type->flags & NF_TEMPLATE) {
+    dlog("cgen: skipping template typedef %s", fmtnode(g, 0, n->type));
+    return;
+  }
+
   switch (n->type->kind) {
   case TYPE_STRUCT:
     gentypename = gen_struct_typename;
@@ -2673,15 +2679,22 @@ err_t cgen_pkgapi(cgen_t* g, const unit_t** unitv, u32 unitc, cgen_pkgapi_t* res
 
   cgen_pkgapi_maybe_add_c_header(g);
 
+  usize section_start = g->outbuf.len;
   for (u32 i = 0; i < unitc; i++)
     unit_interface(g, unitv[i], NF_VIS_PUB);
+  if (section_start < g->outbuf.len)
+    CHAR('\n'); g->lineno++;
 
-  CHAR('\n'); g->lineno++;
   usize pub_header_len = g->outbuf.len;
 
   PRINT("\n// internal API:"); g->lineno++;
+  section_start = g->outbuf.len;
   for (u32 i = 0; i < unitc; i++)
     unit_interface(g, unitv[i], NF_VIS_PKG);
+  if (section_start == g->outbuf.len) {
+    // undo
+    g->outbuf.len = pub_header_len;
+  }
 
   if (g->err || ( g->err = finalize(g, headstart) ))
     return g->err;

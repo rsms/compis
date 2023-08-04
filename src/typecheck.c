@@ -2,12 +2,41 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "colib.h"
 #include "compiler.h"
+#include "ast_field.h"
 
 #include <stdlib.h> // strtof
 
 
 #define trace(fmt, va...) \
   _trace(opt_trace_typecheck, 4, "TC", "%*s" fmt, a->traceindent*2, "", ##va)
+
+// typecheck_t
+typedef struct {
+  compiler_t*     compiler;
+  pkg_t*          pkg;
+  memalloc_t      ma;        // compiler->ma
+  memalloc_t      ast_ma;    // compiler->ast_ma
+  scope_t         scope;
+  err_t           err;
+  fun_t* nullable fun;       // current function
+  type_t*         typectx;
+  ptrarray_t      typectxstack;
+  ptrarray_t      nspath;
+  map_t           postanalyze;    // set of nodes to analyze at the very end (keys only)
+  map_t           tmpmap;
+  map_t           typeidmap;      // sym_t typeid => type_t*
+  bool            reported_error; // true if an error diagnostic has been reported
+  u32             pubnest;        // NF_VIS_PUB nesting level
+  u32             templatenest;   // NF_TEMPLATE nesting level
+
+  // didyoumean tracks names that we might want to consider for help messages
+  // when an identifier can not be resolved
+  array_type(didyoumean_t) didyoumean;
+
+  #if DEBUG
+    int traceindent;
+  #endif
+} typecheck_t;
 
 
 static const char* fmtnode(typecheck_t* a, u32 bufindex, const void* nullable n);
@@ -499,28 +528,32 @@ static char* mangle(typecheck_t* a, const node_t* n) {
 
 
 // intern_usertype interns *tp in c->typeidmap.
-// returns true if *tp was replaced by existing type, false if added to c->typeidmap.
+// Returns true if *tp was added
 static bool intern_usertype(typecheck_t* a, usertype_t** tp) {
   assert(nodekind_isusertype((*tp)->kind));
 
-  sym_t tid = typeid((type_t*)*tp);
+  typeid_t tid = typeid_intern((type_t*)*tp);
 
-  usertype_t** p = (usertype_t**)map_assign_ptr(&a->typeidmap, a->ma, tid);
+  usertype_t** p = (usertype_t**)map_assign_ptr(&a->typeidmap, a->ma, (const void*)tid);
   if UNLIKELY(!p) {
     error(a, (origin_t){0}, "out of memory (%s)", __FUNCTION__);
     return false;
   }
 
-  if (*p && *tp != *p) {
-    // replace existing type
-    assert((*p)->kind == (*tp)->kind);
-    *tp = *p;
-    return true;
+  if (*p) {
+    if (*tp != *p) {
+      // update caller's tp argument with existing type
+      trace("[intern_usertype] dedup %s", fmtnode(a, 0, *p));
+      assert((*p)->kind == (*tp)->kind);
+      *tp = *p;
+    }
+    return false;
   }
 
   // add type (or no-op, if *tp==*p)
   *p = *tp;
-  return false;
+  trace("[intern_usertype] add %s", fmtnode(a, 0, *tp));
+  return true;
 }
 
 
@@ -954,21 +987,41 @@ static void local_var(typecheck_t* a, local_t* n) {
 }
 
 
+// check_local can be called directly, bypassing the general expr() function
+static void check_local(typecheck_t* a, local_t* n) {
+  if CHECK_ONCE(n) {
+    #ifdef DEBUG
+      trace("%s \"%s\" :", nodekind_name(n->kind), n->name);
+      a->traceindent++;
+    #endif
+
+    local(a, n);
+
+    #ifdef DEBUG
+      a->traceindent--;
+    #endif
+  }
+  trace("%s \"%s\" => %s %s",
+    nodekind_name(n->kind), n->name,
+    nodekind_name(n->kind), fmtnode(a, 0, n));
+}
+
+
 static void structtype(typecheck_t* a, structtype_t** tp) {
   structtype_t* st = *tp;
-  st->nsparent = a->nspath.v[a->nspath.len - 1];
+
+  if (!st->nsparent)
+    st->nsparent = a->nspath.v[a->nspath.len - 1];
 
   u8  align = 0;
   u64 size = 0;
-
-  if (st->name)
-    st->mangledname = mangle(a, (node_t*)st);
 
   enter_ns(a, st);
 
   for (u32 i = 0; i < st->fields.len; i++) {
     local_t* f = (local_t*)st->fields.v[i];
-    local(a, f);
+
+    check_local(a, f);
     assertnotnull(f->type);
 
     if (type_isowner(f->type)) {
@@ -989,7 +1042,9 @@ static void structtype(typecheck_t* a, structtype_t** tp) {
     align = MAX(align, t->align); // alignment of struct is max alignment of fields
 
     // check for internal types leaking from public ones
-    if UNLIKELY(a->pubnest && (f->type->flags & NF_VIS_PUB) == 0) {
+    if UNLIKELY(a->pubnest && (f->type->flags & NF_VIS_PUB) == 0 &&
+                f->type->kind != TYPE_PLACEHOLDER)
+    {
       error(a, f, "internal type %s of field %s in public struct",
         fmtnode(a, 0, f->type), f->name);
       help(a, f->type, "mark %s `pub`", fmtnode(a, 0, f->type));
@@ -1001,8 +1056,13 @@ static void structtype(typecheck_t* a, structtype_t** tp) {
   st->align = align;
   st->size = ALIGN2(size, (u64)align);
 
-  // if (intern_usertype(a, (usertype_t**)tp))
-  //   return;
+  // if (st->flags & NF_TEMPLATEI) {
+    if (!intern_usertype(a, (usertype_t**)tp))
+      return;
+  // }
+
+  if (st->name)
+    st->mangledname = mangle(a, (node_t*)st);
 
   if (!(st->flags & NF_SUBOWNERS)) {
     if UNLIKELY(!map_assign_ptr(&a->postanalyze, a->ma, *tp))
@@ -1059,7 +1119,7 @@ static void arraytype(typecheck_t* a, arraytype_t** tp) {
     node_set_visibility((node_t*)at, NF_VIS_PUB);
   }
 
-  assert(at->tid == NULL);
+  assert(!at->_typeid);
   arraytype_calc_size(a, at);
   intern_usertype(a, (usertype_t**)tp);
 }
@@ -1069,7 +1129,7 @@ static void funtype1(typecheck_t* a, funtype_t** np, type_t* thistype) {
   funtype_t* ft = *np;
   typectx_push(a, thistype);
   for (u32 i = 0; i < ft->params.len; i++) {
-    local(a, (local_t*)ft->params.v[i]);
+    check_local(a, (local_t*)ft->params.v[i]);
 
     // check for internal types leaking from public function
     local_t* param = (local_t*)ft->params.v[i];
@@ -1162,11 +1222,13 @@ static void fun(typecheck_t* a, fun_t* n) {
   if (n->recvt) {
     // type function
     type(a, &n->recvt);
-    n->nsparent = (node_t*)n->recvt;
+    if (!n->nsparent)
+      n->nsparent = (node_t*)n->recvt;
     enter_ns(a, n->recvt);
   } else {
     // plain function
-    n->nsparent = a->nspath.v[a->nspath.len - 1];
+    if (!n->nsparent)
+      n->nsparent = a->nspath.v[a->nspath.len - 1];
     if (n->name) {
       define(a, n->name, n);
     }
@@ -2579,14 +2641,152 @@ static void call(typecheck_t* a, call_t** np) {
 }
 
 
+typedef struct {
+  typecheck_t*      a;
+  templateparam_t** paramv; // index in sync with argv, count == argc
+  node_t**          argv;   // index in sync with paramv
+  u32               argc;
+  err_t             err;
+} instancectx_t;
+
+
+static node_t* nullable instantiate_transformer(node_t* n, void* nullable ctxp) {
+  instancectx_t* ctx = ctxp;
+  typecheck_t* a = ctx->a;
+
+  if (n->kind == TYPE_PLACEHOLDER) {
+    // replace placeholder parameter with arg
+    templateparam_t* templateparam = ((placeholdertype_t*)n)->templateparam;
+    for (u32 i = 0; i < ctx->argc; i++) {
+      if (ctx->paramv[i] == templateparam) {
+        trace("template: replace parameter %s with arg %s",
+          templateparam->name, nodekind_name(ctx->argv[i]->kind));
+        // TODO: check any constraints on parameter vs arg
+        return ctx->argv[i];
+      }
+    }
+    assertf(0, "param not found");
+  }
+
+  // // XXX testing
+  // if (n->kind == EXPR_INTLIT) {
+  //   intlit_t* n2 = (intlit_t*)ast_mknode(a->ast_ma, sizeof(intlit_t), EXPR_INTLIT);
+  //   n2->type = ((intlit_t*)n)->type;
+  //   n2->intval = 9;
+  //   return (node_t*)n2;
+  // }
+
+  return n;
+}
+
+
+static void instantiate_transformer_postvisit(
+  node_t* n, const node_t* orign, void* nullable ctxp)
+{
+  // if (n != orign) {
+  //   dlog("modified %-16s %p -> %-16s %p",
+  //     nodekind_name(orign->kind), orign, nodekind_name(n->kind), n);
+  // }
+
+  // scrub "checked" and "unknown" flags, if this path of the AST was modified
+  if (n != orign && !nodekind_isprimtype(n->kind))
+    n->flags &= ~(NF_CHECKED | NF_UNKNOWN);
+}
+
+
+static void instantiate_templatetype(typecheck_t* a, templatetype_t** tp) {
+  templatetype_t* tt = *tp;
+  usertype_t* template = tt->recv;
+  assert(tt->args.len == template->templateparams.len);
+
+  trace("instantiating templatetype");
+
+  // instantiation state
+  instancectx_t ctx = {
+    .a = a,
+    .argc = tt->args.len,
+    .argv = tt->args.v,
+    .paramv = (templateparam_t**)template->templateparams.v,
+  };
+
+  // instantiate template
+  usertype_t* instance = NULL;
+  err_t err = ast_transform(
+    (node_t*)template,
+    a->ast_ma,
+    instantiate_transformer,
+    instantiate_transformer_postvisit,
+    &ctx,
+    (node_t**)&instance);
+
+  // check if transformation failed (if it did, it's going to be OOM)
+  if UNLIKELY(err) {
+    dlog("ast_transform() failed: %s", err_str(err));
+    error(a, (origin_t){0}, "%s", err_str(err));
+    seterr(a, err);
+    return;
+  }
+
+  if (instance == (usertype_t*)template) {
+    // no substitutions, but must still scrub templateparams
+    instance = ast_clone_node(a->ast_ma, instance);
+    if (!instance)
+      return out_of_mem(a);
+  } else {
+    assertf((instance->flags & NF_CHECKED) == 0, "checked flag should be scrubbed");
+  }
+  assert(nodekind_isusertype(instance->kind));
+
+  // convert instance to NF_TEMPLATEI
+  instance->flags = (instance->flags & ~NF_TEMPLATE) | NF_TEMPLATEI;
+  instance->templateparams = tt->args;
+  instance->_typeid = NULL; // scrub cached typeid
+
+  // typecheck the instance
+  *(node_t**)tp = (node_t*)instance;
+  type(a, (type_t**)tp);
+  instance = (usertype_t*)*tp;
+  assert(instance != template);
+  assert(nodekind_isusertype(instance->kind));
+
+  // update source location to that of the instance
+  instance->loc = tt->loc;
+}
+
+
 static void templatetype(typecheck_t* a, templatetype_t** tp) {
-  // e.g.
-  //   var x T<int>
-  //         ~~~~~~
-  dlog("TODO templatetype");
-  //dlog("typeid %s", typeid((type_t*)*tp) );
-  error(a, *tp, "TODO templatetype");
-  return;
+  // Use of template, e.g. var x Foo<int>
+  //                             ~~~~~~~~
+  templatetype_t* tt = *tp;
+  usertype_t* template = tt->recv;
+
+  if UNLIKELY(tt->args.len != template->templateparams.len) {
+    return error(a, tt, "%s template parameters; want %u",
+      tt->args.len > template->templateparams.len ? "too many" : "not enough",
+      template->templateparams.len);
+  }
+
+  // resolve args
+  for (u32 i = 0; i < tt->args.len; i++)
+    type(a, (type_t**)&tt->args.v[i]);
+
+  // stop now if there were errors
+  if (!noerror(a))
+    return;
+
+  if (a->templatenest == 0)
+    return instantiate_templatetype(a, tp);
+
+  // In this case the template is used inside another template definition,
+  // which means it may be incomplete. For example:
+  //   type Foo<X,Y>
+  //     x X
+  //     y Y
+  //   type Bar<Y>
+  //     foo Foo<int,Y>  <—— partial templatetype (Y is a placeholdertype)
+  //
+  dlog("TODO templatetype (partial type check)");
+  return error(a, *tp, "TODO templatetype (partial type check)");
 }
 
 
@@ -2595,8 +2795,9 @@ static void placeholdertype(typecheck_t* a, placeholdertype_t** tp) {
   //   type Foo<T>
   //     x T   <—— visiting T
   //       ~
-  dlog("TODO templatescope");
-  return;
+  //trace("placeholdertype %s", (*tp)->templateparam->name);
+  assert(a->templatenest > 0);
+  //dlog("TODO templatescope");
 }
 
 
@@ -2659,7 +2860,8 @@ static void aliastype(typecheck_t* a, aliastype_t** tp) {
   if UNLIKELY(t->elem == type_void)
     return error(a, t, "cannot alias type void");
 
-  t->nsparent = a->nspath.v[a->nspath.len - 1];
+  if (!t->nsparent)
+    t->nsparent = a->nspath.v[a->nspath.len - 1];
   t->mangledname = mangle(a, (node_t*)t);
 
   // check for internal types leaking from public ones
@@ -2685,13 +2887,10 @@ static void _type(typecheck_t* a, type_t** tp) {
     return;
   t->flags |= NF_CHECKED;
 
-  // if UNLIKELY(t->flags & NF_TEMPLATE) {
-  //   trace("not checking templatized type %s", nodekind_name(t->kind));
-  //   return;
-  // }
+  a->templatenest += (u32)!!(t->flags & NF_TEMPLATE);
 
   TRACE_NODE(a, "", tp);
-  switch ((*tp)->kind) {
+  switch ((enum nodekind)(*tp)->kind) {
     case TYPE_VOID:
     case TYPE_BOOL:
     case TYPE_I8:
@@ -2709,26 +2908,66 @@ static void _type(typecheck_t* a, type_t** tp) {
     case TYPE_NS:
     case TYPE_UNKNOWN:
       assertf(0, "%s should always be NF_CHECKED", nodekind_name((*tp)->kind));
-      return;
+      goto end;
 
-    case TYPE_ARRAY: return arraytype(a, (arraytype_t**)tp);
-    case TYPE_FUN:   return funtype(a, (funtype_t**)tp);
+    case TYPE_ARRAY: arraytype(a, (arraytype_t**)tp); goto end;
+    case TYPE_FUN:   funtype(a, (funtype_t**)tp); goto end;
 
     case TYPE_PTR:
     case TYPE_REF:
     case TYPE_MUTREF:
     case TYPE_SLICE:
     case TYPE_MUTSLICE:
-      return type(a, &((ptrtype_t*)(*tp))->elem);
+      type(a, &((ptrtype_t*)(*tp))->elem); goto end;
 
-    case TYPE_OPTIONAL:    return type(a, &((opttype_t*)(*tp))->elem);
-    case TYPE_STRUCT:      return structtype(a, (structtype_t**)tp);
-    case TYPE_ALIAS:       return aliastype(a, (aliastype_t**)tp);
-    case TYPE_TEMPLATE:    return templatetype(a, (templatetype_t**)tp);
-    case TYPE_PLACEHOLDER: return placeholdertype(a, (placeholdertype_t**)tp);
-    case TYPE_UNRESOLVED:  return unresolvedtype(a, (unresolvedtype_t**)tp);
+    case TYPE_OPTIONAL:    type(a, &((opttype_t*)(*tp))->elem); goto end;
+    case TYPE_STRUCT:      structtype(a, (structtype_t**)tp); goto end;
+    case TYPE_ALIAS:       aliastype(a, (aliastype_t**)tp); goto end;
+    case TYPE_TEMPLATE:    templatetype(a, (templatetype_t**)tp); goto end;
+    case TYPE_PLACEHOLDER: placeholdertype(a, (placeholdertype_t**)tp); goto end;
+    case TYPE_UNRESOLVED:  unresolvedtype(a, (unresolvedtype_t**)tp); goto end;
+
+    // should never see these
+    case NODE_BAD:
+    case NODE_COMMENT:
+    case NODE_UNIT:
+    case NODE_IMPORTID:
+    case NODE_TPLPARAM:
+    case STMT_TYPEDEF:
+    case STMT_IMPORT:
+    case EXPR_FUN:
+    case EXPR_BLOCK:
+    case EXPR_CALL:
+    case EXPR_TYPECONS:
+    case EXPR_ID:
+    case EXPR_NS:
+    case EXPR_FIELD:
+    case EXPR_PARAM:
+    case EXPR_VAR:
+    case EXPR_LET:
+    case EXPR_MEMBER:
+    case EXPR_SUBSCRIPT:
+    case EXPR_PREFIXOP:
+    case EXPR_POSTFIXOP:
+    case EXPR_DEREF:
+    case EXPR_BINOP:
+    case EXPR_ASSIGN:
+    case EXPR_IF:
+    case EXPR_FOR:
+    case EXPR_RETURN:
+    case EXPR_BOOLLIT:
+    case EXPR_INTLIT:
+    case EXPR_FLOATLIT:
+    case EXPR_STRLIT:
+    case EXPR_ARRAYLIT:
+      break;
   }
   assertf(0, "unexpected %s", nodekind_name((*tp)->kind));
+  UNREACHABLE;
+
+end:
+  // note: must access local t here as *tp might have been updated
+  a->templatenest -= (u32)!!(t->flags & NF_TEMPLATE);
 }
 
 
@@ -2806,6 +3045,7 @@ static void exprp(typecheck_t* a, expr_t** np) {
   case NODE_COMMENT:
   case NODE_UNIT:
   case NODE_IMPORTID:
+  case NODE_TPLPARAM:
   case STMT_TYPEDEF:
   case STMT_IMPORT:
   case EXPR_BOOLLIT:
@@ -2835,10 +3075,13 @@ static void exprp(typecheck_t* a, expr_t** np) {
   case TYPE_ALIAS:
   case TYPE_NS:
   case TYPE_UNKNOWN:
+  case TYPE_TEMPLATE:
+  case TYPE_PLACEHOLDER:
   case TYPE_UNRESOLVED:
     break;
   }
   assertf(0, "unexpected node %s", nodekind_name(n->kind));
+  UNREACHABLE;
 }
 
 

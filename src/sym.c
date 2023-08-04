@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "colib.h"
 #include "sym.h"
-#include "map.h"
+#include "hashtable.h"
+#include "hash.h"
+#include "thread.h"
 #include "ast.h"
 
 #if DEBUG
@@ -9,8 +11,9 @@
 extern usize strnlen(const char* s, usize maxlen); // libc
 #endif
 
-static map_t      symbols;
+static strset_t   symbols;
 static memalloc_t sym_ma;
+static rwmutex_t  sym_mu;
 
 sym_t sym__;    // "_"
 sym_t sym_this; // "this"
@@ -23,7 +26,7 @@ sym_t sym_from; // "from"
 // primitive types
 #define _(kind, TYPE, enctag, NAME, size) \
   sym_t sym_##NAME; \
-  sym_t sym_##NAME##_typeid;
+  //sym_t sym_##NAME##_typeid;
 FOREACH_NODEKIND_PRIMTYPE(_)
 #undef _
 
@@ -45,22 +48,20 @@ sym_t sym_intern(const char* key, usize keylen) {
     }
   #endif
 
-  mapent_t* ent = map_assign_ent(&symbols, sym_ma, key, keylen);
-  if UNLIKELY(!ent)
-    goto oom;
+  // lookup under read-only lock
+  rwmutex_rlock(&sym_mu);
+  slice_t* ent = strset_lookup(&symbols, key, keylen);
+  rwmutex_runlock(&sym_mu);
+  if (!ent) {
+    // not found; assign under full write lock
+    rwmutex_lock(&sym_mu);
+    ent = strset_assign(&symbols, key, keylen, NULL);
+    rwmutex_unlock(&sym_mu);
+    if UNLIKELY(!ent)
+      goto oom;
+  }
+  return ent->chars;
 
-  if (ent->value) // already exist
-    return ent->value;
-
-  // dlog("create symbol '%.*s' %p", (int)keylen, (const char*)key, ent);
-
-  ent->value = mem_strdup(sym_ma, (slice_t){ .p=key, .len=keylen }, 0);
-  if UNLIKELY(!ent->value)
-    goto oom;
-  // update key as the key parameter is a borrowed ref
-  ent->key = ent->value;
-  ent->keysize = keylen;
-  return ent->value;
 oom:
   panic("out of memory");
 }
@@ -78,13 +79,31 @@ sym_t sym_snprintf(char* buf, usize bufcap, const char* fmt, ...) {
 
 static sym_t def_static_symn(const char* static_key, usize keylen) {
   assert(static_key[keylen] == 0); // must be NUL terminated
-  mapent_t* ent = map_assign_ent(&symbols, sym_ma, static_key, keylen);
-  if UNLIKELY(!ent)
-    panic("out of memory");
-  assert(ent->value == NULL);
-  ent->value = (void*)static_key;
-  ent->key = static_key;
-  ent->keysize = keylen;
+
+  #ifdef DEBUG
+    bool added;
+  #endif
+
+  UNUSED slice_t* ent;
+
+  ent = hashtable_assign(
+    (hashtable_t*)&symbols,
+    strset_hashfn,
+    strset_eqfn,
+    sizeof(slice_t),
+    &(slice_t){ .p = static_key, .len = keylen },
+    #ifdef DEBUG
+      &added
+    #else
+      NULL
+    #endif
+  );
+
+  safecheckf(ent, "out of memory");
+  assertf(added, "%s", static_key);
+  assert(ent->len == keylen);
+  assert(ent->p == static_key);
+
   return static_key;
 }
 
@@ -95,9 +114,11 @@ inline static sym_t def_static_sym(const char* static_cstr) {
 
 
 void sym_init(memalloc_t ma) {
+  safecheckx(rwmutex_init(&sym_mu) == 0);
   sym_ma = ma;
-  if (!map_init(&symbols, sym_ma, 4096/sizeof(mapent_t)/2))
-    panic("out of memory");
+  UNUSED err_t err = strset_init(&symbols, ma, 4096/sizeof(slice_t)/2);
+  safecheckf(err == 0, "strset_init: %s", err_str(err));
+
   sym__ = def_static_sym("_");
   sym_this = def_static_sym("this");
   sym_drop = def_static_sym("drop");
@@ -106,16 +127,23 @@ void sym_init(memalloc_t ma) {
   sym_as   = def_static_sym("as");
   sym_from = def_static_sym("from");
 
-  static const char typeid_symtab[PRIMTYPE_COUNT][2] = {
-    #define _(kind, TYPE, enctag, NAME, size)  {TYPEID_PREFIX(kind),0},
-    FOREACH_NODEKIND_PRIMTYPE(_)
-    #undef _
-  };
+  // static const char typeid_symtab[PRIMTYPE_COUNT][2] = {
+  //   #define _(kind, TYPE, enctag, NAME, size)  {TYPEID_PREFIX(kind),0},
+  //   FOREACH_NODEKIND_PRIMTYPE(_)
+  //   #undef _
+  // };
+
+  // // sym_NAME = "NAME"  (e.g. sym_int = "int")
+  // #define _(kind, TYPE, enctag, NAME, size) \
+  //   sym_##NAME = def_static_sym(#NAME); \
+  //   sym_##NAME##_typeid = def_static_symn(typeid_symtab[kind - TYPE_VOID], 1); \
+  //   _sym_primtype_nametab[kind - TYPE_VOID] = sym_##NAME;
+  // FOREACH_NODEKIND_PRIMTYPE(_)
+  // #undef _
 
   // sym_NAME = "NAME"  (e.g. sym_int = "int")
   #define _(kind, TYPE, enctag, NAME, size) \
     sym_##NAME = def_static_sym(#NAME); \
-    sym_##NAME##_typeid = def_static_symn(typeid_symtab[kind - TYPE_VOID], 1); \
     _sym_primtype_nametab[kind - TYPE_VOID] = sym_##NAME;
   FOREACH_NODEKIND_PRIMTYPE(_)
   #undef _

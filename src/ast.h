@@ -122,6 +122,7 @@ typedef u16 nodeflag_t;
 #define NF_CONST       ((nodeflag_t)1<< 10) // [anything but block] is a constant
 #define NF_PKGNS       ((nodeflag_t)1<< 11) // [namespace] is a package API
 #define NF_TEMPLATE    ((nodeflag_t)1<< 12) // templatized with templateparam_t
+#define NF_TEMPLATEI   ((nodeflag_t)1<< 13) // instance of template
 
 typedef nodeflag_t nodevis_t; // symbolic
 static_assert(0 < NF_VIS_PKG, "");
@@ -129,6 +130,13 @@ static_assert(NF_VIS_PKG < NF_VIS_PUB, "");
 
 // NODEFLAGS_BUBBLE are flags that "bubble" (transfer) from children to parents
 #define NODEFLAGS_BUBBLE  NF_UNKNOWN
+
+// NODEFLAGS_TYPEID_MASK: flags included in typeid
+#define NODEFLAGS_TYPEID_MASK NF_VIS_MASK \
+                            | NF_OPTIONAL \
+                            | NF_TEMPLATE \
+                            | NF_TEMPLATEI \
+// end NODEFLAGS_TYPEID_MASK
 
 // NODEFLAGS_ALL are all flags, used by AST decoder
 #define NODEFLAGS_ALL ((nodeflag_t) \
@@ -146,6 +154,7 @@ static_assert(NF_VIS_PKG < NF_VIS_PUB, "");
   | NF_CONST \
   | NF_PKGNS \
   | NF_TEMPLATE \
+  | NF_TEMPLATEI \
 ))
 
 // operation codes
@@ -155,6 +164,8 @@ enum op {
   #include "ops.h"
   #undef _
 };
+
+typedef const u8* typeid_t;
 
 
 ASSUME_NONNULL_BEGIN
@@ -224,11 +235,11 @@ typedef struct {
   import_t* nullable  importlist; // list head
 } unit_t;
 
-typedef struct {
+typedef struct type_ {
   node_t;
-  u64   size;
-  u8    align;
-  sym_t tid;
+  u64               size;
+  u8                align;
+  typeid_t nullable _typeid;
 } type_t;
 
 typedef struct {
@@ -270,7 +281,11 @@ typedef struct templateparam_ {
 
 typedef struct {
   type_t;
-  templateparam_t* nullable templateparams; // type is generic if not NULL
+  // templateparams
+  // If flags&NF_TEMPLATE: list of templateparam_t*
+  // If flags&NF_TEMPLATEI: list of parameter arguments (node_t*)
+  // Note: NF_TEMPLATEI is set on instances of templatetype_t.
+  nodearray_t templateparams;
 } usertype_t;
 
 typedef struct {
@@ -287,7 +302,7 @@ typedef struct {
 typedef struct {
   usertype_t;         // loc is opening "<"
   loc_t       endloc; // ">"
-  type_t*     recv;
+  usertype_t* recv;
   nodearray_t args;   // type_t*[]
 } templatetype_t;
 
@@ -378,7 +393,7 @@ typedef struct nsexpr_ {
 typedef struct {
   expr_t;
   expr_t*     recv;
-  nodearray_t args;
+  nodearray_t args; // expr_t*[] (local_t/EXPR_PARAM if named)
   loc_t       argsendloc; // location of ")"
 } call_t;
 
@@ -459,7 +474,6 @@ typedef struct fun_ { // fun is a declaration (stmt) or an expression depending 
 
 
 //———————————————————————————————————————————————————————————————————————————————————————
-// forward decl
 
 typedef struct compiler_ compiler_t;
 
@@ -477,18 +491,6 @@ bool ast_is_main_fun(const fun_t* fn);
 local_t* nullable lookup_struct_field(structtype_t* st, sym_t name);
 const char* node_srcfilename(const node_t* n, locmap_t* lm);
 
-// astiter_of_children returns an iterator over n's children.
-// The type of expressions (expr_t.type) is NOT included.
-// astiter_dispose needs to be called if astiter_next is not run til completion.
-typedef struct astiter_ {
-  const node_t* nullable(*next)(struct astiter_*);
-  u64 v[2];
-} astiter_t;
-astiter_t astiter_of_children(const node_t* n);
-inline static void astiter_dispose(astiter_t* it) {}
-inline static const node_t* nullable astiter_next(astiter_t* it) {
-  return it->next(it);
-}
 
 inline static void bubble_flags(void* parent, void* child) {
   ((node_t*)parent)->flags |= (((node_t*)child)->flags & NODEFLAGS_BUBBLE);
@@ -567,10 +569,6 @@ inline static bool funtype_hasthis(const funtype_t* ft) {
   return ft->params.len && ((local_t*)ft->params.v[0])->isthis;
 }
 
-sym_t nullable _typeid(type_t*);
-inline static sym_t nullable typeid(type_t* t) { return t->tid ? t->tid : _typeid(t); }
-#define TYPEID_PREFIX(typekind)  ('A'+((typekind)-TYPE_VOID))
-
 // type_unwrap_ptr unwraps optional, ref and ptr.
 // e.g. "?&T" => "&T" => "T"
 type_t* type_unwrap_ptr(type_t* t);
@@ -634,6 +632,36 @@ void typefuntab_dispose(typefuntab_t* tfuns, memalloc_t ma);
 fun_t* nullable typefuntab_lookup(typefuntab_t* tfuns, type_t* t, sym_t name);
 
 
+// iterator
+typedef struct { uintptr opaque[3]; } ast_childit_t;
+ast_childit_t ast_childit(node_t* n);
+node_t** nullable ast_childit_next(ast_childit_t* it); // NULL on "end of iteration"
+ast_childit_t ast_childit_const(const node_t* n);
+const node_t* nullable ast_childit_const_next(ast_childit_t* it);
+
+
+// ast_clone_node creates a shallow copy of n, allocated in ma.
+// note: fields of array_type have their underlying arrays copied as well.
+// Returns NULL if memory allocation failed.
+//
+// T ast_clone_node<T is node_t*>(memalloc_t ma, const T srcnode)
+#define ast_clone_node(ma, srcnodep) \
+  ( (__typeof__(*(srcnodep))*)_ast_clone_node((ma), (srcnodep)) )
+node_t* nullable _ast_clone_node(memalloc_t ma, const void* srcnodep);
+
+
+// transformer
+typedef node_t* nullable(*ast_transformer_t)(node_t* n, void* nullable ctx);
+typedef void(*ast_transformerpost_t)(node_t* n, const node_t* orign, void* nullable ctx);
+err_t ast_transform(
+  node_t*                        n,
+  memalloc_t                     ast_ma,
+  ast_transformer_t              trfn,
+  ast_transformerpost_t nullable postfn,
+  void* nullable                 ctx,
+  node_t**                       result);
+
+
 // funtype_params_origin returns the origin of parameters, e.g.
 //   fun foo(x, y int) int
 //          ~~~~~~~~~~
@@ -647,6 +675,23 @@ extern sym_t _sym_primtype_nametab[PRIMTYPE_COUNT];
 inline static sym_t primtype_name(nodekind_t kind) { // e.g. "i64"
   assert(TYPE_VOID <= kind && kind <= TYPE_UNKNOWN);
   return _sym_primtype_nametab[kind - TYPE_VOID];
+}
+
+
+static typeid_t typeid_intern(type_t* t);
+static typeid_t typeid_of(const type_t* t);
+void typeid_init(memalloc_t);
+static u32 typeid_len(typeid_t);
+
+typeid_t _typeid(type_t*, bool intern);
+inline static typeid_t typeid_intern(type_t* t) {
+  return t->_typeid ? t->_typeid : _typeid(t, true);
+}
+inline static typeid_t typeid_of(const type_t* t) {
+  return t->_typeid ? t->_typeid : _typeid((type_t*)t, false);
+}
+inline static u32 typeid_len(typeid_t ti) {
+  return *(u32*)(ti - 4);
 }
 
 

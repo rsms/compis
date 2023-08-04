@@ -3,26 +3,26 @@
 #include "leb128.h"
 
 
-// // returns number of bytes read from input, or err_t (negative value) on error
-// int leb128_read(u64* resultp, u32 nbit, const u8* in, const void* inend) {
-//   assert(nbit > 0 && nbit <= 64 && IS_POW2(nbit));
-//   u64 v = 0;
-//   u32 shift = 0;
-//   if (in == inend)
-//     return ErrInvalid;
-//   const u8* p = in;
-//   while (p != inend) {
-//     u64 b = *p++;
-//     v |= ((b & 0x7f) << shift);
-//     shift += 7;
-//     if ((b & 0x80) == 0)
-//       break;
-//     if (shift >= nbit)
-//       return ErrOverflow;
-//   }
-//   *resultp = v;
-//   return (int)(uintptr)(p - in);
-// }
+// returns number of bytes read from input, or err_t (negative value) on error
+int leb128_read(u64* resultp, u32 nbit, const u8* in, const void* inend) {
+  assert(nbit > 0 && nbit <= 64 && IS_POW2(nbit));
+  u64 v = 0;
+  u32 shift = 0;
+  if (in == inend)
+    return ErrInvalid;
+  const u8* p = in;
+  while (p != inend) {
+    u64 b = *p++;
+    v |= ((b & 0x7f) << shift);
+    shift += 7;
+    if ((b & 0x80) == 0)
+      break;
+    if (shift >= nbit)
+      return ErrOverflow;
+  }
+  *resultp = v;
+  return (int)(uintptr)(p - in);
+}
 
 
 #define _LEB128_MORE_S(T) \

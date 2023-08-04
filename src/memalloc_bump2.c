@@ -51,7 +51,7 @@ static_assert(IS_ALIGN2(sizeof(slab_t), MIN_ALIGNMENT), "");
 // bump_allocator_t contains book-keeping data for the allocator
 typedef struct {
   slab_t           head;   // caution: cyclic; head->prev initially points to &head
-  mutex_t          tailmu; // guards modifications to tail
+  rwmutex_t        tailmu; // guards modifications to tail
 
   #if defined(DEBUG) && defined(__SIZEOF_INT128__)
   union { struct {
@@ -94,7 +94,7 @@ typedef union {
 static bool bump_alloc_grow(bump_allocator_t* a, usize size) {
   assert(IS_ALIGN2(size, MIN_ALIGNMENT)); // bump_alloc has aligned it
 
-  mutex_lock(&a->tailmu);
+  rwmutex_lock(&a->tailmu);
 
   // load current tail
   slab_t* oldtail = ATOMIC_LOAD(&a->tail);
@@ -112,7 +112,7 @@ static bool bump_alloc_grow(bump_allocator_t* a, usize size) {
 
   if UNLIKELY(m.p == NULL) {
     dlog("%s: sys_vm_alloc(%p, %zu) failed", __FUNCTION__, at_addr, size);
-    mutex_unlock(&a->tailmu);
+    rwmutex_unlock(&a->tailmu);
     return false;
   }
 
@@ -137,11 +137,47 @@ static bool bump_alloc_grow(bump_allocator_t* a, usize size) {
   assertnotnull(ATOMIC_LOAD(&ATOMIC_LOAD(&a->tail)->prev));
   // dlog("stored tail %p, prev %p", slab, slab->prev);
 
-  mutex_unlock(&a->tailmu);
+  rwmutex_unlock(&a->tailmu);
 
   return true;
 }
 
+#if 1 // lock-based impl
+
+static bool bump_alloc(bump_allocator_t* a, mem_t* m, usize size, bool zeroed) {
+  rwmutex_rlock(&a->tailmu);
+
+  size = ALIGN2(size, MIN_ALIGNMENT);
+  void* oldptr = ATOMIC_LOAD(&a->ptr);
+
+  // allocate another slab if needed
+  while UNLIKELY(oldptr + size > ATOMIC_LOAD(&a->end)) {
+    // release read lock so that bump_alloc_grow can acquire write lock
+    rwmutex_runlock(&a->tailmu);
+
+    if UNLIKELY(!bump_alloc_grow(a, size)) {
+      *m = (mem_t){0};
+      return false;
+    }
+
+    // acquire read lock again and load new ptr
+    rwmutex_rlock(&a->tailmu);
+    oldptr = ATOMIC_LOAD(&a->ptr);
+  }
+
+  ATOMIC_STORE(&a->ptr, oldptr + size);
+
+  rwmutex_runlock(&a->tailmu);
+
+  m->p = oldptr;
+  m->size = size;
+  if (zeroed && !ISZERO(a))
+    memset(m->p, 0, size);
+
+  return true;
+}
+
+#else // lock-free impl, which has a race on slab_t.prev somewhere
 
 static bool bump_alloc(bump_allocator_t* a, mem_t* m, usize size, bool zeroed) {
   void* oldptr;
@@ -190,6 +226,8 @@ static bool bump_alloc(bump_allocator_t* a, mem_t* m, usize size, bool zeroed) {
   UNREACHABLE;
   return false;
 }
+
+#endif // lockfree
 
 
 static bool bump_resize(bump_allocator_t* a, mem_t* m, usize size, bool zeroed) {
@@ -261,13 +299,13 @@ memalloc_t memalloc_bump2(usize slabsize, u32 flags) {
   a->head.size = m.size;
   a->head.prev = &a->head;
   a->tail = &a->head;
-  err_t err = mutex_init(&a->tailmu);
+  err_t err = rwmutex_init(&a->tailmu);
   a->end = m.p + m.size;
   a->ptr = (void*)ALIGN2((uintptr)a->tail + sizeof(bump_allocator_t), MIN_ALIGNMENT);
   a->ma.f = _memalloc_bump_impl;
 
   if UNLIKELY(err) {
-    dlog("%s: mutex_init failed (%s)", __FUNCTION__, err_str(err));
+    dlog("%s: rwmutex_init failed (%s)", __FUNCTION__, err_str(err));
     memalloc_bump2_dispose(&a->ma);
     return &_memalloc_null;
   }
@@ -282,7 +320,7 @@ void memalloc_bump2_dispose(memalloc_t ma) {
   assert(ma->f == _memalloc_bump_impl);
   bump_allocator_t* a = BUMPALLOC_OF_MEMALLOC(ma);
 
-  mutex_dispose(&a->tailmu);
+  rwmutex_dispose(&a->tailmu);
 
   err_t err;
   slab_t* slab = a->tail;

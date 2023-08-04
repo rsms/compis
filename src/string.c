@@ -288,11 +288,12 @@ usize string_repr(char* dst, usize dstcap, const void* srcp, usize len) {
 
   for (usize i = 0; i < len; i++) {
     u8 c = *(u8*)srcp++;
+    //dlog("[%zu/%zu] 0x%02x '%c'", i, len, c, isprint(c) ? c : ' ');
     switch (c) {
       // \xHH
       case '\1'...'\x08':
       case 0x0E ... 0x1F:
-      case 0x7f ... 0x9F:
+      case 0x7f ... 0xFF:
         if (LIKELY( p + 3 < lastp )) {
           p[0] = '\\';
           p[1] = 'x';

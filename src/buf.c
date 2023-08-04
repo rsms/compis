@@ -62,8 +62,14 @@ bool buf_grow(buf_t* b, usize extracap) {
     }
   }
 
-  if (!b->external)
-    return mem_resize(b->ma, (mem_t*)b, newcap);
+  //dlog("buf_grow extracap=%zu newcap=%zu", extracap, newcap);
+
+  if (!b->external) {
+    // note: buf_t{void*p;usize} is compatible with mem_t{void*;usize}
+    bool ok = mem_resize(b->ma, (mem_t*)b, newcap);
+    b->oom = !ok;
+    return ok;
+  }
 
   mem_t m = mem_alloc(b->ma, newcap);
   if (!m.p) {
@@ -121,7 +127,7 @@ bool buf_append(buf_t* b, const void* src, usize len) {
   void* p = buf_alloc(b, len);
   if (p)
     memcpy(p, src, len);
-  return !!p;
+  return p != NULL;
 }
 
 

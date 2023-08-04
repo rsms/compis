@@ -288,7 +288,7 @@ static void repr_type(RPARAMS, const type_t* t) {
     kindname = STRTAB_GET(nodekind_strtab, t->kind) + strlen("TYPE_");
   }
 
-  REPR_BEGIN('<', kindname);
+  REPR_BEGIN('[', kindname);
   bool isnew = !seen(r, t);
 
   if (t->kind == TYPE_STRUCT && ((structtype_t*)t)->name)
@@ -298,15 +298,24 @@ static void repr_type(RPARAMS, const type_t* t) {
   if (isnew)
     flags(RARGS, (node_t*)t);
 
-  if (isnew && nodekind_isusertype(t->kind) && ((usertype_t*)t)->templateparams) {
-    REPR_BEGIN('(', "templateparams");
-    for (
-      templateparam_t* tparam = ((usertype_t*)t)->templateparams;
-      tparam; tparam = tparam->next_templateparam)
-    {
-      repr(RARGS, (node_t*)tparam);
+  // templateparams
+  if (nodekind_isusertype(t->kind) && ((usertype_t*)t)->templateparams.len) {
+    CHAR(' ');
+    if (isnew) {
+      REPR_BEGIN('<', "");
+    } else {
+      CHAR('<');
     }
-    REPR_END(')');
+    const usertype_t* ut = (usertype_t*)t;
+    for (u32 i = 0; i < ut->templateparams.len; i++) {
+      if (i) CHAR(' ');
+      repr(RARGSFL(fl | REPRFLAG_HEAD), ut->templateparams.v[i]);
+    }
+    if (isnew) {
+      REPR_END('>');
+    } else {
+      CHAR('>');
+    }
   }
 
   switch (t->kind) {
@@ -367,7 +376,7 @@ static void repr_type(RPARAMS, const type_t* t) {
     CHAR(' '), PRINT(((unresolvedtype_t*)t)->name);
     break;
   }
-  REPR_END('>');
+  REPR_END(']');
 }
 
 

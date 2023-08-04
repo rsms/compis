@@ -80,38 +80,6 @@ AST encoding format:
   #undef DEBUG_LOG_ENCODE_STATS
 #endif
 
-// nodekind_t => u32 tag
-static const u32 g_nodekindtagtab[NODEKIND_COUNT] = {
-  #define _(kind, TYPE, tag, ...) [kind] = CO_STRu32(tag),
-  FOREACH_NODEKIND(_)
-  #undef _
-};
-
-// u32 tag => nodekind_t
-static nodekind_t nodekind_of_tag(u32 tag) {
-  switch (tag) {
-    #define _(kind, TYPE, tag, ...) \
-      case CO_STRu32(tag): return kind;
-    FOREACH_NODEKIND(_)
-    #undef _
-    default: return NODE_BAD;
-  }
-}
-
-
-#ifdef DEBUG
-UNUSED __attribute__((constructor)) static void check_nodekindtagtab() {
-  for (nodekind_t i = 0; i < (nodekind_t)countof(g_nodekindtagtab); i++) {
-    assertf(g_nodekindtagtab[i] != 0, "missing g_nodekindtagtab[%s]", nodekind_name(i));
-    for (nodekind_t j = 0; j < (nodekind_t)countof(g_nodekindtagtab); j++) {
-      assertf(i == j || g_nodekindtagtab[i] != g_nodekindtagtab[j],
-        "duplicate id \"%.4s\": [%s] & [%s]",
-        (char*)&g_nodekindtagtab[i], nodekind_name(i), nodekind_name(j));
-    }
-  }
-}
-#endif
-
 
 // Conversion of f64 <-> u64
 // Currently assumes f64 is represented as IEEE 754 binary64
@@ -231,7 +199,7 @@ static void encode_field_nodearray(
 }
 
 
-static void encode_field_nodelist(
+/*static void encode_field_nodelist(
   astencoder_t* a, buf_t* outbuf, const void* fp, ast_field_t f)
 {
   // same encoding as nodearray
@@ -250,7 +218,7 @@ static void encode_field_nodelist(
   }
 
   buf_setlenp(outbuf, p);
-}
+}*/
 
 
 static void encode_field_str(
@@ -259,13 +227,6 @@ static void encode_field_str(
   const char* str = *(const char**)fp;
   usize len = strlen(str);
   encode_str(a, outbuf, str, len);
-}
-
-
-static void encode_field_custom(
-  astencoder_t* a, buf_t* outbuf, const void* fp, ast_field_t f)
-{
-  dlog("TODO %s", __FUNCTION__);
 }
 
 
@@ -328,16 +289,12 @@ again:
       return z + 1ul + ndigits16(na->len) + (na->len * (1 + 9));
     }
 
-    case AST_FIELD_NODELIST: { // "*" len (SP u32x){len}  (same as nodearray)
-      u32 len = 0;
-      for (const void* ent = *(void**)fp; ent; ent = *(void**)(ent + f.listoffs))
-        len++;
-      return z + 1ul + ndigits16(len) + (len * (1 + 9));
-    }
-
-    case AST_FIELD_CUSTOM:
-      // can't guess; will have to check bounds when encoding
-      return z;
+    // case AST_FIELD_NODELIST: { // "*" len (SP u32x){len}  (same as nodearray)
+    //   u32 len = 0;
+    //   for (const void* ent = *(void**)fp; ent; ent = *(void**)(ent + f.listoffs))
+    //     len++;
+    //   return z + 1ul + ndigits16(len) + (len * (1 + 9));
+    // }
 
     case AST_FIELD_UNDEF:
       break;
@@ -381,8 +338,7 @@ static void encode_field(astencoder_t* a, buf_t* outbuf, const void* fp, ast_fie
   case AST_FIELD_STR:       goto enc_str;
   case AST_FIELD_STRZ:      if (*(void**)fp) goto enc_str; goto enc_none;
   case AST_FIELD_NODEARRAY: MUSTTAIL return encode_field_nodearray(a, outbuf, fp, f);
-  case AST_FIELD_NODELIST:  MUSTTAIL return encode_field_nodelist(a, outbuf, fp, f);
-  case AST_FIELD_CUSTOM:    MUSTTAIL return encode_field_custom(a, outbuf, fp, f);
+  //case AST_FIELD_NODELIST:  MUSTTAIL return encode_field_nodelist(a, outbuf, fp, f);
   case AST_FIELD_UNDEF:     break;
   }
   UNREACHABLE;
@@ -428,7 +384,7 @@ static void encode_node(astencoder_t* a, buf_t* outbuf, const node_t* n) {
   u8* p = outbuf->bytes + outbuf->len;
 
   // kind
-  memcpy(p, &g_nodekindtagtab[n->kind], 4); p += 4;
+  memcpy(p, &g_ast_kindtagtab[n->kind], 4); p += 4;
 
   // get field table for kind
   const ast_field_t* fieldtab = g_ast_fieldtab[n->kind];
@@ -677,8 +633,8 @@ static void reg_syms(astencoder_t* a, const node_t* n) {
   #define ADDSYM(sym)  ( reg_sym(a, assertnotnull(sym)) )
   #define ADDSYMZ(sym) ( (sym) ? reg_sym(a, (sym)) : ((void)0) )
 
-  if (node_istype(n))
-    ADDSYMZ(((const type_t*)n)->tid);
+  // if (node_istype(n))
+  //   ADDSYMZ(((const type_t*)n)->_typeid);
 
   switch ((enum nodekind)n->kind) {
 
@@ -863,12 +819,20 @@ static void add_ast_visitor(astencoder_t* a, u32 flags, const node_t* n) {
   }
 
   // visit each child
+  #if 1
+  ast_childit_t childit = ast_childit_const(n);
+  for (const node_t* cn; (cn = ast_childit_const_next(&childit));) {
+    // dlog("visit child %s %p", nodekind_name(cn->kind), cn);
+    add_ast_visitor(a, flags, cn);
+  }
+  #else
   astiter_t childit = astiter_of_children(n);
   for (const node_t* cn; (cn = astiter_next(&childit));) {
     // dlog("visit child %s %p", nodekind_name(cn->kind), cn);
     add_ast_visitor(a, flags, cn);
   }
   astiter_dispose(&childit);
+  #endif
 
   // append n to nodelist
   // dlog("add nodelist[%u] <= %s %p", a->nodelist.len, nodekind_name(n->kind), n);
@@ -1316,7 +1280,7 @@ static const u8* dec_nodearray(DEC_PARAMS, nodearray_t* dstp) {
 }
 
 
-static const u8* dec_nodelist(DEC_PARAMS, u16 listoffs, void** listhead) {
+/*static const u8* dec_nodelist(DEC_PARAMS, u16 listoffs, void** listhead) {
   // same encoding as nodearray
   d->tmpnodearray.len = 0;
   p = dec_nodearray1(DEC_ARGS, &d->tmpnodearray, d->ma);
@@ -1340,7 +1304,7 @@ static const u8* dec_nodelist(DEC_PARAMS, u16 listoffs, void** listhead) {
   }
 
   return p;
-}
+}*/
 
 
 static const u8* decode_field(DEC_PARAMS, void* fp, ast_field_t f) {
@@ -1365,8 +1329,7 @@ static const u8* decode_field(DEC_PARAMS, void* fp, ast_field_t f) {
   case AST_FIELD_STR:       return dec_str(DEC_ARGS, fp, /*allow_null*/false); break;
   case AST_FIELD_STRZ:      return dec_str(DEC_ARGS, fp, /*allow_null*/true); break;
   case AST_FIELD_NODEARRAY: return dec_nodearray(DEC_ARGS, fp); break;
-  case AST_FIELD_NODELIST:  return dec_nodelist(DEC_ARGS, f.listoffs, fp); break;
-  case AST_FIELD_CUSTOM:    panic("TODO decode CUSTOM field"); break;
+  //case AST_FIELD_NODELIST:  return dec_nodelist(DEC_ARGS, f.listoffs, fp); break;
   case AST_FIELD_UNDEF:     UNREACHABLE; break;
   }
 

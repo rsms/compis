@@ -179,13 +179,25 @@ static void funtype(abuf_t* s, const funtype_t* nullable n, u32 indent, u32 maxd
 static void structtype(
   abuf_t* s, const structtype_t* nullable t, u32 indent, u32 maxdepth)
 {
-  if (t->name)
+  if (t->name) {
     abuf_str(s, t->name);
-  if (maxdepth <= 1) {
-    if (!t->name)
-      abuf_str(s, "struct");
-    return;
+  } else if (maxdepth <= 1) {
+    abuf_str(s, "struct");
   }
+
+  if (t->flags & (NF_TEMPLATE | NF_TEMPLATEI) || t->templateparams.len > 0) {
+    abuf_c(s, '<');
+    for (u32 i = 0; i < t->templateparams.len; i++) {
+      if (i)
+        abuf_str(s, ", ");
+      fmt(s, (node_t*)t->templateparams.v[i], indent, MAX(1u, maxdepth));
+    }
+    abuf_c(s, '>');
+  }
+
+  if (maxdepth <= 1)
+    return;
+
   if (t->name)
     abuf_c(s, ' ');
   abuf_c(s, '{');
@@ -208,7 +220,18 @@ static void structtype(
 }
 
 
-static void fmt_nodelist(
+static void templateparam(
+  abuf_t* s, const templateparam_t* tparam, u32 indent, u32 maxdepth)
+{
+  abuf_str(s, tparam->name);
+  if (tparam->init && maxdepth > 1) {
+    abuf_str(s, " = ");
+    fmt(s, tparam->init, indent, maxdepth);
+  }
+}
+
+
+static void fmt_nodearray(
   abuf_t* s, const nodearray_t* nodes, const char* sep, u32 indent, u32 maxdepth)
 {
   for (u32 i = 0; i < nodes->len; i++) {
@@ -234,6 +257,10 @@ static void fmt(abuf_t* s, const node_t* nullable n, u32 indent, u32 maxdepth) {
     }
     break;
   }
+
+  case NODE_TPLPARAM:
+    templateparam(s, (templateparam_t*)n, indent, maxdepth);
+    break;
 
   case STMT_IMPORT:
     abuf_str(s, "/*TODO import_t*/");
@@ -270,7 +297,7 @@ static void fmt(abuf_t* s, const node_t* nullable n, u32 indent, u32 maxdepth) {
     fun_t* fn = (fun_t*)n;
     funtype_t* ft = (funtype_t*)fn->type;
     abuf_fmt(s, "fun %s(", fn->name);
-    fmt_nodelist(s, &ft->params, ", ", indent, maxdepth);
+    fmt_nodearray(s, &ft->params, ", ", indent, maxdepth);
     abuf_str(s, ") ");
     fmt(s, (node_t*)ft->result, indent, maxdepth);
     if (fn->body) {
@@ -304,7 +331,7 @@ static void fmt(abuf_t* s, const node_t* nullable n, u32 indent, u32 maxdepth) {
     const call_t* call = (const call_t*)n;
     fmt(s, (const node_t*)call->recv, indent, maxdepth);
     abuf_c(s, '(');
-    fmt_nodelist(s, &call->args, ", ", indent, maxdepth);
+    fmt_nodearray(s, &call->args, ", ", indent, maxdepth);
     abuf_c(s, ')');
     break;
   }
@@ -384,8 +411,7 @@ static void fmt(abuf_t* s, const node_t* nullable n, u32 indent, u32 maxdepth) {
     case OP_INV: abuf_str(s, "~"); break;
     case OP_NOT: abuf_str(s, "!"); break;
     }
-    fmt(s, (node_t*)((unaryop_t*)n)->expr, indent, maxdepth);
-    break;
+    return fmt(s, (node_t*)((unaryop_t*)n)->expr, indent, maxdepth);
 
   case EXPR_POSTFIXOP:
     fmt(s, (node_t*)((unaryop_t*)n)->expr, indent, maxdepth);
@@ -433,7 +459,7 @@ static void fmt(abuf_t* s, const node_t* nullable n, u32 indent, u32 maxdepth) {
     if (maxdepth <= 1) {
       abuf_str(s, "...");
     } else {
-      fmt_nodelist(s, &((arraylit_t*)n)->values, ", ", indent, maxdepth);
+      fmt_nodearray(s, &((arraylit_t*)n)->values, ", ", indent, maxdepth);
     }
     abuf_c(s, ']');
     break;
@@ -504,12 +530,27 @@ static void fmt(abuf_t* s, const node_t* nullable n, u32 indent, u32 maxdepth) {
   }
 
   case TYPE_ALIAS: {
-    const aliastype_t* at = (const aliastype_t*)n;
+    const aliastype_t* at = (aliastype_t*)n;
     abuf_str(s, at->name);
     if (maxdepth > 1) {
       abuf_c(s, ' ');
       fmt(s, (node_t*)at->elem, indent, maxdepth);
     }
+    break;
+  }
+
+  case TYPE_TEMPLATE: {
+    const templatetype_t* tt = (templatetype_t*)n;
+    fmt(s, (node_t*)tt->recv, indent, maxdepth);
+    abuf_c(s, '<');
+    fmt_nodearray(s, &tt->args, ", ", indent, maxdepth);
+    abuf_c(s, '>');
+    break;
+  }
+
+  case TYPE_PLACEHOLDER: {
+    const placeholdertype_t* pt = (placeholdertype_t*)n;
+    templateparam(s, pt->templateparam, indent, maxdepth);
     break;
   }
 
@@ -527,7 +568,7 @@ static void fmt(abuf_t* s, const node_t* nullable n, u32 indent, u32 maxdepth) {
     abuf_fmt(s, "/*%s*/", nodekind_name(n->kind));
     break;
 
-  }
+  } // switch
 }
 
 

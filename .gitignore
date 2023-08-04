@@ -22,3 +22,4 @@ a.out
 /etc/bitset
 /lib/sysinc
 /lib/*.sysroot
+/tmp

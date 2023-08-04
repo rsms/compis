@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "colib.h"
 #include "compiler.h"
+#include "ast_field.h"
 
 #define _(kind_, TYPE, enctag, NAME, size_) \
   static type_t _type_##NAME;
@@ -14,17 +15,19 @@ FOREACH_NODEKIND_PRIMTYPE(_)
 
 
 void universe_init() {
-  // these can't be initialized at compile time since they use sym_*_typeid
-
-  #define _(kind_, TYPE, enctag, NAME, size_) \
+  #define _(kind_, TYPE, enctag, NAME, size_) { \
+    static u32 typeid_##NAME[2] = {4, 0}; \
+    typeid_##NAME[1] = g_ast_kindtagtab[kind_]; \
     _type_##NAME = (type_t){ \
       .kind = (kind_), \
       .flags = (NF_VIS_PUB | NF_CHECKED | ((kind_) == TYPE_UNKNOWN ? NF_UNKNOWN : 0)), \
       .size = (size_), \
       .align = (size_), \
-      .tid = assertnotnull(sym_##NAME##_typeid), \
-    };
-
+      ._typeid = (const u8*)&typeid_##NAME[1], \
+    }; \
+    /*dlog("%s._typeid = \\x%02x%c%c%c%c", \
+      nodekind_name(kind_), typeid[0], typeid[1], typeid[2], typeid[3], typeid[4]);*/ \
+  }
   FOREACH_NODEKIND_PRIMTYPE(_)
   #undef _
 }

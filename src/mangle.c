@@ -46,6 +46,10 @@ static u8 tagtab[NODEKIND_COUNT] = {
 };
 
 
+#define TEMPLATE_TAG  'T' // template type, e.g. "type Foo<T> {}"
+#define TEMPLATEI_TAG 'I' // instance of template, e.g. "var x Foo<int>"
+
+
 static void type(encoder_t* e, const type_t* t);
 
 
@@ -58,6 +62,10 @@ static void append_zname(encoder_t* e, const char* name) {
 
 
 static void start_path(encoder_t* e, const node_t* n) {
+  if (n->flags & NF_TEMPLATEI)
+    buf_push(&e->buf, TEMPLATEI_TAG);
+  if (nodekind_isusertype(n->kind)  && ((usertype_t*)n)->templateparams.len > 0)
+    buf_push(&e->buf, TEMPLATE_TAG);
   u8 tag = tagtab[n->kind];
   assertf(tag, "missing tag for %s", nodekind_name(n->kind));
   buf_push(&e->buf, tag);
@@ -153,6 +161,17 @@ static void end_path(encoder_t* e, const node_t* n) {
     append_zname(e, ((aliastype_t*)n)->name);
     break;
   }
+
+  // append template instance arguments
+  if (n->flags & NF_TEMPLATEI) {
+    assert(nodekind_isusertype(n->kind));
+    const usertype_t* t = (usertype_t*)n;
+    for (u32 i = 0; i < t->templateparams.len; i++) {
+      // TODO: support expressions, e.g. "type Foo<Size> {...}; var x Foo<123>"
+      assert(node_istype(t->templateparams.v[i]));
+      type(e, (type_t*)t->templateparams.v[i]);
+    }
+  }
 }
 
 
@@ -188,7 +207,7 @@ static void type(encoder_t* e, const type_t* t) {
       if (st->mangledname) {
         e->ok &= buf_print(&e->buf, st->mangledname);
       } else {
-        assertf(0, "TODO unnamed type");
+        assertf(0, "TODO anonymous struct");
       }
       break;
     }

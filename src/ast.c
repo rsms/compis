@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "colib.h"
 #include "ast.h"
+#include "ast_field.h"
 
 // node kind string table with compressed indices (compared to table of pointers.)
 // We end up with something like this; one string with indices:
@@ -63,4 +64,295 @@ bool ast_is_main_fun(const fun_t* fn) {
     fn->name == sym_main &&
     (fn->flags & NF_VIS_PUB) &&
     (fn->nsparent != NULL && fn->nsparent->kind == NODE_UNIT);
+}
+
+
+//———————————————————————————————————————————————————————————————————————————————————————
+// ast_clone_node
+
+
+node_t* nullable _ast_clone_node(memalloc_t ma, const void* np) {
+  const node_t* n = np;
+  usize nodesize = g_ast_sizetab[n->kind];
+  node_t* n2 = mem_alloc(ma, nodesize).p;
+  if UNLIKELY(n2 == NULL)
+    return NULL;
+
+  // copy field values
+  memcpy(n2, n, nodesize);
+
+  // copy array data
+  const ast_field_t* fieldtab = g_ast_fieldtab[n2->kind];
+  u8 fieldlen = g_ast_fieldlentab[n2->kind];
+  for (u8 fieldidx = 0; fieldidx < fieldlen; fieldidx++) {
+    ast_field_t f = fieldtab[fieldidx];
+    if (f.type == AST_FIELD_NODEARRAY) {
+      nodearray_t* na = (void*)n2 + f.offs;
+      void* p = mem_alloc(ma, na->len * sizeof(node_t*)).p;
+      if (!p)
+        return NULL;
+      memcpy(p, na->v, na->len * sizeof(node_t*));
+      na->v = p;
+      na->cap = na->len;
+    }
+  }
+
+  return n2;
+}
+
+
+//———————————————————————————————————————————————————————————————————————————————————————
+// ast_childit
+
+typedef struct {
+  node_t*            n;
+  const ast_field_t* fieldtab;
+  u8                 fieldlen;
+  u8                 fieldidx;
+  #ifdef DEBUG
+  u8                 isconst;
+  #endif
+  u32                arrayidx;
+} ast_childit_impl_t;
+
+static_assert(sizeof(ast_childit_t) == sizeof(ast_childit_impl_t), "");
+
+
+ast_childit_t ast_childit(node_t* n) {
+  ast_childit_impl_t it = {
+    .n = n,
+    .fieldtab = g_ast_fieldtab[n->kind],
+    .fieldlen = g_ast_fieldlentab[n->kind],
+    .fieldidx = 0,
+  };
+  return *(ast_childit_t*)&it;
+}
+
+
+ast_childit_t ast_childit_const(const node_t* n) {
+  ast_childit_t it = ast_childit((node_t*)n);
+  #ifdef DEBUG
+  ((ast_childit_impl_t*)&it)->isconst = 1;
+  #endif
+  return it;
+}
+
+
+const node_t* nullable ast_childit_const_next(ast_childit_t* itp) {
+  ast_childit_impl_t* it = (ast_childit_impl_t*)itp;
+  assert(it->isconst);
+  node_t** np = ast_childit_next(itp);
+  return np ? (node_t*)*np : NULL;
+}
+
+
+node_t** nullable ast_childit_next(ast_childit_t* itp) {
+  ast_childit_impl_t* it = (ast_childit_impl_t*)itp;
+
+  while (it->fieldidx < it->fieldlen) {
+    ast_field_t f = it->fieldtab[it->fieldidx];
+    void* fp = (void*)it->n + f.offs;
+
+    // dlog("** %s %s", f.name, ast_fieldtype_str(f.type));
+
+    switch ((enum ast_fieldtype)f.type) {
+
+    case AST_FIELD_NODEZ:
+      if (*(void**)fp == NULL)
+        break;
+      FALLTHROUGH;
+    case AST_FIELD_NODE:
+      it->fieldidx++;
+      return (node_t**)fp;
+
+    case AST_FIELD_NODEARRAY:
+      if (it->arrayidx < ((nodearray_t*)fp)->len)
+        return &((nodearray_t*)fp)->v[it->arrayidx++];
+      it->arrayidx = 0;
+      break;
+
+    // no nodes
+    case AST_FIELD_U8:
+    case AST_FIELD_U16:
+    case AST_FIELD_U32:
+    case AST_FIELD_U64:
+    case AST_FIELD_F64:
+    case AST_FIELD_LOC:
+    case AST_FIELD_SYM:
+    case AST_FIELD_SYMZ:
+    case AST_FIELD_STR:
+    case AST_FIELD_STRZ:
+    case AST_FIELD_UNDEF:
+      break;
+
+    } // switch
+
+    it->fieldidx++;
+  }
+  return NULL;
+}
+
+
+//———————————————————————————————————————————————————————————————————————————————————————
+// ast_transform
+
+
+typedef struct {
+  memalloc_t  ma;
+  memalloc_t  ast_ma;
+  nodearray_t seenstack;
+  err_t       err;
+} ast_transform_t;
+
+
+static bool ast_transform_clone(ast_transform_t* tr, node_t** np) {
+  node_t* n2 = ast_clone_node(tr->ast_ma, *np);
+  //dlog("%s: %s %p -> %p", __FUNCTION__, nodekind_name((*np)->kind), *np, n2);
+  if UNLIKELY(!n2 || !nodearray_push(&tr->seenstack, tr->ma, n2)) {
+    tr->err = ErrNoMem;
+    return false;
+  }
+  *np = n2;
+  return true;
+}
+
+
+static void* nullable ast_transform_visit(
+  ast_transform_t*               tr,
+  ast_transformer_t              trfn,
+  ast_transformerpost_t nullable postfn,
+  void* nullable                 ctx,
+  node_t*                        n)
+{
+  if (tr->err)
+    return n;
+
+  // break cycles
+  for (u32 i = tr->seenstack.len; i > 0;) {
+    if (tr->seenstack.v[--i] == n)
+      return n;
+  }
+  if UNLIKELY(!nodearray_push(&tr->seenstack, tr->ma, n)) {
+    tr->err = ErrNoMem;
+    return n;
+  }
+
+  //dlog("%s: %s", __FUNCTION__, nodekind_name(n->kind));
+
+  // save original address of n
+  node_t* n1 = n;
+
+  // call user function
+  n = trfn(n, ctx);
+
+  // if the user function returned NULL, we are done
+  if (!n)
+    return n;
+
+  // if n was replaced, register it in seenstack
+  if (n != n1) {
+    if UNLIKELY(!nodearray_push(&tr->seenstack, tr->ma, n)) {
+      tr->err = ErrNoMem;
+      return n;
+    }
+  }
+
+  // visit expression's type
+  if (node_isexpr(n) && ((expr_t*)n)->type) {
+    expr_t* expr = (expr_t*)n;
+    type_t* type2 = ast_transform_visit(tr, trfn, postfn, ctx, (node_t*)expr->type);
+    if (type2 != expr->type) {
+      if UNLIKELY(n == n1 && !ast_transform_clone(tr, &n))
+        return n;
+      ((expr_t*)n)->type = type2;
+    }
+  }
+
+  // visit fields
+  const ast_field_t* fieldtab = g_ast_fieldtab[n->kind];
+  u8 fieldlen = g_ast_fieldlentab[n->kind];
+
+  for (u8 fieldidx = 0; fieldidx < fieldlen; fieldidx++) {
+    ast_field_t f = fieldtab[fieldidx];
+    void* fp = (void*)n + f.offs;
+
+    switch ((enum ast_fieldtype)f.type) {
+
+    case AST_FIELD_NODEZ:
+      if (*(void**)fp == NULL)
+        break;
+      FALLTHROUGH;
+    case AST_FIELD_NODE: {
+      node_t* cn = *(node_t**)fp;
+      node_t* cn2 = ast_transform_visit(tr, trfn, postfn, ctx, cn);
+      if (cn2 == cn)
+        break;
+      if UNLIKELY(n == n1) {
+        if (!ast_transform_clone(tr, &n))
+          return n;
+        fp = (void*)n + f.offs; // load new field pointer
+      }
+      *(node_t**)fp = cn2;
+      break;
+    }
+
+    case AST_FIELD_NODEARRAY: {
+      nodearray_t* na = fp;
+      for (u32 i = 0, end = na->len; i < end; i++) {
+        node_t* cn = na->v[i];
+        node_t* cn2 = ast_transform_visit(tr, trfn, postfn, ctx, cn);
+        if (cn == cn2)
+          continue;
+        if UNLIKELY(n == n1) {
+          if (!ast_transform_clone(tr, &n))
+            return n;
+          fp = (void*)n + f.offs; // load new field pointer
+          na = fp; // load new nodearray
+        }
+        na->v[i] = cn2;
+      }
+      break;
+    }
+
+    case AST_FIELD_U8:
+    case AST_FIELD_U16:
+    case AST_FIELD_U32:
+    case AST_FIELD_U64:
+    case AST_FIELD_F64:
+    case AST_FIELD_LOC:
+    case AST_FIELD_SYM:
+    case AST_FIELD_SYMZ:
+    case AST_FIELD_STR:
+    case AST_FIELD_STRZ:
+    case AST_FIELD_UNDEF:
+      break;
+
+    } // switch
+  }
+
+  tr->seenstack.len -= 1u + (u32)(n != n1); // pop
+
+  if (postfn)
+    postfn(n, n1, ctx);
+
+  return n;
+}
+
+
+err_t ast_transform(
+  node_t*                        n,
+  memalloc_t                     ast_ma,
+  ast_transformer_t              trfn,
+  ast_transformerpost_t nullable postfn,
+  void* nullable                 ctx,
+  node_t**                       result)
+{
+  ast_transform_t tr = {
+    .ma = memalloc_ctx(),
+    .ast_ma = ast_ma,
+  };
+
+  *result = ast_transform_visit(&tr, trfn, postfn, ctx, n);
+
+  return tr.err;
 }

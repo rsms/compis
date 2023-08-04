@@ -17,13 +17,11 @@ enum ast_fieldtype {
   AST_FIELD_NODE, AST_FIELD_NODEZ, // node_t*, node_t* nullable
   AST_FIELD_STR,  AST_FIELD_STRZ,  // u8*, u8* nullable
   AST_FIELD_NODEARRAY,             // nodearray_t
-  AST_FIELD_NODELIST,              // node_t* nullable
-  AST_FIELD_CUSTOM,
 };
 
 typedef struct {
   u16             offs;     // offset in struct
-  u16             listoffs; // offset of "next" member of list element
+  u16             isid : 1; // field is part of an AST node's identity
   ast_fieldtype_t type;
   #ifdef DEBUG
     const char* name;
@@ -43,6 +41,14 @@ extern const u8 g_ast_sizetab[NODEKIND_COUNT];
 
 // g_fieldsof_type_t is the fields for type_t, used to test for universal type
 extern const ast_field_t* g_fieldsof_type_t;
+
+// g_ast_kindtagtab maps nodekind_t => u32 tag.
+// AST kind tags are stable across versions (and readable), unlike nodekind_t values.
+extern const u32 g_ast_kindtagtab[NODEKIND_COUNT];
+
+
+// nodekind_of_tag maps u32 tag => nodekind_t, the inverse of g_ast_kindtagtab
+nodekind_t nodekind_of_tag(u32 tag);
 
 // ast_fieldtype_str returns a printable name for t, e.g. "U32"
 const char* ast_fieldtype_str(ast_fieldtype_t t);

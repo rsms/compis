@@ -503,6 +503,7 @@ static type_t* mkplaceholdertype(
 {
   placeholdertype_t* t = mknode(p, placeholdertype_t, TYPE_PLACEHOLDER);
   t->flags |= NF_UNKNOWN;
+  t->flags |= NF_CHECKED;
   t->templateparam = templateparam;
   if (loc)
     t->loc = loc;
@@ -818,10 +819,28 @@ static type_t* type_id(parser_t* p) {
 }
 
 
+// checks for & consumes a closing ">" (correctly handles ">>")
+static void expect_closing_gt(parser_t* p) {
+  switch (currtok(p)) {
+    case TGT:
+      next(p);
+      break;
+    case TSHR:
+      // Handle e.g. "A<B<C>>" which yields a TSHR ">>" token, not two TGT tokens.
+      // Convert ">>" to ">", effectively "consuming" the first ">".
+      p->scanner.tok = TGT;
+      break;
+    default:
+      unexpected(p, "");
+      fastforward(p, (const tok_t[]){ TGT, TSHR, 0 });
+  }
+}
+
+
 // templatetype = type "<" type ("," type)* ","? ">"
 static type_t* type_template_expansion_infix(parser_t* p, prec_t prec, type_t* recv) {
   templatetype_t* tt = mknode(p, templatetype_t, TYPE_TEMPLATE);
-  tt->recv = recv;
+  tt->recv = (usertype_t*)recv; assert(node_isusertype((node_t*)recv));
   next(p); // consume "<"
 
   // args
@@ -830,17 +849,20 @@ static type_t* type_template_expansion_infix(parser_t* p, prec_t prec, type_t* r
     type_t* arg = type(p, PREC_COMMA);
     if (!pnodearray_push(p, &args, arg))
       break; // OOM
+
     if (currtok(p) != TCOMMA)
       break;
     next(p); // consume ","
     // allow trailing comma
-    if (currtok(p) == TGT)
+    if (currtok(p) == TGT || currtok(p) == TSHR)
       break;
   }
   pnodearray_assignto(p, &args, &tt->args);
 
   tt->endloc = currloc(p);
-  expect(p, TGT, ""); // consume ">"
+
+  // consume closing ">"
+  expect_closing_gt(p);
 
   return (type_t*)tt;
 }
@@ -1092,12 +1114,11 @@ static type_t* type_optional(parser_t* p) {
 
 // templateparams = "<" tparam ("," tparam)* ","? ">"
 // tparam         = name ("=" (expr | type))
-static templateparam_t* parse_templateparams(parser_t* p) {
+static void parse_templateparams(parser_t* p, nodearray_t* templateparams) {
   assert(currtok(p) == TLT);
   next(p); // consume "<"
 
-  templateparam_t* listhead;
-  templateparam_t* tail = NULL;
+  bool optional_started = false;
 
   for (;;) {
     templateparam_t* tparam = mknode(p, templateparam_t, NODE_TPLPARAM);
@@ -1108,35 +1129,48 @@ static templateparam_t* parse_templateparams(parser_t* p) {
       break;
     }
 
-    // add to list
-    if (tail) {
-      tail->next_templateparam = tparam;
-    } else {
-      listhead = tparam;
-    }
-    tail = tparam;
+    if (!pnodearray_push(p, templateparams, tparam))
+      return;
 
     // optional "=" init
-    if (currtok(p) == TEQ) {
-      panic("TODO ... = init");
+    if (currtok(p) == TASSIGN) {
+      optional_started = true;
+      next(p); // consume "="
+      // TODO how do we know what to expect here? A type or an expression?
+      // e.g. both these template parameters are reasonable:
+      //   type Foo<T=int,Size=100>
+      //     things [T Size]
+      //
+      // One alternative is to require a specifier, e.g.
+      //   type Foo<A,B=type int,C=100>
+      // Or even "type" for parameters:
+      //   type Foo<A type, B type = int, C expr = 100>
+      //
+      // For now, assume type
+      tparam->init = (node_t*)type(p, PREC_COMMA);
+    } else if (optional_started) {
+      error_at(p, tparam, "required parameter after optional parameter");
     }
+
     if (currtok(p) != TCOMMA)
       break;
     next(p); // consume ","
     // allow trailing comma
-    if (currtok(p) == TGT)
+    if (currtok(p) == TGT || currtok(p) == TSHR)
       break;
     // parse another parameter
   }
 
-  expect(p, TGT, ""); // consume ">"
-  return listhead;
+  // consume closing ">"
+  expect_closing_gt(p);
 }
 
 
-static void define_templateparams(parser_t* p, templateparam_t* nullable listhead) {
-  for (templateparam_t* tparam = listhead; tparam; tparam = tparam->next_templateparam)
+static void define_templateparams(parser_t* p, nodearray_t templateparams) {
+  for (u32 i = 0; i < templateparams.len; i++) {
+    templateparam_t* tparam = (templateparam_t*)templateparams.v[i];
     define(p, tparam->name, (node_t*)tparam);
+  }
 }
 
 
@@ -1153,30 +1187,27 @@ static stmt_t* stmt_typedef(parser_t* p) {
     name = sym__;
 
   // generic? parse template parameters
-  templateparam_t* templateparams = NULL;
-  if (currtok(p) == TLT)
-    templateparams = parse_templateparams(p);
+  nodearray_t templateparams = {0};
+  if (currtok(p) == TLT) {
+    templateparams = pnodearray_alloc(p);
+    parse_templateparams(p, &templateparams);
+  }
 
   // next is either a type definition or an alias
-
   if (currtok(p) == TLBRACE) {
     // e.g. "type Foo { x, y int }"
     // special path for struct to avoid (typedef (alias x (struct x))),
     // instead we simply get (typedef (struct x))
     structtype_t* t = mknode(p, structtype_t, TYPE_STRUCT);
-    t->templateparams = templateparams;
     define(p, name, (node_t*)t);
     t->name = name;
     next(p);
-
     n->type = (type_t*)t;
-
-    if (templateparams) {
+    if (templateparams.len) {
       enter_scope(p);
       define_templateparams(p, templateparams);
     }
     type_struct1(p, t);
-
     bubble_flags(n, t);
   } else {
     // e.g. "type Foo int"
@@ -1187,15 +1218,12 @@ static stmt_t* stmt_typedef(parser_t* p) {
     define(p, name, (node_t*)t);
     t->loc = nameloc;
     t->name = name;
-
     n->type = (type_t*)t;
-
-    if (templateparams) {
+    if (templateparams.len) {
       enter_scope(p);
       define_templateparams(p, templateparams);
     }
     t->elem = type(p, PREC_COMMA);
-
     bubble_flags(n, t->elem);
     if UNLIKELY(type_isopt(t->elem)) {
       error_at(p, t->elem,
@@ -1204,8 +1232,9 @@ static stmt_t* stmt_typedef(parser_t* p) {
     }
   }
 
-  if (templateparams) {
+  if (templateparams.len > 0) {
     leave_scope(p);
+    pnodearray_assignto(p, &templateparams, &((usertype_t*)n->type)->templateparams);
     n->type->flags |= NF_TEMPLATE;
   }
 

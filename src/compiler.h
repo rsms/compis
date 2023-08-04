@@ -146,32 +146,6 @@ typedef struct {
   node_t*        decl;
 } didyoumean_t;
 
-typedef struct {
-  compiler_t*     compiler;
-  pkg_t*          pkg;
-  memalloc_t      ma;        // compiler->ma
-  memalloc_t      ast_ma;    // compiler->ast_ma
-  scope_t         scope;
-  err_t           err;
-  fun_t* nullable fun;       // current function
-  type_t*         typectx;
-  ptrarray_t      typectxstack;
-  ptrarray_t      nspath;
-  map_t           postanalyze;    // set of nodes to analyze at the very end (keys only)
-  map_t           tmpmap;
-  map_t           typeidmap;      // sym_t typeid => type_t*
-  bool            reported_error; // true if an error diagnostic has been reported
-  u32             pubnest;        // NF_VIS_PUB nesting level
-
-  // didyoumean tracks names that we might want to consider for help messages
-  // when an identifier can not be resolved
-  array_type(didyoumean_t) didyoumean;
-
-  #if DEBUG
-    int traceindent;
-  #endif
-} typecheck_t;
-
 #define CGEN_EXE (1u << 0) // generating code for an executable
 
 typedef struct {

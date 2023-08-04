@@ -35,7 +35,7 @@ fun_t* nullable typefuntab_lookup(typefuntab_t* tfuns, type_t* t, sym_t name) {
 
   for (;;) {
     t = type_unwrap_ptr(t); // e.g. "&T" => "T"
-    map_t** mp = (map_t**)map_lookup_ptr(&tfuns->m, typeid(t));
+    map_t** mp = (map_t**)map_lookup_ptr(&tfuns->m, (const void*)typeid_of(t));
     if (mp) {
       // *mp is a map that maps {sym_t name => fun_t*}
       assertnotnull(*mp);

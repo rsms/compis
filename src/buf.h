@@ -62,7 +62,7 @@ inline static slice_t _buf_slice3(const buf_t b, usize start, usize len) {
 // Following functions returning bool returns false if buf_grow failed:
 
 // buf_grow increases the capacity of b by at least extracap bytes
-bool buf_grow(buf_t* b, usize extracap) WARN_UNUSED_RESULT;
+bool buf_grow(buf_t* b, usize extracap);
 
 // buf_reserve makes sure that there is at least minavail bytes available at b->p+b->len.
 bool buf_reserve(buf_t* b, usize minavail);
@@ -70,7 +70,7 @@ bool buf_reserve(buf_t* b, usize minavail);
 // buf_alloc allocates len bytes at b->p+b->len and increments b->len by len.
 // If there's not enough space available, buf_grow is called to grow b->cap.
 // Returns a pointer to the beginning of the allocated range, or NULL if buf_grow failed.
-void* nullable buf_alloc(buf_t* b, usize len) WARN_UNUSED_RESULT;
+void* nullable buf_alloc(buf_t* b, usize len);
 
 // buf_push appends a byte
 inline static bool buf_push(buf_t* b, u8 byte) {
