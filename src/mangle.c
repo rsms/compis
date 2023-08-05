@@ -17,8 +17,11 @@ typedef struct {
   const pkg_t*      pkg;
   buf_t             buf;
   nsstack_t         nsstack;
-  bool              ok;
 } encoder_t;
+
+
+#define TEMPLATE_TAG  'T' // template type, e.g. "type Foo<T> {}"
+#define TEMPLATEI_TAG 'I' // instance of template, e.g. "var x Foo<int>"
 
 
 static u8 tagtab[NODEKIND_COUNT] = {
@@ -34,7 +37,7 @@ static u8 tagtab[NODEKIND_COUNT] = {
   [TYPE_F32]  = 'f',
   [TYPE_F64]  = 'd',
 
-  // all other types use upper-case characters
+  // all other types use upper-case characters (must be <='Z')
   // [TYPE_ARRAY] = '?',
   [TYPE_PTR] = 'P',
   [TYPE_REF] = 'R',
@@ -43,11 +46,9 @@ static u8 tagtab[NODEKIND_COUNT] = {
   [TYPE_FUN]    = 'F',
   [TYPE_STRUCT] = 'N',
   [EXPR_FUN]    = 'N',
+  [TYPE_PLACEHOLDER] = 'H',
+  [TYPE_TEMPLATE] = 'Y',
 };
-
-
-#define TEMPLATE_TAG  'T' // template type, e.g. "type Foo<T> {}"
-#define TEMPLATEI_TAG 'I' // instance of template, e.g. "var x Foo<int>"
 
 
 static void type(encoder_t* e, const type_t* t);
@@ -56,8 +57,8 @@ static void type(encoder_t* e, const type_t* t);
 static void append_zname(encoder_t* e, const char* name) {
   usize len = strlen(name);
   assert(len <= U32_MAX);
-  e->ok &= buf_print_u32(&e->buf, (u32)len, 10);
-  e->ok &= buf_append(&e->buf, name, len);
+  buf_print_u32(&e->buf, (u32)len, 10);
+  buf_append(&e->buf, name, len);
 }
 
 
@@ -137,7 +138,7 @@ escape:
 
 
 static void append_pkgname(encoder_t* e) {
-  e->ok &= mangle_str(&e->buf, str_slice(e->pkg->path));
+  mangle_str(&e->buf, str_slice(e->pkg->path));
 }
 
 
@@ -205,7 +206,7 @@ static void type(encoder_t* e, const type_t* t) {
     case TYPE_STRUCT: {
       const structtype_t* st = (structtype_t*)t;
       if (st->mangledname) {
-        e->ok &= buf_print(&e->buf, st->mangledname);
+        buf_print(&e->buf, st->mangledname);
       } else {
         assertf(0, "TODO anonymous struct");
       }
@@ -214,6 +215,12 @@ static void type(encoder_t* e, const type_t* t) {
     case TYPE_FUN:
       buf_push(&e->buf, tag);
       funtype1(e, (funtype_t*)t);
+      break;
+    case TYPE_TEMPLATE:
+      dlog("TODO: mangle templatetype_t");
+      break;
+    case TYPE_PLACEHOLDER:
+      append_zname(e, ((placeholdertype_t*)t)->templateparam->name);
       break;
     default:
       assertf(0, "unexpected %s tag='%C'", nodekind_name(t->kind), tag);
@@ -231,10 +238,8 @@ static bool nsstack_grow(encoder_t* e) {
   } else {
     newv = mem_resizev(e->c->ma, oldv, cap, cap*2, sizeof(void*));
   }
-  if (!newv) {
-    e->ok = false;
+  if (!newv)
     return false;
-  }
   e->nsstack.v = newv;
   e->nsstack.cap = cap*2;
   return true;
@@ -254,7 +259,6 @@ static encoder_t mkencoder(const compiler_t* c, const pkg_t* pkg, buf_t* buf) {
     .c = c,
     .pkg = pkg,
     .buf = *buf,
-    .ok = true,
   };
   e.nsstack.v = e.nsstack.st;
   e.nsstack.cap = countof(e.nsstack.st);
@@ -268,13 +272,20 @@ static bool encoder_finalize(encoder_t* e, buf_t* buf) {
     e->nsstack.v = 0;
     e->nsstack.cap = 0;
   }
-  bool ok = buf_nullterm(&e->buf);
+
+  buf_nullterm(&e->buf);
+
+  bool ok = !e->buf.oom;
+  e->buf.oom = false;
   *buf = e->buf;
-  return ok & e->ok;
+
+  return ok;
 }
 
 
-bool compiler_mangle_type(const compiler_t* c, const pkg_t* pkg, buf_t* buf, const type_t* t) {
+bool compiler_mangle_type(
+  const compiler_t* c, const pkg_t* pkg, buf_t* buf, const type_t* t)
+{
   encoder_t e = mkencoder(c, pkg, buf);
   buf_reserve(buf, 16);
   type(&e, t);
@@ -282,7 +293,9 @@ bool compiler_mangle_type(const compiler_t* c, const pkg_t* pkg, buf_t* buf, con
 }
 
 
-bool compiler_mangle(const compiler_t* c, const pkg_t* pkg, buf_t* buf, const node_t* n) {
+bool compiler_mangle(
+  const compiler_t* c, const pkg_t* pkg, buf_t* buf, const node_t* n)
+{
   // package mypkg
   // namespace foo {
   //   fun bar() {}

@@ -1,13 +1,18 @@
 // type Bad<X,Y=int,Z> {} // error: required parameter following optional
 
-type Template<X,Y=int> // template def
+type Template<X,Y=int>
   x X
   y Y
+  //z ?Template<u8,u8>
+
+type Partial<T>
+  x Template<int,T>
 
 type Default
   x Template<uint/* Y defaults to int */>
 
 type Instance
-  x Template<int,uint> // template use
-  y Template<int,uint> // template use
-  z Template<int,Template<u8,int>> // template use
+  a Template<int,uint> // template use
+  b Template<int,uint> // template use
+  c Template<int,Template<int,u8>> // template use
+  d Partial<u8>

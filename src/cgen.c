@@ -428,9 +428,21 @@ static sym_t gen_struct_typename(cgen_t* g, const type_t* t, bool* is_shared) {
 }
 
 
+// TYPEDEF_STRUCTS: if defined, structs are typedef'ed and used as their name
+//#define TYPEDEF_STRUCTS
+
+
 static void gen_struct_typedef(cgen_t* g, const type_t* tp, sym_t typename) {
   const structtype_t* n = (const structtype_t*)tp;
-  PRINTF("typedef struct %s {", typename);
+  #ifdef TYPEDEF_STRUCTS
+    // must typedef before defining struct in case it refers to itself, e.g.
+    //   typedef struct mynode mynode;
+    //   struct mynode {
+    //     mynode* field;
+    //   }
+    PRINTF("typedef struct %s %s; ", typename, typename);
+  #endif
+  PRINTF("struct %s {", typename);
   if (n->fields.len == 0) {
     PRINT("u8 _unused;");
   } else {
@@ -464,11 +476,14 @@ static void gen_struct_typedef(cgen_t* g, const type_t* tp, sym_t typename) {
     if (g->lineno != start_lineno)
       startlinex(g);
   }
-  PRINTF("} %s;", typename);
+  PRINT("};");
 }
 
 
 static void structtype(cgen_t* g, const structtype_t* t) {
+  #if !defined(TYPEDEF_STRUCTS)
+    PRINT("struct ");
+  #endif
   PRINT(intern_typedef(g, (const type_t*)t, gen_struct_typename, gen_struct_typedef));
 }
 

@@ -265,12 +265,13 @@ static void flags(RPARAMS, const node_t* n) {
   // don't include NF_UNKNOWN for TYPE_UNKNOWN (always and obviously true)
   flags &= ~(NF_UNKNOWN * (nodeflag_t)(n->kind == TYPE_UNKNOWN));
 
-  if (flags & (NF_RVALUE | NF_OPTIONAL | NF_UNKNOWN | NF_TEMPLATE)) {
+  if (flags & (NF_RVALUE | NF_OPTIONAL | NF_UNKNOWN | NF_TEMPLATE | NF_TEMPLATEI)) {
     PRINT(" {");
-    if (flags & NF_RVALUE)   CHAR('r');
-    if (flags & NF_OPTIONAL) CHAR('o');
-    if (flags & NF_UNKNOWN)  CHAR('u');
-    if (flags & NF_TEMPLATE) CHAR('t');
+    if (flags & NF_RVALUE)    CHAR('r');
+    if (flags & NF_OPTIONAL)  CHAR('o');
+    if (flags & NF_UNKNOWN)   CHAR('u');
+    if (flags & NF_TEMPLATE)  CHAR('t');
+    if (flags & NF_TEMPLATEI) CHAR('i');
     CHAR('}');
   }
 }

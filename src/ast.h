@@ -651,15 +651,21 @@ node_t* nullable _ast_clone_node(memalloc_t ma, const void* srcnodep);
 
 
 // transformer
-typedef node_t* nullable(*ast_transformer_t)(node_t* n, void* nullable ctx);
-typedef void(*ast_transformerpost_t)(node_t* n, const node_t* orign, void* nullable ctx);
+// ast_transformer_t can return NULL to stop transformation
+typedef struct ast_transform_ ast_transform_t;
+
+typedef node_t* nullable(*ast_transformer_t)(
+  ast_transform_t* tr, node_t* n, void* nullable ctx);
+
 err_t ast_transform(
-  node_t*                        n,
-  memalloc_t                     ast_ma,
-  ast_transformer_t              trfn,
-  ast_transformerpost_t nullable postfn,
-  void* nullable                 ctx,
-  node_t**                       result);
+  node_t*           n,
+  memalloc_t        ast_ma,
+  ast_transformer_t trfn,
+  void* nullable    ctx,
+  node_t**          result);
+
+node_t* nullable ast_transform_children(
+  ast_transform_t* tr, node_t* n, void* nullable ctx);
 
 
 // funtype_params_origin returns the origin of parameters, e.g.

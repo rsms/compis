@@ -197,11 +197,12 @@ node_t** nullable ast_childit_next(ast_childit_t* itp) {
 // ast_transform
 
 
-typedef struct {
-  memalloc_t  ma;
-  memalloc_t  ast_ma;
-  nodearray_t seenstack;
-  err_t       err;
+typedef struct ast_transform_ {
+  ast_transformer_t trfn;
+  memalloc_t        ma;
+  memalloc_t        ast_ma;
+  nodearray_t       seenstack;
+  err_t             err;
 } ast_transform_t;
 
 
@@ -217,17 +218,9 @@ static bool ast_transform_clone(ast_transform_t* tr, node_t** np) {
 }
 
 
-static void* nullable ast_transform_visit(
-  ast_transform_t*               tr,
-  ast_transformer_t              trfn,
-  ast_transformerpost_t nullable postfn,
-  void* nullable                 ctx,
-  node_t*                        n)
-{
+static void* nullable ast_transform_child(ast_transform_t* tr, node_t* n, void* ctx) {
   if (tr->err)
     return n;
-
-  // break cycles
   for (u32 i = tr->seenstack.len; i > 0;) {
     if (tr->seenstack.v[--i] == n)
       return n;
@@ -236,21 +229,25 @@ static void* nullable ast_transform_visit(
     tr->err = ErrNoMem;
     return n;
   }
-
   //dlog("%s: %s", __FUNCTION__, nodekind_name(n->kind));
+  n = tr->trfn(tr, n, ctx);
+  tr->seenstack.len--; // pop
+  return n;
+}
 
-  // save original address of n
-  node_t* n1 = n;
 
-  // call user function
-  n = trfn(n, ctx);
-
-  // if the user function returned NULL, we are done
-  if (!n)
+node_t* nullable ast_transform_children(
+  ast_transform_t* tr, node_t* n, void* nullable ctx)
+{
+  if (tr->err)
     return n;
 
+  // initial node is top of stack; it was cloned if n is different
+  assert(tr->seenstack.len > 0);
+  bool is_clone = n != tr->seenstack.v[tr->seenstack.len - 1];
+
   // if n was replaced, register it in seenstack
-  if (n != n1) {
+  if (is_clone) {
     if UNLIKELY(!nodearray_push(&tr->seenstack, tr->ma, n)) {
       tr->err = ErrNoMem;
       return n;
@@ -260,9 +257,9 @@ static void* nullable ast_transform_visit(
   // visit expression's type
   if (node_isexpr(n) && ((expr_t*)n)->type) {
     expr_t* expr = (expr_t*)n;
-    type_t* type2 = ast_transform_visit(tr, trfn, postfn, ctx, (node_t*)expr->type);
+    type_t* type2 = ast_transform_child(tr, (node_t*)expr->type, ctx);
     if (type2 != expr->type) {
-      if UNLIKELY(n == n1 && !ast_transform_clone(tr, &n))
+      if UNLIKELY(!is_clone && !ast_transform_clone(tr, &n))
         return n;
       ((expr_t*)n)->type = type2;
     }
@@ -284,10 +281,10 @@ static void* nullable ast_transform_visit(
       FALLTHROUGH;
     case AST_FIELD_NODE: {
       node_t* cn = *(node_t**)fp;
-      node_t* cn2 = ast_transform_visit(tr, trfn, postfn, ctx, cn);
+      node_t* cn2 = ast_transform_child(tr, cn, ctx);
       if (cn2 == cn)
         break;
-      if UNLIKELY(n == n1) {
+      if UNLIKELY(!is_clone) {
         if (!ast_transform_clone(tr, &n))
           return n;
         fp = (void*)n + f.offs; // load new field pointer
@@ -300,10 +297,10 @@ static void* nullable ast_transform_visit(
       nodearray_t* na = fp;
       for (u32 i = 0, end = na->len; i < end; i++) {
         node_t* cn = na->v[i];
-        node_t* cn2 = ast_transform_visit(tr, trfn, postfn, ctx, cn);
+        node_t* cn2 = ast_transform_child(tr, cn, ctx);
         if (cn == cn2)
           continue;
-        if UNLIKELY(n == n1) {
+        if UNLIKELY(!is_clone) {
           if (!ast_transform_clone(tr, &n))
             return n;
           fp = (void*)n + f.offs; // load new field pointer
@@ -330,29 +327,28 @@ static void* nullable ast_transform_visit(
     } // switch
   }
 
-  tr->seenstack.len -= 1u + (u32)(n != n1); // pop
-
-  if (postfn)
-    postfn(n, n1, ctx);
+  if (is_clone)
+    tr->seenstack.len--; // pop
 
   return n;
 }
 
 
 err_t ast_transform(
-  node_t*                        n,
-  memalloc_t                     ast_ma,
-  ast_transformer_t              trfn,
-  ast_transformerpost_t nullable postfn,
-  void* nullable                 ctx,
-  node_t**                       result)
+  node_t*           n,
+  memalloc_t        ast_ma,
+  ast_transformer_t trfn,
+  void* nullable    ctx,
+  node_t**          result)
 {
   ast_transform_t tr = {
+    .trfn = trfn,
     .ma = memalloc_ctx(),
     .ast_ma = ast_ma,
   };
-
-  *result = ast_transform_visit(&tr, trfn, postfn, ctx, n);
-
+  if UNLIKELY(!nodearray_push(&tr.seenstack, tr.ma, n))
+    return ErrNoMem;
+  *result = trfn(&tr, n, ctx);
+  nodearray_dispose(&tr.seenstack, tr.ma);
   return tr.err;
 }
