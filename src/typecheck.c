@@ -1851,9 +1851,9 @@ static void binop(typecheck_t* a, binop_t* n) {
     }
   }
 
-  if UNLIKELY(!type_has_binop(a->compiler, n->type, n->op)) {
+  if UNLIKELY(!type_has_binop(a->compiler, n->left->type, n->op)) {
     error(a, n, "type %s has no '%s' operator defined",
-      fmtnode(a, 0, n->type), op_fmt(n->op));
+      fmtnode(a, 0, n->left->type), op_fmt(n->op));
   }
 }
 
