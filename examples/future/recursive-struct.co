@@ -1,0 +1,7 @@
+type Foo
+  a Foo    // error
+  // b &Foo   // error
+  // c *Foo   // error
+  // d ?Foo   // ok
+  // e ?&Foo  // ok
+  // f ?*Foo  // ok
