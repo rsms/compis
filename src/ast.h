@@ -299,6 +299,9 @@ typedef struct {
   templateparam_t* templateparam;
 } placeholdertype_t;
 
+// templatetype_t is an _instantation_ of a template.
+// Template _definitions_ are denoted by NF_TEMPLATE
+// with params at usertype_t.templateparams
 typedef struct {
   usertype_t;         // loc is opening "<"
   loc_t       endloc; // ">"

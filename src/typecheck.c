@@ -8,7 +8,7 @@
 #include <stdlib.h> // strtof
 
 // TRACE_TEMPLATE_EXPANSION: define to trace details about template instantiation
-#define TRACE_TEMPLATE_EXPANSION
+//#define TRACE_TEMPLATE_EXPANSION
 
 #define trace(fmt, va...) \
   _trace(opt_trace_typecheck, 4, "TC", "%*s" fmt, a->traceindent*2, "", ##va)
@@ -1087,7 +1087,7 @@ static void structtype(typecheck_t* a, structtype_t** tp) {
     return;
   // }
 
-  if (st->name && a->templatenest == 0)
+  if (st->name)
     st->mangledname = mangle(a, (node_t*)st);
 
   if (!(st->flags & NF_SUBOWNERS)) {
@@ -2917,10 +2917,12 @@ static void instantiate_templatetype(typecheck_t* a, templatetype_t** tp) {
     // typecheck the instance
     *(node_t**)tp = (node_t*)instance;
     type(a, (type_t**)tp);
-    //instance = (usertype_t*)*tp;
+
     assert((usertype_t*)*tp == (void*)instance); // assumption made by templateimap_add
     assert(instance != template);
     assert(nodekind_isusertype(instance->kind));
+    if (instance->kind == TYPE_STRUCT)
+      assert(((structtype_t*)instance)->mangledname != NULL);
   }
 
   #ifdef DEBUG

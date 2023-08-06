@@ -14,7 +14,22 @@
 typedef struct { usize v[2]; } sizetuple_t;
 
 
-#define trace(fmt, va...)  _trace(opt_trace_cgen, 6, "cgen", fmt, ##va)
+#define trace(fmt, va...) \
+  _trace(opt_trace_cgen, 6, "cgen", "%*s" fmt, g->traceindent, "", ##va)
+
+#ifdef DEBUG
+  #define trace_indentinc() (g->traceindent++)
+  #define trace_indentdec() (g->traceindent--)
+#else
+  #define trace_indentinc() ((void)0)
+  #define trace_indentdec() ((void)0)
+#endif
+
+
+// REPRNODE is used for trace and dlog
+#define REPRNODE_FMT "%s#%p %s"
+#define REPRNODE_ARGS(n, bufno) \
+  nodekind_name((n)->kind), (n), fmtnode(g,(bufno),(n)->type)
 
 
 bool cgen_init(
@@ -2247,11 +2262,15 @@ static void forexpr(cgen_t* g, const forexpr_t* n) {
 
 
 static void typedef_(cgen_t* g, const typedef_t* n) {
+  trace("typedef " REPRNODE_FMT, REPRNODE_ARGS(n, 0));
+  trace_indentinc();
+
   gentypename_t gentypename;
   gentypedef_t gentypedef;
 
   if (n->type->flags & NF_TEMPLATE) {
-    dlog("cgen: skipping template typedef %s", fmtnode(g, 0, n->type));
+    trace("skipping template typedef %s", fmtnode(g, 0, n->type));
+    trace_indentdec();
     return;
   }
 
@@ -2268,7 +2287,9 @@ static void typedef_(cgen_t* g, const typedef_t* n) {
     assertf(0, "unexpected %s", nodekind_name(n->type->kind));
     panic("typedef kind");
   }
+
   intern_typedef(g, n->type, gentypename, gentypedef);
+  trace_indentdec();
 }
 
 

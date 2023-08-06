@@ -1,3 +1,5 @@
+//import "std/runtime" { print }
+
 // type Bad<X,Y=int,Z> {} // error: required parameter following optional
 
 type Template<X,Y=int>
@@ -8,11 +10,23 @@ type Template<X,Y=int>
 type Partial<T>
   x Template<int,T>
 
-type Default
-  x Template<uint/* Y defaults to int */>
+// type Default
+//   x Template<uint/* Y defaults to int */>
 
 type Instance
-  a Template<int,uint> // template use
-  b Template<int,uint> // template use
+  // a Template<int,uint> // template use
+  // b Template<int,uint> // template use
   c Template<int,Template<int,u8>> // template use
-  d Partial<u8>
+  d Partial<u8>  // <——— cgen ISSUE!
+
+// fun makefoo<T>() Template<T>
+// fun blah(i Instance) {}
+
+// pub fun main() {
+//   // var bar Instance
+
+//   // type Foo { x int }
+//   // var Foo w
+
+//   // print("hej")
+// }

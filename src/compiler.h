@@ -169,6 +169,9 @@ typedef struct {
   map_t        tmpmap;
   ptrarray_t   funqueue;   // [fun_t*] queue of (nested) functions awaiting build
   const fun_t* nullable mainfun;
+  #ifdef DEBUG
+  int traceindent;
+  #endif
 } cgen_t;
 
 typedef struct {

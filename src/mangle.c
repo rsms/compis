@@ -22,6 +22,8 @@ typedef struct {
 
 #define TEMPLATE_TAG  'T' // template type, e.g. "type Foo<T> {}"
 #define TEMPLATEI_TAG 'I' // instance of template, e.g. "var x Foo<int>"
+// reserved:
+// - 'B' for compression back reference
 
 
 static u8 tagtab[NODEKIND_COUNT] = {
@@ -65,7 +67,7 @@ static void append_zname(encoder_t* e, const char* name) {
 static void start_path(encoder_t* e, const node_t* n) {
   if (n->flags & NF_TEMPLATEI)
     buf_push(&e->buf, TEMPLATEI_TAG);
-  if (nodekind_isusertype(n->kind)  && ((usertype_t*)n)->templateparams.len > 0)
+  if (n->flags & NF_TEMPLATE)
     buf_push(&e->buf, TEMPLATE_TAG);
   u8 tag = tagtab[n->kind];
   assertf(tag, "missing tag for %s", nodekind_name(n->kind));
@@ -192,38 +194,73 @@ static void funtype1(encoder_t* e, const funtype_t* ft) {
 
 static void type(encoder_t* e, const type_t* t) {
   assert(t->kind < NODEKIND_COUNT);
+  assert(nodekind_istype(t->kind));
+  //dlog("mangle type %s#%p", nodekind_name(t->kind), t);
+
   u8 tag = tagtab[t->kind];
   assertf(tag, "missing tag for %s", nodekind_name(t->kind));
+
+  // primitive types use lower-case characters
   if (tag > 'Z') {
     buf_push(&e->buf, tag);
     return;
   }
+
+  // TODO: compression; when the same name appears an Nth time, refer to the first
+  // definition instead of printing it again.
+  // e.g. instead of encoding "Foo<Bar,Bar>" as
+  //   INsM7example3FooYNsM7example3BarYNsM7example3Bar
+  // we should use back references for repeated names:
+  //
+  //      ——span1——    ——span2———
+  //   INsM7example3FooYNsB3_3BarBG_
+  //                      ~~~    ~~~
+  //                       1      2
+  //
+  // In Rust, back references have the form "B<base-62-number>_"
+  // See: C++/itanium and Rust does something like this.
+  // https://rust-lang.github.io/rfcs/
+  //   2603-rust-symbol-name-mangling-v0.html#compressionsubstitution
+
   switch (t->kind) {
-    case TYPE_REF:
-      buf_push(&e->buf, tag);
-      type(e, ((reftype_t*)t)->elem);
-      break;
-    case TYPE_STRUCT: {
-      const structtype_t* st = (structtype_t*)t;
-      if (st->mangledname) {
-        buf_print(&e->buf, st->mangledname);
-      } else {
-        assertf(0, "TODO anonymous struct");
-      }
-      break;
+
+  case TYPE_REF:
+    buf_push(&e->buf, tag);
+    type(e, ((reftype_t*)t)->elem);
+    break;
+
+  case TYPE_STRUCT: {
+    const structtype_t* st = (structtype_t*)t;
+    if (st->mangledname) {
+      buf_print(&e->buf, st->mangledname);
+    } else {
+      panic("TODO anonymous struct");
     }
-    case TYPE_FUN:
-      buf_push(&e->buf, tag);
-      funtype1(e, (funtype_t*)t);
-      break;
-    case TYPE_TEMPLATE:
-      dlog("TODO: mangle templatetype_t");
-      break;
-    case TYPE_PLACEHOLDER:
-      append_zname(e, ((placeholdertype_t*)t)->templateparam->name);
-      break;
-    default:
-      assertf(0, "unexpected %s tag='%C'", nodekind_name(t->kind), tag);
+    break;
+  }
+
+  case TYPE_FUN:
+    buf_push(&e->buf, tag);
+    funtype1(e, (funtype_t*)t);
+    break;
+
+  case TYPE_TEMPLATE: {
+    // templatetype_t is an instantation of a template
+    const templatetype_t* tt = (templatetype_t*)t;
+    buf_push(&e->buf, tag);
+    type(e, (type_t*)tt->recv);
+    for (u32 i = 0; i < tt->args.len; i++)
+      type(e, (type_t*)tt->args.v[i]);
+    break;
+  }
+
+  case TYPE_PLACEHOLDER:
+    buf_push(&e->buf, tag);
+    append_zname(e, ((placeholdertype_t*)t)->templateparam->name);
+    break;
+
+  default:
+    assertf(0, "unexpected %s tag='%C'", nodekind_name(t->kind), tag);
   }
 }
 
