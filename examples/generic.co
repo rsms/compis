@@ -2,10 +2,19 @@
 
 // type Bad<X,Y=int,Z> {} // error: required parameter following optional
 
-type Template<X,Y=int>
+type Cyclic
+  x ?*Cyclic
+
+pub type Template<X,Y=int>
   x X
   y Y
-  //z ?Template<u8,u8>
+  z Cyclic
+
+pub type Foo
+  x ?Bar
+
+type Bar
+  x int
 
 type Partial<T>
   x Template<int,T>
@@ -13,11 +22,33 @@ type Partial<T>
 // type Default
 //   x Template<uint/* Y defaults to int */>
 
-type Instance
+pub type Instance
   // a Template<int,uint> // template use
   // b Template<int,uint> // template use
   c Template<int,Template<int,u8>> // template use
-  d Partial<u8>  // <——— cgen ISSUE!
+  d Partial<u8>
+
+// type T1
+//   x T2
+// type T2
+//   y ?*T1
+
+type BarArray [Bar]
+type BarSlice &[Bar]
+type u8Array [u8]
+type u8Slice &[u8]
+type BarRef &Bar
+type u8ArrayArray [[u8]]
+
+pub "C" fun something(int) int
+
+fun f1(x int) int
+  f2(x)
+
+fun f2(x int) int
+  if x > 0
+    f1(x - 1)
+  x
 
 // fun makefoo<T>() Template<T>
 // fun blah(i Instance) {}

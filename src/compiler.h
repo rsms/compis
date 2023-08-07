@@ -140,12 +140,6 @@ typedef struct {
   #endif
 } parser_t;
 
-typedef struct {
-  sym_t          name;      // available name of decl
-  sym_t nullable othername; // alternate name
-  node_t*        decl;
-} didyoumean_t;
-
 #define CGEN_EXE (1u << 0) // generating code for an executable
 
 typedef struct {
@@ -167,7 +161,6 @@ typedef struct {
   usize        indent;
   map_t        typedefmap;
   map_t        tmpmap;
-  ptrarray_t   funqueue;   // [fun_t*] queue of (nested) functions awaiting build
   const fun_t* nullable mainfun;
   #ifdef DEBUG
   int traceindent;
@@ -180,6 +173,7 @@ typedef struct {
   map_t   pkg_typedefs; // type definitions for all PKG- & PUB-visibility interfaces
   // note: pkgapidata and pkgtypedefs are allocated in cgen_t.ma, it's the
   // responsibility of the cgen_pkgapi caller to free these with cgen_pkgapi_dispose.
+  nodearray_t defs;
 } cgen_pkgapi_t;
 
 typedef struct { // compiler_config_t
@@ -337,9 +331,8 @@ err_t pkgindex_add(compiler_t* c, pkg_t* pkg);
 bool cgen_init(
   cgen_t* g, compiler_t* c, const pkg_t*, memalloc_t out_ma, u32 flags);
 void cgen_dispose(cgen_t* g);
-err_t cgen_unit_impl(
-  cgen_t* g, const unit_t* unit, const cgen_pkgapi_t* nullable pkgapi);
-err_t cgen_pkgapi(cgen_t* g, const unit_t** unitv, u32 unitc, cgen_pkgapi_t* result);
+err_t cgen_unit_impl(cgen_t* g, unit_t* unit, cgen_pkgapi_t* pkgapi);
+err_t cgen_pkgapi(cgen_t* g, unit_t** unitv, u32 unitc, cgen_pkgapi_t* result);
 void cgen_pkgapi_dispose(cgen_t* g, cgen_pkgapi_t* result);
 
 // co_strlit_check validates a compis string literal while calculating

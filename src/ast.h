@@ -18,6 +18,7 @@ typedef u8 nodekind_t;
   _( NODE_UNIT,     unit_t,          'UNIT')\
   _( NODE_IMPORTID, importid_t,      'IMID')\
   _( NODE_TPLPARAM, templateparam_t, 'TPAR')\
+  _( NODE_FWDDECL,  fwddecl_t,       'FDCL')\
 // end FOREACH_NODEKIND
 #define FOREACH_NODEKIND_STMT(_) /* nodekind_t, TYPE, enctag */ \
   /* statements */\
@@ -110,19 +111,21 @@ typedef u16 nodeflag_t;
 #define NF_VIS_UNIT    ((nodeflag_t)0)      // visible within same source file
 #define NF_VIS_PKG     ((nodeflag_t)1<< 0)  // visible within same package
 #define NF_VIS_PUB     ((nodeflag_t)1<< 1)  // visible to other packages
-// #define NF_VIS_     ((nodeflag_t)1<< 2)  // spare bit (0b11)
-#define NF_CHECKED     ((nodeflag_t)1<< 3)  // has been typecheck'ed (or doesn't need it)
-#define NF_RVALUE      ((nodeflag_t)1<< 4)  // expression is used as an rvalue
-#define NF_OPTIONAL    ((nodeflag_t)1<< 5)  // type-narrowed from optional
-#define NF_UNKNOWN     ((nodeflag_t)1<< 6)  // has or contains unresolved identifier
-#define NF_NAMEDPARAMS ((nodeflag_t)1<< 7)  // function has named parameters
-#define NF_DROP        ((nodeflag_t)1<< 8)  // type has drop() function
-#define NF_SUBOWNERS   ((nodeflag_t)1<< 9)  // type has owning elements
-#define NF_EXIT        ((nodeflag_t)1<< 10) // block exits (i.e. "return" or "break")
-#define NF_CONST       ((nodeflag_t)1<< 10) // [anything but block] is a constant
-#define NF_PKGNS       ((nodeflag_t)1<< 11) // [namespace] is a package API
-#define NF_TEMPLATE    ((nodeflag_t)1<< 12) // templatized with templateparam_t
-#define NF_TEMPLATEI   ((nodeflag_t)1<< 13) // instance of template
+#define NF_CHECKED     ((nodeflag_t)1<< 2)  // has been typecheck'ed (or doesn't need it)
+#define NF_RVALUE      ((nodeflag_t)1<< 3)  // expression is used as an rvalue
+#define NF_OPTIONAL    ((nodeflag_t)1<< 4)  // type-narrowed from optional
+#define NF_UNKNOWN     ((nodeflag_t)1<< 5)  // has or contains unresolved identifier
+#define NF_NAMEDPARAMS ((nodeflag_t)1<< 6)  // function has named parameters
+#define NF_DROP        ((nodeflag_t)1<< 7)  // type has drop() function
+#define NF_SUBOWNERS   ((nodeflag_t)1<< 8)  // type has owning elements
+#define NF_EXIT        ((nodeflag_t)1<< 9)  // block exits (i.e. "return" or "break")
+#define NF_CONST       ((nodeflag_t)1<< 9)  // [anything but block] is a constant
+#define NF_PKGNS       ((nodeflag_t)1<< 10) // [namespace] is a package API
+#define NF_TEMPLATE    ((nodeflag_t)1<< 11) // templatized with templateparam_t
+#define NF_TEMPLATEI   ((nodeflag_t)1<< 12) // instance of template
+#define NF_CYCLIC      ((nodeflag_t)1<< 13) // [usertype] references itself
+#define NF_MARK1       ((nodeflag_t)1<< 14) // general-use marker
+#define NF_MARK2       ((nodeflag_t)1<< 15) // general-use marker
 
 typedef nodeflag_t nodevis_t; // symbolic
 static_assert(0 < NF_VIS_PKG, "");
@@ -222,6 +225,11 @@ typedef struct node_ {
 
 typedef struct {
   node_t;
+  node_t* decl;
+} fwddecl_t;
+
+typedef struct {
+  node_t;
 } stmt_t;
 
 typedef struct import_t import_t;
@@ -285,7 +293,8 @@ typedef struct {
   // If flags&NF_TEMPLATE: list of templateparam_t*
   // If flags&NF_TEMPLATEI: list of parameter arguments (node_t*)
   // Note: NF_TEMPLATEI is set on instances of templatetype_t.
-  nodearray_t templateparams;
+  nodearray_t    templateparams;
+  char* nullable mangledname; // allocated in ast_ma
 } usertype_t;
 
 typedef struct {
@@ -311,11 +320,6 @@ typedef struct {
 
 typedef struct {
   usertype_t;
-  type_t* elem;
-} ptrtype_t;
-
-typedef struct {
-  usertype_t;
   nodearray_t members;
 } nstype_t;
 
@@ -323,9 +327,26 @@ typedef struct {
   usertype_t;
   sym_t            name;
   type_t*          elem;
-  char* nullable   mangledname; // mangled name, created in ast_ma by typecheck
   node_t* nullable nsparent;    // TODO: generalize to just "parent"
 } aliastype_t;
+
+typedef struct {
+  usertype_t;
+  type_t* elem;
+} ptrtype_t;
+
+typedef struct {
+  ptrtype_t;
+} reftype_t;
+
+typedef struct {
+  ptrtype_t;
+  loc_t endloc; // "]"
+} slicetype_t;
+
+typedef struct {
+  ptrtype_t;
+} opttype_t;
 
 typedef struct {
   ptrtype_t;
@@ -345,26 +366,12 @@ typedef struct {
 
 typedef struct {
   usertype_t;
-  sym_t nullable   name;        // NULL if anonymous
-  char* nullable   mangledname; // mangled name, created in ast_ma by typecheck
-  nodearray_t      fields;      // local_t*[]
-  node_t* nullable nsparent;    // TODO: generalize to just "parent"
-  bool             hasinit;     // true if at least one field has an initializer
+  sym_t nullable   name;     // NULL if anonymous
+  nodearray_t      fields;   // local_t*[]
+  node_t* nullable nsparent; // TODO: generalize to just "parent"
+  bool             hasinit;  // true if at least one field has an initializer
   // TODO: move hasinit to nodeflag_t
 } structtype_t;
-
-typedef struct {
-  ptrtype_t;
-} reftype_t;
-
-typedef struct {
-  ptrtype_t;
-  loc_t endloc; // "]"
-} slicetype_t;
-
-typedef struct {
-  ptrtype_t;
-} opttype_t;
 
 typedef struct {
   sym_t   name;
@@ -467,7 +474,7 @@ typedef struct fun_ { // fun is a declaration (stmt) or an expression depending 
   loc_t             nameloc;      // source location of name
   block_t* nullable body;         // NULL if function is a prototype
   type_t* nullable  recvt;        // non-NULL for type functions (type of "this")
-  char* nullable    mangledname;  // mangled name, created in ast_ma by typecheck
+  char* nullable    mangledname;  // mangled name, created in ast_ma
   loc_t             paramsloc;    // location of "(" ...
   loc_t             paramsendloc; // location of ")"
   loc_t             resultloc;    // location of result
@@ -525,7 +532,9 @@ inline static bool nodekind_isptrtype(nodekind_t kind) { return kind == TYPE_PTR
 inline static bool nodekind_isreftype(nodekind_t kind) {
   return kind == TYPE_REF || kind == TYPE_MUTREF; }
 inline static bool nodekind_isptrliketype(nodekind_t kind) {
-  return kind == TYPE_PTR || kind == TYPE_REF || kind == TYPE_MUTREF; }
+  return kind == TYPE_PTR
+      || kind == TYPE_REF
+      || kind == TYPE_MUTREF; }
 inline static bool nodekind_isslicetype(nodekind_t kind) {
   return kind == TYPE_SLICE || kind == TYPE_MUTSLICE; }
 inline static bool nodekind_isvar(nodekind_t kind) {

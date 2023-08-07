@@ -34,6 +34,9 @@ static const ast_field_t k_fieldsof_unit_t[] = {
   // TODO: tfuns
   // TODO: importlist
 };
+static const ast_field_t k_fieldsof_fwddecl_t[] = {
+  FIELD_ID(fwddecl_t, decl, NODE),
+};
 static const ast_field_t k_fieldsof_typedef_t[] = {
   FIELD_ID(typedef_t, type, NODE),
 };

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "colib.h"
 #include "compiler.h"
+#include "hashtable.h"
+#include "hash.h"
 
 // see https://refspecs.linuxbase.org/cxxabi-1.86.html#mangling
 // see https://rust-lang.github.io/rfcs/2603-rust-symbol-name-mangling-v0.html
@@ -13,19 +15,30 @@ typedef struct {
 } nsstack_t;
 
 typedef struct {
+  const node_t* n;
+  usize         offs; // byte offset into buf
+} offstab_ent_t;
+
+typedef struct {
   const compiler_t* c;
   const pkg_t*      pkg;
   buf_t             buf;
   nsstack_t         nsstack;
+  hashtable_t       offstab; // table of offstab_ent_t
 } encoder_t;
 
 
 #define TEMPLATE_TAG  'T' // template type, e.g. "type Foo<T> {}"
 #define TEMPLATEI_TAG 'I' // instance of template, e.g. "var x Foo<int>"
-// reserved:
-// - 'B' for compression back reference
+#define BACKREF_TAG   'B' // back reference "B<base-62-number>_"
 
-
+// tags
+//
+// ——IMPORTANT——
+// Changing these will:
+// - REQUIRE manual update of type definitions in coprelude.h
+// - invalidate all existing metafiles
+//
 static u8 tagtab[NODEKIND_COUNT] = {
   [NODE_UNIT] = 'M',
   // primitive types use lower-case characters
@@ -40,17 +53,29 @@ static u8 tagtab[NODEKIND_COUNT] = {
   [TYPE_F64]  = 'd',
 
   // all other types use upper-case characters (must be <='Z')
-  // [TYPE_ARRAY] = '?',
-  [TYPE_PTR] = 'P',
-  [TYPE_REF] = 'R',
-  // [TYPE_OPTIONAL] = '?',
-  [TYPE_ALIAS]  = 'A',
-  [TYPE_FUN]    = 'F',
-  [TYPE_STRUCT] = 'N',
-  [EXPR_FUN]    = 'N',
+  [TYPE_PTR]         = 'P',
+  [TYPE_REF]         = 'R',
+  [TYPE_OPTIONAL]    = 'O',
+  [TYPE_ARRAY]       = 'A',
+  [TYPE_SLICE]       = 'S',
+  [TYPE_MUTSLICE]    = 'D',
+  [TYPE_ALIAS]       = 'A',
+  [TYPE_FUN]         = 'F',
+  [TYPE_STRUCT]      = 'N',
+  [EXPR_FUN]         = 'N',
   [TYPE_PLACEHOLDER] = 'H',
-  [TYPE_TEMPLATE] = 'Y',
+  [TYPE_TEMPLATE]    = TEMPLATEI_TAG,
 };
+
+
+static bool offstab_ent_eqfn(const void* ent1, const void* ent2) {
+  return ((offstab_ent_t*)ent1)->n == ((offstab_ent_t*)ent2)->n;
+}
+
+static usize offstab_ent_hashfn(usize seed, const void* entp) {
+  const offstab_ent_t* ent = entp;
+  return wyhash64((uintptr)ent->n, seed);
+}
 
 
 static void type(encoder_t* e, const type_t* t);
@@ -64,7 +89,25 @@ static void append_zname(encoder_t* e, const char* name) {
 }
 
 
+static usize offstab_add(encoder_t* e, const node_t* n, usize offs) {
+  offstab_ent_t offstab_key = { .n=n, .offs=offs };
+  bool added;
+  offstab_ent_t* ent = hashtable_assign(
+    &e->offstab, offstab_ent_hashfn, offstab_ent_eqfn,
+    sizeof(offstab_ent_t), &offstab_key, &added);
+  if (!ent) {
+    e->buf.oom = true;
+    return 0;
+  }
+  if (!added)
+    return ent->offs;
+  return 0;
+}
+
+
 static void start_path(encoder_t* e, const node_t* n) {
+  UNUSED usize offs = offstab_add(e, n, e->buf.len);
+  assertf(offs == 0, "duplicate");
   if (n->flags & NF_TEMPLATEI)
     buf_push(&e->buf, TEMPLATEI_TAG);
   if (n->flags & NF_TEMPLATE)
@@ -192,6 +235,24 @@ static void funtype1(encoder_t* e, const funtype_t* ft) {
 }
 
 
+static const char k_base62chars[] = {
+  "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"};
+
+// 0xffffffffffffffff => "LygHa16AHYF"
+#define BASE62_U64_MAX 11
+
+static usize base62_enc_u64(char dst[BASE62_U64_MAX], u64 val) {
+  char* p = dst;
+  u64 rem;
+  while (val > 0) {
+    rem = val % 62;
+    val = val / 62;
+    *p++ = k_base62chars[rem];
+  }
+  return (usize)(uintptr)(p - dst);
+}
+
+
 static void type(encoder_t* e, const type_t* t) {
   assert(t->kind < NODEKIND_COUNT);
   assert(nodekind_istype(t->kind));
@@ -205,6 +266,7 @@ static void type(encoder_t* e, const type_t* t) {
     buf_push(&e->buf, tag);
     return;
   }
+
 
   // TODO: compression; when the same name appears an Nth time, refer to the first
   // definition instead of printing it again.
@@ -221,12 +283,29 @@ static void type(encoder_t* e, const type_t* t) {
   // See: C++/itanium and Rust does something like this.
   // https://rust-lang.github.io/rfcs/
   //   2603-rust-symbol-name-mangling-v0.html#compressionsubstitution
+  //
+  UNUSED usize offs = offstab_add(e, (node_t*)t, e->buf.len);
+  if (offs > 0) {
+    if (buf_reserve(&e->buf, BASE62_U64_MAX+2)) {
+      e->buf.chars[e->buf.len++] = BACKREF_TAG;
+      e->buf.len += base62_enc_u64(&e->buf.chars[e->buf.len], offs);
+      e->buf.chars[e->buf.len++] = '_';
+    }
+    //dlog("backref '%.*s'", (int)e->buf.len, e->buf.chars);
+    return;
+  }
 
   switch (t->kind) {
 
+  case TYPE_PTR:
   case TYPE_REF:
+  case TYPE_MUTREF:
+  case TYPE_SLICE:
+  case TYPE_MUTSLICE:
+  case TYPE_ARRAY:
+  case TYPE_OPTIONAL:
     buf_push(&e->buf, tag);
-    type(e, ((reftype_t*)t)->elem);
+    type(e, ((ptrtype_t*)t)->elem);
     break;
 
   case TYPE_STRUCT: {
@@ -234,7 +313,14 @@ static void type(encoder_t* e, const type_t* t) {
     if (st->mangledname) {
       buf_print(&e->buf, st->mangledname);
     } else {
-      panic("TODO anonymous struct");
+      // anonymous struct
+      //   TAG nfields typeof(field0) typeof(field1) ... typeof(fieldN)
+      buf_push(&e->buf, tag);
+      buf_print_u32(&e->buf, st->fields.len, 10);
+      for (u32 i = 0; i < st->fields.len; i++) {
+        const local_t* field = (local_t*)st->fields.v[i];
+        type(e, field->type);
+      }
     }
     break;
   }
@@ -291,15 +377,20 @@ static bool nsstack_push(encoder_t* e, const node_t* n) {
 }
 
 
-static encoder_t mkencoder(const compiler_t* c, const pkg_t* pkg, buf_t* buf) {
-  encoder_t e = {
-    .c = c,
-    .pkg = pkg,
-    .buf = *buf,
-  };
-  e.nsstack.v = e.nsstack.st;
-  e.nsstack.cap = countof(e.nsstack.st);
-  return e;
+static bool encoder_init(
+  encoder_t* e, const compiler_t* c, const pkg_t* pkg, buf_t* buf)
+{
+  memset(e, 0, sizeof(*e));
+
+  e->c = c;
+  e->pkg = pkg;
+  e->buf = *buf;
+  e->nsstack.v = e->nsstack.st;
+  e->nsstack.cap = countof(e->nsstack.st);
+
+  err_t err = hashtable_init(&e->offstab, e->c->ma, sizeof(offstab_ent_t), 16);
+
+  return err == 0;
 }
 
 
@@ -310,6 +401,7 @@ static bool encoder_finalize(encoder_t* e, buf_t* buf) {
     e->nsstack.cap = 0;
   }
 
+  hashtable_dispose(&e->offstab, sizeof(offstab_ent_t));
   buf_nullterm(&e->buf);
 
   bool ok = !e->buf.oom;
@@ -323,10 +415,19 @@ static bool encoder_finalize(encoder_t* e, buf_t* buf) {
 bool compiler_mangle_type(
   const compiler_t* c, const pkg_t* pkg, buf_t* buf, const type_t* t)
 {
-  encoder_t e = mkencoder(c, pkg, buf);
+  encoder_t e;
+  if (!encoder_init(&e, c, pkg, buf))
+    return false;
   buf_reserve(buf, 16);
   type(&e, t);
   return encoder_finalize(&e, buf);
+}
+
+
+static bool encoder_finalize_ptrtype(encoder_t* e, buf_t* buf, const ptrtype_t* t) {
+  type(e, t->elem);
+  //buf_print(&e->buf, CO_TYPE_SUFFIX);
+  return encoder_finalize(e, buf);
 }
 
 
@@ -355,13 +456,29 @@ bool compiler_mangle(
   if (n->kind == EXPR_FUN && ((fun_t*)n)->abi == ABI_C)
     return buf_print(buf, ((fun_t*)n)->name);
 
-  encoder_t e = mkencoder(c, pkg, buf);
+  encoder_t e;
+  if (!encoder_init(&e, c, pkg, buf))
+    return false;
 
-  buf_reserve(buf, 64);
+  buf_reserve(&e.buf, 64);
 
   // // common prefix
-  // buf_push(buf, '_');
-  // buf_push(buf, 'C');
+  // buf_push(&e.buf, '_');
+  // buf_push(&e.buf, 'C');
+
+  switch (n->kind) {
+    case TYPE_OPTIONAL:
+      buf_print(&e.buf, CO_TYPE_PREFIX "opt_");
+      return encoder_finalize_ptrtype(&e, buf, (ptrtype_t*)n);
+    case TYPE_ARRAY:
+      buf_print(&e.buf, CO_TYPE_PREFIX "array_");
+      return encoder_finalize_ptrtype(&e, buf, (ptrtype_t*)n);
+    case TYPE_SLICE:
+      buf_print(&e.buf, CO_TYPE_PREFIX);
+      buf_print(&e.buf, // "mutslice_" or "slice_"
+        &"mutslice_"[3lu*(usize)(((slicetype_t*)n)->kind == TYPE_SLICE)]);
+      return encoder_finalize_ptrtype(&e, buf, (ptrtype_t*)n);
+  }
 
   // path
   const node_t* ns = n;
@@ -395,13 +512,6 @@ bool compiler_mangle(
 endpath:
   for (u32 i = e.nsstack.len; i;)
     end_path(&e, e.nsstack.v[--i]);
-
-  // TODO: append types for generic functions, structs, arrays:
-  // // type
-  // if (n->kind == EXPR_FUN) {
-  //   // e.g. "fun foo(x, y i32) i8" => "Nf3fooTiiEa"
-  //   funtype1(&e, (funtype_t*)((fun_t*)n)->type);
-  // }
 
   return encoder_finalize(&e, buf);
 }

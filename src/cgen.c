@@ -29,7 +29,7 @@ typedef struct { usize v[2]; } sizetuple_t;
 // REPRNODE is used for trace and dlog
 #define REPRNODE_FMT "%s#%p %s"
 #define REPRNODE_ARGS(n, bufno) \
-  nodekind_name((n)->kind), (n), fmtnode(g,(bufno),(n)->type)
+  nodekind_name((n)->kind), (n), fmtnode(g,(bufno),(n))
 
 
 bool cgen_init(
@@ -60,7 +60,25 @@ void cgen_dispose(cgen_t* g) {
   map_dispose(&g->typedefmap, g->ma);
   buf_dispose(&g->outbuf);
   buf_dispose(&g->headbuf);
-  ptrarray_dispose(&g->funqueue, g->ma);
+}
+
+
+static void cgen_reset(cgen_t* g) {
+  buf_clear(&g->outbuf);
+  buf_clear(&g->headbuf);
+  g->headoffs = 0;
+  g->headnest = 0;
+  g->headlineno = 0;
+  g->headsrcfileid = 0;
+  g->srcfileid = 0;
+  g->lineno = 0;
+  g->scopenest = 0;
+  g->err = 0;
+  g->anon_idgen = 0;
+  g->indent = 0;
+  map_clear(&g->typedefmap);
+  map_clear(&g->tmpmap);
+  g->mainfun = NULL;
 }
 
 
@@ -201,10 +219,24 @@ static void x_semi_end(cgen_t* g, sizetuple_t startlens) {
 }
 
 
-static void type(cgen_t* g, const type_t*);
-static void expr(cgen_t* g, const expr_t*);
-static void expr_rvalue(cgen_t* g, const expr_t* n, const type_t* dst_type);
-static void intconst(cgen_t* g, u64 value, const type_t* t);
+static char* mangle(cgen_t* g, const node_t* n) {
+  buf_t* buf = tmpbuf_get(0);
+  if (compiler_mangle(g->compiler, g->pkg, buf, n)) {
+    memalloc_t ast_ma = g->ma; // FIXME pass acutual ast_ma to cgen
+    char* s = mem_strdup(ast_ma, buf_slice(*buf), 0);
+    if (s)
+      return s;
+  }
+  seterr(g, ErrNoMem);
+  static char last_resort[1] = {0};
+  return last_resort;
+}
+
+
+static void gen_type(cgen_t* g, const type_t*);
+static void gen_expr(cgen_t* g, const expr_t*);
+static void gen_expr_rvalue(cgen_t* g, const expr_t* n, const type_t* dst_type);
+static void gen_intconst(cgen_t* g, u64 value, const type_t* t);
 
 
 static const char* operator(op_t op) {
@@ -283,19 +315,6 @@ static const char* operator(op_t op) {
 }
 
 
-#if DEBUG
-  static bool type_is_interned_def(const type_t* t) {
-    return t->kind == TYPE_STRUCT
-        || t->kind == TYPE_OPTIONAL
-        || t->kind == TYPE_ALIAS
-        || t->kind == TYPE_ARRAY
-        || t->kind == TYPE_SLICE
-        || t->kind == TYPE_MUTSLICE
-        ;
-  }
-#endif
-
-
 static const type_t* unwind_aliastypes(const type_t* t) {
   while (t->kind == TYPE_ALIAS)
     t = assertnotnull(((aliastype_t*)t)->elem);
@@ -303,109 +322,9 @@ static const type_t* unwind_aliastypes(const type_t* t) {
 }
 
 
-static void print_mangledname_of_type(cgen_t* g, const type_t* t) {
-  if (t->kind == TYPE_STRUCT) {
-    buf_print(&g->outbuf, assertnotnull(((structtype_t*)t)->mangledname));
-  } else if (t->kind == TYPE_ALIAS) {
-    buf_print(&g->outbuf, assertnotnull(((aliastype_t*)t)->mangledname));
-  } else {
-    compiler_mangle_type(g->compiler, g->pkg, &g->outbuf, t);
-  }
-}
-
-
-typedef sym_t(*gentypename_t)(cgen_t* g, const type_t* t, bool* is_shared);
-typedef void(*gentypedef_t)(cgen_t* g, const type_t* t, sym_t name);
-
-
-static sym_t intern_typedef(
-  cgen_t* g, const type_t* t, gentypename_t gentypename, gentypedef_t gentypedef)
-{
-  assertf(type_is_interned_def(t), "update type_is_interned_def");
-  const void* key = t;
-  if (t->kind == TYPE_OPTIONAL)
-    key = (void*)(uintptr)typeid_intern((type_t*)t);
-
-  sym_t* vp = (sym_t*)map_assign_ptr(&g->typedefmap, g->ma, key);
-  if UNLIKELY(!vp)
-    return seterr(g, ErrNoMem), sym__;
-  if (*vp) {
-    // already generated
-    return *vp;
-  }
-
-  trace("%*.s%s %s %s",
-    (int)g->headnest*2, "", __FUNCTION__, nodekind_name(t->kind), fmtnode(g, 0, t));
-
-  // saved values
-  u32 lineno, srcfileid, indent;
-
-  // save & replace outbuf
-  buf_t outbuf = g->outbuf;
-  usize insert_offs = g->headoffs;
-  if (g->headnest) {
-    g->outbuf = buf_make(g->ma);
-  } else {
-    g->outbuf = g->headbuf;
-    indent = g->indent;
-    lineno = g->lineno;
-    srcfileid = g->srcfileid;
-    g->indent = 0;
-    g->lineno = g->headlineno;
-    g->srcfileid = g->headsrcfileid;
-  }
-
-  g->headnest++;
-
-  // generate, appending to g->outbuf
-  bool is_shared = false;
-  sym_t name = gentypename(g, t, &is_shared);
-  *vp = name;
-  // For common types like str_t which appear in many units, we need to guard the
-  // typedef to prevent duplicate definitions when an API header is included in
-  // many units. However, we don't need to do this inside a unit implementation
-  // file since we track package-wide what definitons have been generated in the
-  // shared "package header."
-  if (is_shared) {
-    PRINTF("\n#ifndef __co_DEF_%s", name), g->lineno++;
-    PRINTF("\n#define __co_DEF_%s", name), g->lineno++;
-  }
-  startline(g, t->loc);
-  gentypedef(g, t, name);
-  if (is_shared) {
-    PRINT("\n#endif"), g->lineno++;
-  } else {
-    CHAR('\n'), g->lineno++;
-  }
-
-  g->headnest--;
-
-  // restore outbuf
-  buf_t buf = g->outbuf;
-  g->outbuf = outbuf;
-
-  if (g->headnest) {
-    if (!buf_insert(&g->outbuf, insert_offs, buf.p, buf.len))
-      seterr(g, ErrNoMem);
-    buf_dispose(&buf);
-  } else {
-    g->headbuf = buf;
-    g->headlineno = g->lineno;
-    g->headsrcfileid = g->srcfileid;
-    g->lineno = lineno;
-    g->srcfileid = srcfileid;
-    g->indent = indent;
-  }
-
-  g->headoffs = buf.len;
-
-  return name;
-}
-
-
-static void funtype(cgen_t* g, const funtype_t* t, const char* nullable name) {
+static void gen_funtype(cgen_t* g, const funtype_t* t, const char* nullable name) {
   // void(*name)(args)
-  type(g, t->result);
+  gen_type(g, t->result);
   PRINT("(*");
   if (!name || name == sym__) {
     PRINTF(ANON_FMT, g->anon_idgen++);
@@ -422,7 +341,7 @@ static void funtype(cgen_t* g, const funtype_t* t, const char* nullable name) {
       // if (!type_isprim(param->type) && !param->ismut)
       //   PRINT("const ");
       if (i) PRINT(", ");
-      type(g, param->type);
+      gen_type(g, param->type);
       if (param->name && param->name != sym__) {
         CHAR(' ');
         PRINT(param->name);
@@ -433,39 +352,27 @@ static void funtype(cgen_t* g, const funtype_t* t, const char* nullable name) {
 }
 
 
-static sym_t gen_struct_typename(cgen_t* g, const type_t* t, bool* is_shared) {
-  const structtype_t* st = (const structtype_t*)t;
-  if (st->mangledname)
-    return sym_intern(st->mangledname, strlen(st->mangledname));
-  char buf[strlen(CO_TYPE_PREFIX "structXXXXXXXX.")];
-  return sym_snprintf(buf, sizeof(buf),
-    CO_TYPE_PREFIX "struct%x" CO_TYPE_SUFFIX, g->anon_idgen++);
+
+static void gen_structtype(cgen_t* g, const structtype_t* st) {
+  if (st->mangledname) {
+    PRINT("struct "), PRINT(st->mangledname);
+  } else {
+    PRINTF("struct " CO_TYPE_PREFIX "struct%lx" CO_TYPE_SUFFIX, (uintptr)st);
+  }
 }
 
 
-// TYPEDEF_STRUCTS: if defined, structs are typedef'ed and used as their name
-//#define TYPEDEF_STRUCTS
-
-
-static void gen_struct_typedef(cgen_t* g, const type_t* tp, sym_t typename) {
-  const structtype_t* n = (const structtype_t*)tp;
-  #ifdef TYPEDEF_STRUCTS
-    // must typedef before defining struct in case it refers to itself, e.g.
-    //   typedef struct mynode mynode;
-    //   struct mynode {
-    //     mynode* field;
-    //   }
-    PRINTF("typedef struct %s %s; ", typename, typename);
-  #endif
-  PRINTF("struct %s {", typename);
-  if (n->fields.len == 0) {
+static void gen_structtype_def(cgen_t* g, structtype_t* st) {
+  startline(g, st->loc);
+  gen_structtype(g, st), PRINT(" {");
+  if (st->fields.len == 0) {
     PRINT("u8 _unused;");
   } else {
     g->indent++;
     u32 start_lineno = g->lineno;
     const type_t* t = NULL;
-    for (u32 i = 0; i < n->fields.len; i++) {
-      const local_t* f = (local_t*)n->fields.v[i];
+    for (u32 i = 0; i < st->fields.len; i++) {
+      const local_t* f = (local_t*)st->fields.v[i];
       bool newline = loc_line(f->loc) != g->lineno;
       if (newline) {
         if (i) CHAR(';');
@@ -475,10 +382,10 @@ static void gen_struct_typedef(cgen_t* g, const type_t* tp, sym_t typename) {
       if (f->type != t) {
         if (i && !newline) PRINT("; ");
         if (f->type->kind == TYPE_FUN) {
-          funtype(g, (const funtype_t*)f->type, f->name);
+          gen_funtype(g, (const funtype_t*)f->type, f->name);
           continue;
         }
-        type(g, f->type);
+        gen_type(g, f->type);
         CHAR(' ');
         t = f->type;
       } else {
@@ -495,88 +402,68 @@ static void gen_struct_typedef(cgen_t* g, const type_t* tp, sym_t typename) {
 }
 
 
-static void structtype(cgen_t* g, const structtype_t* t) {
-  #if !defined(TYPEDEF_STRUCTS)
-    PRINT("struct ");
-  #endif
-  PRINT(intern_typedef(g, (const type_t*)t, gen_struct_typename, gen_struct_typedef));
+// static void maybe_gen_ptrtype_defguard(cgen_t* g, const ptrtype_t* t) {
+//   if (nodekind_isprimtype(t->elem->kind)) {
+//     assertnotnull(t->mangledname);
+//     PRINTF("\n#ifndef __co_DEF_%s", t->mangledname), g->lineno++;
+//     PRINTF("\n#define __co_DEF_%s", t->mangledname), g->lineno++;
+//   }
+// }
+
+// static void maybe_gen_ptrtype_defguard_end(cgen_t* g, const ptrtype_t* t) {
+//   if (nodekind_isprimtype(t->elem->kind))
+//     PRINT("\n#endif"), g->lineno++;
+// }
+
+
+static void gen_slicetype(cgen_t* g, const slicetype_t* t) {
+  PRINT("struct "), PRINT(assertnotnull(t->mangledname));
 }
 
-
-static sym_t gen_slice_typename(cgen_t* g, const type_t* tp, bool* is_shared) {
-  const slicetype_t* t = (const slicetype_t*)tp;
-  usize len1 = g->outbuf.len;
-
-  PRINT(CO_TYPE_PREFIX);
-  PRINT(&"mutslice_"[3lu*(usize)(t->kind == TYPE_SLICE)]);
-
-  // use familiar names for common types,
-  // e.g. "__co_slice_u8_t" instead of "__co_slice_h_t" for &[u8]
+static void gen_slicetype_def(cgen_t* g, const slicetype_t* t) {
   if (nodekind_isprimtype(t->elem->kind)) {
-    PRINT(primtype_name(t->elem->kind));
-    *is_shared = true;
-  } else {
-    print_mangledname_of_type(g, t->elem);
-  }
-
-  PRINT(CO_TYPE_SUFFIX);
-
-  sym_t name = sym_intern(&g->outbuf.chars[len1], g->outbuf.len - len1);
-  g->outbuf.len = len1;
-  return name;
-}
-
-
-static void gen_slice_typedef(cgen_t* g, const type_t* tp, sym_t typename) {
-  const slicetype_t* t = (const slicetype_t*)tp;
-  PRINT("typedef struct {");
-  type(g, g->compiler->uinttype);
-  PRINT(" len; ");
-  if (t->kind == TYPE_SLICE)
-    PRINT("const ");
-  type(g, t->elem);
-  PRINTF("* ptr;} %s;", typename);
-}
-
-
-static void slicetype(cgen_t* g, const slicetype_t* t) {
-  PRINT(intern_typedef(g, (const type_t*)t, gen_slice_typename, gen_slice_typedef));
-}
-
-
-static sym_t gen_darray_typename(cgen_t* g, const type_t* tp, bool* is_shared) {
-  const arraytype_t* t = (const arraytype_t*)tp;
-  usize len1 = g->outbuf.len;
-  PRINT(CO_TYPE_PREFIX "array_");
-  print_mangledname_of_type(g, t->elem);
-  PRINT(CO_TYPE_SUFFIX);
-  sym_t name = sym_intern(&g->outbuf.chars[len1], g->outbuf.len - len1);
-  g->outbuf.len = len1;
-  return name;
-}
-
-
-static void gen_darray_typedef(cgen_t* g, const type_t* tp, sym_t typename) {
-  const arraytype_t* t = (const arraytype_t*)tp;
-  // typedef struct { uint cap, len; T* ptr; }
-  PRINT("typedef struct {");
-  type(g, g->compiler->uinttype);
-  PRINT(" cap, len; ");
-  type(g, t->elem);
-  PRINTF("* ptr;} %s;", typename);
-}
-
-
-static void arraytype(cgen_t* g, const arraytype_t* t) {
-  if (t->len == 0) {
-    // dynamic array
-    PRINT(intern_typedef(g, (const type_t*)t, gen_darray_typename, gen_darray_typedef));
+    // predefined in prelude
     return;
   }
-  type(g, t->elem);
-  CHAR('*');
-  // PRINTF("[%llu]", t->len);
-  // dlog("TODO array");
+  //maybe_gen_ptrtype_defguard(g, (ptrtype_t*)t);
+  startline(g, t->loc);
+  gen_slicetype(g, t), PRINT(" {");
+  gen_type(g, g->compiler->uinttype);
+  PRINT(" len; ");
+  if (t->kind == TYPE_SLICE) // not "mut"
+    PRINT("const ");
+  gen_type(g, t->elem);
+  PRINT("* ptr;};");
+  //maybe_gen_ptrtype_defguard_end(g, (ptrtype_t*)t);
+}
+
+
+static void gen_arraytype(cgen_t* g, const arraytype_t* t) {
+  if (t->len > 0) {
+    gen_type(g, t->elem), CHAR('*');
+  } else {
+    PRINT("struct "), PRINT(assertnotnull(t->mangledname));
+  }
+}
+
+static void gen_arraytype_def(cgen_t* g, const arraytype_t* t) {
+  if (t->len > 0) {
+    // statically-sized array (T*) needs no definition
+    return;
+  }
+  // dynamic array -- typedef struct { uint cap, len; T* ptr; }
+  if (nodekind_isprimtype(t->elem->kind)) {
+    // predefined in prelude
+    return;
+  }
+  //maybe_gen_ptrtype_defguard(g, (ptrtype_t*)t);
+  startline(g, t->loc);
+  gen_arraytype(g, t), PRINT(" {");
+  gen_type(g, g->compiler->uinttype);
+  PRINT(" cap, len; ");
+  gen_type(g, t->elem);
+  PRINT("* ptr;};");
+  //maybe_gen_ptrtype_defguard_end(g, (ptrtype_t*)t);
 }
 
 
@@ -590,7 +477,7 @@ static bool reftype_byvalue(cgen_t* g, const reftype_t* t) {
 }
 
 
-static void reftype(cgen_t* g, const reftype_t* t) {
+static void gen_reftype(cgen_t* g, const reftype_t* t) {
   if (reftype_byvalue(g, t)) {
     // e.g. "&Foo" => "Foo"
     if (t->kind == TYPE_REF && t->elem->kind == TYPE_ARRAY &&
@@ -603,83 +490,67 @@ static void reftype(cgen_t* g, const reftype_t* t) {
       // However for pointer values like arrays we _must_ use const.
       PRINT("const ");
     }
-    type(g, t->elem);
+    gen_type(g, t->elem);
   } else {
     // e.g. "&Foo"    => "const Foo*"
     //      "mut&Foo" => "Foo*"
     if (t->kind == TYPE_REF)
       PRINT("const ");
-    type(g, t->elem);
+    gen_type(g, t->elem);
     CHAR('*');
   }
 }
 
 
-static void ptrtype(cgen_t* g, const ptrtype_t* t) {
-  type(g, t->elem);
+static void gen_ptrtype(cgen_t* g, const ptrtype_t* t) {
+  gen_type(g, t->elem);
   CHAR('*');
 }
 
 
-static sym_t gen_alias_typename(cgen_t* g, const type_t* t, bool* is_shared) {
-  const aliastype_t* at = (aliastype_t*)t;
-  assertnotnull(at->mangledname);
-  *is_shared = (at == &g->compiler->strtype);
-  // if (at->mangledname == NULL) {
-  //   str_t name = str_makeempty(strlen(CO_INTERNAL_PREFIX) + strlen(at->name) + 2);
-  //   safecheckf(name.cap > 0, "oom");
-  //   str_append(&name, CO_INTERNAL_PREFIX, at->name, "_t");
-  //   sym_t sym = sym_intern(name.p, name.len);
-  //   str_free(name);
-  //   return sym;
-  //   // return at->name;
-  // }
-  return sym_intern(at->mangledname, strlen(at->mangledname));
+static void gen_aliastype(cgen_t* g, const aliastype_t* t) {
+  PRINT(assertnotnull(t->mangledname));
 }
 
-static void gen_alias_typedef(cgen_t* g, const type_t* tp, sym_t typename) {
-  const aliastype_t* t = (const aliastype_t*)tp;
-  assertf(t->kind == TYPE_ALIAS, "%s", nodekind_name(t->kind));
-  PRINT("typedef "); type(g, t->elem); PRINTF(" %s;", typename);
-}
-
-static void aliastype(cgen_t* g, const aliastype_t* t) {
-  PRINT(intern_typedef(g, (type_t*)t, gen_alias_typename, gen_alias_typedef));
+static void gen_aliastype_def(cgen_t* g, const aliastype_t* t) {
+  startline(g, t->loc);
+  PRINT("typedef "), gen_type(g, t->elem);
+  PRINTF(" %s;", assertnotnull(t->mangledname));
 }
 
 
-static sym_t gen_opt_typename(cgen_t* g, const type_t* t, bool* is_shared) {
-  // TODO: descriptive name using compiler_mangle_type
-  char namebuf[64];
-  return sym_snprintf(namebuf, sizeof(namebuf),
-    CO_TYPE_PREFIX "opt%x" CO_TYPE_SUFFIX, g->anon_idgen++);
+static void gen_opttype_name(cgen_t* g, const opttype_t* t) {
+  assertnotnull(t->mangledname);
+  PRINT("struct "), PRINT(assertnotnull(t->mangledname));
+  // PRINTF(CO_TYPE_PREFIX "opt%lx" CO_TYPE_SUFFIX, (uintptr)t);
 }
 
-static void gen_opt_typedef(cgen_t* g, const type_t* tp, sym_t typename) {
-  const opttype_t* t = (const opttype_t*)tp;
-  PRINT("typedef struct{bool ok; "); type(g, t->elem); PRINTF(" v;} %s;", typename);
+static void gen_opttype_def(cgen_t* g, opttype_t* t) {
+  // ?*T is represented as a nullable pointer (not a struct) e.g. "T*"
+  if (type_isptrlike(t->elem))
+    return;
+  startline(g, t->loc);
+  gen_opttype_name(g, t);
+  PRINT("{bool ok; "); gen_type(g, t->elem); PRINT(" v;};");
 }
 
-static void opttype(cgen_t* g, const opttype_t* t) {
-  if (type_isptrlike(t->elem)) {
-    // NULL used for "no value"
-    type(g, t->elem);
-  } else {
-    assert(t->elem->kind != TYPE_OPTIONAL);
-    PRINT(intern_typedef(g, (type_t*)t, gen_opt_typename, gen_opt_typedef));
-  }
+static void gen_opttype(cgen_t* g, const opttype_t* t) {
+  // ?*T is represented as a nullable pointer (not a struct) e.g. "T*"
+  if (type_isptrlike(t->elem))
+    return gen_type(g, t->elem);
+  gen_opttype_name(g, t);
 }
 
 
 static void optinit(cgen_t* g, const expr_t* init, bool isshort) {
   if (type_isptrlike(init->type))
-    return expr_rvalue(g, init, init->type);
+    return gen_expr_rvalue(g, init, init->type);
   assert(init->type->kind != TYPE_OPTIONAL);
   if (!isshort) {
     opttype_t t = { .kind = TYPE_OPTIONAL, .elem = (type_t*)init->type };
-    CHAR('('), opttype(g, &t), CHAR(')');
+    CHAR('('), gen_opttype(g, &t), CHAR(')');
   }
-  PRINT("{true,"); expr_rvalue(g, init, init->type); CHAR('}');
+  PRINT("{true,"); gen_expr_rvalue(g, init, init->type); CHAR('}');
 }
 
 
@@ -690,14 +561,14 @@ static void optzero(cgen_t* g, const type_t* elem, bool isshort) {
   } else {
     if (!isshort) {
       opttype_t t = { .kind = TYPE_OPTIONAL, .elem = (type_t*)elem };
-      CHAR('('), opttype(g, &t), CHAR(')');
+      CHAR('('), gen_opttype(g, &t), CHAR(')');
     }
     PRINT("{0}");
   }
 }
 
 
-static void type(cgen_t* g, const type_t* t) {
+static void gen_type(cgen_t* g, const type_t* t) {
   switch (t->kind) {
   case TYPE_VOID:
   case TYPE_BOOL:
@@ -713,21 +584,21 @@ static void type(cgen_t* g, const type_t* t) {
   case TYPE_F64:
     PRINT(primtype_name(t->kind));
     break;
-  case TYPE_INT:      return type(g, g->compiler->inttype);
-  case TYPE_UINT:     return type(g, g->compiler->uinttype);
+  case TYPE_INT:      return gen_type(g, g->compiler->inttype);
+  case TYPE_UINT:     return gen_type(g, g->compiler->uinttype);
   // case TYPE_INT:      PRINT(CO_TYPE_PREFIX "int"); break;
   // case TYPE_UINT:     PRINT(CO_TYPE_PREFIX "uint"); break;
 
-  case TYPE_FUN:      return funtype(g, (const funtype_t*)t, NULL);
-  case TYPE_PTR:      return ptrtype(g, (const ptrtype_t*)t);
+  case TYPE_FUN:      return gen_funtype(g, (const funtype_t*)t, NULL);
+  case TYPE_PTR:      return gen_ptrtype(g, (const ptrtype_t*)t);
   case TYPE_REF:
-  case TYPE_MUTREF:   return reftype(g, (const reftype_t*)t);
+  case TYPE_MUTREF:   return gen_reftype(g, (const reftype_t*)t);
   case TYPE_SLICE:
-  case TYPE_MUTSLICE: return slicetype(g, (const slicetype_t*)t);
-  case TYPE_OPTIONAL: return opttype(g, (const opttype_t*)t);
-  case TYPE_STRUCT:   return structtype(g, (const structtype_t*)t);
-  case TYPE_ALIAS:    return aliastype(g, (const aliastype_t*)t);
-  case TYPE_ARRAY:    return arraytype(g, (const arraytype_t*)t);
+  case TYPE_MUTSLICE: return gen_slicetype(g, (const slicetype_t*)t);
+  case TYPE_OPTIONAL: return gen_opttype(g, (const opttype_t*)t);
+  case TYPE_STRUCT:   return gen_structtype(g, (const structtype_t*)t);
+  case TYPE_ALIAS:    return gen_aliastype(g, (const aliastype_t*)t);
+  case TYPE_ARRAY:    return gen_arraytype(g, (const arraytype_t*)t);
 
   default:
     panic("unexpected type_t %s (%u)", nodekind_name(t->kind), t->kind);
@@ -755,7 +626,7 @@ static bool has_ambiguous_prec(const expr_t* n) {
 }
 
 
-static void expr_rvalue(cgen_t* g, const expr_t* n, const type_t* lt) {
+static void gen_expr_rvalue(cgen_t* g, const expr_t* n, const type_t* lt) {
   const type_t* rt = n->type;
   bool parenwrap = has_ambiguous_prec(n);
   if (parenwrap)
@@ -776,10 +647,10 @@ static void expr_rvalue(cgen_t* g, const expr_t* n, const type_t* lt) {
           "unexpected slice initializer %s", nodekind_name(rt->kind) );
         const arraytype_t* at = (arraytype_t*)((reftype_t*)rt)->elem;
         // struct slice { uint len; T* ptr; }
-        CHAR('('), type(g, (type_t*)lt), PRINT("){");
-        intconst(g, at->len, g->compiler->uinttype);
+        CHAR('('), gen_type(g, (type_t*)lt), PRINT("){");
+        gen_intconst(g, at->len, g->compiler->uinttype);
         CHAR(',');
-        expr(g, n);
+        gen_expr(g, n);
         CHAR('}');
         if (parenwrap)
           CHAR(')');
@@ -797,11 +668,11 @@ static void expr_rvalue(cgen_t* g, const expr_t* n, const type_t* lt) {
   }
 
   if (parenwrap) {
-    expr(g, n);
+    gen_expr(g, n);
     CHAR(')');
   } else {
     // allow tail call in common case
-    return expr(g, n);
+    return gen_expr(g, n);
   }
 }
 
@@ -828,32 +699,32 @@ static usize fmt_tmp_id(char* buf, usize bufcap, const void* n) {
 //—————————————————————————————————————————————————————————————————————————————————————
 
 
-static void zeroinit(cgen_t* g, const type_t* t);
+static void gen_zeroinit(cgen_t* g, const type_t* t);
 
 
 static void expr_or_zeroinit(cgen_t* g, const type_t* t, const expr_t* nullable n) {
   if (n)
-    return expr(g, n);
-  zeroinit(g, t);
+    return gen_expr(g, n);
+  gen_zeroinit(g, t);
 }
 
 
-static void retexpr(cgen_t* g, const retexpr_t* n, const char* nullable tmp) {
+static void gen_retexpr(cgen_t* g, const retexpr_t* n, const char* nullable tmp) {
   if (tmp) {
     assert(n->type != type_void);
-    type(g, n->type), PRINT(" const "), PRINT(tmp);
+    gen_type(g, n->type), PRINT(" const "), PRINT(tmp);
     if (!n->value)
       return;
     PRINT(" = ");
     if (!n->value) {
-      zeroinit(g, n->type);
+      gen_zeroinit(g, n->type);
     } else {
-      expr(g, n->value);
+      gen_expr(g, n->value);
     }
   } else if (!n->value) {
     PRINT("return");
   } else {
-    PRINT("return "), expr(g, n->value);
+    PRINT("return "), gen_expr(g, n->value);
   }
 }
 
@@ -1118,7 +989,9 @@ static bool expr_contains_owners(const expr_t* n) {
 }
 
 
-static void drops_before_stmt(cgen_t* g, const droparray_t* drops, const void* node) {
+static void gen_drops_before_stmt(
+  cgen_t* g, const droparray_t* drops, const void* node)
+{
   if (drops->len) {
     gen_drops(g, drops);
     startline(g, ((const node_t*)node)->loc);
@@ -1128,7 +1001,7 @@ static void drops_before_stmt(cgen_t* g, const droparray_t* drops, const void* n
 }
 
 
-static void block(cgen_t* g, const block_t* n) {
+static void gen_block(cgen_t* g, const block_t* n) {
   g->scopenest++;
 
   if (n->flags & NF_RVALUE) {
@@ -1141,7 +1014,7 @@ static void block(cgen_t* g, const block_t* n) {
       }
       // simplify expression block with a single sub expression
       if (n->children.len == 1) {
-        expr_rvalue(g, (expr_t*)n->children.v[0], n->type);
+        gen_expr_rvalue(g, (expr_t*)n->children.v[0], n->type);
         g->scopenest--;
         return;
       }
@@ -1155,7 +1028,7 @@ static void block(cgen_t* g, const block_t* n) {
   char block_resvar[ID_SIZE("block")];
   if (block_isrvalue) {
     FMT_ID(block_resvar, sizeof(block_resvar), "block", n);
-    type(g, n->type), CHAR(' '), PRINT(block_resvar), CHAR(';');
+    gen_type(g, n->type), CHAR(' '), PRINT(block_resvar), CHAR(';');
   }
 
   u32 start_lineno = g->lineno;
@@ -1191,20 +1064,20 @@ static void block(cgen_t* g, const block_t* n) {
         if (ret->type == type_void) {
           startline_if_needed(g, cn->loc);
           if (ret->value)
-            expr(g, ret->value), CHAR(';');
+            gen_expr(g, ret->value), CHAR(';');
           gen_drops(g, &n->drops);
         } else if (n->drops.len && expr_contains_owners(cn)) {
           startline_if_needed(g, cn->loc);
           fmt_tmp_id(tmp, sizeof(tmp), ret);
           // "T tmp = expr;"
-          type(g, ret->type), PRINT(" const "), PRINT(tmp), PRINT(" = ");
+          gen_type(g, ret->type), PRINT(" const "), PRINT(tmp), PRINT(" = ");
           expr_or_zeroinit(g, ret->type, ret->value), CHAR(';');
           gen_drops(g, &n->drops);
           startlinex(g);
           PRINT("return "), PRINT(tmp), CHAR(';');
         } else {
-          drops_before_stmt(g, &n->drops, cn);
-          retexpr(g, (const retexpr_t*)cn, NULL), CHAR(';');
+          gen_drops_before_stmt(g, &n->drops, cn);
+          gen_retexpr(g, (const retexpr_t*)cn, NULL), CHAR(';');
         }
         break;
       }
@@ -1213,14 +1086,14 @@ static void block(cgen_t* g, const block_t* n) {
         // result from rvalue block
         // e.g. "let x = { 1; 2 }" => "x" is an "int" with value "2"
         x_semi_begin(g, cn->loc);
-        PRINT(block_resvar), PRINT(" = "), expr(g, cn), CHAR(';');
+        PRINT(block_resvar), PRINT(" = "), gen_expr(g, cn), CHAR(';');
         gen_drops(g, &n->drops);
         break;
       }
 
       // regular statement or expression
       startlens = x_semi_begin(g, cn->loc);
-      expr(g, cn);
+      gen_expr(g, cn);
       if ((cn->kind == EXPR_BLOCK || cn->kind == EXPR_IF) && lastchar(g) == '}')
         x_semi_cancel(&startlens);
       x_semi_end(g, startlens);
@@ -1276,14 +1149,13 @@ static bool noalias(const type_t* t) {
 }
 
 
-static void fun_name(cgen_t* g, const fun_t* fun) {
-  // compiler_encode_name(g->compiler, &g->outbuf, (node_t*)fun);
-  // mangle(g->compiler, &g->outbuf, (node_t*)fun);
-  PRINT(assertnotnull(fun->mangledname));
+static void gen_fun(cgen_t* g, const fun_t* fun) {
+  assertf(fun->mangledname != NULL, "%s", fun->name);
+  PRINT(fun->mangledname);
 }
 
 
-static void fun_proto(cgen_t* g, const fun_t* fun) {
+static void gen_fun_proto(cgen_t* g, const fun_t* fun) {
   funtype_t* ft = (funtype_t*)fun->type;
 
   switch (fun->flags & NF_VIS_MASK) {
@@ -1292,9 +1164,9 @@ static void fun_proto(cgen_t* g, const fun_t* fun) {
     case NF_VIS_PUB:  PRINT(CO_INTERNAL_PREFIX "pub "); break;
   }
 
-  type(g, ft->result);
+  gen_type(g, ft->result);
   CHAR(' ');
-  fun_name(g, fun);
+  PRINT(assertnotnull(fun->mangledname));
   CHAR('(');
   if (ft->params.len > 0) {
     g->scopenest++;
@@ -1303,7 +1175,7 @@ static void fun_proto(cgen_t* g, const fun_t* fun) {
       if (i) PRINT(", ");
       // if (!type_isprim(param->type) && !param->ismut)
       //   PRINT("const ");
-      type(g, param->type);
+      gen_type(g, param->type);
       if (noalias(param->type))
         PRINT(CO_INTERNAL_PREFIX "noalias");
       if (param->name && param->name != sym__) {
@@ -1319,57 +1191,48 @@ static void fun_proto(cgen_t* g, const fun_t* fun) {
 }
 
 
-#define GEN_IN_HEADBUF_BEGIN \
-  assertf(g->headnest == 0, "reentrant GEN_IN_HEADBUF"); \
-  g->headnest++; \
-  usize indent = g->indent;  g->indent = 0; \
-  u32   lineno = g->lineno;  g->lineno = 0; \
-  buf_t outbuf = g->outbuf;  g->outbuf = g->headbuf;
+static void gen_fun_decl(cgen_t* g, const fun_t* fn) {
+  // ignore pure declarations, e.g.
+  //   fun foo(int) int             <—— declaration ignored
+  //   fun foo(x int) int { x * 2 } <—— definition  included
+  //   pub "C" bar(int) int         <—— declaration ignored
+  if (fn->name == sym_main)
+    g->mainfun = fn;
+  if (!fn->body)
+    return;
+  startline(g, fn->loc);
+  gen_fun_proto(g, fn);
+  CHAR(';');
+}
 
-#define GEN_IN_HEADBUF_END \
-  assertf(g->headnest == 1, "unbalanced GEN_IN_HEADBUF"); \
-  g->headnest--; \
-  g->headbuf = g->outbuf; \
-  g->outbuf  = outbuf; \
-  g->lineno  = lineno; \
-  g->indent  = indent;
 
-
-static void fun(cgen_t* g, const fun_t* fun) {
-  // if (type_isowner(((funtype_t*)fun->type)->result))
+static void gen_fun_def(cgen_t* g, const fun_t* fn) {
+  // if (type_isowner(((funtype_t*)fn->type)->result))
   //   PRINT("__attribute__((__return_typestate__(unconsumed))) ");
-
-  if (g->scopenest > 0) {
-    if UNLIKELY(!ptrarray_push(&g->funqueue, g->ma, (void*)fun))
-      seterr(g, ErrNoMem);
-    GEN_IN_HEADBUF_BEGIN
-    startlinex(g);
-    fun_proto(g, fun);
-    CHAR(';');
-    GEN_IN_HEADBUF_END
-    return;
-  }
-
-  fun_proto(g, fun);
-
-  if (!fun->body)
-    return;
-
-  CHAR(' ');
-  block(g, fun->body);
-}
-
-
-static void structinit_field(cgen_t* g, const type_t* t, const expr_t* value) {
-  if (t->kind == TYPE_OPTIONAL && !type_isptrlike(((const opttype_t*)t)->elem)) {
-    PRINT("{.ok=1,.v="); expr(g, value); CHAR('}');
+  if (fn->name == sym_main)
+    g->mainfun = fn;
+  assert(g->scopenest == 0);
+  startline(g, fn->loc);
+  gen_fun_proto(g, fn);
+  if (fn->body) {
+    CHAR(' ');
+    gen_block(g, fn->body);
   } else {
-    expr(g, value);
+    CHAR(';');
   }
 }
 
 
-static void structinit(cgen_t* g, const structtype_t* t, nodearray_t args) {
+static void gen_structinit_field(cgen_t* g, const type_t* t, const expr_t* value) {
+  if (t->kind == TYPE_OPTIONAL && !type_isptrlike(((const opttype_t*)t)->elem)) {
+    PRINT("{.ok=1,.v="); gen_expr(g, value); CHAR('}');
+  } else {
+    gen_expr(g, value);
+  }
+}
+
+
+static void gen_structinit(cgen_t* g, const structtype_t* t, nodearray_t args) {
   assert(args.len <= t->fields.len);
   CHAR('{');
   u32 i = 0;
@@ -1379,13 +1242,13 @@ static void structinit(cgen_t* g, const structtype_t* t, nodearray_t args) {
     if (arg->kind == EXPR_PARAM)
       break;
     if (i) PRINT(", ");
-    structinit_field(g, f->type, arg);
+    gen_structinit_field(g, f->type, arg);
   }
 
   if (i == args.len && !t->hasinit) {
     if (i == 0 && t->fields.len > 0) {
       const local_t* f = (local_t*)t->fields.v[0];
-      zeroinit(g, f->type);
+      gen_zeroinit(g, f->type);
     }
     CHAR('}');
     return;
@@ -1412,7 +1275,7 @@ static void structinit(cgen_t* g, const structtype_t* t, nodearray_t args) {
     CHAR('.'); PRINT(arg->name); CHAR('=');
     const local_t** fp = (const local_t**)map_lookup_ptr(initmap, arg->name);
     assert(fp && *fp);
-    structinit_field(g, (*fp)->type, assertnotnull(arg->init));
+    gen_structinit_field(g, (*fp)->type, assertnotnull(arg->init));
     map_del_ptr(initmap, arg->name);
   }
 
@@ -1423,7 +1286,7 @@ static void structinit(cgen_t* g, const structtype_t* t, nodearray_t args) {
     if (f->init) {
       if (i) PRINT(", ");
       CHAR('.'); PRINT(f->name); CHAR('=');
-      structinit_field(g, (f)->type, assertnotnull(f->init));
+      gen_structinit_field(g, (f)->type, assertnotnull(f->init));
       i++; // for ", "
     }
   }
@@ -1432,7 +1295,7 @@ static void structinit(cgen_t* g, const structtype_t* t, nodearray_t args) {
 }
 
 
-static void zeroinit_array(cgen_t* g, const arraytype_t* t) {
+static void gen_zeroinit_array(cgen_t* g, const arraytype_t* t) {
   if (t->len == 0) {
     // runtime dynamic array "{ cap, len uint; T* ptr }"
     PRINT("{0}");
@@ -1440,15 +1303,15 @@ static void zeroinit_array(cgen_t* g, const arraytype_t* t) {
   }
   // (u32[5]){0u}
   CHAR('(');
-  type(g, t->elem);
+  gen_type(g, t->elem);
   PRINTF("[%llu])", t->len);
   CHAR('{');
-  zeroinit(g, t->elem);
+  gen_zeroinit(g, t->elem);
   CHAR('}');
 }
 
 
-static void zeroinit(cgen_t* g, const type_t* t) {
+static void gen_zeroinit(cgen_t* g, const type_t* t) {
   t = unwind_aliastypes(t);
 again:
   switch (t->kind) {
@@ -1480,7 +1343,7 @@ again:
   case TYPE_U8:
   case TYPE_I16:
   case TYPE_U16:
-    CHAR('('); CHAR('('); type(g, t); PRINT(")0)");
+    CHAR('('); CHAR('('); gen_type(g, t); PRINT(")0)");
     break;
   case TYPE_F32:
     PRINT("0.0f");
@@ -1496,12 +1359,12 @@ again:
     PRINT("{0}");
     break;
   case TYPE_ARRAY:
-    return zeroinit_array(g, (arraytype_t*)t);
+    return gen_zeroinit_array(g, (arraytype_t*)t);
   case TYPE_PTR:
     PRINT("NULL");
     break;
   case TYPE_STRUCT:
-    structinit(g, (const structtype_t*)t, (nodearray_t){0});
+    gen_structinit(g, (structtype_t*)t, (nodearray_t){0});
     break;
   default:
     debugdie(g, t, "unexpected type %s", nodekind_name(t->kind));
@@ -1510,34 +1373,34 @@ again:
 }
 
 
-static void primtype_cast(cgen_t* g, const type_t* t, const expr_t* nullable val) {
+static void gen_primtype_cast(cgen_t* g, const type_t* t, const expr_t* nullable val) {
   const type_t* basetype = unwind_aliastypes(t);
 
   // skip redundant "(T)v" when v is T
   if (val && (val->type == t || val->type == basetype))
-    return expr_rvalue(g, val, t);
+    return gen_expr_rvalue(g, val, t);
 
-  CHAR('('); type(g, t); CHAR(')');
+  CHAR('('); gen_type(g, t); CHAR(')');
 
   if (val) {
-    expr_rvalue(g, val, t);
+    gen_expr_rvalue(g, val, t);
   } else {
-    zeroinit(g, t);
+    gen_zeroinit(g, t);
   }
 }
 
 
-static void call_type(cgen_t* g, const call_t* n, const type_t* t) {
+static void gen_call_type(cgen_t* g, const call_t* n, const type_t* t) {
   if (type_isprim(t)) {
     assert(n->args.len < 2);
-    return primtype_cast(g, t, n->args.len ? (expr_t*)n->args.v[0] : NULL);
+    return gen_primtype_cast(g, t, n->args.len ? (expr_t*)n->args.v[0] : NULL);
   }
 
-  CHAR('('); type(g, t); CHAR(')');
+  CHAR('('); gen_type(g, t); CHAR(')');
 
   switch (t->kind) {
   case TYPE_STRUCT:
-    structinit(g, (const structtype_t*)t, n->args);
+    gen_structinit(g, (const structtype_t*)t, n->args);
     break;
   default:
     dlog("NOT IMPLEMENTED: type call %s", nodekind_name(t->kind));
@@ -1546,37 +1409,43 @@ static void call_type(cgen_t* g, const call_t* n, const type_t* t) {
 }
 
 
-static void call_fn_recv(cgen_t* g, const call_t* n, expr_t** selfp, bool* isselfrefp) {
+static void gen_call_fn_recv(
+  cgen_t* g, const call_t* n, expr_t** selfp, bool* isselfrefp)
+{
   switch (n->recv->kind) {
-    case EXPR_MEMBER: {
-      member_t* m = (member_t*)n->recv;
-      fun_t* fn = (fun_t*)m->target;
-      if (fn->kind != EXPR_FUN)
-        break;
-      funtype_t* ft = (funtype_t*)fn->type;
-      if (ft->params.len > 0 && ((const local_t*)ft->params.v[0])->isthis) {
-        const local_t* thisparam = (local_t*)ft->params.v[0];
-        *isselfrefp = type_isref(thisparam->type);
-        *selfp = m->recv;
-      }
-      assert(fn->name != sym__);
-      fun_name(g, fn);
-      return;
-    }
-    case EXPR_ID: {
-      const idexpr_t* id = (const idexpr_t*)n->recv;
-      if (id->ref->kind == EXPR_FUN)
-        return fun_name(g, (fun_t*)id->ref);
+
+  case EXPR_MEMBER: {
+    member_t* m = (member_t*)n->recv;
+    fun_t* fn = (fun_t*)m->target;
+    if (fn->kind != EXPR_FUN)
       break;
+    funtype_t* ft = (funtype_t*)fn->type;
+    if (ft->params.len > 0 && ((const local_t*)ft->params.v[0])->isthis) {
+      const local_t* thisparam = (local_t*)ft->params.v[0];
+      *isselfrefp = type_isref(thisparam->type);
+      *selfp = m->recv;
     }
-    case EXPR_FUN:
-      return fun_name(g, (fun_t*)n->recv);
+    assert(fn->name != sym__);
+    gen_fun(g, fn);
+    return;
   }
-  expr(g, n->recv);
+
+  case EXPR_ID: {
+    const idexpr_t* id = (const idexpr_t*)n->recv;
+    if (id->ref->kind == EXPR_FUN)
+      return gen_fun(g, (fun_t*)id->ref);
+    break;
+  }
+
+  case EXPR_FUN:
+    return gen_fun(g, (fun_t*)n->recv);
+
+  }
+  gen_expr(g, n->recv);
 }
 
 
-static void call_fun(cgen_t* g, const call_t* n) {
+static void gen_call_fun(cgen_t* g, const call_t* n) {
   // okay, then it must be a function call
   assert(n->recv->type->kind == TYPE_FUN);
   const funtype_t* ft = (funtype_t*)n->recv->type;
@@ -1589,14 +1458,14 @@ static void call_fun(cgen_t* g, const call_t* n) {
   // recv
   expr_t* self = NULL;
   bool isselfref = false;
-  call_fn_recv(g, n, &self, &isselfref);
+  gen_call_fn_recv(g, n, &self, &isselfref);
 
   // args
   CHAR('(');
   if (self) {
     if (isselfref && !type_isref(self->type))
       CHAR('&');
-    expr(g, self);
+    gen_expr(g, self);
     if (n->args.len > 0)
       PRINT(", ");
   }
@@ -1606,7 +1475,7 @@ static void call_fun(cgen_t* g, const call_t* n) {
     if (arg->kind == EXPR_PARAM) // named argument
       arg = ((local_t*)arg)->init;
     const type_t* dst_t = ((local_t*)ft->params.v[i])->type;
-    expr_rvalue(g, arg, dst_t);
+    gen_expr_rvalue(g, arg, dst_t);
   }
   CHAR(')');
 
@@ -1615,37 +1484,37 @@ static void call_fun(cgen_t* g, const call_t* n) {
 }
 
 
-static void call(cgen_t* g, const call_t* n) {
+static void gen_call(cgen_t* g, const call_t* n) {
   // type call?
   const idexpr_t* idrecv = (idexpr_t*)n->recv;
   if (idrecv->kind == EXPR_ID && nodekind_istype(idrecv->ref->kind))
-    return call_type(g, n, (type_t*)idrecv->ref);
+    return gen_call_type(g, n, (type_t*)idrecv->ref);
   if (nodekind_istype(n->recv->kind))
-    return call_type(g, n, (type_t*)n->recv);
+    return gen_call_type(g, n, (type_t*)n->recv);
 
   // okay, then it must be a function call
-  return call_fun(g, n);
+  return gen_call_fun(g, n);
 }
 
 
-static void typecons(cgen_t* g, const typecons_t* n) {
+static void gen_typecons(cgen_t* g, const typecons_t* n) {
   assert(type_isprim(unwind_aliastypes(n->type)));
-  return primtype_cast(g, n->type, n->expr);
+  return gen_primtype_cast(g, n->type, n->expr);
 }
 
 
-static void binop(cgen_t* g, const binop_t* n) {
-  expr_rvalue(g, n->left, n->left->type);
+static void gen_binop(cgen_t* g, const binop_t* n) {
+  gen_expr_rvalue(g, n->left, n->left->type);
   CHAR(' ');
   PRINT(operator(n->op));
   CHAR(' ');
-  expr_rvalue(g, n->right, n->right->type);
+  gen_expr_rvalue(g, n->right, n->right->type);
 }
 
 
-static void intconst(cgen_t* g, u64 value, const type_t* t) {
+static void gen_intconst(cgen_t* g, u64 value, const type_t* t) {
   if (t->kind < TYPE_I32)
-    CHAR('('), type(g, t), CHAR(')');
+    CHAR('('), gen_type(g, t), CHAR(')');
 
   if (!type_isunsigned(t) && (value & 0x1000000000000000) ) {
     value &= ~0x1000000000000000;
@@ -1666,24 +1535,24 @@ again:
 }
 
 
-static void intlit(cgen_t* g, const intlit_t* n) {
-  intconst(g, n->intval, n->type);
+static void gen_intlit(cgen_t* g, const intlit_t* n) {
+  gen_intconst(g, n->intval, n->type);
 }
 
 
-static void floatlit(cgen_t* g, const floatlit_t* n) {
+static void gen_floatlit(cgen_t* g, const floatlit_t* n) {
   PRINTF("%f", n->f64val);
   if (n->type->kind == TYPE_F32)
     CHAR('f');
 }
 
 
-static void boollit(cgen_t* g, const intlit_t* n) {
+static void gen_boollit(cgen_t* g, const intlit_t* n) {
   PRINT(n->intval ? "true" : "false");
 }
 
 
-static void strlit(cgen_t* g, const strlit_t* n) {
+static void gen_strlit(cgen_t* g, const strlit_t* n) {
   const type_t* t = n->type;
   if (type_isref(t) && ((reftype_t*)t)->elem->kind == TYPE_ARRAY) {
     PRINTF("(const u8[%llu]){\"", n->len);
@@ -1695,7 +1564,7 @@ static void strlit(cgen_t* g, const strlit_t* n) {
     // const slicetype_t* st = (slicetype_t*)t;
     assert(type_isslice(unwind_aliastypes(t)));
     PRINT("(");
-    type(g, t);
+    gen_type(g, t);
     PRINTF("){%llu,(const u8[%llu]){\"", n->len, n->len);
     buf_appendrepr(&g->outbuf, n->bytes, n->len);
     PRINT("\"}}");
@@ -1703,21 +1572,21 @@ static void strlit(cgen_t* g, const strlit_t* n) {
 }
 
 
-static void arraylit1(cgen_t* g, const arraylit_t* n, u64 len) {
+static void gen_arraylit1(cgen_t* g, const arraylit_t* n, u64 len) {
   const arraytype_t* at = (arraytype_t*)n->type;
   CHAR('(');
   // PRINT("const "); // TODO: track constctx
-  type(g, at->elem);
+  gen_type(g, at->elem);
   PRINTF("[%llu]){", len);
   for (u32 i = 0; i < n->values.len; i++) {
     if (i) CHAR(',');
-    expr(g, (expr_t*)n->values.v[i]);
+    gen_expr(g, (expr_t*)n->values.v[i]);
   }
   PRINT("}");
 }
 
 
-static void darraylit(cgen_t* g, const arraylit_t* n) {
+static void gen_dyn_arraylit(cgen_t* g, const arraylit_t* n) {
   // see gen_darray_typedef
   const arraytype_t* at = (arraytype_t*)n->type;
 
@@ -1726,40 +1595,42 @@ static void darraylit(cgen_t* g, const arraylit_t* n) {
   u64 elemsize = at->elem->size;
   u64 len = n->values.len;
 
-  CHAR('('), type(g, (type_t*)at), CHAR(')');
+  CHAR('('), gen_type(g, (type_t*)at), CHAR(')');
   PRINTF("{%llu,%llu,", len, len);
   PRINT(CO_INTERNAL_PREFIX "mem_dup(&");
-  arraylit1(g, n, n->values.len);
+  gen_arraylit1(g, n, n->values.len);
   PRINTF(",%llu)}", len * elemsize);
 }
 
 
-static void arraylit(cgen_t* g, const arraylit_t* n) {
+static void gen_arraylit(cgen_t* g, const arraylit_t* n) {
   const arraytype_t* at = (arraytype_t*)n->type;
   if (at->len == 0)
-    return darraylit(g, n);
-  arraylit1(g, n, at->len);
+    return gen_dyn_arraylit(g, n);
+  gen_arraylit1(g, n, at->len);
 }
 
 
-static void assign(cgen_t* g, const binop_t* n) {
+static void gen_assign(cgen_t* g, const binop_t* n) {
   if UNLIKELY(n->left->kind == EXPR_ID && ((idexpr_t*)n->left)->name == sym__) {
     // "_ = expr" => "expr"  if expr may have side effects or building in debug mode
     // "_ = expr" => ""      if expr does not have side effects
     // note: this may cause a warning to be printed by cc (in DEBUG builds only)
     if (g->compiler->buildmode == BUILDMODE_DEBUG || !expr_no_side_effects(n->right))
-      expr_rvalue(g, n->right, n->type);
+      gen_expr_rvalue(g, n->right, n->type);
     return;
   }
-  expr(g, n->left);
+  gen_expr(g, n->left);
   CHAR(' ');
   PRINT(operator(n->op));
   CHAR(' ');
-  expr_rvalue(g, n->right, n->type);
+  gen_expr_rvalue(g, n->right, n->type);
 }
 
 
-static void vardef1(cgen_t* g, const local_t* n, const char* name, bool wrap_rvalue) {
+static void gen_vardef1(
+  cgen_t* g, const local_t* n, const char* name, bool wrap_rvalue)
+{
   // elide unused variable without side effects.
   // Note: This isn't very useful in practice as clang will optimize away
   // unused code anyway (when optimizing), but it's a nice thing to do.
@@ -1786,7 +1657,7 @@ static void vardef1(cgen_t* g, const local_t* n, const char* name, bool wrap_rva
   if ((n->flags & NF_RVALUE) && wrap_rvalue)
     PRINT("({");
 
-  type(g, n->type);
+  gen_type(g, n->type);
 
   // "const" qualifier for &T that's a pointer
   if (n->kind == EXPR_LET &&
@@ -1815,10 +1686,10 @@ static void vardef1(cgen_t* g, const local_t* n, const char* name, bool wrap_rva
       optinit(g, n->init, /*isshort*/true);
       //optinit(g, ((const opttype_t*)n->type)->elem, n->init, /*isshort*/true);
     } else {
-      expr_rvalue(g, n->init, n->type);
+      gen_expr_rvalue(g, n->init, n->type);
     }
   } else {
-    zeroinit(g, n->type);
+    gen_zeroinit(g, n->type);
   }
 
   if ((n->flags & NF_RVALUE) && wrap_rvalue)
@@ -1826,29 +1697,29 @@ static void vardef1(cgen_t* g, const local_t* n, const char* name, bool wrap_rva
 }
 
 
-static void vardef(cgen_t* g, const local_t* n) {
-  vardef1(g, n, n->name, true);
+static void gen_vardef(cgen_t* g, const local_t* n) {
+  gen_vardef1(g, n, n->name, true);
 }
 
 
-static void deref(cgen_t* g, const unaryop_t* n) {
+static void gen_deref(cgen_t* g, const unaryop_t* n) {
   const type_t* t = n->expr->type;
   if (t->kind == TYPE_REF && reftype_byvalue(g, (reftype_t*)t)) {
-    expr(g, n->expr);
+    gen_expr(g, n->expr);
   } else {
     CHAR('*');
     // note: must not uese expr_rvalue here since it does implicit deref
     bool parenwrap = has_ambiguous_prec(n->expr);
     if (parenwrap)
       CHAR('(');
-    expr(g, n->expr);
+    gen_expr(g, n->expr);
     if (parenwrap)
       CHAR(')');
   }
 }
 
 
-static void doref(cgen_t* g, const unaryop_t* n) {
+static void gen_doref(cgen_t* g, const unaryop_t* n) {
   // e.g. "&x"
   switch (n->expr->type->kind) {
     case TYPE_ARRAY:
@@ -1858,43 +1729,43 @@ static void doref(cgen_t* g, const unaryop_t* n) {
       panic("TODO ref to expr `%s` of type kind %s",
         fmtnode(g, 0, n->expr), nodekind_name(n->expr->type->kind));
   }
-  expr_rvalue(g, n->expr, n->type);
+  gen_expr_rvalue(g, n->expr, n->type);
 }
 
 
-static void prefixop(cgen_t* g, const unaryop_t* n) {
+static void gen_prefixop(cgen_t* g, const unaryop_t* n) {
   if (n->op == OP_REF || n->op == OP_MUTREF)
-    return doref(g, n);
+    return gen_doref(g, n);
   if (n->expr->kind == EXPR_INTLIT && n->expr->type->kind < TYPE_I32)
-    CHAR('('), type(g, n->expr->type), CHAR(')');
+    CHAR('('), gen_type(g, n->expr->type), CHAR(')');
   PRINT(operator(n->op));
-  expr_rvalue(g, n->expr, n->type);
+  gen_expr_rvalue(g, n->expr, n->type);
 }
 
 
-static void postfixop(cgen_t* g, const unaryop_t* n) {
-  expr_rvalue(g, n->expr, n->type);
+static void gen_postfixop(cgen_t* g, const unaryop_t* n) {
+  gen_expr_rvalue(g, n->expr, n->type);
   PRINT(operator(n->op));
 }
 
 
-static void idexpr(cgen_t* g, const idexpr_t* n) {
+static void gen_idexpr(cgen_t* g, const idexpr_t* n) {
   id(g, n->name);
 }
 
 
-static void param(cgen_t* g, const local_t* n) {
+static void gen_param(cgen_t* g, const local_t* n) {
   id(g, n->name);
 }
 
 
-static void nsexpr(cgen_t* g, const nsexpr_t* n) {
+static void gen_nsexpr(cgen_t* g, const nsexpr_t* n) {
   // Note: maybe don't do anything since a namespace is not materialized (it's abstract)
   panic("TODO namespace");
 }
 
 
-static void member_op(cgen_t* g, const type_t* recvt) {
+static void gen_member_op(cgen_t* g, const type_t* recvt) {
   if (recvt->kind == TYPE_PTR ||
     (type_isref(recvt) && !reftype_byvalue(g, (reftype_t*)recvt)))
   {
@@ -1905,27 +1776,27 @@ static void member_op(cgen_t* g, const type_t* recvt) {
 }
 
 
-static void member(cgen_t* g, const member_t* n) {
+static void gen_member(cgen_t* g, const member_t* n) {
   // TODO: nullcheck doesn't work for assignments, e.g. "foo->ptr = ptr"
   // bool insert_nullcheck = n->type->kind == TYPE_REF || n->type->kind == TYPE_FUN;
   bool insert_nullcheck = false;
   if (insert_nullcheck) {
     PRINT(CO_INTERNAL_PREFIX "checknull(");
-    expr(g, n->recv);
+    gen_expr(g, n->recv);
   } else {
-    expr_rvalue(g, n->recv, n->recv->type);
+    gen_expr_rvalue(g, n->recv, n->recv->type);
   }
   if (n->recv->type->kind == TYPE_OPTIONAL) {
     panic("TODO optional access!");
   }
-  member_op(g, n->recv->type);
+  gen_member_op(g, n->recv->type);
   PRINT(n->name);
   if (insert_nullcheck)
     CHAR(')');
 }
 
 
-static void subscript(cgen_t* g, const subscript_t* n) {
+static void gen_subscript(cgen_t* g, const subscript_t* n) {
   // If no bounds checking is needed, this is simply one of the following:
   //
   //   recv[index]      -- for arrays of known size
@@ -1989,16 +1860,16 @@ static void subscript(cgen_t* g, const subscript_t* n) {
       CHAR('{');
 
     if (recv_tmp_id) {
-      type(g, n->recv->type);
+      gen_type(g, n->recv->type);
       PRINTF(" " ANON_FMT " = ", recv_tmp_id);
-      expr_rvalue(g, n->recv, n->recv->type);
+      gen_expr_rvalue(g, n->recv, n->recv->type);
       PRINT(";\n");
     }
 
     if (index_tmp_id) {
-      type(g, n->index->type);
+      gen_type(g, n->index->type);
       PRINTF(" " ANON_FMT " = ", index_tmp_id);
-      expr_rvalue(g, n->index, n->index->type);
+      gen_expr_rvalue(g, n->index, n->index->type);
       PRINT(";\n");
     }
 
@@ -2009,7 +1880,7 @@ static void subscript(cgen_t* g, const subscript_t* n) {
       if (recv_tmp_id) {
         PRINTF(ANON_FMT, recv_tmp_id);
       } else {
-        expr_rvalue(g, n->recv, n->recv->type);
+        gen_expr_rvalue(g, n->recv, n->recv->type);
       }
       PRINT(".len");
     }
@@ -2019,7 +1890,7 @@ static void subscript(cgen_t* g, const subscript_t* n) {
     } else if (n->index->flags & NF_CONST) {
       PRINTF("%llu", n->index_val);
     } else {
-      expr_rvalue(g, n->index, n->index->type);
+      gen_expr_rvalue(g, n->index, n->index->type);
     }
     CHAR(')');
 
@@ -2028,10 +1899,10 @@ static void subscript(cgen_t* g, const subscript_t* n) {
     if (recv_tmp_id) {
       PRINTF(ANON_FMT, recv_tmp_id);
     } else {
-      expr_rvalue(g, n->recv, n->recv->type);
+      gen_expr_rvalue(g, n->recv, n->recv->type);
     }
   } else {
-    expr_rvalue(g, n->recv, n->recv->type);
+    gen_expr_rvalue(g, n->recv, n->recv->type);
   }
 
   PRINT(ptr_code);
@@ -2042,7 +1913,7 @@ static void subscript(cgen_t* g, const subscript_t* n) {
   } else if (n->index->flags & NF_CONST) {
     PRINTF("%llu", n->index_val);
   } else {
-    expr_rvalue(g, n->index, n->index->type);
+    gen_expr_rvalue(g, n->index, n->index->type);
   }
   CHAR(']');
 
@@ -2053,16 +1924,16 @@ static void subscript(cgen_t* g, const subscript_t* n) {
 }
 
 
-static void expr_in_block(cgen_t* g, const expr_t* n) {
+static void gen_expr_in_block(cgen_t* g, const expr_t* n) {
   if (n->kind == EXPR_BLOCK || n->kind == EXPR_IF)
-    return expr(g, n);
+    return gen_expr(g, n);
   PRINT("{ ");
-  expr(g, n);
+  gen_expr(g, n);
   PRINT("; }");
 }
 
 
-static void ifexpr(cgen_t* g, const ifexpr_t* n) {
+static void gen_ifexpr(cgen_t* g, const ifexpr_t* n) {
   // TODO: rewrite and clean up this monster of a function
   bool hasvar = n->cond->kind == EXPR_LET || n->cond->kind == EXPR_VAR;
   bool has_tmp_opt = false;
@@ -2094,7 +1965,7 @@ static void ifexpr(cgen_t* g, const ifexpr_t* n) {
       startline(g, var->loc);
 
       // "T x = init;" | "T x = init.v;"
-      vardef1(g, var, var->name, false);
+      gen_vardef1(g, var, var->name, false);
       if ((var->flags & NF_OPTIONAL) && !type_isptrlike(var->type))
         PRINT(".v");
       PRINT("; ");
@@ -2108,7 +1979,7 @@ static void ifexpr(cgen_t* g, const ifexpr_t* n) {
         PRINT("if ");
       }
       if ((var->flags & NF_OPTIONAL) && !type_isptrlike(var->type)) {
-        CHAR('('), expr_rvalue(g, var->init, var->init->type), PRINT(".ok)");
+        CHAR('('), gen_expr_rvalue(g, var->init, var->init->type), PRINT(".ok)");
       } else {
         PRINTF("(%s)", var->name);
       }
@@ -2122,14 +1993,14 @@ static void ifexpr(cgen_t* g, const ifexpr_t* n) {
       // "opt0 tmp = init;"
       assert(!type_isopt(var->type));
       opttype_t t = { .kind = TYPE_OPTIONAL, .elem = (type_t*)var->type };
-      opttype(g, &t);
+      gen_opttype(g, &t);
       PRINT(" const "), PRINT(tmp), PRINT(" = ");
-      expr_rvalue(g, var->init, (type_t*)&t);
+      gen_expr_rvalue(g, var->init, (type_t*)&t);
       CHAR(';');
 
       // "K x = tmp.v;"
       startline(g, var->loc);
-      type(g, var->type);
+      gen_type(g, var->type);
       if (var->kind == EXPR_LET)
         PRINT(" const");
       PRINTF(" %s = %s.v; ", var->name, tmp);
@@ -2163,12 +2034,12 @@ static void ifexpr(cgen_t* g, const ifexpr_t* n) {
         if (n->flags & NF_RVALUE)
           CHAR('(');
         PRINT("{ ");
-        opttype(g, (const opttype_t*)n->cond->type);
+        gen_opttype(g, (const opttype_t*)n->cond->type);
         fmt_tmp_id(tmp, sizeof(tmp), id);
         PRINTF(" %s = %s; ", tmp, id->name);
 
         // "T x = tmp.v;"
-        type(g, ((const opttype_t*)n->cond->type)->elem);
+        gen_type(g, ((const opttype_t*)n->cond->type)->elem);
         PRINTF(" %s = %s.v; ", id->name, tmp);
       } else {
         has_tmp_opt = false;
@@ -2179,7 +2050,7 @@ static void ifexpr(cgen_t* g, const ifexpr_t* n) {
       if (id) {
         PRINTF("(%s.ok ? ", has_tmp_opt ? tmp : id->name);
       } else {
-        CHAR('('), expr_rvalue(g, n->cond, n->cond->type);
+        CHAR('('), gen_expr_rvalue(g, n->cond, n->cond->type);
         if (n->cond->type->kind == TYPE_OPTIONAL &&
           !type_isptrlike(((const opttype_t*)n->cond->type)->elem))
         {
@@ -2191,7 +2062,7 @@ static void ifexpr(cgen_t* g, const ifexpr_t* n) {
       if (id) {
         PRINTF("if (%s.ok) ", has_tmp_opt ? tmp : id->name);
       } else {
-        PRINT("if ("), expr_rvalue(g, n->cond, n->cond->type), CHAR(')');
+        PRINT("if ("), gen_expr_rvalue(g, n->cond, n->cond->type), CHAR(')');
       }
     }
   }
@@ -2202,13 +2073,13 @@ static void ifexpr(cgen_t* g, const ifexpr_t* n) {
     if ((!n->elseb || n->elseb->type == type_void) && !type_isopt(n->thenb->type)) {
       optinit(g, (expr_t*)n->thenb, /*isshort*/false);
     } else {
-      block(g, n->thenb);
+      gen_block(g, n->thenb);
     }
     PRINT(" : (");
     if (n->elseb) {
       if (loc_line(n->elseb->loc) != g->lineno)
         startline(g, n->elseb->loc);
-      block(g, n->elseb);
+      gen_block(g, n->elseb);
       if (n->elseb->type == type_void)
         PRINT(", ");
     } else {
@@ -2222,12 +2093,12 @@ static void ifexpr(cgen_t* g, const ifexpr_t* n) {
     }
     PRINT("))");
   } else {
-    block(g, n->thenb);
+    gen_block(g, n->thenb);
     if (n->elseb) {
       if (lastchar(g) != '}')
         CHAR(';'); // terminate non-block "then" body
       PRINT(" else ");
-      block(g, n->elseb);
+      gen_block(g, n->elseb);
     }
   }
 
@@ -2247,86 +2118,56 @@ static void ifexpr(cgen_t* g, const ifexpr_t* n) {
 }
 
 
-static void forexpr(cgen_t* g, const forexpr_t* n) {
+static void gen_forexpr(cgen_t* g, const forexpr_t* n) {
   PRINT("for (");
   if (n->start)
-    expr(g, n->start);
+    gen_expr(g, n->start);
   PRINT("; ");
-  expr(g, n->cond);
+  gen_expr(g, n->cond);
   PRINT("; ");
   if (n->end)
-    expr(g, n->end);
+    gen_expr(g, n->end);
   PRINT(") ");
-  expr_in_block(g, n->body);
+  gen_expr_in_block(g, n->body);
 }
 
 
-static void typedef_(cgen_t* g, const typedef_t* n) {
-  trace("typedef " REPRNODE_FMT, REPRNODE_ARGS(n, 0));
-  trace_indentinc();
-
-  gentypename_t gentypename;
-  gentypedef_t gentypedef;
-
-  if (n->type->flags & NF_TEMPLATE) {
-    trace("skipping template typedef %s", fmtnode(g, 0, n->type));
-    trace_indentdec();
-    return;
-  }
-
-  switch (n->type->kind) {
-  case TYPE_STRUCT:
-    gentypename = gen_struct_typename;
-    gentypedef = gen_struct_typedef;
-    break;
-  case TYPE_ALIAS:
-    gentypename = gen_alias_typename;
-    gentypedef = gen_alias_typedef;
-    break;
-  default:
-    assertf(0, "unexpected %s", nodekind_name(n->type->kind));
-    panic("typedef kind");
-  }
-
-  intern_typedef(g, n->type, gentypename, gentypedef);
-  trace_indentdec();
-}
-
-
-static void expr(cgen_t* g, const expr_t* n) {
+static void gen_expr(cgen_t* g, const expr_t* n) {
   switch ((enum nodekind)n->kind) {
-  case EXPR_FUN:       return fun(g, (const fun_t*)n);
-  case EXPR_INTLIT:    return intlit(g, (const intlit_t*)n);
-  case EXPR_FLOATLIT:  return floatlit(g, (const floatlit_t*)n);
-  case EXPR_BOOLLIT:   return boollit(g, (const intlit_t*)n);
-  case EXPR_STRLIT:    return strlit(g, (const strlit_t*)n);
-  case EXPR_ARRAYLIT:  return arraylit(g, (const arraylit_t*)n);
-  case EXPR_ID:        return idexpr(g, (const idexpr_t*)n);
-  case EXPR_NS:        return nsexpr(g, (const nsexpr_t*)n);
-  case EXPR_PARAM:     return param(g, (const local_t*)n);
-  case EXPR_BLOCK:     return block(g, (const block_t*)n);
-  case EXPR_CALL:      return call(g, (const call_t*)n);
-  case EXPR_TYPECONS:  return typecons(g, (const typecons_t*)n);
-  case EXPR_MEMBER:    return member(g, (const member_t*)n);
-  case EXPR_SUBSCRIPT: return subscript(g, (const subscript_t*)n);
-  case EXPR_IF:        return ifexpr(g, (const ifexpr_t*)n);
-  case EXPR_FOR:       return forexpr(g, (const forexpr_t*)n);
-  case EXPR_RETURN:    return retexpr(g, (const retexpr_t*)n, NULL);
-  case EXPR_DEREF:     return deref(g, (const unaryop_t*)n);
-  case EXPR_PREFIXOP:  return prefixop(g, (const unaryop_t*)n);
-  case EXPR_POSTFIXOP: return postfixop(g, (const unaryop_t*)n);
-  case EXPR_BINOP:     return binop(g, (const binop_t*)n);
-  case EXPR_ASSIGN:    return assign(g, (const binop_t*)n);
+  case EXPR_FUN:       return gen_fun(g, (const fun_t*)n);
+  case EXPR_INTLIT:    return gen_intlit(g, (const intlit_t*)n);
+  case EXPR_FLOATLIT:  return gen_floatlit(g, (const floatlit_t*)n);
+  case EXPR_BOOLLIT:   return gen_boollit(g, (const intlit_t*)n);
+  case EXPR_STRLIT:    return gen_strlit(g, (const strlit_t*)n);
+  case EXPR_ARRAYLIT:  return gen_arraylit(g, (const arraylit_t*)n);
+  case EXPR_ID:        return gen_idexpr(g, (const idexpr_t*)n);
+  case EXPR_NS:        return gen_nsexpr(g, (const nsexpr_t*)n);
+  case EXPR_PARAM:     return gen_param(g, (const local_t*)n);
+  case EXPR_BLOCK:     return gen_block(g, (const block_t*)n);
+  case EXPR_CALL:      return gen_call(g, (const call_t*)n);
+  case EXPR_TYPECONS:  return gen_typecons(g, (const typecons_t*)n);
+  case EXPR_MEMBER:    return gen_member(g, (const member_t*)n);
+  case EXPR_SUBSCRIPT: return gen_subscript(g, (const subscript_t*)n);
+  case EXPR_IF:        return gen_ifexpr(g, (const ifexpr_t*)n);
+  case EXPR_FOR:       return gen_forexpr(g, (const forexpr_t*)n);
+  case EXPR_RETURN:    return gen_retexpr(g, (const retexpr_t*)n, NULL);
+  case EXPR_DEREF:     return gen_deref(g, (const unaryop_t*)n);
+  case EXPR_PREFIXOP:  return gen_prefixop(g, (const unaryop_t*)n);
+  case EXPR_POSTFIXOP: return gen_postfixop(g, (const unaryop_t*)n);
+  case EXPR_BINOP:     return gen_binop(g, (const binop_t*)n);
+  case EXPR_ASSIGN:    return gen_assign(g, (const binop_t*)n);
 
   case EXPR_VAR:
   case EXPR_LET:
-    return vardef(g, (const local_t*)n);
+    return gen_vardef(g, (const local_t*)n);
 
   // node types we should never see
   case NODE_BAD:
   case NODE_COMMENT:
   case NODE_UNIT:
   case NODE_IMPORTID:
+  case NODE_TPLPARAM:
+  case NODE_FWDDECL:
   case STMT_TYPEDEF:
   case STMT_IMPORT:
   case EXPR_FIELD:
@@ -2355,6 +2196,8 @@ static void expr(cgen_t* g, const expr_t* n) {
   case TYPE_STRUCT:
   case TYPE_ALIAS:
   case TYPE_NS:
+  case TYPE_TEMPLATE:
+  case TYPE_PLACEHOLDER:
   case TYPE_UNKNOWN:
   case TYPE_UNRESOLVED:
     break;
@@ -2422,124 +2265,6 @@ end:
 }
 
 
-static void unit_impl(cgen_t* g, const unit_t* unit) {
-  assert_nodekind(unit, NODE_UNIT);
-  if (unit->children.len == 0)
-    return;
-
-  // external function prototypes (pure declarations)
-  g->srcfileid = 0;
-  for (u32 i = 0; i < unit->children.len; i++) {
-    const fun_t* fn = (fun_t*)unit->children.v[i];
-    if (fn->kind == EXPR_FUN && !fn->body) {
-      startline(g, fn->loc);
-      fun_proto(g, fn);
-      CHAR(';');
-    }
-  }
-
-  // unit-local function prototypes
-  bool printed_head = false;
-  g->srcfileid = 0;
-  for (u32 i = 0; i < unit->children.len; i++) {
-    const fun_t* fn = (fun_t*)unit->children.v[i];
-    if (fn->kind == EXPR_FUN && fn->body && (fn->flags & NF_VIS_MASK) == NF_VIS_UNIT) {
-      if (!printed_head) {
-        printed_head = true;
-        PRINT("\n\n#line 1 \"<generated>\"");
-      }
-      CHAR('\n'); g->lineno++;
-      fun_proto(g, fn);
-      CHAR(';');
-    }
-  }
-
-  // implementations (and typedefs, added to headbuf)
-  g->srcfileid = 0;
-  for (u32 i = 0; i < unit->children.len; i++) {
-    const node_t* n = unit->children.v[i];
-    switch (n->kind) {
-      case STMT_TYPEDEF:
-        if ((n->flags & NF_VIS_MASK) == NF_VIS_UNIT)
-          typedef_(g, (typedef_t*)n);
-        break;
-      case EXPR_FUN: {
-        const fun_t* fn = (fun_t*)n;
-        // skip declaration-only function (already generated)
-        if (!fn->body)
-          break;
-        startline(g, fn->loc);
-        fun(g, fn);
-        if (ast_is_main_fun(fn))
-          g->mainfun = fn;
-        // nested functions
-        for (u32 i = 0; i < g->funqueue.len; i++) {
-          const fun_t* fn = g->funqueue.v[i];
-          startline(g, fn->loc);
-          fun(g, fn);
-        }
-        g->funqueue.len = 0;
-        break;
-      }
-      default:
-        debugdie(g, n, "unexpected unit-level node %s", nodekind_name(n->kind));
-    }
-  }
-
-}
-
-
-static void unit_interface(cgen_t* g, const unit_t* unit, nodeflag_t visibility) {
-  assert_nodekind(unit, NODE_UNIT);
-  if (unit->children.len == 0)
-    return;
-
-  g->srcfileid = 0;
-
-
-  for (u32 i = 0; i < unit->children.len; i++) {
-    const node_t* n = unit->children.v[i];
-    if (!(n->flags & visibility)) {
-      //dlog("skip %s (%s)", nodekind_name(n->kind), visibility_str(n->flags));
-      continue;
-    }
-
-    // check for duplicate entries to avoid hard-to-debug situation
-    #ifdef DEBUG
-    for (u32 j = 0; j < unit->children.len; j++) {
-      assertf(i == j || unit->children.v[i] != unit->children.v[j],
-        "duplicate unit->children entries: %s %p at both [%u] & [%u]",
-        nodekind_name(unit->children.v[i]->kind), unit->children.v[i], j, i);
-    }
-    #endif
-
-    switch (n->kind) {
-      case STMT_TYPEDEF:
-        typedef_(g, (typedef_t*)n);
-        break;
-      case EXPR_FUN: {
-        const fun_t* fn = (fun_t*)n;
-
-        // ignore pure declarations
-        if (!fn->body)
-          break;
-
-        if (fn->name == sym_main)
-          g->mainfun = fn;
-
-        startline(g, fn->loc);
-        // CHAR('\n'); g->lineno++;
-        fun_proto(g, fn);
-        CHAR(';');
-        break;
-      }
-      default:
-        debugdie(g, n, "unexpected unit-level node %s", nodekind_name(n->kind));
-    }
-  }
-}
-
-
 static void gen_main(cgen_t* g) {
   assertnotnull(g->mainfun);
   assertnotnull(g->mainfun->mangledname);
@@ -2555,48 +2280,319 @@ static void gen_main(cgen_t* g) {
 }
 
 
-static void reset(cgen_t* g) {
-  buf_clear(&g->outbuf);
-  buf_clear(&g->headbuf);
-  g->headoffs = 0;
-  g->headnest = 0;
-  g->headlineno = 0;
-  g->headsrcfileid = 0;
-  g->srcfileid = 0;
-  g->lineno = 0;
-  g->scopenest = 0;
-  g->err = 0;
-  g->anon_idgen = 0;
-  g->indent = 0;
-  map_clear(&g->typedefmap);
-  map_clear(&g->tmpmap);
-  ptrarray_clear(&g->funqueue);
-  g->mainfun = NULL;
-}
-
-
 static err_t finalize(cgen_t* g, usize headstart) {
   if (g->err)
     return g->err;
-
   if (g->headbuf.len > 0)
     buf_insert(&g->outbuf, headstart, g->headbuf.p, g->headbuf.len);
-
   // make sure outputs ends with LF
   if (g->outbuf.len > 0 && g->outbuf.chars[g->outbuf.len-1] != '\n')
     CHAR('\n');
-
   buf_nullterm(&g->outbuf);
-
   if (g->outbuf.oom)
     seterr(g, ErrNoMem);
-
   return g->err;
 }
 
 
-err_t cgen_unit_impl(cgen_t* g, const unit_t* u, const cgen_pkgapi_t* nullable pkgapi) {
-  reset(g);
+static bool toposort_visit(
+  cgen_t* g, nodearray_t* defs, node_t* n, nodeflag_t visibility)
+{
+  switch (n->kind) {
+    case EXPR_FUN:
+      if (visibility && (n->flags & visibility) == 0)
+        return true;
+      FALLTHROUGH;
+    case TYPE_ARRAY:
+    case TYPE_FUN:
+    case TYPE_PTR:
+    case TYPE_REF:
+    case TYPE_MUTREF:
+    case TYPE_SLICE:
+    case TYPE_MUTSLICE:
+    case TYPE_OPTIONAL:
+    case TYPE_STRUCT:
+    case TYPE_ALIAS:
+    case TYPE_NS:
+    case TYPE_TEMPLATE:
+      //dlog("[%s] %s#%p", __FUNCTION__, nodekind_name(n->kind), n);
+      // If MARK1 is set, n is currently being visited (recursive)
+      if (n->flags & NF_MARK1) {
+        // insert a "forward declaration" node for the recursive definition
+        fwddecl_t* fwddecl = mem_alloct(g->ma, fwddecl_t);
+        if (!fwddecl)
+          goto oom;
+        fwddecl->kind = NODE_FWDDECL;
+        fwddecl->decl = n;
+        if (!nodearray_push(defs, g->ma, (node_t*)fwddecl))
+          goto oom;
+        return true;
+      }
+      // stop now if n has been visited already
+      for (u32 i = defs->len; i > 0; ) {
+        if (defs->v[--i] == n)
+          return true;
+      }
+      // mark n as "currently being visited"
+      n->flags |= NF_MARK1;
+      break;
+
+    case TYPE_PLACEHOLDER:
+      // treat placeholdertype_t specially to avoid adding it to defs
+      if ((n = (node_t*)((placeholdertype_t*)n)->templateparam->init))
+        MUSTTAIL return toposort_visit(g, defs, n, visibility);
+      return true;
+
+    default:
+      break;
+  }
+
+  // visit children
+  ast_childit_t it = ast_childit(n);
+  for (node_t** cnp; (cnp = ast_childit_next(&it));) {
+    if (!toposort_visit(g, defs, *cnp, visibility))
+      goto oom;
+  }
+
+  // mark node as "has been visited" by adding it to the defs array
+  if (n->flags & NF_MARK1) {
+    n->flags &= ~NF_MARK1; // clear "currently being visited" marker
+    if (!nodearray_push(defs, g->ma, (node_t*)n))
+      goto oom;
+  }
+
+  return true;
+oom:
+  g->err = ErrNoMem;
+  return false;
+}
+
+
+#ifdef DEBUG
+  UNUSED static void dlog_defs(cgen_t* g, node_t** defv, u32 defc, const char* prefix) {
+    for (u32 i = 0; i < defc; i++) {
+      const node_t* n = defv[i];
+      if (n->kind == NODE_FWDDECL) {
+        const node_t* d = ((fwddecl_t*)n)->decl;
+        dlog("%s%s#%p -> %s#%p %s", prefix,
+          nodekind_name(n->kind), n,
+          nodekind_name(d->kind), d, fmtnode(g, 1, d));
+      } else {
+        dlog("%s%s#%p %s%s", prefix,
+          nodekind_name(n->kind), n, fmtnode(g, 0, n),
+          (n->flags & NF_CYCLIC) ? " (cyclic)" : "");
+      }
+    }
+  }
+#else
+  #define dlog_defs(...) ((void)0)
+#endif
+
+
+static void assign_mangledname(cgen_t* g, node_t* n) {
+  char** p;
+  switch (n->kind) {
+    case EXPR_FUN:
+      p = &((fun_t*)n)->mangledname;
+      break;
+
+    // usertype_t
+    case TYPE_ARRAY:
+      if (((arraytype_t*)n)->len > 0) // statically-sized array is just T*
+        return;
+      FALLTHROUGH;
+    case TYPE_SLICE:
+    case TYPE_MUTSLICE:
+    case TYPE_OPTIONAL:
+    case TYPE_STRUCT:
+    case TYPE_ALIAS:
+    case TYPE_NS:
+      p = &((usertype_t*)n)->mangledname;
+      break;
+
+    // has no mangledname
+    #ifdef DEBUG
+    case NODE_FWDDECL:
+    case TYPE_FUN:
+    case TYPE_PTR:
+    case TYPE_REF:
+    case TYPE_MUTREF:
+    case TYPE_TEMPLATE:
+    case TYPE_PLACEHOLDER:
+    case TYPE_UNRESOLVED:
+      return;
+    default:
+      panic("TODO " REPRNODE_FMT, REPRNODE_ARGS(n, 0));
+    #endif
+  }
+  assertf(*p == NULL, REPRNODE_FMT, REPRNODE_ARGS(n, 0));
+  *p = mangle(g, n);
+  //dlog("%s " REPRNODE_FMT " => %s", __FUNCTION__, REPRNODE_ARGS(n, 0), *p);
+}
+
+
+static void gen_fwddecl(cgen_t* g, const fwddecl_t* d) {
+  if (d->decl->kind != EXPR_FUN)
+    return;
+
+  const node_t* n = assertnotnull(d->decl);
+  startline(g, n->loc);
+
+  switch (n->kind) {
+
+  case EXPR_FUN:
+    gen_fun_proto(g, (fun_t*)n);
+    break;
+
+  case TYPE_STRUCT: {
+    gen_structtype(g, (structtype_t*)n);
+    break;
+  }
+
+  default:
+    debugdie(g, n, "unexpected node %s", nodekind_name(n->kind));
+  }
+  CHAR(';');
+}
+
+
+// gen_def generates declaration or definition of n
+static void gen_def(cgen_t* g, const node_t* n, bool is_impl) {
+  // don't generate templates
+  if (n->flags & NF_TEMPLATE)
+    return;
+
+  // don't generate any code for partial template instances, e.g.
+  //   type Template<A,B>
+  //     x A
+  //     y B
+  //   type Partial<B>
+  //     z Template<int,B>  <—— partial template instance
+  //
+  if (nodekind_isusertype(n->kind)) {
+    usertype_t* ut = (usertype_t*)n;
+    for (u32 i = 0; i < ut->templateparams.len; i++)
+      if (ut->templateparams.v[i]->kind == TYPE_PLACEHOLDER)
+        return;
+  }
+
+  trace("gen_def (%s) " REPRNODE_FMT, is_impl ? "impl" : "api", REPRNODE_ARGS(n, 0));
+
+  switch (n->kind) {
+
+  case NODE_FWDDECL:
+    if (is_impl)
+      gen_fwddecl(g, (fwddecl_t*)n);
+    break;
+
+  case STMT_TYPEDEF:
+    MUSTTAIL return gen_def(g, (node_t*)((typedef_t*)n)->type, is_impl);
+
+  case EXPR_FUN:
+    if (is_impl)
+      return gen_fun_def(g, (fun_t*)n);
+    return gen_fun_decl(g, (fun_t*)n);
+
+  case TYPE_STRUCT:
+    gen_structtype_def(g, (structtype_t*)n);
+    break;
+
+  case TYPE_OPTIONAL:
+    gen_opttype_def(g, (opttype_t*)n);
+    break;
+
+  case TYPE_FUN:
+    // TODO: determine when a function type is actually used,
+    // e.g. as a function parameter type or array-type element.
+    //startline(g, n->loc);
+    //PRINT("typedef "), gen_funtype(g, (funtype_t*)n, NULL), CHAR(';');
+    break;
+
+  case TYPE_ARRAY:
+    gen_arraytype_def(g, (arraytype_t*)n);
+    break;
+
+  case TYPE_ALIAS:
+    gen_aliastype_def(g, (aliastype_t*)n);
+    break;
+
+  case TYPE_SLICE:
+  case TYPE_MUTSLICE:
+    gen_slicetype_def(g, (slicetype_t*)n);
+    break;
+
+  // nothing to be done for these
+  case TYPE_PTR:
+  case TYPE_REF:
+  case TYPE_MUTREF:
+  case TYPE_TEMPLATE:
+    break;
+
+  default:
+    debugdie(g, n, "unexpected node %s", nodekind_name(n->kind));
+  }
+}
+
+
+static isize nodearray_indexof(const nodearray_t* na, const node_t* n) {
+  assert((u64)na->len <= (u64)ISIZE_MAX);
+  for (u32 i = 0; i < na->len; i++) {
+    if (na->v[i] == n)
+      return (isize)i;
+  }
+  return -1;
+}
+
+
+static void gen_unit(cgen_t* g, unit_t* unit, cgen_pkgapi_t* pkgapi) {
+  assert_nodekind(unit, NODE_UNIT);
+  nodearray_t children = unit->children;
+
+  if (children.len == 0)
+    return;
+
+  u32 defs_start = pkgapi->defs.len;
+  nodearray_t defs = {0};
+
+  // add unit-local declarations & definitions to topologically-sorted array "defs"
+  nodeflag_t visibility = 0;
+  for (u32 i = 0; i < children.len; i++) {
+    node_t* n = children.v[i];
+    if (!toposort_visit(g, &defs, n, visibility))
+      goto end; // OOM
+  }
+  //dlog_defs(g, defs.v, defs.len, "unit> ");
+
+  // reset source tracking
+  g->srcfileid = 0;
+
+  // Assign mangledname.
+  // We must do this for all definitions before calling gen_def as the mangledname
+  // of a node may be needed in the body of another node preceeding it.
+  for (u32 i = 0; i < defs.len; i++) {
+    node_t* n = defs.v[i];
+    if (nodearray_indexof(&pkgapi->defs, n) == -1) {
+      assign_mangledname(g, n);
+    } else if (n->kind != EXPR_FUN) {
+      // erase node with already-generted code
+      defs.v[i] = NULL;
+    }
+  }
+
+  // generate definitions
+  for (u32 i = 0; i < defs.len; i++) {
+    node_t* n = defs.v[i];
+    if (n)
+      gen_def(g, n, /*is_impl*/true);
+  }
+
+end:
+  pkgapi->defs.len = defs_start;
+}
+
+
+err_t cgen_unit_impl(cgen_t* g, unit_t* u, cgen_pkgapi_t* pkgapi) {
+  cgen_reset(g);
 
   if (pkgapi) {
     if (!map_update_replace_ptr(&g->typedefmap, g->ma, &pkgapi->pkg_typedefs))
@@ -2619,7 +2615,7 @@ err_t cgen_unit_impl(cgen_t* g, const unit_t* u, const cgen_pkgapi_t* nullable p
 
   usize headstart = g->outbuf.len;
 
-  unit_impl(g, u);
+  gen_unit(g, u, pkgapi);
 
   if (g->mainfun && (g->flags & CGEN_EXE))
     gen_main(g);
@@ -2633,6 +2629,7 @@ void cgen_pkgapi_dispose(cgen_t* g, cgen_pkgapi_t* pkgapi) {
     return;
   str_free(pkgapi->pkg_header);
   map_dispose(&pkgapi->pkg_typedefs, g->ma);
+  nodearray_dispose(&pkgapi->defs, g->ma);
 }
 
 
@@ -2704,10 +2701,48 @@ end:
 }
 
 
-err_t cgen_pkgapi(cgen_t* g, const unit_t** unitv, u32 unitc, cgen_pkgapi_t* result) {
-  memset(result, 0, sizeof(*result));
+static void add_pkg_defs(
+  cgen_t* g, unit_t** unitv, u32 unitc, nodearray_t* defs, nodeflag_t visibility)
+{
+  // topologically sort type & function definitions
+  for (u32 i = 0; i < unitc; i++) {
+    nodearray_t children = unitv[i]->children;
+    for (u32 i = 0; i < children.len; i++) {
+      node_t* n = children.v[i];
+      if ((n->flags & visibility) == 0)
+        continue;
+      if (!toposort_visit(g, defs, n, NF_VIS_PKG | NF_VIS_PUB)) {
+        nodearray_dispose(defs, g->ma);
+        return;
+      }
+    }
+  }
+}
 
-  reset(g);
+
+static void gen_decls(cgen_t* g, node_t** defv, u32 defc) {
+  g->srcfileid = 0;
+  for (u32 i = 0; i < defc; i++)
+    assign_mangledname(g, defv[i]);
+  for (u32 i = 0; i < defc; i++)
+    gen_def(g, defv[i], /*is_impl*/false);
+}
+
+
+err_t cgen_pkgapi(cgen_t* g, unit_t** unitv, u32 unitc, cgen_pkgapi_t* pkgapi) {
+  memset(pkgapi, 0, sizeof(*pkgapi));
+  cgen_reset(g);
+
+  // we assume no AST nodes have been MARK1'd, since we rely on that for toposort
+  #ifdef DEBUG
+  for (u32 i = 0; i < unitc; i++) {
+    nodearray_t children = unitv[i]->children;
+    for (u32 i = 0; i < children.len; i++) {
+      const node_t* n = children.v[i];
+      assertf((n->flags & NF_MARK1) == 0, "%s#%p", nodekind_name(n->kind), n);
+    }
+  }
+  #endif
 
   PRINT("// package "), PRINTN(g->pkg->path.p, g->pkg->path.len), CHAR('\n');
   PRINT("#pragma once\n");
@@ -2715,25 +2750,39 @@ err_t cgen_pkgapi(cgen_t* g, const unit_t** unitv, u32 unitc, cgen_pkgapi_t* res
 
   cgen_pkgapi_maybe_add_c_header(g);
 
+
+  // -- public --
+
   usize section_start = g->outbuf.len;
-  for (u32 i = 0; i < unitc; i++)
-    unit_interface(g, unitv[i], NF_VIS_PUB);
+
+  add_pkg_defs(g, unitv, unitc, &pkgapi->defs, NF_VIS_PUB);
+  //dlog_defs(g, pkgapi->defs.v, pkgapi->defs.len, "pub> ");
+  gen_decls(g, pkgapi->defs.v, pkgapi->defs.len);
+
   if (section_start < g->outbuf.len)
     CHAR('\n'); g->lineno++;
 
   usize pub_header_len = g->outbuf.len;
 
+
+  // -- package --
+
   PRINT("\n// internal API:"); g->lineno++;
   section_start = g->outbuf.len;
-  for (u32 i = 0; i < unitc; i++)
-    unit_interface(g, unitv[i], NF_VIS_PKG);
+
+  u32 defs_start = pkgapi->defs.len;
+  add_pkg_defs(g, unitv, unitc, &pkgapi->defs, NF_VIS_PKG);
+  //dlog_defs(g, pkgapi->defs.v+defs_start, pkgapi->defs.len-defs_start, "pkg> ");
+  gen_decls(g, pkgapi->defs.v+defs_start, pkgapi->defs.len-defs_start);
+
   if (section_start == g->outbuf.len) {
     // undo
     g->outbuf.len = pub_header_len;
   }
 
+
   if (g->err || ( g->err = finalize(g, headstart) ))
-    return g->err;
+    goto end;
   pub_header_len += g->headbuf.len;
 
   // Create result map of package-level type definitions by moving g->typedefmap
@@ -2742,21 +2791,22 @@ err_t cgen_pkgapi(cgen_t* g, const unit_t** unitv, u32 unitc, cgen_pkgapi_t* res
   if (!map_init(&newtypedefmap, g->ma, 8)) {
     g->err = ErrNoMem;
   } else {
-    result->pkg_typedefs = g->typedefmap;
+    pkgapi->pkg_typedefs = g->typedefmap;
     g->typedefmap = newtypedefmap;
   }
 
   // Public API header is the first pub_header_len bytes of outbuf
-  result->pub_header = buf_slice(g->outbuf, 0, pub_header_len);
+  pkgapi->pub_header = buf_slice(g->outbuf, 0, pub_header_len);
 
   // Package-internal API is outbuf[headstart:]
   // We must copy this since it will be reused with cgen_unit_impl,
   // which in turn recycles outbuf.
-  result->pkg_header = str_makelen(g->outbuf.p + headstart, g->outbuf.len - headstart);
-  if (result->pkg_header.cap == 0 || g->outbuf.oom)
+  pkgapi->pkg_header = str_makelen(g->outbuf.p + headstart, g->outbuf.len - headstart);
+  if (pkgapi->pkg_header.cap == 0 || g->outbuf.oom)
     seterr(g, ErrNoMem);
 
+end:
   if (g->err)
-    cgen_pkgapi_dispose(g, result);
+    cgen_pkgapi_dispose(g, pkgapi);
   return g->err;
 }

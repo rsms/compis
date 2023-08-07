@@ -25,3 +25,45 @@ typedef long               __co_int;
 
 #define __co_pkg __attribute__((__visibility__("internal")))
 #define __co_pub __attribute__((__visibility__("default")))
+
+struct __co_array_b {__co_uint cap, len; bool*      ptr;};
+struct __co_array_a {__co_uint cap, len; i8*        ptr;};
+struct __co_array_h {__co_uint cap, len; u8*        ptr;};
+struct __co_array_s {__co_uint cap, len; i16*       ptr;};
+struct __co_array_t {__co_uint cap, len; u16*       ptr;};
+struct __co_array_l {__co_uint cap, len; i32*       ptr;};
+struct __co_array_m {__co_uint cap, len; u32*       ptr;};
+struct __co_array_x {__co_uint cap, len; i64*       ptr;};
+struct __co_array_y {__co_uint cap, len; u64*       ptr;};
+struct __co_array_i {__co_uint cap, len; __co_int*  ptr;};
+struct __co_array_j {__co_uint cap, len; __co_uint* ptr;};
+struct __co_array_f {__co_uint cap, len; f32*       ptr;};
+struct __co_array_d {__co_uint cap, len; f64*       ptr;};
+
+struct __co_slice_b {__co_uint len; const bool*      ptr;};
+struct __co_slice_a {__co_uint len; const i8*        ptr;};
+struct __co_slice_h {__co_uint len; const u8*        ptr;};
+struct __co_slice_s {__co_uint len; const i16*       ptr;};
+struct __co_slice_t {__co_uint len; const u16*       ptr;};
+struct __co_slice_l {__co_uint len; const i32*       ptr;};
+struct __co_slice_m {__co_uint len; const u32*       ptr;};
+struct __co_slice_x {__co_uint len; const i64*       ptr;};
+struct __co_slice_y {__co_uint len; const u64*       ptr;};
+struct __co_slice_i {__co_uint len; const __co_int*  ptr;};
+struct __co_slice_j {__co_uint len; const __co_uint* ptr;};
+struct __co_slice_f {__co_uint len; const f32*       ptr;};
+struct __co_slice_d {__co_uint len; const f64*       ptr;};
+
+struct __co_mutslice_b {__co_uint len; bool*      ptr;};
+struct __co_mutslice_a {__co_uint len; i8*        ptr;};
+struct __co_mutslice_h {__co_uint len; u8*        ptr;};
+struct __co_mutslice_s {__co_uint len; i16*       ptr;};
+struct __co_mutslice_t {__co_uint len; u16*       ptr;};
+struct __co_mutslice_l {__co_uint len; i32*       ptr;};
+struct __co_mutslice_m {__co_uint len; u32*       ptr;};
+struct __co_mutslice_x {__co_uint len; i64*       ptr;};
+struct __co_mutslice_y {__co_uint len; u64*       ptr;};
+struct __co_mutslice_i {__co_uint len; __co_int*  ptr;};
+struct __co_mutslice_j {__co_uint len; __co_uint* ptr;};
+struct __co_mutslice_f {__co_uint len; f32*       ptr;};
+struct __co_mutslice_d {__co_uint len; f64*       ptr;};

@@ -21,6 +21,13 @@
 #endif
 
 
+typedef struct {
+  sym_t          name;      // available name of decl
+  sym_t nullable othername; // alternate name
+  node_t*        decl;
+} didyoumean_t;
+
+
 // typecheck_t
 typedef struct {
   compiler_t*     compiler;
@@ -522,21 +529,6 @@ static expr_t* mkretexpr(typecheck_t* a, expr_t* value, loc_t loc) {
   n->type = value->type;
   transfer_nuse_to_wrapper(n, value);
   return (expr_t*)n;
-}
-
-
-static char* mangle(typecheck_t* a, const node_t* n) {
-  buf_t* buf = tmpbuf_get(0);
-  if UNLIKELY(!compiler_mangle(a->compiler, a->pkg, buf, n)) {
-    dlog("compiler_mangle failed");
-  } else {
-    char* s = mem_strdup(a->ast_ma, buf_slice(*buf), 0);
-    if (s)
-      return s;
-  }
-  out_of_mem(a);
-  static char last_resort[1] = {0};
-  return last_resort;
 }
 
 
@@ -1067,14 +1059,14 @@ static void structtype(typecheck_t* a, structtype_t** tp) {
     size = f->offset + t->size;
     align = MAX(align, t->align); // alignment of struct is max alignment of fields
 
-    // check for internal types leaking from public ones
-    if UNLIKELY(a->pubnest && (f->type->flags & NF_VIS_PUB) == 0 &&
-                f->type->kind != TYPE_PLACEHOLDER)
-    {
-      error(a, f, "internal type %s of field %s in public struct",
-        fmtnode(a, 0, f->type), f->name);
-      help(a, f->type, "mark %s `pub`", fmtnode(a, 0, f->type));
-    }
+    // // check for internal types leaking from public ones
+    // if UNLIKELY(a->pubnest && (f->type->flags & NF_VIS_PUB) == 0 &&
+    //             f->type->kind != TYPE_PLACEHOLDER)
+    // {
+    //   error(a, f, "internal type %s of field %s in public struct",
+    //     fmtnode(a, 0, f->type), f->name);
+    //   help(a, f->type, "mark %s `pub`", fmtnode(a, 0, f->type));
+    // }
   }
 
   leave_ns(a);
@@ -1086,9 +1078,6 @@ static void structtype(typecheck_t* a, structtype_t** tp) {
   if (!intern_usertype(a, (usertype_t**)tp))
     return;
   // }
-
-  if (st->name)
-    st->mangledname = mangle(a, (node_t*)st);
 
   if (!(st->flags & NF_SUBOWNERS)) {
     if UNLIKELY(!map_assign_ptr(&a->postanalyze, a->ma, *tp))
@@ -1138,10 +1127,11 @@ static void arraytype(typecheck_t* a, arraytype_t** tp) {
 
   // check for internal types leaking from public ones
   if UNLIKELY(a->pubnest) {
-    if ((at->elem->flags & NF_VIS_PUB) == 0) {
-      error(a, at, "public array type of internal subtype %s", fmtnode(a, 0, at->elem));
-      help(a, at->elem, "mark %s `pub`", fmtnode(a, 0, at->elem));
-    }
+    // if ((at->elem->flags & NF_VIS_PUB) == 0) {
+    //   error(a, at, "public array type of internal subtype %s",
+    //     fmtnode(a, 0, at->elem));
+    //   help(a, at->elem, "mark %s `pub`", fmtnode(a, 0, at->elem));
+    // }
     node_set_visibility((node_t*)at, NF_VIS_PUB);
   }
 
@@ -1253,10 +1243,10 @@ static void fun(typecheck_t* a, fun_t* n) {
     enter_ns(a, n->recvt);
   } else {
     // plain function
-    if (!n->nsparent)
+    if (!n->nsparent) {
       n->nsparent = a->nspath.v[a->nspath.len - 1];
-    if (n->name) {
-      define(a, n->name, n);
+      if (n->name)
+        define(a, n->name, n);
     }
   }
 
@@ -1287,9 +1277,6 @@ static void fun(typecheck_t* a, fun_t* n) {
 
   // result type
   type(a, &ft->result);
-
-  // mangle name
-  n->mangledname = mangle(a, (node_t*)n);
 
   // check signature of special "drop" function.
   // basically a "poor person's drop trait."
@@ -2921,8 +2908,6 @@ static void instantiate_templatetype(typecheck_t* a, templatetype_t** tp) {
     assert((usertype_t*)*tp == (void*)instance); // assumption made by templateimap_add
     assert(instance != template);
     assert(nodekind_isusertype(instance->kind));
-    if (instance->kind == TYPE_STRUCT)
-      assert(((structtype_t*)instance)->mangledname != NULL);
   }
 
   #ifdef DEBUG
@@ -3059,11 +3044,7 @@ static void unresolvedtype(typecheck_t* a, unresolvedtype_t** tp) {
 }
 
 
-static void typedef_(typecheck_t* a, typedef_t* n) {
-  a->pubnest += (u32)!!(n->flags & NF_VIS_PUB);
-  type(a, &n->type);
-  a->pubnest -= (u32)!!(n->flags & NF_VIS_PUB);
-
+static void define_typedef(typecheck_t* a, typedef_t* n) {
   sym_t name;
   if (n->type->kind == TYPE_STRUCT) {
     name = assertnotnull(((structtype_t*)n->type)->name);
@@ -3075,6 +3056,14 @@ static void typedef_(typecheck_t* a, typedef_t* n) {
 }
 
 
+static void typedef_(typecheck_t* a, typedef_t* n) {
+  a->pubnest += (u32)!!(n->flags & NF_VIS_PUB);
+  type(a, &n->type);
+  a->pubnest -= (u32)!!(n->flags & NF_VIS_PUB);
+  define_typedef(a, n);
+}
+
+
 static void aliastype(typecheck_t* a, aliastype_t** tp) {
   aliastype_t* t = *tp;
   type(a, &t->elem);
@@ -3083,7 +3072,6 @@ static void aliastype(typecheck_t* a, aliastype_t** tp) {
 
   if (!t->nsparent)
     t->nsparent = a->nspath.v[a->nspath.len - 1];
-  t->mangledname = mangle(a, (node_t*)t);
 
   // check for internal types leaking from public ones
   if (a->pubnest) {
@@ -3094,6 +3082,12 @@ static void aliastype(typecheck_t* a, aliastype_t** tp) {
     }
     node_set_visibility((node_t*)t, NF_VIS_PUB);
   }
+}
+
+
+static void opttype(typecheck_t* a, opttype_t** tp) {
+  opttype_t* t = *tp;
+  type(a, &t->elem);
 }
 
 
@@ -3162,7 +3156,7 @@ static void _type(typecheck_t* a, type_t** tp) {
     case TYPE_MUTSLICE:
       type(a, &((ptrtype_t*)(*tp))->elem); goto end;
 
-    case TYPE_OPTIONAL:    type(a, &((opttype_t*)(*tp))->elem); goto end;
+    case TYPE_OPTIONAL:    opttype(a, (opttype_t**)tp); goto end;
     case TYPE_STRUCT:      structtype(a, (structtype_t**)tp); goto end;
     case TYPE_ALIAS:       aliastype(a, (aliastype_t**)tp); goto end;
     case TYPE_TEMPLATE:    templatetype(a, (templatetype_t**)tp); goto end;
@@ -3497,6 +3491,35 @@ static void import(typecheck_t* a, import_t* im) {
 }
 
 
+static void assign_nsparent(typecheck_t* a, node_t* n) {
+  switch (n->kind) {
+    case EXPR_FUN: {
+      fun_t* fn = (fun_t*)n;
+      if (fn->recvt) {
+        // type function
+        type(a, &fn->recvt);
+        fn->nsparent = (node_t*)fn->recvt;
+      } else {
+        fn->nsparent = a->nspath.v[a->nspath.len - 1];
+      }
+      break;
+    }
+  }
+}
+
+
+static void define_at_unit_level(typecheck_t* a, node_t* n) {
+  switch (n->kind) {
+    case EXPR_FUN: {
+      fun_t* fn = (fun_t*)n;
+      assertnotnull(fn->name);
+      define(a, fn->name, n);
+      break;
+    }
+  }
+}
+
+
 err_t typecheck(
   compiler_t* c, memalloc_t ast_ma, pkg_t* pkg, unit_t** unitv, u32 unitc)
 {
@@ -3534,6 +3557,12 @@ err_t typecheck(
 
     for (import_t* im = unit->importlist; im; im = im->next_import)
       import(&a, im);
+
+    // assign parents and define
+    for (u32 i = 0; i < unit->children.len; i++) {
+      assign_nsparent(&a, unit->children.v[i]);
+      define_at_unit_level(&a, unit->children.v[i]);
+    }
 
     for (u32 i = 0; i < unit->children.len; i++)
       stmt(&a, (stmt_t*)unit->children.v[i]);

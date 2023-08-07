@@ -1134,7 +1134,7 @@ static err_t pkgbuild_cgen_pub_api(pkgbuild_t* pb) {
   if (pb->c->opt_verbose)
     pkgbuild_begintask(pb, "cgen %s", relpath(pubhfile.p));
 
-  err_t err = cgen_pkgapi(&pb->cgen, (const unit_t**)pb->unitv, pb->unitc, &pb->pkgapi);
+  err_t err = cgen_pkgapi(&pb->cgen, (unit_t**)pb->unitv, pb->unitc, &pb->pkgapi);
   if (err) {
     dlog("cgen_pkgapi: %s", err_str(err));
     goto end;

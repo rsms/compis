@@ -396,8 +396,11 @@ static void encode_node(astencoder_t* a, buf_t* outbuf, const node_t* n) {
   } else {
     // it's a standard node, not a universal one
 
+    // exclude NF_MARK* from flags
+    nodeflag_t flags = n->flags & ~(NF_MARK1 | NF_MARK2);
+
     // base attributes of node_t
-    *p++ = '\t'; p += fmt_u64_base16((char*)p, 4, (u64)n->flags);
+    *p++ = '\t'; p += fmt_u64_base16((char*)p, 4, (u64)flags);
     *p++ = '\t'; p += fmt_u64_base16((char*)p, 8, (u64)n->nuse);
     *p++ = '\t'; p += fmt_u64_base16((char*)p, 16, (u64)enc_remap_loc(a, n->loc));
 
