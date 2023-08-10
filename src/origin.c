@@ -87,10 +87,20 @@ origin_t ast_origin(locmap_t* lm, const node_t* n) {
     break;
   }
 
-  case TYPE_SLICE: {
+  case TYPE_SLICE:
+  case TYPE_MUTSLICE: {
     const slicetype_t* t = (slicetype_t*)n;
     r = origin_union(r, ast_origin(lm, (node_t*)t->elem));
     r = origin_union(r, origin_make(lm, t->endloc));
+    break;
+  }
+
+  case TYPE_PTR:
+  case TYPE_REF:
+  case TYPE_MUTREF:
+  case TYPE_OPTIONAL: {
+    const ptrtype_t* t = (ptrtype_t*)n;
+    r = origin_union(r, ast_origin(lm, (node_t*)t->elem));
     break;
   }
 

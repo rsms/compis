@@ -80,7 +80,7 @@ typedef u8 nodekind_t;
   _( TYPE_MUTREF,   reftype_t,    'mref')/* mut&T   */\
   _( TYPE_SLICE,    slicetype_t,  'slc ')/* &[T]    */\
   _( TYPE_MUTSLICE, slicetype_t,  'mslc')/* mut&[T] */\
-  _( TYPE_OPTIONAL, opttype_t,    'opt ')\
+  _( TYPE_OPTIONAL, opttype_t,    'opt ')/* ?T */\
   _( TYPE_STRUCT,   structtype_t, 'st  ')\
   _( TYPE_ALIAS,    aliastype_t,  'alis')\
   _( TYPE_NS,       nstype_t,     'ns  ')\
@@ -323,32 +323,31 @@ typedef struct {
   nodearray_t members;
 } nstype_t;
 
-typedef struct {
-  usertype_t;
-  sym_t            name;
-  type_t*          elem;
-  node_t* nullable nsparent;    // TODO: generalize to just "parent"
-} aliastype_t;
-
-typedef struct {
+typedef struct { // *T
   usertype_t;
   type_t* elem;
 } ptrtype_t;
 
-typedef struct {
+typedef struct { // type A B
+  ptrtype_t;
+  sym_t            name;
+  node_t* nullable nsparent;    // TODO: generalize to just "parent"
+} aliastype_t;
+
+typedef struct { // ?T
+  ptrtype_t;
+} opttype_t;
+
+typedef struct { // &T, mut&T
   ptrtype_t;
 } reftype_t;
 
-typedef struct {
+typedef struct { // &[T], mut&[T]
   ptrtype_t;
   loc_t endloc; // "]"
 } slicetype_t;
 
-typedef struct {
-  ptrtype_t;
-} opttype_t;
-
-typedef struct {
+typedef struct { // [T]
   ptrtype_t;
   loc_t            endloc; // "]"
   u64              len;
@@ -678,6 +677,15 @@ err_t ast_transform(
 
 node_t* nullable ast_transform_children(
   ast_transform_t* tr, node_t* n, void* nullable ctx);
+
+
+// ast_toposort_visit_def appends to defs n and all dependencies of n,
+// in topological order (dependencies first, dependants after.)
+// When a dependency cycle is detected, a fwddecl_t(NODE_FWDDECL) node is inserted,
+// pointing to a dependency (inserted before the first dependant.)
+// If visibility>0, only nodes with one of the provided visibility flags are included.
+bool ast_toposort_visit_def(
+  nodearray_t* defs, memalloc_t ma, nodeflag_t visibility, node_t* n);
 
 
 // funtype_params_origin returns the origin of parameters, e.g.

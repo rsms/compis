@@ -1209,6 +1209,7 @@ static stmt_t* stmt_typedef(parser_t* p) {
     // instead we simply get (typedef (struct x))
     structtype_t* t = mknode(p, structtype_t, TYPE_STRUCT);
     define(p, name, (node_t*)t);
+    t->loc = nameloc;
     t->name = name;
     next(p);
     n->type = (type_t*)t;

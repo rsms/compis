@@ -1,0 +1,53 @@
+// recursive types
+
+// refs do not cause cycles; these are okay
+//   TODO: cgen breaks when trying to "pass as value".
+//   e.g. what we expect:
+//     struct R0 { struct R0* x }
+//   what is actually generated:
+//     struct R0 { struct R0 x }  <—— cycle!
+//
+// Ideas:
+//   Mark struct field with recursive ref type by cloning the reftype
+//   and setting a flag (e.g. NF_CYCLIC or a new field of reftype_t.)
+//   Then, in reftype_byvalue, return false if that flag is set.
+//
+type R0 { x &R0 }
+// type R1 { x &R2 } ; type R2 { x &R1 }
+
+// TODO: the following fails cgen, but should work.
+// The issue arises from invalid definition order.
+// Only happens with ref and/or(?) type alias.
+// type AR [&R1] ; type R1 { r AR }
+
+
+// // owned types can not be recursive; these are errors
+// type T0 { x T0 }
+// type T1 { x T2 } ; type T2 { x T1 }
+// type O0 { x ?O0 }
+// type O1 { x ?O2 } ; type O2 { x ?O1 }
+// type P0 { x *P0 }
+// type P1 { x *P2 } ; type P2 { x *P1 }
+// type OP0 { x ?*OP0 }
+// type OP1 { x ?*OP2 } ; type OP2 { x ?*OP1 }
+
+
+// // type Foo
+// //   x int
+
+// type C3
+//   // c1 *C1
+//   x int
+
+// type C2
+//   c3 ?*C3
+
+// type C1
+//   c2 *C2
+
+// type A
+//   c1 *C1
+
+// type X [A]
+
+// fun blah(a [A]) {}

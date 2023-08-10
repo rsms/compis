@@ -2351,7 +2351,7 @@ static void ircons_reset(ircons_t* c) {
 }
 
 
-err_t analyze(
+err_t iranalyze(
   compiler_t* compiler, memalloc_t ir_ma, pkg_t* pkg, unit_t** unitv, u32 unitc)
 {
   bad_irval.type = type_void;

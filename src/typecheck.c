@@ -148,9 +148,9 @@ bool type_isowner(const type_t* t) {
   // a nodeflag e.g. NF_OWNER, and rewriting type_isowner to just check for that flag.
   t = type_isopt(t) ? ((opttype_t*)t)->elem : t;
   return (
-    ((t->flags & (NF_DROP | NF_SUBOWNERS)) != 0) ||
+    (t->flags & (NF_DROP | NF_SUBOWNERS)) ||
     type_isptr(t) ||
-    ( t->kind == TYPE_ARRAY && ((arraytype_t*)t)->len == 0 ) // dynamic array [T]
+    ( t->kind == TYPE_ALIAS && type_isowner(((aliastype_t*)t)->elem) )
   );
 }
 
@@ -1109,6 +1109,9 @@ static void arraytype(typecheck_t* a, arraytype_t** tp) {
 
   type(a, &at->elem);
 
+  if (type_isowner(at->elem))
+    at->flags |= NF_SUBOWNERS;
+
   if (at->lenexpr) {
     typectx_push(a, type_uint);
     expr(a, at->lenexpr);
@@ -1135,7 +1138,7 @@ static void arraytype(typecheck_t* a, arraytype_t** tp) {
     node_set_visibility((node_t*)at, NF_VIS_PUB);
   }
 
-  assert(!at->_typeid);
+  //assertf(at->_typeid == NULL, "%s", fmtnode(a, 0, at));
   arraytype_calc_size(a, at);
   intern_usertype(a, (usertype_t**)tp);
 }
@@ -3067,8 +3070,12 @@ static void typedef_(typecheck_t* a, typedef_t* n) {
 static void aliastype(typecheck_t* a, aliastype_t** tp) {
   aliastype_t* t = *tp;
   type(a, &t->elem);
+
   if UNLIKELY(t->elem == type_void)
     return error(a, t, "cannot alias type void");
+
+  if (type_isowner(t->elem))
+    t->flags |= NF_SUBOWNERS;
 
   if (!t->nsparent)
     t->nsparent = a->nspath.v[a->nspath.len - 1];

@@ -148,7 +148,7 @@ typedef struct {
   memalloc_t   ma;         // compiler->ma
   u32          flags;      // CGEN_*
   buf_t        outbuf;
-  buf_t        headbuf;
+  buf_t        headbuf;  // TODO: remove this (it's unused)
   usize        headoffs;
   u32          headnest;
   u32          headlineno;
@@ -157,10 +157,11 @@ typedef struct {
   u32          lineno;
   u32          scopenest;
   err_t        err;
-  u32          anon_idgen;
+  u32          idgen_local;
   usize        indent;
   map_t        typedefmap;
   map_t        tmpmap;
+  ptrarray_t   tmpptrarray;
   const fun_t* nullable mainfun;
   #ifdef DEBUG
   int traceindent;
@@ -306,7 +307,8 @@ inline static u32 parser_errcount(const parser_t* p) { return p->scanner.errcoun
 
 // post-parse passes
 err_t typecheck(compiler_t*, memalloc_t ast_ma, pkg_t* pkg, unit_t** unitv, u32 unitc);
-err_t analyze(compiler_t* c, memalloc_t ast_ma, pkg_t* pkg, unit_t** unitv, u32 unitc);
+err_t iranalyze(compiler_t*, memalloc_t ast_ma, pkg_t* pkg, unit_t** unitv, u32 unitc);
+err_t check_typedeps(compiler_t* c, const unit_t*const* unitv, u32 unitc);
 
 // importing of packages
 bool import_validate_path(const char* path, const char** errmsgp, usize* erroffsp);

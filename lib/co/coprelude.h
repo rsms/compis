@@ -67,3 +67,5 @@ struct __co_mutslice_i {__co_uint len; __co_int*  ptr;};
 struct __co_mutslice_j {__co_uint len; __co_uint* ptr;};
 struct __co_mutslice_f {__co_uint len; f32*       ptr;};
 struct __co_mutslice_d {__co_uint len; f64*       ptr;};
+
+typedef struct __co_slice_h __co_str_t;

@@ -28,10 +28,10 @@ pub type Instance
   c Template<int,Template<int,u8>> // template use
   d Partial<u8>
 
-// type T1
-//   x T2
-// type T2
-//   y ?*T1
+type T1
+  x T2
+type T2
+  y ?*T1
 
 type BarArray [Bar]
 type BarSlice &[Bar]
@@ -51,7 +51,7 @@ fun f2(x int) int
   x
 
 // fun makefoo<T>() Template<T>
-// fun blah(i Instance) {}
+fun blah(i Instance) {}
 
 // pub fun main() {
 //   // var bar Instance

@@ -15,11 +15,6 @@
 #define weak_alias(name, aliasname) \
   extern __typeof(name) aliasname __attribute__((__weak__, __alias__(#name)))
 
-
-typedef struct {__co_uint len; const u8* ptr;} __co_slice_u8_t; // &[u8]
-typedef __co_slice_u8_t __co_str_t; // type str &[u8]
-
-
 #define __CO_X_STR(cstr) ((__co_str_t){__builtin_strlen(cstr),(u8*)(cstr)})
 
 

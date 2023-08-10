@@ -208,12 +208,17 @@ static const ast_field_t k_fieldsof_arraytype_t[] = {
 static const ast_field_t k_fieldsof_reftype_t[] = {
   PTRTYPE_FIELDS,
 };
+static const ast_field_t k_fieldsof_opttype_t[] = {
+  PTRTYPE_FIELDS,
+};
 static const ast_field_t k_fieldsof_slicetype_t[] = {
   PTRTYPE_FIELDS,
   FIELD___(slicetype_t, endloc, LOC),
 };
-static const ast_field_t k_fieldsof_opttype_t[] = {
+static const ast_field_t k_fieldsof_aliastype_t[] = {
   PTRTYPE_FIELDS,
+  FIELD_ID(aliastype_t, name,        SYM),
+  FIELD___(aliastype_t, mangledname, STRZ),
 };
 static const ast_field_t k_fieldsof_funtype_t[] = {
   USERTYPE_FIELDS,
@@ -225,12 +230,6 @@ static const ast_field_t k_fieldsof_structtype_t[] = {
   FIELD_ID(structtype_t, name,        SYMZ),
   FIELD___(structtype_t, mangledname, STRZ),
   FIELD_ID(structtype_t, fields,      NODEARRAY),
-};
-static const ast_field_t k_fieldsof_aliastype_t[] = {
-  USERTYPE_FIELDS,
-  FIELD_ID(aliastype_t, name,        SYM),
-  FIELD_ID(aliastype_t, elem,        NODE),
-  FIELD___(aliastype_t, mangledname, STRZ),
 };
 static const ast_field_t k_fieldsof_nstype_t[] = {
   USERTYPE_FIELDS,

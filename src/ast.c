@@ -352,3 +352,79 @@ err_t ast_transform(
   nodearray_dispose(&tr.seenstack, tr.ma);
   return tr.err;
 }
+
+
+//———————————————————————————————————————————————————————————————————————————————————————
+
+
+bool ast_toposort_visit_def(
+  nodearray_t* defs, memalloc_t ma, nodeflag_t visibility, node_t* n)
+{
+  switch (n->kind) {
+
+    case EXPR_FUN:
+      if (visibility && (n->flags & visibility) == 0)
+        return true;
+      FALLTHROUGH;
+    case TYPE_ARRAY:
+    case TYPE_FUN:
+    case TYPE_PTR:
+    case TYPE_REF:
+    case TYPE_MUTREF:
+    case TYPE_SLICE:
+    case TYPE_MUTSLICE:
+    case TYPE_OPTIONAL:
+    case TYPE_ALIAS:
+    case TYPE_STRUCT:
+    case TYPE_NS:
+    case TYPE_TEMPLATE:
+      dlog("[%s] %s#%p", __FUNCTION__, nodekind_name(n->kind), n);
+      // If MARK1 is set, n is currently being visited (recursive)
+      if UNLIKELY(n->flags & NF_MARK1) {
+        // insert a "forward declaration" node for the recursive definition
+        fwddecl_t* fwddecl = mem_alloct(ma, fwddecl_t);
+        if (!fwddecl)
+          return false;
+        fwddecl->kind = NODE_FWDDECL;
+        fwddecl->decl = n;
+        if (!nodearray_push(defs, ma, (node_t*)fwddecl))
+          return false;
+        return true;
+      }
+      // stop now if n has been visited already
+      for (u32 i = defs->len; i > 0; ) {
+        if (defs->v[--i] == n)
+          return true;
+      }
+      // mark n as "currently being visited"
+      n->flags |= NF_MARK1;
+      break;
+
+    case TYPE_PLACEHOLDER:
+      // treat placeholdertype_t specially to avoid adding it to defs
+      if ((n = (node_t*)((placeholdertype_t*)n)->templateparam->init))
+        MUSTTAIL return ast_toposort_visit_def(defs, ma, visibility, n);
+      return true;
+
+    default:
+      break;
+  }
+
+  // visit children
+  ast_childit_t it = ast_childit(n);
+  for (node_t** cnp; (cnp = ast_childit_next(&it));) {
+    if (!ast_toposort_visit_def(defs, ma, visibility, *cnp))
+      return false;
+  }
+
+  // if node may have had children that were visited
+  if (n->flags & NF_MARK1) {
+    // clear "currently being visited" marker
+    n->flags &= ~NF_MARK1;
+    // mark node as "has been visited" by adding it to the defs array
+    if (!nodearray_push(defs, ma, (node_t*)n))
+      return false;
+  }
+
+  return true;
+}

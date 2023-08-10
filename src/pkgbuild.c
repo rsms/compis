@@ -1021,6 +1021,7 @@ static err_t report_bad_mainfun(pkgbuild_t* pb, const fun_t* fn) {
 
 
 err_t pkgbuild_typecheck(pkgbuild_t* pb) {
+  err_t err;
   compiler_t* c = pb->c;
 
   pkgbuild_begintask(pb, "typecheck");
@@ -1037,11 +1038,12 @@ err_t pkgbuild_typecheck(pkgbuild_t* pb) {
   }
 
   // typecheck
-  err_t err = typecheck(c, pb->ast_ma, pb->pkgc.pkg, pb->unitv, pb->unitc);
-  if (err)
+  if (( err = typecheck(c, pb->ast_ma, pb->pkgc.pkg, pb->unitv, pb->unitc) )) {
+    dlog("typecheck: %s", err_str(err));
     return err;
+  }
   if (compiler_errcount(c) > 0) {
-    dlog("typecheck failed with %u diagnostic errors", compiler_errcount(c));
+    dlog("typecheck: %u diagnostic errors", compiler_errcount(c));
     if (!opt_trace_parse && c->opt_printast)
       dump_pkg_ast(pb->pkgc.pkg, pb->unitv, pb->unitc);
     return ErrCanceled;
@@ -1053,21 +1055,36 @@ err_t pkgbuild_typecheck(pkgbuild_t* pb) {
     dump_pkg_ast(pb->pkgc.pkg, pb->unitv, pb->unitc);
   }
 
-  // analyze
-  dlog_if(opt_trace_ir, "————————— IR —————————");
-  err = analyze(c, pb->ast_ma, pb->pkgc.pkg, pb->unitv, pb->unitc);
-  if (err) {
-    dlog("IR analyze: err=%s", err_str(err));
+  // check for cyclic types
+  if (( err = check_typedeps(c, (const unit_t*const*)pb->unitv, pb->unitc) )) {
+    dlog("check_typedeps: %s", err_str(err));
     return err;
   }
   if (compiler_errcount(c) > 0) {
-    dlog("analyze failed with %u diagnostic errors", compiler_errcount(c));
+    dlog("check_typedeps: %u diagnostic errors", compiler_errcount(c));
     return ErrCanceled;
+  }
+
+  // build IR -- performs ownership analysis; updates "drops" lists in AST
+  dlog_if(opt_trace_ir, "————————— IR —————————");
+  if (( err = iranalyze(c, pb->ast_ma, pb->pkgc.pkg, pb->unitv, pb->unitc) )) {
+    dlog("iranalyze: %s", err_str(err));
+    return err;
+  }
+  if (compiler_errcount(c) > 0) {
+    dlog("iranalyze: %u diagnostic errors", compiler_errcount(c));
+    return ErrCanceled;
+  }
+
+  // trace & dlog
+  if (opt_trace_ir && c->opt_printast) {
+    dlog("————————— AST after IR —————————");
+    dump_pkg_ast(pb->pkgc.pkg, pb->unitv, pb->unitc);
   }
 
   // print AST, if requested
   if (c->opt_printast) {
-    if (opt_trace_typecheck || opt_trace_parse) {
+    if (opt_trace_parse || opt_trace_typecheck || opt_trace_ir) {
       // we have printed the AST at various stages already,
       // so let's print a header to make it easier to distinguish what is what
       dlog("————————— AST after analyze —————————");
