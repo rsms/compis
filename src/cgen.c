@@ -2407,7 +2407,6 @@ static void assign_mangledname(cgen_t* g, node_t* n) {
       break;
 
     // has no mangledname
-    #ifdef DEBUG
     case NODE_FWDDECL:
     case TYPE_FUN:
     case TYPE_PTR:
@@ -2417,6 +2416,8 @@ static void assign_mangledname(cgen_t* g, node_t* n) {
     case TYPE_PLACEHOLDER:
     case TYPE_UNRESOLVED:
       return;
+
+    #ifdef DEBUG
     default:
       panic("TODO " REPRNODE_FMT, REPRNODE_ARGS(n, 0));
     #endif
