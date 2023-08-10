@@ -249,6 +249,77 @@ let f i8      // error: missing value
 > FUTURE: support deferred binding, e.g. `let x i8; x = 8`
 
 
+## Arrays
+
+An array in Compis is a representation of a region of linear memory,
+interpreted as zero or more values of a uniform type.
+Arrays have ownership of their values.
+
+There are two kinds of arrays with very similar syntax:
+
+- Fixed-size arrays `[type size]` (e.g. `[int 3]` for three ints)
+- Dynamic arrays `[type]` which can grow at runtime
+
+```co
+var three_ints [int 3]
+var some_bytes [u8]
+three_ints[3] // compile error: out of bounds
+some_bytes[3] // runtime panic: out of bounds
+```
+
+Fixed-size arrays are concretely represented simply by a pointer while
+dynamic arrays are represented by a triple `(capacity, length, data_pointer)`.
+
+
+## Slices
+
+Slices are references to arrays. Like regular references, they can be mutable.
+
+```co
+var three_ints [int 3]
+var a &[int] = &three_ints
+var b mut&[int] = &three_ints
+var c = &three_ints  // effecive type is mut&[int]
+```
+
+Slices are concretely represented by a tuple `(length, data_pointer)`.
+
+
+
+## Structures
+
+Structures are used for organizing data.
+A structure have named fields and can be nested.
+Here's an example of declaring a named structure type:
+
+```co
+type Thing
+  x, y f32
+  size uint
+  metadata          // anonymous struct
+    debugname str
+    is_hidden bool
+```
+
+They can be composed, and the order they are defined in does not matter:
+
+```co
+type Thing
+  x, y f32
+  size uint
+  metadata Metadata
+
+type OtherThing
+  name     str
+  metadata Metadata
+
+type Metadata
+  debugname str
+  is_hidden bool
+```
+
+
+
 ## Templates
 
 Template types (generic types) are useful when describing shapes of data with
