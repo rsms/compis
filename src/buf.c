@@ -257,6 +257,45 @@ bool buf_print_u32(buf_t* b, u32 n, u32 base) {
 }
 
 
+bool buf_print_f64(buf_t* b, f64 v, int ndec) {
+  if (!buf_reserve(b, 32))
+    return false;
+  usize n, avail = buf_avail(b);
+  char* dst;
+  for (;;) {
+    dst = b->chars + b->len;
+
+    if (ndec > -1) {
+      n = (usize)snprintf(dst, avail, "%.*f", ndec, v);
+    } else {
+      n = (usize)snprintf(dst, avail, "%f", v);
+    }
+
+    if UNLIKELY(n >= avail) {
+      assertf(n < USIZE_MAX/2, "snprintf returned -1");
+      avail = (usize)n + 1;
+      if (!buf_reserve(b, avail))
+        return false;
+      continue;
+    }
+
+    if (ndec < 0) {
+      // trim trailing zeros
+      char* p = &dst[n - 1];
+      while (*p == '0')
+        p--;
+      if (*p == '.')
+        p++; // avoid "1.00" becoming "1." (instead, let it be "1.0")
+      n = (usize)(uintptr)(p - dst) + 1;
+      dst[n] = 0;
+    }
+
+    b->len += n;
+    return true;
+  }
+}
+
+
 bool buf_print_leb128_u32(buf_t* b, u32 n) {
   if (!buf_reserve(b, LEB128_NBYTE_32))
     return false;

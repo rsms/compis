@@ -1,0 +1,3 @@
+type Foo { x int }
+//fun f1(x ?Foo) int { x.x } // error
+fun f2(x ?Foo) int { if x x.x else 0 } // ok

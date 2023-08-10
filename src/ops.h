@@ -1,86 +1,99 @@
 // SPDX-License-Identifier: Apache-2.0
-//
-// _( NAME name, opflag_t flags )
-//
+#ifndef CO_DEFINE_OPS
+#define CO_DEFINE_OPS
+  // operation codes
+  typedef u8 op_t;
+  enum op {
+    #define _(NAME, ...) NAME,
+    #include "ops.h"
+    #undef _
+  };
+  const char* op_fmt(op_t op);  // e.g. "+"
+  const char* op_name(op_t op); // e.g. "ADD"
+  int op_name_maxlen();
+
+#elif !defined(CO_INCLUDE_OPS) //————————————————————————————————————————————————————
+// _( NAME name, const char* fmtstr )
 
 // temporary flag aliases
 #define W  OP_FL_WRITE
 
 // special ops
-_( OP_NOOP, 0 )
-_( OP_PHI, 0 )
-_( OP_ARG, 0 )
-_( OP_CALL, 0 )
-_( OP_ZERO, 0 ) // zero initializer
-_( OP_FUN, 0 )
+_( OP_NOOP, "" )
+_( OP_PHI,  "" )
+_( OP_ARG,  "" )
+_( OP_CALL, "" )
+_( OP_ZERO, "" ) // zero initializer
+_( OP_FUN,  "" )
 
 // constants
-_( OP_ICONST, 0 )
-_( OP_FCONST, 0 )
+_( OP_ICONST, "" )
+_( OP_FCONST, "" )
 
 // literals
-_( OP_ARRAY, 0 ) // [v ...]
-_( OP_STR, 0 )   // "..."
+_( OP_ARRAY, "" ) // [v ...]
+_( OP_STR,   "" ) // "..."
 
 // memory
-_( OP_VAR, 0 )   // stack memory
-_( OP_STORE, 0 ) // T -> T
-_( OP_DEREF, 0 ) // *T -> T
-_( OP_ALIAS, 0 ) // T -> *T
-_( OP_GEP, 0 )   // get element pointer
+_( OP_VAR,   "" ) // stack memory
+_( OP_STORE, "" ) // T -> T
+_( OP_DEREF, "" ) // *T -> T
+_( OP_ALIAS, "" ) // T -> *T
+_( OP_GEP,   "" ) // get element pointer
 
 // ownership & lifetime
-_( OP_MOVE, 0 )   // T -> T
-_( OP_REF, 0 )    // T -> &T
-_( OP_MUTREF, 0 ) // T -> mut&T
-_( OP_DROP, 0 )   //
-_( OP_OCHECK, 0 ) // test if T? has value
+_( OP_MOVE,   "" ) // T -> T
+_( OP_REF,    "" ) // T -> &T
+_( OP_MUTREF, "" ) // T -> mut&T
+_( OP_DROP,   "" ) //
+_( OP_OCHECK, "" ) // test if T? has value
 
 // unary
-_( OP_INC,  0 ) // ++
-_( OP_DEC,  0 ) // --
-_( OP_INV,  0 ) // ~
-_( OP_NOT,  0 ) // !
-_( OP_CAST, 0 ) // T(x)
+_( OP_INC,  "++" )
+_( OP_DEC,  "--" )
+_( OP_INV,  "~" )
+_( OP_NOT,  "!" )
+_( OP_CAST, "cast" )
 
 // binary, arithmetic
-_( OP_ADD, 0 ) // +
-_( OP_SUB, 0 ) // -
-_( OP_MUL, 0 ) // *
-_( OP_DIV, 0 ) // /
-_( OP_MOD, 0 ) // %
+_( OP_ADD, "+" )
+_( OP_SUB, "-" )
+_( OP_MUL, "*" )
+_( OP_DIV, "/" )
+_( OP_MOD, "%" )
 
 // binary, bitwise
-_( OP_AND, 0 ) // &
-_( OP_OR, 0 )  // |
-_( OP_XOR, 0 ) // ^
-_( OP_SHL, 0 ) // <<
-_( OP_SHR, 0 ) // >>
+_( OP_AND, "&" )
+_( OP_OR,  "|" )
+_( OP_XOR, "^" )
+_( OP_SHL, "<<" )
+_( OP_SHR, ">>" )
 
 // binary, logical
-_( OP_LAND, 0 ) // &&
-_( OP_LOR, 0 )  // ||
+_( OP_LAND, "&&" )
+_( OP_LOR,  "||" )
 
 // binary, comparison
-_( OP_EQ, 0 )   // ==
-_( OP_NEQ, 0 )  // !=
-_( OP_LT, 0 )   // <
-_( OP_GT, 0 )   // >
-_( OP_LTEQ, 0 ) // <=
-_( OP_GTEQ, 0 ) // >=
+_( OP_EQ,   "==" )
+_( OP_NEQ,  "!=" )
+_( OP_LT,   "<" )
+_( OP_GT,   ">" )
+_( OP_LTEQ, "<=" )
+_( OP_GTEQ, ">=" )
 
 // binary, assignment
-_( OP_ASSIGN, 0 )     // =
-_( OP_ADD_ASSIGN, 0 ) // +=
-_( OP_SUB_ASSIGN, 0 ) // -=
-_( OP_MUL_ASSIGN, 0 ) // *=
-_( OP_DIV_ASSIGN, 0 ) // /=
-_( OP_MOD_ASSIGN, 0 ) // %=
-_( OP_AND_ASSIGN, 0 ) // &=
-_( OP_OR_ASSIGN, 0 )  // |=
-_( OP_XOR_ASSIGN, 0 ) // ^=
-_( OP_SHL_ASSIGN, 0 ) // <<=
-_( OP_SHR_ASSIGN, 0 ) // >>=
+_( OP_ASSIGN,     "=" )
+_( OP_ADD_ASSIGN, "+=" )
+_( OP_SUB_ASSIGN, "-=" )
+_( OP_MUL_ASSIGN, "*=" )
+_( OP_DIV_ASSIGN, "/=" )
+_( OP_MOD_ASSIGN, "%=" )
+_( OP_AND_ASSIGN, "&=" )
+_( OP_OR_ASSIGN,  "|=" )
+_( OP_XOR_ASSIGN, "^=" )
+_( OP_SHL_ASSIGN, "<<=" )
+_( OP_SHR_ASSIGN, ">>=" )
 
 
 #undef W
+#endif // CO_DEFINE_OPS or CO_INCLUDE_OPS

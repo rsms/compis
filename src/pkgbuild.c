@@ -1056,7 +1056,7 @@ err_t pkgbuild_typecheck(pkgbuild_t* pb) {
   }
 
   // check for cyclic types
-  if (( err = check_typedeps(c, (const unit_t*const*)pb->unitv, pb->unitc) )) {
+  if (( err = check_typedeps(c, pb->unitv, pb->unitc) )) {
     dlog("check_typedeps: %s", err_str(err));
     return err;
   }

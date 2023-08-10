@@ -795,6 +795,14 @@ static type_t* type(parser_t* p, prec_t prec) {
 
 
 static type_t* named_type(parser_t* p, sym_t name, loc_t loc) {
+  if UNLIKELY(name == sym__) {
+    if (loc) {
+      error_at(p, loc, "cannot use placeholder name (\"_\") as type");
+    } else {
+      error(p, "cannot use placeholder name (\"_\") as type");
+    }
+  }
+
   const node_t* t = lookup(p, name);
   if (!t)
     goto unresolved;
@@ -1124,6 +1132,8 @@ static void parse_templateparams(parser_t* p, nodearray_t* templateparams) {
     templateparam_t* tparam = mknode(p, templateparam_t, NODE_TPLPARAM);
     tparam->flags |= NF_UNKNOWN;
     tparam->name = p->scanner.sym;
+    if (tparam->name == sym__)
+      error(p, "cannot use placeholder name (\"_\") as template parameter");
     if (!expect2(p, TID, "")) {
       tparam->name = sym__;
       break;
@@ -1204,6 +1214,7 @@ static stmt_t* stmt_typedef(parser_t* p) {
 
   // next is either a type definition or an alias
   if (currtok(p) == TLBRACE) {
+    // struct
     // e.g. "type Foo { x, y int }"
     // special path for struct to avoid (typedef (alias x (struct x))),
     // instead we simply get (typedef (struct x))
@@ -1220,6 +1231,7 @@ static stmt_t* stmt_typedef(parser_t* p) {
     type_struct1(p, t);
     bubble_flags(n, t);
   } else {
+    // alias
     // e.g. "type Foo int"
     // e.g. "type Foo [int]"
     // e.g. "type Foo &[int]"
@@ -1234,6 +1246,12 @@ static stmt_t* stmt_typedef(parser_t* p) {
       define_templateparams(p, templateparams);
     }
     t->elem = type(p, PREC_COMMA);
+    if UNLIKELY(t->elem == (type_t*)t) {
+      // e.g. "type A A"
+      error_at(p, t, "recursive alias");
+      // break cycle to prevent stack overflow in type_isowner
+      t->elem = type_unknown;
+    }
     bubble_flags(n, t->elem);
     if UNLIKELY(type_isopt(t->elem)) {
       error_at(p, t->elem,

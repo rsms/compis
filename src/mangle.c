@@ -345,6 +345,11 @@ static void type(encoder_t* e, const type_t* t) {
     append_zname(e, ((placeholdertype_t*)t)->templateparam->name);
     break;
 
+  case TYPE_ALIAS:
+    buf_push(&e->buf, tag);
+    append_zname(e, ((aliastype_t*)t)->name);
+    break;
+
   default:
     assertf(0, "unexpected %s tag='%C'", nodekind_name(t->kind), tag);
   }

@@ -10,6 +10,7 @@
 #include "sha256.h"
 #include "str.h"
 #include "thread.h"
+#include "ops.h"
 
 typedef u8 nodekind_t;
 #define FOREACH_NODEKIND_NODE(_) /* nodekind_t, TYPE, enctag */ \
@@ -159,14 +160,6 @@ static_assert(NF_VIS_PKG < NF_VIS_PUB, "");
   | NF_TEMPLATE \
   | NF_TEMPLATEI \
 ))
-
-// operation codes
-typedef u8 op_t;
-enum op {
-  #define _(NAME, ...) NAME,
-  #include "ops.h"
-  #undef _
-};
 
 typedef const u8* typeid_t;
 

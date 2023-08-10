@@ -148,11 +148,6 @@ typedef struct {
   memalloc_t   ma;         // compiler->ma
   u32          flags;      // CGEN_*
   buf_t        outbuf;
-  buf_t        headbuf;  // TODO: remove this (it's unused)
-  usize        headoffs;
-  u32          headnest;
-  u32          headlineno;
-  u32          headsrcfileid;
   u32          srcfileid;
   u32          lineno;
   u32          scopenest;
@@ -161,7 +156,6 @@ typedef struct {
   usize        indent;
   map_t        typedefmap;
   map_t        tmpmap;
-  ptrarray_t   tmpptrarray;
   const fun_t* nullable mainfun;
   #ifdef DEBUG
   int traceindent;
@@ -308,7 +302,8 @@ inline static u32 parser_errcount(const parser_t* p) { return p->scanner.errcoun
 // post-parse passes
 err_t typecheck(compiler_t*, memalloc_t ast_ma, pkg_t* pkg, unit_t** unitv, u32 unitc);
 err_t iranalyze(compiler_t*, memalloc_t ast_ma, pkg_t* pkg, unit_t** unitv, u32 unitc);
-err_t check_typedeps(compiler_t* c, const unit_t*const* unitv, u32 unitc);
+err_t check_typedeps(compiler_t* c, unit_t** unitv, u32 unitc);
+bool check_typedep(compiler_t* c, node_t* n);
 
 // importing of packages
 bool import_validate_path(const char* path, const char** errmsgp, usize* erroffsp);
@@ -379,11 +374,6 @@ const char* tok_name(tok_t); // e.g. TEQ => "TEQ"
 const char* tok_repr(tok_t); // e.g. TEQ => "="
 usize tok_descr(char* buf, usize bufcap, tok_t, slice_t lit); // e.g. "number 3"
 inline static bool tok_isassign(tok_t t) { return TASSIGN <= t && t <= TORASSIGN; }
-
-// operations
-const char* op_name(op_t); // e.g. OP_ADD => "OP_ADD"
-const char* op_fmt(op_t);  // e.g. OP_ADD => "+"
-int op_name_maxlen();
 
 // scope
 void scope_clear(scope_t* s);

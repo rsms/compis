@@ -8,7 +8,7 @@ _Noreturn void __co_panic_null(void);
 void* __co_mem_dup(const void* src, __co_uint size);
 void __co_mem_free(void* ptr, __co_uint size);
 
-inline static void __co_checkbounds(u64 len, u64 index) {
+inline static void __co_checkbounds(__co_uint len, __co_uint index) {
   if (__builtin_expect(index >= len, false))
     __co_panic_out_of_bounds();
 }

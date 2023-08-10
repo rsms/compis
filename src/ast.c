@@ -378,7 +378,7 @@ bool ast_toposort_visit_def(
     case TYPE_STRUCT:
     case TYPE_NS:
     case TYPE_TEMPLATE:
-      dlog("[%s] %s#%p", __FUNCTION__, nodekind_name(n->kind), n);
+      //dlog("[%s] %s#%p", __FUNCTION__, nodekind_name(n->kind), n);
       // If MARK1 is set, n is currently being visited (recursive)
       if UNLIKELY(n->flags & NF_MARK1) {
         // insert a "forward declaration" node for the recursive definition
@@ -400,11 +400,14 @@ bool ast_toposort_visit_def(
       n->flags |= NF_MARK1;
       break;
 
-    case TYPE_PLACEHOLDER:
-      // treat placeholdertype_t specially to avoid adding it to defs
-      if ((n = (node_t*)((placeholdertype_t*)n)->templateparam->init))
-        MUSTTAIL return ast_toposort_visit_def(defs, ma, visibility, n);
+    case TYPE_PLACEHOLDER: {
+      // treat placeholdertype_t specially to avoid adding it to defs.
+      // note: don't store to n to avoid tripping msan when init is null.
+      node_t* init = assertnotnull(((placeholdertype_t*)n)->templateparam)->init;
+      if (init)
+        MUSTTAIL return ast_toposort_visit_def(defs, ma, visibility, init);
       return true;
+    }
 
     default:
       break;

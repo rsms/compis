@@ -2,7 +2,7 @@
 #include "colib.h"
 #include "tmpbuf.h"
 
-static _Thread_local buf_t _tmpbuf[2];
+static _Thread_local buf_t _tmpbuf[3];
 
 buf_t* tmpbuf_get(u32 bufindex) {
   assert(bufindex < countof(_tmpbuf));

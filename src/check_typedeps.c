@@ -13,6 +13,21 @@ UNUSED static const char* fmtnode(u32 bufindex, const void* nullable n) {
 }
 
 
+static bool type_isowner_safe1(const type_t* t, u32 n) {
+  t = type_isopt(t) ? ((opttype_t*)t)->elem : t;
+  return (
+    (t->flags & (NF_DROP | NF_SUBOWNERS)) ||
+    type_isptr(t) ||
+    ( t->kind == TYPE_ALIAS &&
+      n > 0 && type_isowner_safe1(((aliastype_t*)t)->elem, n - 1) )
+  );
+}
+
+static bool type_isowner_safe(const type_t* t) {
+  return type_isowner_safe1(t, 16);
+}
+
+
 static void error_ownership_cycle_help(
   compiler_t* c, const type_t* bt, const node_t* nullable origin_n)
 {
@@ -26,7 +41,7 @@ static void error_ownership_cycle_help(
 
   origin = ast_origin(&c->locmap, origin_n);
 
-  const char* bt_kind_prefix = type_isowner(bt) ? "managed-lifetime " : "";
+  const char* bt_kind_prefix = type_isowner_safe(bt) ? "managed-lifetime " : "";
 
   switch (origin_n->kind) {
   case EXPR_FIELD:
@@ -79,14 +94,17 @@ static bool error_ownership_cycle(
   if (buf.oom)
     buf.len = 0;
 
+  if (!origin_n)
+    origin_n = bt;
+
   // emit diagnostic (error)
-  if (type_isowner(bt)) {
+  if (type_isowner_safe(bt)) {
     report_diag(c, ast_origin(&c->locmap, (node_t*)origin_n), DIAG_ERR,
       "ownership cycle: %s manages its own lifetime%.*s",
       fmtnode(0, bt), (int)buf.len, buf.chars);
   } else {
     report_diag(c, ast_origin(&c->locmap, (node_t*)origin_n), DIAG_ERR,
-      "interdepenent type %s%.*s",
+      "interdependent type %s%.*s",
       fmtnode(0, bt), (int)buf.len, buf.chars);
   }
 
@@ -100,6 +118,7 @@ static bool check_type(
   compiler_t*          c,
   nodearray_t*         defs,
   u32                  vstk_base,
+  u32                  aliasnest,
   const type_t*        t,
   const void* nullable origin)
 {
@@ -114,14 +133,21 @@ unwrap:
 
     // we will inspect these types closer as they may contain subtypes
     case TYPE_ARRAY:
-    case TYPE_FUN:
     case TYPE_STRUCT:
     case TYPE_ALIAS:
-    case TYPE_NS:
     case TYPE_TEMPLATE:
       break;
 
-    // other types cannot cause cycles (including REF & SLICE)
+    // check reference types when "inside" an alias
+    case TYPE_REF:
+    case TYPE_MUTREF:
+    case TYPE_SLICE:
+    case TYPE_MUTSLICE:
+      if (aliasnest > 0)
+        break;
+      FALLTHROUGH;
+
+    // other types cannot cause cycles
     default:
       dlog("[%s] skip %s", __FUNCTION__, fmtnode(0, t));
       return true;
@@ -155,32 +181,63 @@ unwrap:
 
   switch (bt->kind) {
 
+  case TYPE_ARRAY:
+  case TYPE_REF:
+  case TYPE_MUTREF:
+  case TYPE_SLICE:
+  case TYPE_MUTSLICE:
+    ok = check_type(c, defs, vstk_base, aliasnest, ((ptrtype_t*)bt)->elem, bt);
+    break;
+
+  case TYPE_ALIAS: {
+    // check for special case of alias of array of same alias, e.g.
+    //   type A [&A]
+    const aliastype_t* at = (aliastype_t*)bt;
+    if UNLIKELY(
+      at->elem->kind == TYPE_ARRAY &&
+      type_unwrap_ptr(((arraytype_t*)at->elem)->elem) == bt )
+    {
+      safecheckxf(nodearray_push(defs, c->ma, (node_t*)at->elem), "OOM");
+      defs->v[defs->len-1] = defs->v[defs->len-2];
+      defs->v[defs->len-2] = (node_t*)at->elem;
+      error_ownership_cycle(c, defs, vstk_base, at->elem, origin);
+      error_ownership_cycle_help(c, bt, origin);
+      return false;
+    }
+    ok = check_type(c, defs, vstk_base, aliasnest+1, ((ptrtype_t*)bt)->elem, bt);
+    break;
+  }
+
   case TYPE_STRUCT:
     for (u32 i = 0; i < ((structtype_t*)bt)->fields.len; i++) {
       const local_t* field = (local_t*)((structtype_t*)bt)->fields.v[i];
-      // if (!type_isowner(field->type))
-      //   continue;
-      if (!check_type(c, defs, vstk_base, field->type, field)) {
+      if (!check_type(c, defs, vstk_base, aliasnest, field->type, field)) {
         ok = false;
         break;
       }
     }
     break;
 
-  case TYPE_ARRAY:
-    ok = check_type(c, defs, vstk_base, ((arraytype_t*)bt)->elem, bt);
+  case TYPE_TEMPLATE: {
+    templatetype_t* tt = (templatetype_t*)bt;
+    type_t* recvt = (type_t*)tt->recv;
+    if (!check_type(c, defs, vstk_base, aliasnest, recvt, bt)) {
+      ok = false;
+      break;
+    }
+    for (u32 i = 0; i < tt->args.len; i++) {
+      const type_t* arg = (type_t*)tt->args.v[i];
+      assertf(nodekind_istype(arg->kind), "%s", nodekind_name(arg->kind));
+      if (!check_type(c, defs, vstk_base, aliasnest, arg, bt)) {
+        ok = false;
+        break;
+      }
+    }
     break;
-
-  case TYPE_ALIAS:
-    ok = check_type(c, defs, vstk_base, ((aliastype_t*)bt)->elem, bt);
-    break;
-
-  case TYPE_FUN:
-    dlog("TODO TYPE_FUN");
-    break;
+  }
 
   default:
-    assertf(0, "NOT IMPLEMENTED %s", nodekind_name(bt->kind));
+    assertf(0, "unexpected %s", nodekind_name(bt->kind));
     UNREACHABLE;
     ok = false;
   }
@@ -195,8 +252,24 @@ unwrap:
 }
 
 
+bool check_typedep(compiler_t* c, node_t* n) {
+  bool ok = false;
+  nodearray_t defs = {0};
+  if (ast_toposort_visit_def(&defs, c->ma, 0, n)) {
+    u32 vstk_base = defs.len;
+    ok = true;
+    for (u32 i = 0; i < defs.len && ok; i++) {
+      if (defs.v[i] == NULL || !node_istype(defs.v[i]))
+        continue;
+      ok = check_type(c, &defs, vstk_base, 0, (type_t*)defs.v[i], NULL);
+    }
+  }
+  nodearray_dispose(&defs, c->ma);
+  return ok;
+}
 
-err_t check_typedeps(compiler_t* c, const unit_t*const* unitv, u32 unitc) {
+
+err_t check_typedeps(compiler_t* c, unit_t** unitv, u32 unitc) {
   err_t err = 0;
   nodearray_t defs = {0};
 
@@ -223,7 +296,7 @@ err_t check_typedeps(compiler_t* c, const unit_t*const* unitv, u32 unitc) {
   for (u32 i = 0; i < defs.len; i++) {
     if (defs.v[i] == NULL || !node_istype(defs.v[i]))
       continue;
-    if (!check_type(c, &defs, vstk_base, (type_t*)defs.v[i], NULL))
+    if (!check_type(c, &defs, vstk_base, 0, (type_t*)defs.v[i], NULL))
       break;
   }
 

@@ -1,0 +1,34 @@
+// recursive types
+
+// refs do not cause cycles; these are okay
+type R0 { x &R0 }
+type R1 { x &R2 } ; type R2 { x &R1 } // nested
+type TR0<T> { x &TR0<T> } // template
+type TR1<T> { x &TR2<T> } ; type TR2<T> { x &TR1<T> }
+type SAzR { x [&SAzR 3] } // fixed array of refs
+type SAdR { x [&SAdR] } // dynamic array of refs
+
+// owned types can not be recursive; these are errors
+// type T0 { x T0 }
+// type T1 { x T2 } ; type T2 { x T1 }
+// type O0 { x ?O0 }
+// type O1 { x ?O2 } ; type O2 { x ?O1 }
+// type P0 { x *P0 }
+// type P1 { x *P2 } ; type P2 { x *P1 }
+// type OP0 { x ?*OP0 }
+// type OP1 { x ?*OP2 } ; type OP2 { x ?*OP1 }
+// type TT<T> { x TT<T> }
+// type TT1<T> { x TT2<T> } ; type TT2<T> { x TT1<T> }
+// type A1 [A1]
+// type A1 [A1 3]
+
+// aliases can not be recursive; these are errors
+// type AR1 AR1
+// type AR1 AR2 ; type AR2 AR1
+// type AR1 &AR1
+// type AR1 [&AR1 3]
+// type AR2 [&AR2]
+// type AR3 [&R3] ; type R3 { r AR3 }
+// type SR &[SR] // slice
+// type SAzR { x AzR } ; type AzR [&SAzR 3]
+// type SAdR { x AdR } ; type AdR [&SAdR]

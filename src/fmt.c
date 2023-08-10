@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "colib.h"
 #include "compiler.h"
-#include "abuf.h"
-
-// TODO: rewrite this to use buf_t, like ast.c and cgen.c
 
 
 const char* nodekind_fmt(nodekind_t kind) {
@@ -56,412 +53,336 @@ const char* nodekind_fmt(nodekind_t kind) {
 }
 
 
-const char* op_fmt(op_t op) {
-  switch ((enum op)op) {
-  case OP_ALIAS:
-  case OP_ARG:
-  case OP_ARRAY:
-  case OP_REF:
-  case OP_MUTREF:
-  case OP_CALL:
-  case OP_CAST:
-  case OP_DROP:
-  case OP_FCONST:
-  case OP_FUN:
-  case OP_GEP:
-  case OP_ICONST:
-  case OP_MOVE:
-  case OP_NOOP:
-  case OP_OCHECK:
-  case OP_PHI:
-  case OP_STORE:
-  case OP_STR:
-  case OP_VAR:
-  case OP_ZERO:
-    return op_name(op);
+#define FMT_PARAMS           buf_t* outbuf, u32 indent, u32 maxdepth, u32 templatenest
+#define FMT_ARGS             outbuf,            indent,     maxdepth,     templatenest
+#define FMT_ARGSD(maxdepth)  outbuf,            indent,     maxdepth,     templatenest
 
-  // unary
-  case OP_INC:   return "++";
-  case OP_DEC:   return "--";
-  case OP_INV:   return "~";
-  case OP_NOT:   return "!";
-  case OP_DEREF: return "*";
+#define CHAR(ch)             buf_push(outbuf, (ch))
+#define PRINT(cstr)          buf_print(outbuf, (cstr))
+#define PRINTF(fmt, args...) buf_printf(outbuf, (fmt), ##args)
+#define PRINTN(bytes, len)   buf_append(outbuf, (bytes), (len))
+#define STARTLINE()          startline(outbuf, indent)
 
-  // binary, arithmetic
-  case OP_ADD: return "+";
-  case OP_SUB: return "-";
-  case OP_MUL: return "*";
-  case OP_DIV: return "/";
-  case OP_MOD: return "%";
 
-  // binary, bitwise
-  case OP_AND: return "&";
-  case OP_OR:  return "|";
-  case OP_XOR: return "^";
-  case OP_SHL: return "<<";
-  case OP_SHR: return ">>";
 
-  // binary, logical
-  case OP_LAND: return "&&";
-  case OP_LOR:  return "||";
-
-  // binary, comparison
-  case OP_EQ:   return "==";
-  case OP_NEQ:  return "!=";
-  case OP_LT:   return "<";
-  case OP_GT:   return ">";
-  case OP_LTEQ: return "<=";
-  case OP_GTEQ: return ">=";
-
-  // binary, assignment
-  case OP_ASSIGN:     return "=";
-  case OP_ADD_ASSIGN: return "+=";
-  case OP_AND_ASSIGN: return "&=";
-  case OP_DIV_ASSIGN: return "/=";
-  case OP_MOD_ASSIGN: return "%=";
-  case OP_MUL_ASSIGN: return "*=";
-  case OP_OR_ASSIGN:  return "|=";
-  case OP_SHL_ASSIGN: return "<<=";
-  case OP_SHR_ASSIGN: return ">>=";
-  case OP_SUB_ASSIGN: return "-=";
-  case OP_XOR_ASSIGN: return "^=";
-  }
-  assertf(0,"bad op %u", op);
-  return "?";
+static void startline(buf_t* outbuf, u32 indent) {
+  if (outbuf->len)
+    CHAR('\n');
+  buf_fill(outbuf, ' ', (usize)indent * 2);
 }
 
 
-// static void fmtarray(abuf_t* s, const ptrarray_t* a, u32 depth, u32 maxdepth) {
-//   for (usize i = 0; i < a->len; i++) {
-//     abuf_c(s, ' ');
-//     repr(s, a->v[i], indent, fl);
-//   }
-// }
+static void fmt(FMT_PARAMS, const node_t* nullable n);
 
 
-static void startline(abuf_t* s, u32 indent) {
-  if (s->len) abuf_c(s, '\n');
-  abuf_fill(s, ' ', (usize)indent * 2);
-}
-
-
-static void fmt(abuf_t* s, const node_t* nullable n, u32 indent, u32 maxdepth);
-
-
-static void local(abuf_t* s, const local_t* nullable n, u32 indent, u32 maxdepth) {
-  abuf_str(s, n->name);
-  abuf_c(s, ' ');
-  fmt(s, (node_t*)n->type, indent, maxdepth);
+static void local(FMT_PARAMS, const local_t* nullable n) {
+  PRINT(n->name);
+  CHAR(' ');
+  fmt(FMT_ARGS, (node_t*)n->type);
   if (n->init && maxdepth > 1) {
-    abuf_str(s, " = ");
-    fmt(s, (node_t*)n->init, indent, maxdepth);
+    PRINT(" = ");
+    fmt(FMT_ARGS, (node_t*)n->init);
   }
 }
 
 
-static void funtype(abuf_t* s, const funtype_t* nullable n, u32 indent, u32 maxdepth) {
+static void funtype(FMT_PARAMS, const funtype_t* nullable n) {
   assert(maxdepth > 0);
-  abuf_c(s, '(');
+  CHAR('(');
   for (u32 i = 0; i < n->params.len; i++) {
-    if (i) abuf_str(s, ", ");
+    if (i) PRINT(", ");
     const local_t* param = (local_t*)n->params.v[i];
-    abuf_str(s, param->name);
+    PRINT(param->name);
     if (i+1 == n->params.len || ((local_t*)n->params.v[i+1])->type != param->type) {
-      abuf_c(s, ' ');
-      fmt(s, (const node_t*)param->type, indent, maxdepth);
+      CHAR(' ');
+      fmt(FMT_ARGS, (const node_t*)param->type);
     }
   }
-  abuf_str(s, ") ");
-  fmt(s, (const node_t*)n->result, indent, maxdepth);
+  PRINT(") ");
+  fmt(FMT_ARGS, (const node_t*)n->result);
 }
 
 
-static void structtype(
-  abuf_t* s, const structtype_t* nullable t, u32 indent, u32 maxdepth)
-{
+static void structtype(FMT_PARAMS, const structtype_t* nullable t) {
   if (t->name) {
-    abuf_str(s, t->name);
+    PRINT(t->name);
   } else if (maxdepth <= 1) {
-    abuf_str(s, "struct");
+    PRINT("struct");
   }
 
-  if (t->flags & (NF_TEMPLATE | NF_TEMPLATEI) || t->templateparams.len > 0) {
-    abuf_c(s, '<');
+  if (t->flags & (NF_TEMPLATE | NF_TEMPLATEI) && templatenest == 0) {
+    CHAR('<');
+    u32 maxdepth0 = maxdepth;
+    if (maxdepth == 0)
+      maxdepth = 1;
     for (u32 i = 0; i < t->templateparams.len; i++) {
       if (i)
-        abuf_str(s, ", ");
-      fmt(s, (node_t*)t->templateparams.v[i], indent, MAX(1u, maxdepth));
+        PRINT(", ");
+      fmt(FMT_ARGS, (node_t*)t->templateparams.v[i]);
     }
-    abuf_c(s, '>');
+    maxdepth = maxdepth0;
+    CHAR('>');
   }
 
   if (maxdepth <= 1)
     return;
 
   if (t->name)
-    abuf_c(s, ' ');
-  abuf_c(s, '{');
+    CHAR(' ');
+  CHAR('{');
   if (t->fields.len > 0) {
     indent++;
     for (u32 i = 0; i < t->fields.len; i++) {
-      startline(s, indent);
+      STARTLINE();
       const local_t* f = (local_t*)t->fields.v[i];
-      abuf_str(s, f->name), abuf_c(s, ' ');
-      fmt(s, (const node_t*)f->type, indent, maxdepth);
+      PRINT(f->name), CHAR(' ');
+      fmt(FMT_ARGS, (const node_t*)f->type);
       if (f->init) {
-        abuf_str(s, " = ");
-        fmt(s, (const node_t*)f->init, indent, maxdepth);
+        PRINT(" = ");
+        fmt(FMT_ARGS, (const node_t*)f->init);
       }
     }
     indent--;
-    startline(s, indent);
+    STARTLINE();
   }
-  abuf_c(s, '}');
+  CHAR('}');
 }
 
 
-static void templateparam(
-  abuf_t* s, const templateparam_t* tparam, u32 indent, u32 maxdepth)
-{
-  abuf_str(s, tparam->name);
+static void templateparam(FMT_PARAMS, const templateparam_t* tparam) {
+  PRINT(tparam->name);
   if (tparam->init && maxdepth > 1) {
-    abuf_str(s, " = ");
-    fmt(s, tparam->init, indent, maxdepth);
+    PRINT(" = ");
+    fmt(FMT_ARGS, tparam->init);
   }
 }
 
 
-static void fmt_nodearray(
-  abuf_t* s, const nodearray_t* nodes, const char* sep, u32 indent, u32 maxdepth)
-{
+static void fmt_nodearray(FMT_PARAMS, const nodearray_t* nodes, const char* sep) {
   for (u32 i = 0; i < nodes->len; i++) {
-    if (i) abuf_str(s, sep);
-    fmt(s, nodes->v[i], indent, maxdepth);
+    if (i) PRINT(sep);
+    fmt(FMT_ARGS, nodes->v[i]);
   }
 }
 
 
-static void fmt(abuf_t* s, const node_t* nullable n, u32 indent, u32 maxdepth) {
+static void fmt(FMT_PARAMS, const node_t* nullable n) {
   if (maxdepth == 0)
     return;
-  if (!n)
-    return abuf_str(s, "(NULL)");
+
+  if (!n) {
+    PRINT("(NULL)");
+    return;
+  }
 
   switch ((enum nodekind)n->kind) {
 
   case NODE_UNIT: {
     const nodearray_t* a = &((unit_t*)n)->children;
     for (u32 i = 0; i < a->len; i++) {
-      startline(s, indent);
-      fmt(s, a->v[i], indent, maxdepth - 1);
+      STARTLINE();
+      fmt(FMT_ARGSD(maxdepth - 1), a->v[i]);
     }
     break;
   }
 
   case NODE_TPLPARAM:
-    templateparam(s, (templateparam_t*)n, indent, maxdepth);
+    templateparam(FMT_ARGS, (templateparam_t*)n);
     break;
 
   case STMT_IMPORT:
-    abuf_str(s, "/*TODO import_t*/");
+    PRINT("/*TODO import_t*/");
     break;
 
   case STMT_TYPEDEF:
     if (n->flags & NF_VIS_PUB)
-      abuf_str(s, "pub ");
-    abuf_str(s, "type ");
-    fmt(s, (node_t*)((typedef_t*)n)->type, indent, maxdepth);
+      PRINT("pub ");
+    PRINT("type ");
+    fmt(FMT_ARGS, (node_t*)((typedef_t*)n)->type);
     break;
 
   case EXPR_VAR:
   case EXPR_LET:
-    abuf_str(s, n->kind == EXPR_VAR ? "var " : "let ");
+    PRINT(n->kind == EXPR_VAR ? "var " : "let ");
     FALLTHROUGH;
   case EXPR_PARAM:
   case EXPR_FIELD:
-    return local(s, (const local_t*)n, indent, maxdepth);
+    return local(FMT_ARGS, (const local_t*)n);
 
   case EXPR_NS: {
     const nsexpr_t* ns = (nsexpr_t*)n;
     if (ns->flags & NF_PKGNS) {
-      abuf_fmt(s, "package \"%s\"", ns->pkg ? ns->pkg->path.p : "?");
+      PRINTF("package \"%s\"", ns->pkg ? ns->pkg->path.p : "?");
     } else {
-      abuf_str(s, "/*TODO nsexpr_t*/");
+      PRINT("/*TODO nsexpr_t*/");
     }
     break;
   }
 
   case EXPR_FUN: {
     if (n->flags & NF_VIS_PUB)
-      abuf_str(s, "pub ");
+      PRINT("pub ");
     fun_t* fn = (fun_t*)n;
     funtype_t* ft = (funtype_t*)fn->type;
-    abuf_fmt(s, "fun %s(", fn->name);
-    fmt_nodearray(s, &ft->params, ", ", indent, maxdepth);
-    abuf_str(s, ") ");
-    fmt(s, (node_t*)ft->result, indent, maxdepth);
-    if (fn->body) {
-      abuf_c(s, ' ');
-      fmt(s, (node_t*)fn->body, indent, maxdepth);
+    PRINTF("fun %s(", fn->name);
+    fmt_nodearray(FMT_ARGS, &ft->params, ", ");
+    PRINT(") ");
+    fmt(FMT_ARGS, (node_t*)ft->result);
+    if (fn->body && maxdepth > 1) {
+      CHAR(' ');
+      fmt(FMT_ARGSD(maxdepth - 1), (node_t*)fn->body);
     }
     break;
   }
 
   case EXPR_BLOCK: {
-    abuf_c(s, '{');
+    CHAR('{');
     const nodearray_t* a = &((block_t*)n)->children;
     if (a->len > 0) {
       if (maxdepth <= 1) {
-        abuf_str(s, "...");
+        PRINT("...");
       } else {
         indent++;
         for (u32 i = 0; i < a->len; i++) {
-          startline(s, indent);
-          fmt(s, a->v[i], indent, maxdepth - 1);
+          STARTLINE();
+          fmt(FMT_ARGSD(maxdepth - 1), a->v[i]);
         }
         indent--;
-        startline(s, indent);
+        STARTLINE();
       }
     }
-    abuf_c(s, '}');
+    CHAR('}');
     break;
   }
 
   case EXPR_CALL: {
     const call_t* call = (const call_t*)n;
-    fmt(s, (const node_t*)call->recv, indent, maxdepth);
-    abuf_c(s, '(');
-    fmt_nodearray(s, &call->args, ", ", indent, maxdepth);
-    abuf_c(s, ')');
+    fmt(FMT_ARGS, (const node_t*)call->recv);
+    CHAR('(');
+    fmt_nodearray(FMT_ARGS, &call->args, ", ");
+    CHAR(')');
     break;
   }
 
   case EXPR_TYPECONS: {
     const typecons_t* tc = (const typecons_t*)n;
-    fmt(s, (const node_t*)tc->type, indent, maxdepth);
-    abuf_c(s, '(');
-    fmt(s, (const node_t*)tc->expr, indent, maxdepth);
-    abuf_c(s, ')');
+    fmt(FMT_ARGS, (const node_t*)tc->type);
+    CHAR('(');
+    fmt(FMT_ARGS, (const node_t*)tc->expr);
+    CHAR(')');
     break;
   }
 
   case EXPR_MEMBER:
-    fmt(s, (node_t*)((const member_t*)n)->recv, indent, maxdepth);
-    abuf_c(s, '.');
-    abuf_str(s, ((const member_t*)n)->name);
+    fmt(FMT_ARGS, (node_t*)((const member_t*)n)->recv);
+    CHAR('.');
+    PRINT(((const member_t*)n)->name);
     break;
 
   case EXPR_SUBSCRIPT:
-    fmt(s, (node_t*)((const subscript_t*)n)->recv, indent, maxdepth);
-    abuf_c(s, '[');
-    fmt(s, (node_t*)((const subscript_t*)n)->index, indent, maxdepth);
-    abuf_c(s, ']');
+    fmt(FMT_ARGS, (node_t*)((const subscript_t*)n)->recv);
+    CHAR('[');
+    fmt(FMT_ARGS, (node_t*)((const subscript_t*)n)->index);
+    CHAR(']');
     break;
 
   case EXPR_IF:
-    abuf_str(s, "if ");
-    fmt(s, (node_t*)((const ifexpr_t*)n)->cond, indent, maxdepth);
-    abuf_c(s, ' ');
-    fmt(s, (node_t*)((const ifexpr_t*)n)->thenb, indent, maxdepth);
+    PRINT("if ");
+    fmt(FMT_ARGS, (node_t*)((const ifexpr_t*)n)->cond);
+    CHAR(' ');
+    fmt(FMT_ARGS, (node_t*)((const ifexpr_t*)n)->thenb);
     if (((const ifexpr_t*)n)->elseb) {
-      abuf_str(s, " else ");
-      fmt(s, (node_t*)((const ifexpr_t*)n)->elseb, indent, maxdepth);
+      PRINT(" else ");
+      fmt(FMT_ARGS, (node_t*)((const ifexpr_t*)n)->elseb);
     }
     break;
 
   case EXPR_FOR:
     if (maxdepth <= 1) {
-      abuf_str(s, "for");
+      PRINT("for");
     } else {
       forexpr_t* e = (forexpr_t*)n;
-      abuf_str(s, "for ");
+      PRINT("for ");
       if (e->start || e->end) {
         if (e->start)
-          fmt(s, (node_t*)e->start, indent, maxdepth - 1);
-        abuf_str(s, "; ");
-        fmt(s, (node_t*)e->cond, indent, maxdepth - 1);
-        abuf_str(s, "; ");
+          fmt(FMT_ARGSD(maxdepth - 1), (node_t*)e->start);
+        PRINT("; ");
+        fmt(FMT_ARGSD(maxdepth - 1), (node_t*)e->cond);
+        PRINT("; ");
         if (e->end)
-          fmt(s, (node_t*)e->start, indent, maxdepth - 1);
+          fmt(FMT_ARGSD(maxdepth - 1), (node_t*)e->start);
       } else {
-        fmt(s, (node_t*)e->cond, indent, maxdepth - 1);
+        fmt(FMT_ARGSD(maxdepth - 1), (node_t*)e->cond);
       }
-      abuf_c(s, ' ');
-      fmt(s, (node_t*)e->body, indent, maxdepth - 1);
+      CHAR(' ');
+      fmt(FMT_ARGSD(maxdepth - 1), (node_t*)e->body);
     }
     break;
 
   case EXPR_ID:
-    abuf_str(s, ((idexpr_t*)n)->name);
+    PRINT(((idexpr_t*)n)->name);
     break;
 
   case EXPR_RETURN:
-    abuf_str(s, "return");
+    PRINT("return");
     if (((const retexpr_t*)n)->value) {
-      abuf_c(s, ' ');
-      fmt(s, (node_t*)((const retexpr_t*)n)->value, indent, maxdepth);
+      CHAR(' ');
+      fmt(FMT_ARGS, (node_t*)((const retexpr_t*)n)->value);
     }
     break;
 
   case EXPR_DEREF:
   case EXPR_PREFIXOP:
     switch ( ((unaryop_t*)n)->op ) {
-    case OP_INC: abuf_str(s, "++"); break;
-    case OP_DEC: abuf_str(s, "--"); break;
-    case OP_INV: abuf_str(s, "~"); break;
-    case OP_NOT: abuf_str(s, "!"); break;
+    case OP_INC: PRINT("++"); break;
+    case OP_DEC: PRINT("--"); break;
+    case OP_INV: PRINT("~"); break;
+    case OP_NOT: PRINT("!"); break;
     }
-    return fmt(s, (node_t*)((unaryop_t*)n)->expr, indent, maxdepth);
+    return fmt(FMT_ARGS, (node_t*)((unaryop_t*)n)->expr);
 
   case EXPR_POSTFIXOP:
-    fmt(s, (node_t*)((unaryop_t*)n)->expr, indent, maxdepth);
-    abuf_str(s, op_fmt(((unaryop_t*)n)->op));
+    fmt(FMT_ARGS, (node_t*)((unaryop_t*)n)->expr);
+    PRINT(op_fmt(((unaryop_t*)n)->op));
     break;
 
   case EXPR_ASSIGN:
   case EXPR_BINOP:
-    fmt(s, (node_t*)((binop_t*)n)->left, indent, maxdepth - 1);
-    abuf_c(s, ' ');
-    abuf_str(s, op_fmt(((binop_t*)n)->op));
-    abuf_c(s, ' ');
-    fmt(s, (node_t*)((binop_t*)n)->right, indent, maxdepth - 1);
+    fmt(FMT_ARGSD(maxdepth - 1), (node_t*)((binop_t*)n)->left);
+    CHAR(' ');
+    PRINT(op_fmt(((binop_t*)n)->op));
+    CHAR(' ');
+    fmt(FMT_ARGSD(maxdepth - 1), (node_t*)((binop_t*)n)->right);
     break;
 
   case EXPR_BOOLLIT:
-    abuf_str(s, ((const intlit_t*)n)->intval ? "true" : "false");
+    PRINT(((intlit_t*)n)->intval ? "true" : "false");
     break;
 
-  case EXPR_INTLIT: {
-    const intlit_t* lit = (const intlit_t*)n;
-    if (lit->type && type_isunsigned(lit->type)) {
-      abuf_str(s, "0x");
-      abuf_u64(s, lit->intval, 16);
-    } else {
-      abuf_u64(s, lit->intval, 10);
-    }
+  case EXPR_INTLIT:
+    buf_print_u64(outbuf, ((intlit_t*)n)->intval, 10);
     break;
-  }
 
   case EXPR_FLOATLIT:
-    abuf_f64(s, ((const floatlit_t*)n)->f64val, -1);
+    buf_print_f64(outbuf, ((floatlit_t*)n)->f64val, -1);
     break;
 
   case EXPR_STRLIT: {
     const strlit_t* str = (strlit_t*)n;
-    abuf_c(s, '"');
-    abuf_repr(s, str->bytes, str->len);
-    abuf_c(s, '"');
+    CHAR('"');
+    buf_appendrepr(outbuf, str->bytes, str->len);
+    CHAR('"');
     break;
   }
 
   case EXPR_ARRAYLIT:
-    abuf_c(s, '[');
+    CHAR('[');
     if (maxdepth <= 1) {
-      abuf_str(s, "...");
+      PRINT("...");
     } else {
-      fmt_nodearray(s, &((arraylit_t*)n)->values, ", ", indent, maxdepth);
+      fmt_nodearray(FMT_ARGS, &((arraylit_t*)n)->values, ", ");
     }
-    abuf_c(s, ']');
+    CHAR(']');
     break;
 
   case TYPE_VOID:
@@ -478,113 +399,125 @@ static void fmt(abuf_t* s, const node_t* nullable n, u32 indent, u32 maxdepth) {
   case TYPE_UINT:
   case TYPE_F32:
   case TYPE_F64:
-    abuf_str(s, primtype_name(n->kind));
+    PRINT(primtype_name(n->kind));
     break;
 
   case TYPE_STRUCT:
-    return structtype(s, (const structtype_t*)n, indent, maxdepth);
+    return structtype(FMT_ARGS, (const structtype_t*)n);
+
   case TYPE_FUN:
-    abuf_str(s, "fun");
-    return funtype(s, (const funtype_t*)n, indent, maxdepth);
+    PRINT("fun");
+    return funtype(FMT_ARGS, (const funtype_t*)n);
+
   case TYPE_ARRAY: {
     arraytype_t* t = (arraytype_t*)n;
-    abuf_c(s, '[');
-    fmt(s, (node_t*)t->elem, indent, maxdepth);
+    CHAR('[');
+    fmt(FMT_ARGS, (node_t*)t->elem);
     if (t->len > 0) {
-      abuf_fmt(s, " <const %llu>", t->len);
+      PRINTF(" %llu", t->len);
     } else if (t->lenexpr) {
-      abuf_c(s, ' ');
-      fmt(s, (node_t*)t->lenexpr, indent, maxdepth);
+      CHAR(' ');
+      fmt(FMT_ARGS, (node_t*)t->lenexpr);
     }
-    abuf_c(s, ']');
+    CHAR(']');
     break;
   }
+
   case TYPE_SLICE:
   case TYPE_MUTSLICE: {
     slicetype_t* t = (slicetype_t*)n;
-    abuf_str(s, "&[");
-    fmt(s, (node_t*)t->elem, indent, maxdepth);
-    abuf_c(s, ']');
+    PRINT("&[");
+    fmt(FMT_ARGS, (node_t*)t->elem);
+    CHAR(']');
     break;
   }
+
   case TYPE_PTR: {
     const ptrtype_t* pt = (const ptrtype_t*)n;
-    abuf_c(s, '*');
-    fmt(s, (node_t*)pt->elem, indent, maxdepth);
+    CHAR('*');
+    fmt(FMT_ARGS, (node_t*)pt->elem);
     break;
   }
+
   case TYPE_REF:
   case TYPE_MUTREF: {
     const reftype_t* pt = (const reftype_t*)n;
-    abuf_str(s, n->kind == TYPE_MUTREF ? "mut&" : "&");
-    fmt(s, (node_t*)pt->elem, indent, maxdepth);
+    PRINT(n->kind == TYPE_MUTREF ? "mut&" : "&");
+    fmt(FMT_ARGS, (node_t*)pt->elem);
     break;
   }
+
   case TYPE_OPTIONAL: {
-    abuf_c(s, '?');
-    fmt(s, (node_t*)((const opttype_t*)n)->elem, indent, maxdepth);
+    CHAR('?');
+    fmt(FMT_ARGS, (node_t*)((const opttype_t*)n)->elem);
     break;
+
   case TYPE_NS:
-    abuf_str(s, "namespace");
+    PRINT("namespace");
     break;
   }
 
   case TYPE_ALIAS: {
     const aliastype_t* at = (aliastype_t*)n;
-    abuf_str(s, at->name);
+    PRINT(at->name);
     if (maxdepth > 1) {
-      abuf_c(s, ' ');
-      fmt(s, (node_t*)at->elem, indent, maxdepth);
+      CHAR(' ');
+      fmt(FMT_ARGS, (node_t*)at->elem);
     }
     break;
   }
 
   case TYPE_TEMPLATE: {
     const templatetype_t* tt = (templatetype_t*)n;
-    fmt(s, (node_t*)tt->recv, indent, maxdepth);
-    abuf_c(s, '<');
-    fmt_nodearray(s, &tt->args, ", ", indent, maxdepth);
-    abuf_c(s, '>');
+    templatenest++;
+    fmt(FMT_ARGS, (node_t*)tt->recv);
+    templatenest--;
+    CHAR('<');
+    fmt_nodearray(FMT_ARGS, &tt->args, ", ");
+    CHAR('>');
     break;
   }
 
   case TYPE_PLACEHOLDER: {
     const placeholdertype_t* pt = (placeholdertype_t*)n;
-    templateparam(s, pt->templateparam, indent, maxdepth);
+    templateparam(FMT_ARGS, pt->templateparam);
     break;
   }
 
   case TYPE_UNKNOWN:
-    abuf_str(s, "unknown");
+    PRINT("unknown");
     break;
 
   case TYPE_UNRESOLVED:
-    abuf_str(s, ((unresolvedtype_t*)n)->name);
+    PRINT(((unresolvedtype_t*)n)->name);
     break;
 
   case NODE_BAD:
   case NODE_IMPORTID:
   case NODE_COMMENT:
-    abuf_fmt(s, "/*%s*/", nodekind_name(n->kind));
+  case NODE_FWDDECL:
+    PRINTF("/*%s*/", nodekind_name(n->kind));
     break;
 
   } // switch
 }
 
 
-err_t node_fmt(buf_t* buf, const node_t* n, u32 maxdepth) {
-  usize needavail = 64;
-  maxdepth = MAX(maxdepth, 1);
-  for (;;) {
-    buf_reserve(buf, needavail);
-    abuf_t s = abuf_make(buf->chars + buf->len, buf->cap - buf->len);
-    fmt(&s, n, 0, maxdepth);
-    usize len = abuf_terminate(&s);
-    if (len < needavail) {
-      buf->len += len;
-      break;
-    }
-    needavail = len + 1;
-  }
-  return 0;
+err_t node_fmt(buf_t* outbuf, const node_t* n, u32 maxdepth) {
+  if (outbuf->oom)
+    return ErrNoMem;
+
+  u32 indent = 0;
+  u32 templatenest = 0;
+  if (maxdepth == 0)
+    maxdepth = 1;
+
+  fmt(FMT_ARGS, n);
+
+  buf_nullterm(outbuf);
+
+  bool oom = outbuf->oom;
+  outbuf->oom = false;
+
+  return oom ? ErrNoMem : 0;
 }

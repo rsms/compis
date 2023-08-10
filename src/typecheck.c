@@ -194,11 +194,10 @@ type_t* type_unwrap_ptr(type_t* t) {
 
 
 // unwrap_ptr_and_alias unwraps optional, ref, ptr and alias
-// e.g. "?&MyT" => "&MyT" => "MyT" => "T"
+// e.g. "&MyT" => "MyT" => "T"
 static type_t* unwrap_ptr_and_alias(type_t* t) {
   assertnotnull(t);
   for (;;) switch (t->kind) {
-    case TYPE_OPTIONAL: t = assertnotnull(((opttype_t*)t)->elem); break;
     case TYPE_REF:
     case TYPE_MUTREF:   t = assertnotnull(((reftype_t*)t)->elem); break;
     case TYPE_PTR:      t = assertnotnull(((ptrtype_t*)t)->elem); break;
@@ -1386,9 +1385,11 @@ static void ifexpr(typecheck_t* a, ifexpr_t* n) {
     n->type = n->thenb->type;
     if UNLIKELY(!type_isassignable(a->compiler, n->thenb->type, n->elseb->type)) {
       // TODO: type union
-      const char* t1 = fmtnode(a, 0, n->thenb->type);
-      const char* t2 = fmtnode(a, 1, n->elseb->type);
-      error(a, n->elseb, "incompatible types %s and %s in \"if\" branches", t1, t2);
+      if (n->thenb->type->kind != TYPE_UNKNOWN && n->elseb->type->kind != TYPE_UNKNOWN) {
+        const char* t1 = fmtnode(a, 0, n->thenb->type);
+        const char* t2 = fmtnode(a, 1, n->elseb->type);
+        error(a, n->elseb, "incompatible types %s and %s in \"if\" branches", t1, t2);
+      }
     }
   } else {
     // "if" => ?T
@@ -2134,7 +2135,7 @@ static void member_ns(typecheck_t* a, member_t* n) {
 static expr_t* nullable find_member(
   typecheck_t* a, type_t* bt, type_t* recvt, sym_t name)
 {
-  // note: bt has unwrap_ptr_and_alias applied, e.g. ?&MyMyT => T
+  // note: bt has unwrap_ptr_and_alias applied, e.g. &MyMyT => T
   assert(bt->kind != TYPE_NS); // handled by find_member_ns
 
   // Treat the member operation as a field access.
@@ -2166,17 +2167,32 @@ static expr_t* nullable find_member(
 }
 
 
+static void error_optional_access(
+  typecheck_t* a, const opttype_t* t, const expr_t* expr, const expr_t* access)
+{
+  error(a, expr, "optional value of type %s may not be valid", fmtnode(a, 0, t));
+  if (loc_line(access->loc)) {
+    help(a, access, "check %s before access, e.g: if %s %s",
+      fmtnode(a, 0, access), fmtnode(a, 1, access), fmtnode(a, 2, expr));
+  }
+}
+
+
 static void member(typecheck_t* a, member_t* n) {
   incuse(n->recv);
   expr(a, n->recv);
 
   // get receiver type without ref or optional
   type_t* recvt = n->recv->type; // e.g. ?&MyMyT
-  type_t* recvbt = unwrap_ptr_and_alias(recvt); // e.g. ?&MyMyT => T
+  type_t* recvbt = unwrap_ptr_and_alias(recvt); // e.g. &MyMyT => T
 
   // namespace has dedicated implementation
   if (recvbt->kind == TYPE_NS)
     return member_ns(a, n);
+
+  // can't access members through optional
+  if UNLIKELY(recvbt->kind == TYPE_OPTIONAL)
+    return error_optional_access(a, (opttype_t*)recvbt, (expr_t*)n, n->recv);
 
   // resolve target
   typectx_push(a, type_unknown);
@@ -2230,24 +2246,40 @@ static void subscript(typecheck_t* a, subscript_t* n) {
   unsigned_index_expr(a, n->index, &n->index_val);
 
   ptrtype_t* recvt = (ptrtype_t*)unwrap_ptr_and_alias(n->recv->type);
+  n->type = a->typectx; // avoid cascading errors
 
   switch (recvt->kind) {
     case TYPE_ARRAY: {
       n->type = recvt->elem;
       arraytype_t* at = (arraytype_t*)recvt;
-      if ((n->index->flags & NF_CONST) && at->lenexpr && n->index_val >= at->len)
+      if UNLIKELY(
+        (n->index->flags & NF_CONST) && at->lenexpr && n->index_val >= at->len)
+      {
         error(a, n, "out of bounds: element %llu of array %s",
           n->index_val, fmtnode(a, 0, recvt));
+      }
       break;
     }
     case TYPE_SLICE:
     case TYPE_MUTSLICE:
       n->type = recvt->elem;
       break;
+
+    case TYPE_OPTIONAL:
+      // can't subscript optional
+      // eg. given
+      //   fun f(x ?[int]) int { x[2] }
+      // the following diagnostic is produced
+      // example.co:1:24: error: optional value of type ?[int] may not be valid
+      // 8 → │ fun f(x ?[int]) int { x[2] }
+      //     │                         ~~~
+      // example.co:1:23: help: check x before access, e.g: if x x[2]
+      // 8 → │ fun f(x ?[int]) int { x[2] }
+      //     │                        ~
+      return error_optional_access(a, (opttype_t*)recvt, (expr_t*)n, n->recv);
+
     default:
-      n->type = a->typectx; // avoid cascading errors
-      error(a, n, "cannot index into type %s", fmtnode(a, 0, recvt));
-      return;
+      return error(a, n, "cannot index into type %s", fmtnode(a, 0, recvt));
   }
 }
 
@@ -2739,7 +2771,7 @@ end:
     } else {
       trace_tplexp("%s#%p %s => %s#%p %s",
         nodekind_name(n1->kind), n1, fmtnode(a, 0, n1),
-        nodekind_name(n->kind), n, fmtnode(a, 0, n));
+        nodekind_name(n->kind), n, fmtnode(a, 1, n));
     }
   #endif
 
@@ -2824,7 +2856,7 @@ static void instantiate_templatetype(typecheck_t* a, templatetype_t** tp) {
   usertype_t* template = tt->recv;
   assert(tt->args.len <= template->templateparams.len);
 
-  trace("instantiating template %s with %u args:", fmtnode(a,0,template), tt->args.len);
+  trace("expand template %s with %u args", fmtnode(a,0,template), tt->args.len);
   #ifdef TRACE_TEMPLATE_EXPANSION
     for (u32 i = 0; i < tt->args.len; i++) {
       trace("  - [%u] %s %p %s => %s %p %s",
@@ -2843,6 +2875,7 @@ static void instantiate_templatetype(typecheck_t* a, templatetype_t** tp) {
   instancectx_t ctx = {
     .a = a,
     .paramv = (templateparam_t**)template->templateparams.v,
+    .templatenest = a->templatenest,
     #ifdef TRACE_TEMPLATE_EXPANSION
     .traceindent = a->traceindent,
     #endif
@@ -2871,47 +2904,56 @@ static void instantiate_templatetype(typecheck_t* a, templatetype_t** tp) {
     *(node_t**)tp = (node_t*)instance;
     if (tt->args.len != template->templateparams.len)
       nodearray_dispose(&ctx.args, a->ast_ma);
-  } else {
-    // instantiate template
-    err_t err = ast_transform(
-      (node_t*)template, a->ast_ma, instantiate_trfn, &ctx, (node_t**)&instance);
-
-    // check if transformation failed (if it did, it's going to be OOM)
-    if UNLIKELY(err) {
-      dlog("ast_transform() failed: %s", err_str(err));
-      error(a, (origin_t){0}, "%s", err_str(err));
-      seterr(a, err);
-      #ifdef DEBUG
-        a->traceindent--;
-      #endif
-      return;
-    }
-
-    if (instance == (usertype_t*)template) {
-      // no substitutions
-      if UNLIKELY(!( instance = ast_clone_node(a->ast_ma, instance) ))
-        return out_of_mem(a);
-    } else {
-      assertf((instance->flags & NF_CHECKED) == 0, "checked flag should be scrubbed");
-    }
-    assert(nodekind_isusertype(instance->kind));
-
-    // convert instance to NF_TEMPLATEI
-    instance->flags = (instance->flags & ~NF_TEMPLATE) | NF_TEMPLATEI;
-    instance->templateparams = ctx.args;
-    instance->_typeid = NULL; // scrub cached typeid
-
-    // register instance (before checking, in case it refers to itself)
-    templateimap_add(a, template, instance);
-
-    // typecheck the instance
-    *(node_t**)tp = (node_t*)instance;
-    type(a, (type_t**)tp);
-
-    assert((usertype_t*)*tp == (void*)instance); // assumption made by templateimap_add
-    assert(instance != template);
-    assert(nodekind_isusertype(instance->kind));
+    #ifdef DEBUG
+      a->traceindent--;
+    #endif
+    return;
   }
+
+  // instantiate template
+  err_t err = ast_transform(
+    (node_t*)template, a->ast_ma, instantiate_trfn, &ctx, (node_t**)&instance);
+
+  // check if transformation failed (if it did, it's going to be OOM)
+  if UNLIKELY(err) {
+    dlog("ast_transform() failed: %s", err_str(err));
+    error(a, (origin_t){0}, "%s", err_str(err));
+    seterr(a, err);
+    #ifdef DEBUG
+      a->traceindent--;
+    #endif
+    return;
+  }
+
+  if (instance == (usertype_t*)template) {
+    // no substitutions
+    if UNLIKELY(!( instance = ast_clone_node(a->ast_ma, instance) ))
+      return out_of_mem(a);
+  } else {
+    assertf((instance->flags & NF_CHECKED) == 0, "checked flag should be scrubbed");
+  }
+  assert(nodekind_isusertype(instance->kind));
+
+  // convert instance to NF_TEMPLATEI
+  instance->flags = (instance->flags & ~NF_TEMPLATE) | NF_TEMPLATEI;
+  instance->templateparams = ctx.args;
+  instance->_typeid = NULL; // scrub cached typeid
+
+  // register instance (before checking, in case it refers to itself)
+  templateimap_add(a, template, instance);
+
+  // typecheck the instance
+  *(node_t**)tp = (node_t*)instance;
+  type(a, (type_t**)tp);
+
+  // instance must not have been transformed.
+  // We rely on this when we call templateimap_add ahead of time.
+  if ((usertype_t*)*tp != instance) {
+    dlog("instance was transformed: %s -> %s",
+      fmtnode(a, 0, instance), fmtnode(a, 1, *tp));
+  }
+  assert((usertype_t*)*tp == instance);
+  assert(nodekind_isusertype(instance->kind));
 
   #ifdef DEBUG
     a->traceindent--;
@@ -2995,7 +3037,9 @@ static void templatetype(typecheck_t* a, templatetype_t** tp) {
   assert(tt == *tp);
   assert(template == (*tp)->recv);
 
-  return instantiate_templatetype(a, tp);
+  // actually instantiate the template, unless we are inside a template definition
+  if (a->templatenest == 0)
+    return instantiate_templatetype(a, tp);
 }
 
 
@@ -3026,6 +3070,14 @@ static void unresolvedtype(typecheck_t* a, unresolvedtype_t** tp) {
     t->nuse += (*tp)->nuse;
     (*tp)->resolved = t;
     *(type_t**)tp = t;
+
+    // we must check type aliases for cycles now, since we unwrap aliases often
+    // and before we have run check_typedefs.
+    if (t->kind == TYPE_ALIAS && !check_typedep(a->compiler, (node_t*)t)) {
+      // break cycle to prevent stack overflow in type_isowner
+      ((aliastype_t*)t)->elem = type_unknown;
+    }
+
     return;
   }
 
@@ -3176,6 +3228,7 @@ static void _type(typecheck_t* a, type_t** tp) {
     case NODE_UNIT:
     case NODE_IMPORTID:
     case NODE_TPLPARAM:
+    case NODE_FWDDECL:
     case STMT_TYPEDEF:
     case STMT_IMPORT:
     case EXPR_FUN:
@@ -3289,6 +3342,7 @@ static void exprp(typecheck_t* a, expr_t** np) {
   case NODE_UNIT:
   case NODE_IMPORTID:
   case NODE_TPLPARAM:
+  case NODE_FWDDECL:
   case STMT_TYPEDEF:
   case STMT_IMPORT:
   case EXPR_BOOLLIT:
