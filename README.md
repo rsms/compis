@@ -249,6 +249,54 @@ let f i8      // error: missing value
 > FUTURE: support deferred binding, e.g. `let x i8; x = 8`
 
 
+## Templates
+
+Template types (generic types) are useful when describing shapes of data with
+incomplete details.
+They are also useful for reusing the same structures for many other types.
+Here's an example where the same type `Vector` is used to implement two functions
+that accept different types of primitive values (`int` and `f32`):
+
+```co
+type Vector<T>
+  x, y T
+
+fun example1(point Vector<int>) int
+  point.x * point.y
+
+fun example2(point Vector<f32>) f32
+  point.x * point.y
+```
+
+Template parameters can define default values:
+
+```co
+type Foo<T,Offs=uint>
+  value T
+  offs  Offs
+
+var a Foo<int>  // is really Foo<int,uint>
+```
+
+Templates can be partially expanded:
+
+```co
+type Foo<T,Offs=uint>
+  value T
+  offs  Offs
+
+type Bar<T>
+  small_foo Foo<T,u8>  // Foo partially expanded
+
+var a Bar<int>  // Bar and Foo fully expanded
+```
+
+
+Currently only types can be templates, not yet functions, but I'll add that.
+It is also not yet possible to define type functions for template types
+(i.e. `fun Foo<T>.bar(this)` does not compile.)
+
+
 ## Packages
 
 A package in Compis is a directory of files and identified by its file path.
