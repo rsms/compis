@@ -149,11 +149,11 @@ unwrap:
 
     // other types cannot cause cycles
     default:
-      dlog("[%s] skip %s", __FUNCTION__, fmtnode(0, t));
+      //dlog("[%s] skip %s", __FUNCTION__, fmtnode(0, t));
       return true;
   }
 
-  dlog("[%s] %s (%s)", __FUNCTION__, fmtnode(0, t), fmtnode(1, bt));
+  //dlog("[%s] %s (%s)", __FUNCTION__, fmtnode(0, t), fmtnode(1, bt));
   u32 i;
 
   // is bt on the visit stack?
