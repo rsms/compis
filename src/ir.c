@@ -2214,6 +2214,8 @@ static irval_t* expr(ircons_t* c, void* expr_node) {
   case NODE_COMMENT:
   case NODE_UNIT:
   case NODE_IMPORTID:
+  case NODE_TPLPARAM:
+  case NODE_FWDDECL:
   case STMT_TYPEDEF:
   case STMT_IMPORT:
   case EXPR_FIELD:
@@ -2243,6 +2245,8 @@ static irval_t* expr(ircons_t* c, void* expr_node) {
   case TYPE_ALIAS:
   case TYPE_NS:
   case TYPE_UNKNOWN:
+  case TYPE_TEMPLATE:
+  case TYPE_PLACEHOLDER:
   case TYPE_UNRESOLVED:
     break;
   }

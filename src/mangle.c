@@ -511,7 +511,8 @@ bool compiler_mangle(
       case TYPE_F64:
         goto endpath;
       default:
-        assertf(0, "unexpected %s", nodekind_name(ns->kind));
+        safecheckf(0, "unexpected %s", nodekind_name(ns->kind));
+        UNREACHABLE;
     }
   }
 endpath:

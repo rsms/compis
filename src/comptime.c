@@ -441,6 +441,7 @@ static void* eval1(ctx_t* ctx, void* np) {
 
   // —— TODO ——
   case NODE_UNIT:
+  case NODE_TPLPARAM:
   case STMT_TYPEDEF:
   case STMT_IMPORT:
 
@@ -468,6 +469,7 @@ static void* eval1(ctx_t* ctx, void* np) {
   case TYPE_UINT:
   case TYPE_F32:
   case TYPE_F64:
+  case TYPE_UNKNOWN:
   case TYPE_STRUCT:
   case TYPE_FUN:
   case TYPE_ARRAY:
@@ -478,15 +480,17 @@ static void* eval1(ctx_t* ctx, void* np) {
   case TYPE_MUTREF:
   case TYPE_OPTIONAL:
   case TYPE_ALIAS:
-  case TYPE_UNKNOWN:
-  case TYPE_UNRESOLVED:
   case TYPE_NS:
+  case TYPE_TEMPLATE:
+  case TYPE_PLACEHOLDER:
+  case TYPE_UNRESOLVED:
     return error_not_supported(ctx, n, "%s", nodekind_fmt(n->kind)), n;
 
   // nodes we should never encounter as an expression
   case NODE_BAD:
   case NODE_COMMENT:
   case NODE_IMPORTID:
+  case NODE_FWDDECL:
   case EXPR_FIELD:
     break;
   }

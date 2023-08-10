@@ -660,6 +660,7 @@ static void reg_syms(astencoder_t* a, const node_t* n) {
   case NODE_COMMENT:
   case NODE_UNIT:
   case NODE_IMPORTID:
+  case NODE_FWDDECL:
   case STMT_IMPORT:  // TODO
   case STMT_TYPEDEF:
   case EXPR_ARRAYLIT:

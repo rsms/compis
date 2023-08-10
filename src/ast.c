@@ -139,8 +139,7 @@ ast_childit_t ast_childit_const(const node_t* n) {
 
 
 const node_t* nullable ast_childit_const_next(ast_childit_t* itp) {
-  ast_childit_impl_t* it = (ast_childit_impl_t*)itp;
-  assert(it->isconst);
+  assert(((ast_childit_impl_t*)itp)->isconst);
   node_t** np = ast_childit_next(itp);
   return np ? (node_t*)*np : NULL;
 }
