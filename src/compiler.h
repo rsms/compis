@@ -140,14 +140,15 @@ typedef struct {
   #endif
 } parser_t;
 
-#define CGEN_EXE (1u << 0) // generating code for an executable
+#define CGEN_EXE     (1u << 0) // generating code for an executable
+#define CGEN_SRCINFO (1u << 1) // generate `#line N "source.co"`
 
 typedef struct {
   compiler_t*  compiler;
   const pkg_t* pkg;
   memalloc_t   ma;         // compiler->ma
-  u32          flags;      // CGEN_*
   buf_t        outbuf;
+  u32          flags;      // CGEN_*
   u32          srcfileid;
   u32          lineno;
   u32          scopenest;
@@ -204,10 +205,15 @@ typedef struct { // compiler_config_t
 extern node_t* last_resort_node;
 
 // name prefix reserved for implementation
-// note: if you change this, also update coprelude.h
-#define CO_INTERNAL_PREFIX "__co_"
-#define CO_TYPE_PREFIX CO_INTERNAL_PREFIX
-#define CO_TYPE_SUFFIX "_t"
+//
+// Caution! Changing any of this alters the ABI; invalidates exising generated code.
+// Node: coprelude.h has these values hard-coded and needs manual updating.
+#define CO_MANGLE_PREFIX     "_co"
+#define CO_ABI_GLOBAL_PREFIX "__co_"
+// mangledname of built-ins
+#define CO_MANGLEDNAME_STR  CO_ABI_GLOBAL_PREFIX "str"
+#define CO_MANGLEDNAME_INT  CO_ABI_GLOBAL_PREFIX "int"
+#define CO_MANGLEDNAME_UINT CO_ABI_GLOBAL_PREFIX "uint"
 
 // c++ ABI version
 // TODO: condsider making this configurable in compiler_t

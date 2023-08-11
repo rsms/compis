@@ -43,11 +43,10 @@ void compiler_dispose(compiler_t* c) {
   map_dispose(&c->pkgindex, c->ma);
   rwmutex_dispose(&c->pkgindex_mu);
 
-  if (c->strtype.mangledname) {
-    mem_freex(c->ma,
-      MEM(c->strtype.mangledname,
-        strlen(CO_TYPE_PREFIX) + strlen("str") + strlen(CO_TYPE_SUFFIX) + 1));
-  }
+  if (c->u8stype.mangledname)
+    mem_freex(c->ma, MEM(c->u8stype.mangledname, strlen(c->u8stype.mangledname) + 1));
+  if (c->strtype.mangledname)
+    mem_freex(c->ma, MEM(c->strtype.mangledname, strlen(c->strtype.mangledname) + 1));
 }
 
 
@@ -60,7 +59,13 @@ static err_t set_secondary_pointer_types(compiler_t* c) {
   c->u8stype.align = c->target.ptrsize;
   c->u8stype.elem = type_u8;
 
-  // "type string &[u8]"
+  pkg_t pkg = {0};
+  c->diagbuf.len = 0;
+  safecheckx(compiler_mangle(c, &pkg, &c->diagbuf, (node_t*)&c->u8stype));
+  c->u8stype.mangledname = mem_strdup(c->ma, buf_slice(c->diagbuf), 0);
+  safecheck(c->u8stype.mangledname);
+
+  // "type str &[u8]"
   memset(&c->strtype, 0, sizeof(c->strtype));
   c->strtype.kind = TYPE_ALIAS;
   c->strtype.flags = NF_CHECKED | NF_VIS_PUB;
@@ -68,18 +73,8 @@ static err_t set_secondary_pointer_types(compiler_t* c) {
   c->strtype.align = c->target.ptrsize;
   c->strtype.name = sym_str;
   c->strtype.elem = (type_t*)&c->u8stype;
-
-  char* mangledname = mem_alloc(c->ma,
-    strlen(CO_TYPE_PREFIX) + strlen("str") + strlen(CO_TYPE_SUFFIX) + 1).p;
-  if (mangledname == NULL)
-    return ErrNoMem;
-  c->strtype.mangledname = mangledname;
-  memcpy(mangledname, CO_TYPE_PREFIX, strlen(CO_TYPE_PREFIX));
-  mangledname += strlen(CO_TYPE_PREFIX);
-  memcpy(mangledname, "str", strlen("str"));
-  mangledname += strlen("str");
-  memcpy(mangledname, CO_TYPE_SUFFIX, strlen(CO_TYPE_SUFFIX));
-  mangledname[strlen(CO_TYPE_SUFFIX)] = 0;
+  c->strtype.mangledname = mem_strdup(c->ma, slice_cstr(CO_MANGLEDNAME_STR), 0);
+  safecheck(c->strtype.mangledname);
 
   return 0;
 }

@@ -211,6 +211,12 @@ unwrap:
   case TYPE_STRUCT:
     for (u32 i = 0; i < ((structtype_t*)bt)->fields.len; i++) {
       const local_t* field = (local_t*)((structtype_t*)bt)->fields.v[i];
+      // Note: we could allow optional owning pointers here, e.g. "type T { x ?*T }"
+      // by checking for field.type==opt && field.type.elem==ptr and "continue"ing.
+      // However, allowing that would require updating ownership code generation in cgen
+      // to handle this case, which is non-trivial. Since cycles like these can be long,
+      // e.g. A B C A, "type A { x ?*B }; type B { x ?*C }; type C { x ?*A }",
+      // the code we would need to generate to drop such a type like A B or C is complex.
       if (!check_type(c, defs, vstk_base, aliasnest, field->type, field)) {
         ok = false;
         break;

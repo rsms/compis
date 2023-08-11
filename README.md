@@ -249,6 +249,7 @@ let f i8      // error: missing value
 > FUTURE: support deferred binding, e.g. `let x i8; x = 8`
 
 
+
 ## Arrays
 
 An array in Compis is a representation of a region of linear memory,
@@ -277,9 +278,14 @@ Slices are references to arrays. Like regular references, they can be mutable.
 
 ```co
 var three_ints [int 3]
-var a &[int] = &three_ints
+
+// slices
+var a &[int]    = &three_ints
 var b mut&[int] = &three_ints
-var c = &three_ints  // effecive type is mut&[int]
+
+// references to the array (compile-time length)
+var c &[int 3] = &three_ints
+var d          = &three_ints  // type inferred as mut&[int 3]
 ```
 
 Slices are concretely represented by a tuple `(length, data_pointer)`.
@@ -366,6 +372,7 @@ var a Bar<int>  // Bar and Foo fully expanded
 Currently only types can be templates, not yet functions, but I'll add that.
 It is also not yet possible to define type functions for template types
 (i.e. `fun Foo<T>.bar(this)` does not compile.)
+
 
 
 ## Packages

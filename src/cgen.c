@@ -4,10 +4,23 @@
 #include "path.h"
 #include <sys/stat.h>
 
+// ANON_PREFIX is used for generated names
+#define ANON_PREFIX  CO_ABI_GLOBAL_PREFIX "v"
+#define ANON_FMT     ANON_PREFIX "%x"
 
-//#define INTERNAL_SEP  "·" // U+00B7 MIDDLE DOT (UTF8: "\xC2\xB7")
-#define ANON_PREFIX    CO_INTERNAL_PREFIX "v"
-#define ANON_FMT       ANON_PREFIX "%x"
+// attributes, defined by coprelude.h
+#define ATTR_PKG      CO_ABI_GLOBAL_PREFIX "PKG"
+#define ATTR_PUB      CO_ABI_GLOBAL_PREFIX "PUB"
+#define ATTR_NOALIAS  CO_ABI_GLOBAL_PREFIX "NOALIAS"
+#define ATTR_UNUSED   CO_ABI_GLOBAL_PREFIX "UNUSED"
+
+// runtime functions, defined by std/runtime/pub-api.co.h
+#define RT_mem_free            CO_ABI_GLOBAL_PREFIX "mem_free"
+#define RT_mem_dup             CO_ABI_GLOBAL_PREFIX "mem_dup"
+#define RT_panic               CO_ABI_GLOBAL_PREFIX "panic"
+#define RT_panic_out_of_bounds CO_ABI_GLOBAL_PREFIX "panic_out_of_bounds"
+#define RT_panic_null          CO_ABI_GLOBAL_PREFIX "panic_null"
+#define RT_checkbounds         CO_ABI_GLOBAL_PREFIX "checkbounds"
 
 
 typedef struct { usize v[2]; } sizetuple_t;
@@ -136,12 +149,12 @@ static char lastchar(cgen_t* g) {
 }
 
 
-static bool startloc(cgen_t* g, loc_t loc) {
+static void startloc(cgen_t* g, loc_t loc) {
   bool inputok = loc_srcfileid(loc) == 0 || g->srcfileid == loc_srcfileid(loc);
   u32 lineno = loc_line(loc);
 
   if (lineno == 0 || (g->lineno == lineno && inputok))
-    return false;
+    return;
 
   if (g->lineno < lineno && inputok && lineno - g->lineno < 4) {
     buf_fill(&g->outbuf, '\n', lineno - g->lineno);
@@ -164,13 +177,13 @@ static bool startloc(cgen_t* g, loc_t loc) {
   }
 
   g->lineno = lineno;
-  return true;
 }
 
 
 static void startline(cgen_t* g, loc_t loc) {
   g->lineno++;
-  startloc(g, loc);
+  if (g->flags & CGEN_SRCINFO)
+    startloc(g, loc);
   CHAR('\n');
   buf_fill(&g->outbuf, ' ', g->indent*2);
 }
@@ -317,8 +330,8 @@ static const type_t* unwind_aliastypes(const type_t* t) {
 // static void maybe_gen_ptrtype_defguard(cgen_t* g, const ptrtype_t* t) {
 //   if (nodekind_isprimtype(t->elem->kind)) {
 //     assertnotnull(t->mangledname);
-//     PRINTF("\n#ifndef __co_DEF_%s", t->mangledname), g->lineno++;
-//     PRINTF("\n#define __co_DEF_%s", t->mangledname), g->lineno++;
+//     PRINTF("\n#ifndef " CO_ABI_GLOBAL_PREFIX "DEF_%s", t->mangledname), g->lineno++;
+//     PRINTF("\n#define " CO_ABI_GLOBAL_PREFIX "DEF_%s", t->mangledname), g->lineno++;
 //   }
 // }
 
@@ -513,7 +526,7 @@ static void gen_structtype(cgen_t* g, const structtype_t* st) {
   if (st->mangledname) {
     PRINT("struct "), PRINT(st->mangledname);
   } else {
-    PRINTF("struct " CO_TYPE_PREFIX "struct%lx" CO_TYPE_SUFFIX, (uintptr)st);
+    PRINTF("struct " CO_ABI_GLOBAL_PREFIX "%lx", (uintptr)st);
   }
 }
 
@@ -597,10 +610,10 @@ static void gen_type(cgen_t* g, const type_t* t) {
   case TYPE_F64:
     PRINT(primtype_name(t->kind));
     break;
-  case TYPE_INT:      return gen_type(g, g->compiler->inttype);
-  case TYPE_UINT:     return gen_type(g, g->compiler->uinttype);
-  // case TYPE_INT:      PRINT(CO_TYPE_PREFIX "int"); break;
-  // case TYPE_UINT:     PRINT(CO_TYPE_PREFIX "uint"); break;
+  // case TYPE_INT:      return gen_type(g, g->compiler->inttype);
+  // case TYPE_UINT:     return gen_type(g, g->compiler->uinttype);
+  case TYPE_INT:      PRINT(CO_MANGLEDNAME_INT); break;
+  case TYPE_UINT:     PRINT(CO_MANGLEDNAME_UINT); break;
 
   case TYPE_FUN:      return gen_funtype(g, (const funtype_t*)t, NULL);
   case TYPE_PTR:      return gen_ptrtype(g, (const ptrtype_t*)t);
@@ -782,8 +795,8 @@ static void drop_begin(cgen_t* g, const expr_t* owner) {
   // TODO FIXME
   dlog("TODO FIXME %s", __FUNCTION__);
   PRINT(type_isopt(owner->type) ?
-    CO_INTERNAL_PREFIX "drop_opt(" :
-    CO_INTERNAL_PREFIX "drop(");
+    CO_ABI_GLOBAL_PREFIX "drop_opt(" :
+    CO_ABI_GLOBAL_PREFIX "drop(");
 }
 
 
@@ -851,12 +864,12 @@ static void gen_drop_array_elements(cgen_t* g, const drop_t* d, const arraytype_
 
   if (at->len == 0) {
     // dynamic runtime-sized array
-    PRINTF("for (__co_uint %s = 0; %s < %s.len; %s++) {",
+    PRINTF("for (" CO_MANGLEDNAME_UINT " %s = 0; %s < %s.len; %s++) {",
       key_id, key_id, d->name, key_id);
     buf_printf(&tmpbuf, "%s.ptr[%s]", d->name, key_id);
   } else {
     // compile time-sized array
-    PRINTF("for (__co_uint %s = 0; %s < %llu; %s++) {",
+    PRINTF("for (" CO_MANGLEDNAME_UINT " %s = 0; %s < %llu; %s++) {",
       key_id, key_id, at->len, key_id);
     buf_printf(&tmpbuf, "%s[%s]", d->name, key_id);
   }
@@ -893,7 +906,7 @@ static void gen_drop_subowners(cgen_t* g, const drop_t* d, const type_t* bt) {
 
 static void gen_drop_ptr(cgen_t* g, const drop_t* d, const ptrtype_t* pt) {
   startlinex(g);
-  PRINTF(CO_INTERNAL_PREFIX "mem_free(%s, %llu);", d->name, pt->elem->size);
+  PRINTF(RT_mem_free "(%s, %llu);", d->name, pt->elem->size);
 }
 
 
@@ -901,12 +914,10 @@ static void gen_drop_array(cgen_t* g, const drop_t* d, const arraytype_t* at) {
   startlinex(g);
   if (at->len == 0) {
     // dynamic runtime-sized array
-    PRINTF(CO_INTERNAL_PREFIX "mem_free(%s.ptr, %s.cap * %llu);",
-      d->name, d->name, at->elem->size);
+    PRINTF(RT_mem_free "(%s.ptr, %s.cap * %llu);", d->name, d->name, at->elem->size);
   } else {
     // compile time-sized array
-    PRINTF(CO_INTERNAL_PREFIX "mem_free(%s, %llu);",
-      d->name, at->len * at->elem->size);
+    PRINTF(RT_mem_free "(%s, %llu);", d->name, at->len * at->elem->size);
   }
 }
 
@@ -1212,8 +1223,8 @@ static void gen_fun_proto(cgen_t* g, const fun_t* fun) {
 
   switch (fun->flags & NF_VIS_MASK) {
     case NF_VIS_UNIT: PRINT("static "); break;
-    case NF_VIS_PKG:  PRINT(CO_INTERNAL_PREFIX "pkg "); break;
-    case NF_VIS_PUB:  PRINT(CO_INTERNAL_PREFIX "pub "); break;
+    case NF_VIS_PKG:  PRINT(ATTR_PKG " "); break;
+    case NF_VIS_PUB:  PRINT(ATTR_PUB " "); break;
   }
 
   gen_type(g, ft->result);
@@ -1229,7 +1240,7 @@ static void gen_fun_proto(cgen_t* g, const fun_t* fun) {
       //   PRINT("const ");
       gen_type(g, param->type);
       if (noalias(param->type))
-        PRINT(CO_INTERNAL_PREFIX "noalias");
+        PRINT(ATTR_NOALIAS);
       if (param->name && param->name != sym__) {
         CHAR(' ');
         PRINT(param->name);
@@ -1650,7 +1661,7 @@ static void gen_dyn_arraylit(cgen_t* g, const arraylit_t* n) {
 
   CHAR('('), gen_type(g, (type_t*)at), CHAR(')');
   PRINTF("{%llu,%llu,", len, len);
-  PRINT(CO_INTERNAL_PREFIX "mem_dup(&");
+  PRINT(RT_mem_dup "(&");
   gen_arraylit1(g, n, n->values.len);
   PRINTF(",%llu)}", len * elemsize);
 }
@@ -1697,10 +1708,10 @@ static void gen_vardef1(
     PRINT("/* elided unused ");
     PRINT(nodekind_fmt(n->kind));
     CHAR(' ');
-    if (name[0] != '_' || (name[1] && !string_startswith(name, CO_INTERNAL_PREFIX))) {
+    if (name[0] != '_' || (name[1] && !string_startswith(name, CO_ABI_GLOBAL_PREFIX))) {
       PRINT(name);
     } else {
-      // catch all "_" and "{CO_INTERNAL_PREFIX}..." vars
+      // catch all "_" and "{CO_ABI_GLOBAL_PREFIX}..." vars
       CHAR('_');
     }
     PRINT(" */");
@@ -1725,7 +1736,7 @@ static void gen_vardef1(
   id(g, name);
 
   if (n->nuse == 0)
-    CHAR(' '), PRINT(CO_INTERNAL_PREFIX "unused");
+    CHAR(' '), PRINT(ATTR_UNUSED);
 
   // if (type_isptr(n->type)) {
   //   PRINTF(" __attribute__((__consumable__(%s)))",
@@ -1937,7 +1948,7 @@ static void gen_subscript(cgen_t* g, const subscript_t* n) {
       PRINT(";\n");
     }
 
-    PRINT(CO_INTERNAL_PREFIX "checkbounds(");
+    PRINT(RT_checkbounds "(");
     if (len_buf[0]) {
       PRINT(len_buf);
     } else {
@@ -2365,7 +2376,7 @@ static err_t finalize(cgen_t* g, usize headstart) {
         const node_t* d = ((fwddecl_t*)n)->decl;
         dlog("%s%s#%p -> %s#%p %s", prefix,
           nodekind_name(n->kind), n,
-          nodekind_name(d->kind), d, fmtnode(g, 1, d));
+          nodekind_name(d->kind), d, fmtnode(g, 0, d));
       } else {
         dlog("%s%s#%p %s%s", prefix,
           nodekind_name(n->kind), n, fmtnode(g, 0, n),
@@ -2380,6 +2391,8 @@ static err_t finalize(cgen_t* g, usize headstart) {
 
 static void assign_mangledname(cgen_t* g, node_t* n) {
   char** p;
+
+  trace("%s> %s#%p %s", __FUNCTION__, nodekind_name(n->kind), n, fmtnode(g, 0, n));
 
   if (n == (node_t*)&g->compiler->strtype) {
     // note: strtype has predefined mangledname.
@@ -2422,8 +2435,8 @@ static void assign_mangledname(cgen_t* g, node_t* n) {
       panic("TODO " REPRNODE_FMT, REPRNODE_ARGS(n, 0));
     #endif
   }
-  assertf(*p == NULL, REPRNODE_FMT, REPRNODE_ARGS(n, 0));
-  *p = mangle(g, n);
+  if (*p == NULL)
+    *p = mangle(g, n);
   //dlog("%s " REPRNODE_FMT " => %s", __FUNCTION__, REPRNODE_ARGS(n, 0), *p);
 }
 
@@ -2456,7 +2469,7 @@ static void gen_fwddecl(cgen_t* g, const fwddecl_t* d, bool is_impl) {
     gen_aliastype_def(g, (aliastype_t*)n);
     break;
 
-  case TYPE_ARRAY: // "struct __co_array_abc;"
+  case TYPE_ARRAY: // "struct _co_array_abc;"
     if (((arraytype_t*)n)->len == 0) {
       startline(g, n->loc);
       gen_arraytype(g, (arraytype_t*)n);
@@ -2601,7 +2614,9 @@ static void gen_unit(cgen_t* g, unit_t* unit, cgen_pkgapi_t* pkgapi) {
     if (!ast_toposort_visit_def(&defs, g->ma, visibility, n))
       goto end; // OOM
   }
-  //dlog_defs(g, defs.v, defs.len, "unit> ");
+
+  // dlog("%u unit defs:", defs.len);
+  // dlog_defs(g, defs.v, defs.len, "unit> ");
 
   // reset source tracking
   g->srcfileid = 0;

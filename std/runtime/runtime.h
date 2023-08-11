@@ -15,7 +15,7 @@
 #define weak_alias(name, aliasname) \
   extern __typeof(name) aliasname __attribute__((__weak__, __alias__(#name)))
 
-#define __CO_X_STR(cstr) ((__co_str_t){__builtin_strlen(cstr),(u8*)(cstr)})
+#define __CO_X_STR(cstr) ((__co_str){__builtin_strlen(cstr),(u8*)(cstr)})
 
 
 // // u8"..." is of type char* prior to C23

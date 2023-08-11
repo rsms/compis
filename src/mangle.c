@@ -28,19 +28,16 @@ typedef struct {
 } encoder_t;
 
 
-#define TEMPLATE_TAG  'T' // template type, e.g. "type Foo<T> {}"
-#define TEMPLATEI_TAG 'I' // instance of template, e.g. "var x Foo<int>"
-#define BACKREF_TAG   'B' // back reference "B<base-62-number>_"
-
-// tags
+// namespace tags
 //
 // ——IMPORTANT——
 // Changing these will:
+// - alter the ABI
 // - REQUIRE manual update of type definitions in coprelude.h
 // - invalidate all existing metafiles
+// - invalidate all existing compiled library code (e.g. mylib.a)
 //
 static u8 tagtab[NODEKIND_COUNT] = {
-  [NODE_UNIT] = 'M',
   // primitive types use lower-case characters
   [TYPE_VOID] = 'z',
   [TYPE_BOOL] = 'b',
@@ -52,20 +49,63 @@ static u8 tagtab[NODEKIND_COUNT] = {
   [TYPE_F32]  = 'f',
   [TYPE_F64]  = 'd',
 
-  // all other types use upper-case characters (must be <='Z')
+  // all other kinds use characters <='Z': 0-9 A-Z
+  [NODE_UNIT]        = 'M',
+  [EXPR_FUN]         = 'N', // two-stage tag: Nf
+  [TYPE_STRUCT]      = 'N', // two-stage tag: Ns
   [TYPE_PTR]         = 'P',
   [TYPE_REF]         = 'R',
   [TYPE_OPTIONAL]    = 'O',
   [TYPE_ARRAY]       = 'A',
   [TYPE_SLICE]       = 'S',
   [TYPE_MUTSLICE]    = 'D',
-  [TYPE_ALIAS]       = 'A',
+  [TYPE_ALIAS]       = 'L',
   [TYPE_FUN]         = 'F',
-  [TYPE_STRUCT]      = 'N',
-  [EXPR_FUN]         = 'N',
   [TYPE_PLACEHOLDER] = 'H',
-  [TYPE_TEMPLATE]    = TEMPLATEI_TAG,
+  [TYPE_TEMPLATE]    = 'I', // instance of template, e.g. "var x Foo<int>"
 };
+#define TEMPLATE_TAG 'T' // template type, e.g. "type Foo<T> {}"
+#define BACKREF_TAG  'B' // back reference "B<base-62-number>_"
+
+
+// check tag integrity in debug builds
+#ifdef DEBUG
+__attribute__((constructor)) static void check_tags() {
+  u8 seen[256] = {0};
+
+  // add "special" tags not in tagtab (not mapped to a nodekind)
+  seen[TEMPLATE_TAG] = 0xff;
+  seen[BACKREF_TAG] = 0xff;
+
+  // check all non-zero tags in tagtab
+  for (u32 nodekind = 0; nodekind < countof(tagtab); nodekind++) {
+    u8 tag = tagtab[nodekind];
+
+    // ignore kinds without tags
+    if (tag == 0)
+      continue;
+
+    // fun and struct have same tag (uses two-stage tags: Nf, Ns)
+    if (nodekind == EXPR_FUN || nodekind == TYPE_STRUCT)
+      continue;
+
+    // check for conflict
+    nodekind_t other_nodekind = seen[tag];
+    if (other_nodekind == 0xff) {
+      // a #define'd tag
+      panic("duplicate mangle tag '%c': %s and predefined \"special\" tag",
+        tag, nodekind_name(nodekind));
+
+    } else if (other_nodekind) {
+      panic("duplicate mangle tag '%c': %s and %s",
+        tag, nodekind_name(other_nodekind), nodekind_name(nodekind));
+    }
+
+    // register tag as "seen"
+    seen[tag] = nodekind;
+  }
+}
+#endif
 
 
 static bool offstab_ent_eqfn(const void* ent1, const void* ent2) {
@@ -75,6 +115,24 @@ static bool offstab_ent_eqfn(const void* ent1, const void* ent2) {
 static usize offstab_ent_hashfn(usize seed, const void* entp) {
   const offstab_ent_t* ent = entp;
   return wyhash64((uintptr)ent->n, seed);
+}
+
+
+static const char k_base62chars[] = {
+  "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"};
+
+// 0xffffffffffffffff => "LygHa16AHYF"
+#define BASE62_U64_MAX 11
+
+static usize base62_enc_u64(char dst[BASE62_U64_MAX], u64 val) {
+  char* p = dst;
+  u64 rem;
+  while (val > 0) {
+    rem = val % 62;
+    val = val / 62;
+    *p++ = k_base62chars[rem];
+  }
+  return (usize)(uintptr)(p - dst);
 }
 
 
@@ -108,13 +166,17 @@ static usize offstab_add(encoder_t* e, const node_t* n, usize offs) {
 static void start_path(encoder_t* e, const node_t* n) {
   UNUSED usize offs = offstab_add(e, n, e->buf.len);
   assertf(offs == 0, "duplicate");
-  if (n->flags & NF_TEMPLATEI)
-    buf_push(&e->buf, TEMPLATEI_TAG);
+
   if (n->flags & NF_TEMPLATE)
     buf_push(&e->buf, TEMPLATE_TAG);
+
+  if ((n->flags & NF_TEMPLATEI) && n->kind != TYPE_TEMPLATE)
+    buf_push(&e->buf, tagtab[TYPE_TEMPLATE]);
+
   u8 tag = tagtab[n->kind];
   assertf(tag, "missing tag for %s", nodekind_name(n->kind));
   buf_push(&e->buf, tag);
+
   if (tag < 'a') switch (n->kind) {
     case TYPE_STRUCT: buf_push(&e->buf, 's'); break;
     case EXPR_FUN:    buf_push(&e->buf, 'f'); break;
@@ -189,13 +251,16 @@ static void append_pkgname(encoder_t* e) {
 
 static void end_path(encoder_t* e, const node_t* n) {
   switch (n->kind) {
+
   case NODE_UNIT:
     append_pkgname(e);
     break;
+
   case EXPR_FUN:
     assertf(((fun_t*)n)->name, "unnamed %s in ns path", nodekind_name(n->kind));
     append_zname(e, ((fun_t*)n)->name);
     break;
+
   case TYPE_STRUCT:
     if (((structtype_t*)n)->name) {
       append_zname(e, ((structtype_t*)n)->name);
@@ -203,9 +268,18 @@ static void end_path(encoder_t* e, const node_t* n) {
       dlog("TODO unnamed type");
     }
     break;
+
   case TYPE_ALIAS:
     append_zname(e, ((aliastype_t*)n)->name);
     break;
+
+  case TYPE_OPTIONAL:
+  case TYPE_ARRAY:
+  case TYPE_SLICE:
+  case TYPE_MUTSLICE:
+    type(e, ((ptrtype_t*)n)->elem);
+    break;
+
   }
 
   // append template instance arguments
@@ -235,24 +309,6 @@ static void funtype1(encoder_t* e, const funtype_t* ft) {
 }
 
 
-static const char k_base62chars[] = {
-  "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"};
-
-// 0xffffffffffffffff => "LygHa16AHYF"
-#define BASE62_U64_MAX 11
-
-static usize base62_enc_u64(char dst[BASE62_U64_MAX], u64 val) {
-  char* p = dst;
-  u64 rem;
-  while (val > 0) {
-    rem = val % 62;
-    val = val / 62;
-    *p++ = k_base62chars[rem];
-  }
-  return (usize)(uintptr)(p - dst);
-}
-
-
 static void type(encoder_t* e, const type_t* t) {
   assert(t->kind < NODEKIND_COUNT);
   assert(nodekind_istype(t->kind));
@@ -266,7 +322,6 @@ static void type(encoder_t* e, const type_t* t) {
     buf_push(&e->buf, tag);
     return;
   }
-
 
   // TODO: compression; when the same name appears an Nth time, refer to the first
   // definition instead of printing it again.
@@ -467,23 +522,8 @@ bool compiler_mangle(
 
   buf_reserve(&e.buf, 64);
 
-  // // common prefix
-  // buf_push(&e.buf, '_');
-  // buf_push(&e.buf, 'C');
-
-  switch (n->kind) {
-    case TYPE_OPTIONAL:
-      buf_print(&e.buf, CO_TYPE_PREFIX "opt_");
-      return encoder_finalize_ptrtype(&e, buf, (ptrtype_t*)n);
-    case TYPE_ARRAY:
-      buf_print(&e.buf, CO_TYPE_PREFIX "array_");
-      return encoder_finalize_ptrtype(&e, buf, (ptrtype_t*)n);
-    case TYPE_SLICE:
-      buf_print(&e.buf, CO_TYPE_PREFIX);
-      buf_print(&e.buf, // "mutslice_" or "slice_"
-        &"mutslice_"[3lu*(usize)(((slicetype_t*)n)->kind == TYPE_SLICE)]);
-      return encoder_finalize_ptrtype(&e, buf, (ptrtype_t*)n);
-  }
+  // common prefix
+  buf_print(&e.buf, CO_MANGLE_PREFIX);
 
   // path
   const node_t* ns = n;
@@ -496,23 +536,10 @@ bool compiler_mangle(
       case TYPE_ALIAS:  ns = assertnotnull(((aliastype_t*)ns)->nsparent); break;
 
       case NODE_UNIT:
-      case TYPE_BOOL:
-      case TYPE_I8:
-      case TYPE_I16:
-      case TYPE_I32:
-      case TYPE_I64:
-      case TYPE_INT:
-      case TYPE_U8:
-      case TYPE_U16:
-      case TYPE_U32:
-      case TYPE_U64:
-      case TYPE_UINT:
-      case TYPE_F32:
-      case TYPE_F64:
         goto endpath;
       default:
-        safecheckf(0, "unexpected %s", nodekind_name(ns->kind));
-        UNREACHABLE;
+        safecheckf(node_istype(ns), "unexpected %s", nodekind_name(ns->kind));
+        goto endpath;
     }
   }
 endpath:

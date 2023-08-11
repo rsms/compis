@@ -1,7 +1,7 @@
 #include "runtime.h"
 #include <stdio.h>
 
-_Noreturn void __co_panic(__co_str_t msg) {
+_Noreturn void __co_panic(__co_str msg) {
   fwrite("panic: ", __builtin_strlen("panic: "), 1, stderr);
   fwrite(msg.ptr, msg.len, 1, stderr);
   putc('\n', stderr);
@@ -32,7 +32,7 @@ void __co_mem_free(void* ptr, __co_uint size) {
 }
 
 
-void _print(__co_str_t msg) {
+void _print(__co_str msg) {
   fwrite(msg.ptr, msg.len, 1, stdout);
   fputc('\n', stdout);
 }

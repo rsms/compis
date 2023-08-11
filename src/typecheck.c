@@ -845,11 +845,11 @@ static void implicit_rvalue_deref(typecheck_t* a, const type_t* ltype, expr_t** 
 }
 
 
-static bool name_is_co_internal(sym_t name) {
+static bool name_is_reserved(sym_t name) {
   return (
-    *name == CO_INTERNAL_PREFIX[0] &&
-    strlen(name) >= strlen(CO_INTERNAL_PREFIX) &&
-    memcmp(CO_INTERNAL_PREFIX, name, strlen(CO_INTERNAL_PREFIX)) == 0 );
+    *name == CO_ABI_GLOBAL_PREFIX[0] &&
+    strlen(name) >= strlen(CO_ABI_GLOBAL_PREFIX) &&
+    memcmp(CO_ABI_GLOBAL_PREFIX, name, strlen(CO_ABI_GLOBAL_PREFIX)) == 0 );
 }
 
 
@@ -859,7 +859,7 @@ static bool report_unused(typecheck_t* a, const void* expr_node) {
 
   if (nodekind_islocal(n->kind)) {
     local_t* var = (local_t*)n;
-    if (var->name != sym__ && !name_is_co_internal(var->name) && noerror(a)) {
+    if (var->name != sym__ && !name_is_reserved(var->name) && noerror(a)) {
       warning(a, var->nameloc, "unused %s %s", fmtkind(n), var->name);
       return true;
     }

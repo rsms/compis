@@ -1,11 +1,11 @@
 // slice and array types
-fun main() {
+pub fun main() {
   var _ &[int]    // immutable slice
   var _ mut&[int] // mutable slice
   var _ [i16]     // variably-sized array (growable at runtime)
   var _ [u32 3]   // fixed-size array
 
-  var a str = "cat" // str aka &[u8]
+  var a str = "cat" // str is an alias of &[u8]
   var b = "robin"   // &[u8 5]
   a = b             // ok; higher-fidelity type assignable to lower-fi type
 }

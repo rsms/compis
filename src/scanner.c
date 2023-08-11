@@ -591,11 +591,11 @@ static void intern_identifier(scanner_t* s) {
   slice_t lit = scanner_lit(s);
 
   if UNLIKELY(
-    lit.len >= strlen(CO_INTERNAL_PREFIX) &&
-    memcmp(CO_INTERNAL_PREFIX, lit.chars, strlen(CO_INTERNAL_PREFIX)) == 0)
+    lit.len >= strlen(CO_ABI_GLOBAL_PREFIX) &&
+    memcmp(CO_ABI_GLOBAL_PREFIX, lit.chars, strlen(CO_ABI_GLOBAL_PREFIX)) == 0)
   {
     return error(s,
-      "invalid identifier; prefix '" CO_INTERNAL_PREFIX "' reserved for internal use");
+      "invalid identifier; prefix '" CO_ABI_GLOBAL_PREFIX "' reserved for internal use");
   }
 
   s->sym = sym_intern(lit.chars, lit.len);
