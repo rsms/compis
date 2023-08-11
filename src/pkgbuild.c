@@ -1189,13 +1189,12 @@ err_t pkgbuild_cgen_pub(pkgbuild_t* pb) {
     assert(c->opt_nomain == false); // checked before setting PKGBUILD_EXE
     cgen_flags |= CGEN_EXE;
   }
-  if (pb->c->buildmode == BUILDMODE_DEBUG) {
-    // Include `#line N "source.co"` in C code generated for debug builds.
-    // This aids in debugging issues with cgen, so it's really a tool for
-    // developing Compis itself, not user programs.
-    // But Compis is still largely untested so "users" will find bugs.
-    cgen_flags |= CGEN_SRCINFO;
-  }
+  // Include `#line N "source.co"` in generated C code, which propagates to
+  // the linker and thus runtime debugging.
+  // This aids in debugging issues with cgen, so it's really a tool for
+  // developing Compis itself, not user programs.
+  // But Compis is still largely untested so "users" will find bugs.
+  cgen_flags |= CGEN_SRCINFO;
   if (!cgen_init(&pb->cgen, c, pb->pkgc.pkg, c->ma, cgen_flags)) {
     dlog("cgen_init: %s", err_str(ErrNoMem));
     return ErrNoMem;
