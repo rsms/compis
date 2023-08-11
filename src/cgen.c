@@ -645,6 +645,7 @@ static bool has_ambiguous_prec(const expr_t* n) {
   case EXPR_DEREF:
   case EXPR_PREFIXOP:
   case EXPR_POSTFIXOP:
+  case EXPR_SUBSCRIPT:
     return false;
   default:
     return true;
