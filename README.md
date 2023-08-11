@@ -268,8 +268,10 @@ three_ints[3] // compile error: out of bounds
 some_bytes[3] // runtime panic: out of bounds
 ```
 
-Fixed-size arrays are concretely represented simply by a pointer while
-dynamic arrays are represented by a triple `(capacity, length, data_pointer)`.
+Fixed-size arrays are concretely represented simply by a pointer to the
+underlying memory while dynamic arrays are represented by a triple
+`(capacity, length, data_pointer)`.
+
 
 
 ## Slices
@@ -278,17 +280,80 @@ Slices are references to arrays. Like regular references, they can be mutable.
 
 ```co
 var three_ints [int 3]
-
-// slices
 var a &[int]    = &three_ints
 var b mut&[int] = &three_ints
-
-// references to the array (compile-time length)
-var c &[int 3] = &three_ints
-var d          = &three_ints  // type inferred as mut&[int 3]
 ```
 
 Slices are concretely represented by a tuple `(length, data_pointer)`.
+
+Note that you can make references to arrays while retaining compile-time size
+information:
+
+
+
+
+### Slices vs array references
+
+References to fixed-size arrays are concretely represented by a pointer to the array's
+underlying memory, rather than a slice construct:
+
+```co
+var four_bytes [u8 4]      // fixed-size array
+var some_bytes [u8]        // dynamically-sized array
+var a = &four_bytes        // mut&[u8 3] -- reference to array
+var b = &some_bytes        // mut&[u8] -- slice of array
+var c &[u8] = &four_bytes  // slice of array, from explicit type
+```
+
+When you don't specify the type, as in the case for `a` and `b` above,
+Compis will chose the highest-fidelity type. For example, referencing a fixed-size array
+yields a mutable array reference with the length encoded in the type.
+This leads the most efficient machine code (just a pointer.)
+However, you can specify a more narrow type or a compatible type of lower fidelity, as
+in the case with `c` above.
+
+To understand the practical impact, consider the two following functions,
+one which takes a reference to an array and one which takes a slice:
+
+```co
+fun decode_u32le_array_ref(bytes &[u8 4]) u32
+  u32(bytes[0]) |
+  u32(bytes[1]) << 8 |
+  u32(bytes[2]) << 16 |
+  u32(bytes[3]) << 24
+
+fun decode_u32le_slice(bytes &[u8]) u32
+  u32(bytes[0]) |
+  u32(bytes[1]) << 8 |
+  u32(bytes[2]) << 16 |
+  u32(bytes[3]) << 24
+```
+
+The equivalent generated C code looks like this:
+
+```c
+u32 decode_u32le_array_ref(const u8* bytes) {
+  return (u32)bytes[0] |
+         (u32)bytes[1] << 8u |
+         (u32)bytes[2] << 16u |
+         (u32)bytes[3] << 24u;
+}
+
+u32 decode_u32le_slice(struct { uint len; const u8* ptr; } bytes) {
+  if (bytes.len <= 3) __co_panic_out_of_bounds(); // bounds check
+  return (u32)bytes.ptr[0] |
+         (u32)bytes.ptr[1] << 8u |
+         (u32)bytes.ptr[2] << 16u |
+         (u32)bytes.ptr[3] << 24u;
+}
+```
+
+Notice how for the "slice" version, two machine words are passed as arguments
+(length and address) instead of just one (address) as is the case with the
+"array_ref" version. Additionally, a bounds check is performed at runtime in the
+"slice" version.
+
+> Note: Currently the actual generated code is a little less elegant for the "slice" version as there are bounds checks for every access, not just one for the largest offset. In the future the Compis code generator will be more clever and perform a minimum amount of runtime checks.
 
 
 
