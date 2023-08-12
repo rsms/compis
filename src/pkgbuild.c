@@ -1044,7 +1044,7 @@ err_t pkgbuild_typecheck(pkgbuild_t* pb) {
   }
   if (compiler_errcount(c) > 0) {
     dlog("typecheck: %u diagnostic errors", compiler_errcount(c));
-    if (!opt_trace_parse && c->opt_printast)
+    if (c->opt_printast)
       dump_pkg_ast(pb->pkgc.pkg, pb->unitv, pb->unitc);
     return ErrCanceled;
   }

@@ -1194,7 +1194,7 @@ static void gen_block(cgen_t* g, const block_t* n) {
 }
 
 
-static void id(cgen_t* g, sym_t nullable name) {
+static void gen_id(cgen_t* g, sym_t nullable name) {
   if (name && name != sym__) {
     PRINT(name);
   } else {
@@ -1734,7 +1734,7 @@ static void gen_vardef1(
     PRINT(" const");
   }
   CHAR(' ');
-  id(g, name);
+  gen_id(g, name);
 
   if (n->nuse == 0)
     CHAR(' '), PRINT(ATTR_UNUSED);
@@ -1815,12 +1815,12 @@ static void gen_postfixop(cgen_t* g, const unaryop_t* n) {
 
 
 static void gen_idexpr(cgen_t* g, const idexpr_t* n) {
-  id(g, n->name);
+  gen_id(g, n->name);
 }
 
 
 static void gen_param(cgen_t* g, const local_t* n) {
-  id(g, n->name);
+  gen_id(g, n->name);
 }
 
 
@@ -2025,7 +2025,7 @@ static void gen_ifexpr(cgen_t* g, const ifexpr_t* n) {
     // or, when varinit has no side effects:
     //   ({ T x = varinit.v; if (varinit.ok) ... })
     const local_t* var = (const local_t*)n->cond;
-    assert(!type_isopt(var->type)); // should be narrowed & have NF_OPTIONAL
+    assert(!type_isopt(var->type)); // should be narrowed & have NF_NARROWED
 
     if (n->flags & NF_RVALUE)
       CHAR('(');
@@ -2033,7 +2033,7 @@ static void gen_ifexpr(cgen_t* g, const ifexpr_t* n) {
 
     g->indent++;
 
-    if ((var->flags & NF_OPTIONAL) == 0 ||
+    if ((var->flags & NF_NARROWED) == 0 ||
         expr_no_side_effects(var->init) ||
         type_isptrlike(var->type))
     {
@@ -2042,7 +2042,7 @@ static void gen_ifexpr(cgen_t* g, const ifexpr_t* n) {
 
       // "T x = init;" | "T x = init.v;"
       gen_vardef1(g, var, var->name, false);
-      if ((var->flags & NF_OPTIONAL) && !type_isptrlike(var->type))
+      if ((var->flags & NF_NARROWED) && !type_isptrlike(var->type))
         PRINT(".v");
       PRINT("; ");
 
@@ -2054,7 +2054,7 @@ static void gen_ifexpr(cgen_t* g, const ifexpr_t* n) {
       } else {
         PRINT("if ");
       }
-      if ((var->flags & NF_OPTIONAL) && !type_isptrlike(var->type)) {
+      if ((var->flags & NF_NARROWED) && !type_isptrlike(var->type)) {
         CHAR('('), gen_expr_rvalue(g, var->init, var->init->type), PRINT(".ok)");
       } else {
         PRINTF("(%s)", var->name);
@@ -2063,7 +2063,7 @@ static void gen_ifexpr(cgen_t* g, const ifexpr_t* n) {
       if (n->flags & NF_RVALUE)
         CHAR('?');
     } else {
-      assert(var->flags & NF_OPTIONAL);
+      assert(var->flags & NF_NARROWED);
       fmt_tmp_id(tmp, sizeof(tmp), var);
 
       // "opt0 tmp = init;"

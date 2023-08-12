@@ -140,22 +140,6 @@ static u8 kStash;
 #if defined(TRACE_SCOPESTACK) && defined(DEBUG)
   #define trace(s, fmt, args...) \
     _trace(true, 7, "scope", "[%u] " fmt, level(s), ##args)
-  static u32 level(const scope_t* nullable s) {
-    u32 n = 0;
-    if (s && s->len > 2) for (u32 base = s->base; base > 0; n++) {
-      if (s->ptr[base] == &kStash) {
-        assert(base > 1);
-        u32 base2 = (u32)(uintptr)s->ptr[base - 1];
-        assertf(base2 < base || base2 == 0, "%u < %u", base2, base);
-        base = base2;
-      } else {
-        u32 base2 = (u32)(uintptr)s->ptr[base];
-        assertf(base2 < base || base2 == 0, "%u < %u", base2, base);
-        base = base2;
-      }
-    }
-    return n;
-  }
   static void trace_state(const scope_t* nullable s) {
     fprintf(stderr, "(len %u, base %u) ", s->len, s->base);
     if (!s)          return fprintf(stderr, "null\n"), ((void)0);
@@ -387,4 +371,22 @@ void scope_iterate(scope_t* s, u32 maxdepth, scopeit_t it, void* nullable ctx) {
       i--;
     }
   }
+}
+
+
+u32 scope_level(const scope_t* nullable s) {
+  u32 n = 0;
+  if (s && s->len > 2) for (u32 base = s->base; base > 0; n++) {
+    if (s->ptr[base] == &kStash) {
+      assert(base > 1);
+      u32 base2 = (u32)(uintptr)s->ptr[base - 1];
+      assertf(base2 < base || base2 == 0, "%u < %u", base2, base);
+      base = base2;
+    } else {
+      u32 base2 = (u32)(uintptr)s->ptr[base];
+      assertf(base2 < base || base2 == 0, "%u < %u", base2, base);
+      base = base2;
+    }
+  }
+  return n;
 }

@@ -13,6 +13,9 @@
 #define trace(fmt, va...) \
   _trace(opt_trace_typecheck, 4, "TC", "%*s" fmt, a->traceindent*2, "", ##va)
 
+#define tracex(fmt, va...) \
+  _trace(opt_trace_typecheck, 4, "TC", fmt, ##va)
+
 #ifdef TRACE_TEMPLATE_EXPANSION
   #define trace_tplexp(fmt, va...) \
     _trace(opt_trace_typecheck, 6, "TX", "%*s" fmt, ctx->traceindent*2, "", ##va)
@@ -59,7 +62,7 @@ typedef struct {
 } typecheck_t;
 
 
-static const char* fmtnode(typecheck_t* a, u32 bufindex, const void* nullable n);
+static const char* fmtnode(u32 bufindex, const void* nullable n);
 
 
 static const char* fmtkind(const void* node) {
@@ -84,7 +87,7 @@ static const char* fmtkind(const void* node) {
 #ifdef DEBUG
   #define trace_node(a, msg, np) ({ \
     const node_t* __n = *(const node_t**)(np); \
-    trace("%s%-14s: %s", (msg), nodekind_name(__n->kind), fmtnode((a), 0, __n)); \
+    trace("%s%-14s: %s", (msg), nodekind_name(__n->kind), fmtnode(0, __n)); \
   })
 
   typedef struct {
@@ -110,11 +113,11 @@ static const char* fmtkind(const void* node) {
           t->kind == TYPE_UNRESOLVED) )
     {
       trace("\e[1;31m%s type not resolved (%s)\e[0m",
-        nodekind_name(n->kind), fmtnode(a, 0, n));
+        nodekind_name(n->kind), fmtnode(0, n));
     }
     trace("%s%-14s => %s %s", nt->msg, nodekind_name(n->kind),
       t ? nodekind_name(t->kind) : "NULL",
-      t ? fmtnode(a, 0, t) : "");
+      t ? fmtnode(0, t) : "");
   }
 
   #define TRACE_NODE(a, msg, np) \
@@ -419,14 +422,11 @@ static bool noerror(typecheck_t* a) {
 }
 
 
-static const char* fmtnode(typecheck_t* a, u32 bufindex, const void* nullable n) {
+static const char* fmtnode(u32 bufindex, const void* nullable n) {
   buf_t* buf = tmpbuf_get(bufindex);
   err_t err = node_fmt(buf, n, /*depth*/0);
-  if (!err)
-    return buf->chars;
-  dlog("node_fmt: %s", err_str(err));
-  seterr(a, err);
-  return "?";
+  safecheck(err == 0);
+  return buf->chars;
 }
 
 
@@ -546,7 +546,7 @@ static bool intern_usertype(typecheck_t* a, usertype_t** tp) {
     if (*tp != *p) {
       // update caller's tp argument with existing type
       trace("[intern_usertype] dedup %s#%p %s",
-        nodekind_name((*p)->kind), *p, fmtnode(a, 0, *p));
+        nodekind_name((*p)->kind), *p, fmtnode(0, *p));
       assert((*p)->kind == (*tp)->kind);
       *tp = *p;
     }
@@ -561,13 +561,13 @@ static bool intern_usertype(typecheck_t* a, usertype_t** tp) {
     buf_t tmpbuf = buf_make(a->ma);
     buf_appendrepr(&tmpbuf, typeid, typeid_len(typeid));
     trace("[intern_usertype] add %s#%p %s (typeid='%.*s')",
-      nodekind_name((*tp)->kind), *tp, fmtnode(a, 0, *tp),
+      nodekind_name((*tp)->kind), *tp, fmtnode(0, *tp),
       (int)tmpbuf.len, tmpbuf.chars);
     buf_dispose(&tmpbuf);
   }
   #else
     trace("[intern_usertype] add %s#%p %s",
-      nodekind_name((*tp)->kind), *tp, fmtnode(a, 0, *tp));
+      nodekind_name((*tp)->kind), *tp, fmtnode(0, *tp));
   #endif
 
   return true;
@@ -685,6 +685,10 @@ bool expr_no_side_effects(const expr_t* n) { switch (n->kind) {
            (ife->elseb == NULL || expr_no_side_effects((expr_t*)ife->elseb));
   }
 
+  case EXPR_RETURN:
+    return ((retexpr_t*)n)->value == NULL ||
+           expr_no_side_effects(((retexpr_t*)n)->value);
+
   case EXPR_CALL:
     return false;
 
@@ -716,12 +720,12 @@ static void error_incompatible_types(
 {
   const char* in_descr = origin_node ? fmtkind(origin_node) : NULL;
   error(a, origin_node, "incompatible types %s and %s%s%s",
-    fmtnode(a, 0, x), fmtnode(a, 1, y), in_descr ? " in " : "", in_descr);
+    fmtnode(0, x), fmtnode(1, y), in_descr ? " in " : "", in_descr);
 }
 
 
 static void error_unassignable_type(
-  typecheck_t* a, const void* dst_expr, const type_t* srct)
+  typecheck_t* a, const void* dst_expr, const expr_t* src)
 {
   const expr_t* dst = dst_expr;
   const expr_t* origin = dst;
@@ -730,8 +734,32 @@ static void error_unassignable_type(
     if (loc_line(assertnotnull(local->init)->loc))
       origin = local->init;
   }
+
+  // check if the source's type has been narrowed, e.g. from optional check
+  if (
+    (src->flags & NF_NARROWED) ||
+    (src->kind == EXPR_ID && ((idexpr_t*)src)->ref &&
+      (((idexpr_t*)src)->ref->flags & NF_NARROWED)))
+  {
+    error(a, src, "optional value %s is empty here", fmtnode(0, src));
+    return;
+  }
+
+  type_t* srctype = src->type;
+
+  // check if destination is a narrowed local
+  if ((dst->flags & NF_NARROWED) && srctype->kind == TYPE_OPTIONAL) {
+    // instead of "cannot assign value of type ?int to binding of type i8"
+    // say        "cannot assign value of type int to binding of type i8"
+    // for e.g.
+    //   fun example(a ?int)
+    //     if let x i8 = a   <——
+    //
+    srctype = ((opttype_t*)srctype)->elem;
+  }
+
   error(a, origin, "cannot assign value of type %s to %s of type %s",
-    fmtnode(a, 0, srct), fmtkind(dst), fmtnode(a, 1, dst->type));
+    fmtnode(0, srctype), fmtkind(dst), fmtnode(1, dst->type));
 }
 
 
@@ -739,7 +767,7 @@ static void typectx_push(typecheck_t* a, type_t* t) {
   // if (t->kind == TYPE_UNKNOWN)
   //   t = type_void;
   trace("typectx [%u] %s -> %s",
-    a->typectxstack.len, fmtnode(a, 0, a->typectx), fmtnode(a, 1, t));
+    a->typectxstack.len, fmtnode(0, a->typectx), fmtnode(1, t));
   if UNLIKELY(!ptrarray_push(&a->typectxstack, a->ma, a->typectx))
     out_of_mem(a);
   a->typectx = t;
@@ -749,7 +777,7 @@ static void typectx_pop(typecheck_t* a) {
   assert(a->typectxstack.len > 0);
   type_t* t = ptrarray_pop(&a->typectxstack);
   trace("typectx [%u] %s <- %s",
-    a->typectxstack.len, fmtnode(a, 1, t), fmtnode(a, 0, a->typectx));
+    a->typectxstack.len, fmtnode(1, t), fmtnode(0, a->typectx));
   a->typectx = t;
 }
 
@@ -757,10 +785,12 @@ static void typectx_pop(typecheck_t* a) {
 static void enter_scope(typecheck_t* a) {
   if (!scope_push(&a->scope, a->ma))
     out_of_mem(a);
+  trace("enter scope #%u", scope_level(&a->scope));
 }
 
 
 static void leave_scope(typecheck_t* a) {
+  trace("leave scope #%u", scope_level(&a->scope));
   scope_pop(&a->scope);
 }
 
@@ -802,7 +832,8 @@ static void define(typecheck_t* a, sym_t name, void* n) {
   if (name == sym__)
     return;
 
-  trace("define \"%s\" => %s", name, fmtnode(a, 0, n));
+  trace("define \"%s\" => %s (%s)", name, fmtnode(0, n),
+    node_isexpr(n) ? fmtnode(1, ((expr_t*)n)->type) : "");
 
   #if DEBUG
     node_t* existing = scope_lookup(&a->scope, name, 0);
@@ -837,8 +868,8 @@ static void implicit_rvalue_deref(typecheck_t* a, const type_t* ltype, expr_t** 
 
   // dlog("%s ltype: %s (kind %s, isreflike %d), rtype: %s (kind %s, isreflike %d)",
   //   __FUNCTION__,
-  //   fmtnode(a, 0, ltype), nodekind_name(ltype->kind), type_isreflike(ltype),
-  //   fmtnode(a, 1, rtype), nodekind_name(rtype->kind), type_isreflike(rtype) );
+  //   fmtnode(0, ltype), nodekind_name(ltype->kind), type_isreflike(ltype),
+  //   fmtnode(1, rtype), nodekind_name(rtype->kind), type_isreflike(rtype) );
 
   if (!type_isreflike(ltype) && type_isreflike(rtype))
     *rvalp = mkderef(a, rval, rval->loc);
@@ -857,17 +888,31 @@ static bool report_unused(typecheck_t* a, const void* expr_node) {
   assert(node_isexpr(expr_node));
   const expr_t* n = expr_node;
 
-  if (nodekind_islocal(n->kind)) {
-    local_t* var = (local_t*)n;
-    if (var->name != sym__ && !name_is_reserved(var->name) && noerror(a)) {
-      warning(a, var->nameloc, "unused %s %s", fmtkind(n), var->name);
-      return true;
+  switch (n->kind) {
+    case EXPR_FIELD:
+    case EXPR_PARAM:
+    case EXPR_LET:
+    case EXPR_VAR: {
+      local_t* var = (local_t*)n;
+      if (var->name != sym__ && !name_is_reserved(var->name) && noerror(a)) {
+        warning(a, var->nameloc, "unused %s %s", fmtkind(n), var->name);
+        return true;
+      }
+      return false;
     }
-  } else if UNLIKELY(expr_no_side_effects(n)) {
-    if (noerror(a)) {
-      warning(a, n, "unused %s %s", fmtkind(n), fmtnode(a, 0, n));
-      return true;
-    }
+    case EXPR_IF:
+      if ((n->flags & NF_RVALUE) == 0)
+        return false;
+      break; // report
+    default:
+      if (!expr_no_side_effects(n))
+        return false;
+      break; // report
+  }
+
+  if (noerror(a)) {
+    warning(a, n, "unused %s %s", fmtkind(n), fmtnode(0, n));
+    return true;
   }
   return false;
 }
@@ -916,7 +961,7 @@ static void block_noscope(typecheck_t* a, block_t* n) {
   exprp(a, (expr_t**)&stmtv[stmt_end]);
   lastexpr = (expr_t*)stmtv[stmt_end]; // reload; expr might have edited
 
-  lastexpr->nuse = MAX(n->nuse, lastexpr->nuse);
+  incuse(lastexpr);
   n->type = lastexpr->type;
 
 end:
@@ -970,10 +1015,22 @@ static void local(typecheck_t* a, local_t* n) {
 
     if (n->type == type_unknown || n->type->kind == TYPE_UNRESOLVED) {
       n->type = n->init->type;
-    } else if UNLIKELY(!type_isassignable(a->compiler, n->type, n->init->type)) {
-      error_unassignable_type(a, n, n->init->type);
     } else {
-      implicit_rvalue_deref(a, n->type, &n->init);
+      type_t* rtype = n->init->type;
+      if ((n->flags & NF_NARROWED) && n->type != type_void) {
+        // handle type narrowed local, e.g.
+        //   fun example(a ?int)
+        //     if let x = a  <—— "let x" is of type "int" but a is "?int"
+        //       x           <—— refs to "let x" are "int"
+        //
+        assert(rtype->kind == TYPE_OPTIONAL);
+        rtype = ((opttype_t*)rtype)->elem;
+      }
+      if UNLIKELY(!type_isassignable(a->compiler, n->type, rtype)) {
+        error_unassignable_type(a, n, n->init);
+      } else {
+        implicit_rvalue_deref(a, n->type, &n->init);
+      }
     }
   }
 
@@ -983,13 +1040,17 @@ static void local(typecheck_t* a, local_t* n) {
   // // field, param and var are mutable (but "let" isn't; see local_var)
   // n->flags |= NF_MUT;
 
-  if UNLIKELY(n->type == type_void || n->type == type_unknown)
+  if UNLIKELY(
+    (n->type == type_void || n->type == type_unknown) &&
+    (n->flags & NF_NARROWED) == 0)
+  {
     error(a, n, "cannot define %s of type void", fmtkind(n));
+  }
 
   if (n->name == sym__ && type_isowner(n->type)) {
     // owners require var names for ownership tracking
     // FIXME: this is a pretty janky hack which is rooted in the fact that
-    //        IR-based ownership analysis only tracks varnames, not locals.
+    //        IR-based ownership analysis tracks variable _names_.
     char buf[strlen("__co_varFFFFFFFFFFFFFFFF")+1];
     n->name = sym_snprintf(buf, sizeof(buf), "__co_var%lx", (unsigned long)n);
   }
@@ -998,9 +1059,11 @@ static void local(typecheck_t* a, local_t* n) {
 
 static void local_var(typecheck_t* a, local_t* n) {
   assert(nodekind_isvar(n->kind));
+  bool need_def = (n->flags & NF_UNKNOWN) || n->type == type_unknown;
   local(a, n);
   // n->flags = COND_FLAG(n->flags, NF_MUT, n->kind == EXPR_VAR);
-  define(a, n->name, n);
+  if (need_def || scope_istoplevel(&a->scope))
+    define(a, n->name, n);
 }
 
 
@@ -1020,7 +1083,7 @@ static void check_local(typecheck_t* a, local_t* n) {
   }
   trace("%s \"%s\" => %s %s",
     nodekind_name(n->kind), n->name,
-    nodekind_name(n->kind), fmtnode(a, 0, n));
+    nodekind_name(n->kind), fmtnode(0, n));
 }
 
 
@@ -1063,8 +1126,8 @@ static void structtype(typecheck_t* a, structtype_t** tp) {
     //             f->type->kind != TYPE_PLACEHOLDER)
     // {
     //   error(a, f, "internal type %s of field %s in public struct",
-    //     fmtnode(a, 0, f->type), f->name);
-    //   help(a, f->type, "mark %s `pub`", fmtnode(a, 0, f->type));
+    //     fmtnode(0, f->type), f->name);
+    //   help(a, f->type, "mark %s `pub`", fmtnode(0, f->type));
     // }
   }
 
@@ -1095,7 +1158,7 @@ static void arraytype_calc_size(typecheck_t* a, arraytype_t* at) {
   u64 size;
   if (check_mul_overflow(at->len, at->elem->size, &size)) {
     error(a, at, "array constant too large; overflows uint (%s)",
-      fmtnode(a, 0, a->compiler->uinttype));
+      fmtnode(0, a->compiler->uinttype));
     return;
   }
   at->align = at->elem->align;
@@ -1131,13 +1194,13 @@ static void arraytype(typecheck_t* a, arraytype_t** tp) {
   if UNLIKELY(a->pubnest) {
     // if ((at->elem->flags & NF_VIS_PUB) == 0) {
     //   error(a, at, "public array type of internal subtype %s",
-    //     fmtnode(a, 0, at->elem));
-    //   help(a, at->elem, "mark %s `pub`", fmtnode(a, 0, at->elem));
+    //     fmtnode(0, at->elem));
+    //   help(a, at->elem, "mark %s `pub`", fmtnode(0, at->elem));
     // }
     node_set_visibility((node_t*)at, NF_VIS_PUB);
   }
 
-  //assertf(at->_typeid == NULL, "%s", fmtnode(a, 0, at));
+  //assertf(at->_typeid == NULL, "%s", fmtnode(0, at));
   arraytype_calc_size(a, at);
   intern_usertype(a, (usertype_t**)tp);
 }
@@ -1153,8 +1216,8 @@ static void funtype1(typecheck_t* a, funtype_t** np, type_t* thistype) {
     local_t* param = (local_t*)ft->params.v[i];
     if UNLIKELY(a->pubnest && (param->type->flags & NF_VIS_PUB) == 0) {
       error(a, param, "parameter of internal type %s in public function",
-        fmtnode(a, 0, param->type));
-      help(a, param->type, "mark %s `pub`", fmtnode(a, 0, param->type));
+        fmtnode(0, param->type));
+      help(a, param->type, "mark %s `pub`", fmtnode(0, param->type));
     }
   }
   type(a, &ft->result);
@@ -1196,12 +1259,12 @@ static type_t* check_retval(typecheck_t* a, const void* originptr, expr_t*nullab
           loc = ((block_t*)origin)->endloc;
         error(a, loc, "missing return value");
       } else if (t != type_unknown || !a->reported_error) {
-        error(a, origin, "invalid function result type: %s", fmtnode(a, 0, t));
+        error(a, origin, "invalid function result type: %s", fmtnode(0, t));
       }
       if (loc_line(a->fun->resultloc) && (t != type_unknown || !a->reported_error)) {
         help(a, a->fun->resultloc, "function %s%sreturns %s",
           (a->fun->name ? a->fun->name : ""), (a->fun->name ? " " : ""),
-          fmtnode(a, 1, ft->result));
+          fmtnode(1, ft->result));
       }
     }
   }
@@ -1340,32 +1403,304 @@ static void fun(typecheck_t* a, fun_t* n) {
 }
 
 
+static bool type_narrow_error_find_local(expr_t* x, local_t** lp, op_t* op) {
+  switch (x->kind) {
+  case EXPR_VAR:
+  case EXPR_LET:
+    if (!*lp && (x->flags & NF_NARROWED))
+      *lp = (local_t*)x;
+    break;
+  case EXPR_PREFIXOP:
+    if (((unaryop_t*)x)->op == OP_NOT && !*op)
+      *op = ((unaryop_t*)x)->op;
+    break;
+  case EXPR_BINOP:
+    if (((binop_t*)x)->op == OP_LOR && !*op)
+      *op = ((binop_t*)x)->op;
+    break;
+  }
+  if (*lp && *op)
+    return true;
+  ast_childit_t it = ast_childit_const((node_t*)x);
+  for (const node_t* cn; (cn = ast_childit_const_next(&it));) {
+    if (!node_isexpr(cn))
+      continue;
+    if (type_narrow_error_find_local((expr_t*)cn, lp, op))
+      return true;
+  }
+  return false;
+}
+
+
+static bool type_narrow_error_localdef_mix(compiler_t* c, expr_t* cond) {
+  local_t* l = NULL;
+  op_t op = 0;
+  type_narrow_error_find_local(cond, &l, &op);
+  assertnotnull(l);
+  assert(op > 0);
+  report_diag(c, ast_origin(&c->locmap, (node_t*)l), DIAG_ERR,
+    "cannot use type-narrowing %s definition with '%s' operation",
+    l->kind == EXPR_VAR ? "var" : "let", op_fmt(op));
+  return false;
+}
+
+
+static bool type_narrow_cond1(
+  compiler_t* c, memalloc_t ast_ma, scope_t* scope, u32* flags, expr_t* x)
+{
+  // negation is a little tricky
+  // e.g.
+  //   fun example1(a, b ?int)
+  //     if !(a && !b) { /* a is void, b is int */ }
+  //     else          { /* a is int, b is void */ }
+  //   fun example2(a, b ?int)
+  //     if (a && !b)  { /* a is int, b is void */ }
+  //     else          { /* a is void, b is int */ }
+  //
+  // We temporarily mark optional-type expressions with NF_MARK1 to denote "negative".
+  // E.g. !a sets NF_MARK1 on a, !!a sets NF_MARK1 on a and then clears it.
+  //
+  // TODO: handle mutually negated identifier, e.g.
+  //   fun example2(a ?int)
+  //     if (a || !a) { /* a is void */ }
+  //     else         { /* a is void */ }
+  //
+  switch (x->kind) {
+
+  case EXPR_PREFIXOP: {
+    unaryop_t* n = (unaryop_t*)x;
+    if (n->op != OP_NOT)
+      break;
+    *flags |= 1; // has complex op
+    //dlog(">> %s [%s] %s", nodekind_name(n->kind), fmtnode(0, n->type), fmtnode(1, n));
+    u32 scope_len = scope->len;
+    if (!type_narrow_cond1(c, ast_ma, scope, flags, n->expr))
+      return false;
+    for (u32 i = scope->len; i > scope_len;) {
+      --i; //sym_t name = scope->ptr[--i];
+      node_t* n2 = scope->ptr[--i];
+      if (n2->flags & NF_NARROWED) {
+        // toggle "negative" flag
+        n2->flags ^= NF_MARK1;
+        //dlog("- negating definition \"%s\" %s", name, fmtnode(0, n2));
+      }
+    }
+    break;
+  }
+
+  case EXPR_BINOP: {
+    binop_t* n = (binop_t*)x;
+    if (n->op != OP_LAND && n->op != OP_LOR)
+      break;
+    if (n->op == OP_LOR)
+      *flags |= 1; // has complex op
+    //dlog(">> %s [%s] %s", nodekind_name(n->kind), fmtnode(0, n->type), fmtnode(1, n));
+    if (!type_narrow_cond1(c, ast_ma, scope, flags, n->left))
+      return false;
+    if (!type_narrow_cond1(c, ast_ma, scope, flags, n->right))
+      return false;
+    break;
+  }
+
+  case EXPR_ID: {
+    idexpr_t* n = (idexpr_t*)x;
+    if (n->type->kind != TYPE_OPTIONAL || (n->flags & NF_NARROWED)) {
+      // NF_NARROWED = already narrowed by previous pass
+      break;
+    }
+    n->flags |= NF_NARROWED;
+    //dlog(">> %s [%s] %s", nodekind_name(n->kind), fmtnode(0, n->type), fmtnode(1, n));
+    local_t* n2 = scope_lookup(scope, n->name, /*maxdepth*/0);
+    if (!n2 || n2->kind != n->kind || !(n2->flags & NF_NARROWED)) {
+      safecheck(node_islocal(n->ref));
+      n2 = ast_clone_node(ast_ma, (local_t*)assertnotnull(n->ref));
+      if (!n2) return false;
+      n2->flags |= NF_NARROWED;
+      tracex("define \"%s\" => %s (%s)", n2->name, fmtnode(0, n2), fmtnode(1, n2->type));
+      if (!scope_define(scope, c->ma, n2->name, n2))
+        return false;
+    }
+    //else dlog("existing \"%s\" %s", n->name, fmtnode(0, n2));
+    break;
+  }
+
+  case EXPR_VAR:
+  case EXPR_LET: {
+    local_t* n = (local_t*)x;
+    if ((n->flags & NF_NARROWED) || // already narrowed by previous pass
+        n->type->kind == TYPE_UNKNOWN ||
+        ( n->type->kind != TYPE_OPTIONAL &&
+          ( n->init == NULL ||
+            ( n->init->type &&
+              n->init->type->kind != TYPE_OPTIONAL &&
+              n->init->type->kind != TYPE_UNKNOWN
+            )
+          )
+        ) )
+    {
+      break;
+    }
+    *flags |= 2; // has local definition
+    n->flags |= NF_NARROWED | NF_MARK2;
+    //dlog(">> %s [%s] %s", nodekind_name(n->kind), fmtnode(0, n->type), fmtnode(1, n));
+    tracex("define \"%s\" => %s (%s)", n->name, fmtnode(0, n), fmtnode(1, n->type));
+    if (!scope_define(scope, c->ma, n->name, n))
+      return false;
+    break;
+  }
+
+  default: {
+    if (x->type->kind != TYPE_OPTIONAL)
+      break;
+    //dlog(">> %s [%s] %s", nodekind_name(x->kind), fmtnode(0, x->type), fmtnode(1, x));
+    break;
+  }
+  }
+  return true;
+}
+
+
+bool type_narrow_cond(
+  compiler_t*           c,
+  memalloc_t            ast_ma,
+  scope_t*              scope,
+  nodearray_t* nullable elsedefs,
+  expr_t*               cond)
+{
+  u32 scope_len = scope->len;
+  u32 flags = 0;
+
+  if (!type_narrow_cond1(c, ast_ma, scope, &flags, cond))
+    return false;
+
+  if UNLIKELY(flags == (1 | 2))
+    return type_narrow_error_localdef_mix(c, cond);
+
+  if (elsedefs && scope->len > scope_len) {
+    if (!nodearray_reserve_exact(elsedefs, c->ma, scope->len - scope_len))
+      return false;
+  }
+
+  for (u32 i = scope->len; i > scope_len;) {
+    sym_t name = scope->ptr[--i];
+    expr_t* n = scope->ptr[--i];
+    if ((n->flags & NF_NARROWED) == 0)
+      continue;
+
+    bool isneg = (n->flags & NF_MARK1) != 0;
+    bool islocal = (n->flags & NF_MARK2) != 0;
+    n->flags &= ~(NF_MARK1 | NF_MARK2);
+
+    // optional type is found either on the local or the initializer. e.g.
+    //   fun example(a ?int)
+    //     if let x = a ...  // local's type is opttype_t
+    //     if let x int = a  // local's type is int; use init type
+    //
+    type_t* oktype = n->type;
+    if (oktype->kind != TYPE_OPTIONAL) {
+      assert(node_islocal((node_t*)n));
+      oktype = assertnotnull(((local_t*)n)->init)->type;
+      assertf(oktype->kind == TYPE_OPTIONAL, "%s", nodekind_name(oktype->kind));
+    }
+    oktype = ((opttype_t*)oktype)->elem;
+
+    if (islocal) {
+      // check assignable type of local definition
+      local_t* var = (local_t*)n;
+      if (var->type->kind == TYPE_UNRESOLVED) {
+        // Type is not yet known; must retain the type in this case.
+        // This can only happen during the first pass of type_narrow_cond run by parser.
+        oktype = var->type;
+      } else if UNLIKELY(
+        var->type != type_unknown &&
+        !type_isassignable(c, var->type, oktype))
+      {
+        report_diag(c, ast_origin(&c->locmap, (node_t*)var->init), DIAG_ERR,
+          "cannot assign value of type %s to %s of type %s",
+          fmtnode(0, oktype), fmtkind(var), fmtnode(1, var->type));
+      }
+    } else if (elsedefs) {
+      // Add the inverse to the "else" definitions.
+      // E.g. "(x ?int) if x ..." => "x int" in "then" branch, "x void" in "else" branch
+      expr_t* n2 = ast_clone_node(ast_ma, n);
+      if (!n2) return false;
+      // narrow type of n2 (inversely)
+      n2->type = isneg ? oktype : type_void;
+      elsedefs->v[elsedefs->len++] = (node_t*)n2;
+      dlog("type_narrow 'else' \"%s\" %s (%c)", name, fmtnode(0, n2), isneg?'+':'-');
+    }
+
+    // narrow type of n
+    n->type = isneg ? type_void : oktype;
+    dlog("type_narrow 'then' \"%s\" %s (%c)", name, fmtnode(0, n), isneg?'-':'+');
+  }
+
+  return true;
+}
+
+
+bool type_narrow_elsedefs(compiler_t* c, scope_t* scope, const nodearray_t* elsedefs) {
+  for (u32 i = 0; i < elsedefs->len; i++) {
+    expr_t* n = (expr_t*)elsedefs->v[i];
+    sym_t name;
+    if (nodekind_islocal(n->kind)) {
+      name = ((local_t*)n)->name;
+    } else {
+      assert_nodekind(n, EXPR_ID);
+      name = ((idexpr_t*)n)->name;
+    }
+    if (!scope_define(scope, c->ma, name, n))
+      return false;
+  }
+  return true;
+}
+
+
 static void ifexpr(typecheck_t* a, ifexpr_t* n) {
-  // "cond"
-  assert(n->cond->flags & NF_RVALUE);
+  bool cond_has_unkn = n->cond->flags & NF_UNKNOWN;
+
+  // enter "then" scope
   enter_scope(a);
+
+  // condition
+  assert(n->cond->flags & NF_RVALUE);
   use(n->cond);
   expr(a, n->cond);
-  if (!type_isbool(n->cond->type) && !type_isopt(n->cond->type))
-    return error(a, n->cond, "conditional is not a boolean nor an optional type");
 
-  // "then"
-  enter_scope(a);
+  nodearray_t elsedefs = {0};
+  if (cond_has_unkn) {
+    nodearray_t* elsedefsp = n->elseb ? &elsedefs : NULL;
+    if (!type_narrow_cond(a->compiler, a->ast_ma, &a->scope, elsedefsp, n->cond)) {
+      nodearray_dispose(&elsedefs, a->ma);
+      return;
+    }
+  }
+
+  if UNLIKELY(
+    !(n->cond->flags & NF_NARROWED) &&
+    !type_isbool(n->cond->type) &&
+    !type_isopt(n->cond->type) )
+  {
+    return error(a, n->cond, "conditional is not a boolean nor an optional type");
+  }
+
+  // "then" branch
   n->thenb->flags |= (n->flags & NF_RVALUE); // "then" block is rvalue if "if" is
   block_noscope(a, n->thenb);
   leave_scope(a);
 
-  // "else"
+  // "else" branch
   if (n->elseb) {
     // visit "else" branch
     enter_scope(a);
+    if (!type_narrow_elsedefs(a->compiler, &a->scope, &elsedefs))
+      return out_of_mem(a);
     n->elseb->flags |= (n->flags & NF_RVALUE); // "else" block is rvalue if "if" is
     block_noscope(a, n->elseb);
     leave_scope(a);
   }
 
-  // leave "cond" scope
-  leave_scope(a);
+  nodearray_dispose(&elsedefs, a->ma);
 
   // if (type_narrowed_binding) {
   //   expr_t* dst = n->cond;
@@ -1386,8 +1721,8 @@ static void ifexpr(typecheck_t* a, ifexpr_t* n) {
     if UNLIKELY(!type_isassignable(a->compiler, n->thenb->type, n->elseb->type)) {
       // TODO: type union
       if (n->thenb->type->kind != TYPE_UNKNOWN && n->elseb->type->kind != TYPE_UNKNOWN) {
-        const char* t1 = fmtnode(a, 0, n->thenb->type);
-        const char* t2 = fmtnode(a, 1, n->elseb->type);
+        const char* t1 = fmtnode(0, n->thenb->type);
+        const char* t2 = fmtnode(1, n->elseb->type);
         error(a, n->elseb, "incompatible types %s and %s in \"if\" branches", t1, t2);
       }
     }
@@ -1586,7 +1921,7 @@ static void unknown_identifier(typecheck_t* a, idexpr_t* n) {
 
 
 static void idexpr(typecheck_t* a, idexpr_t* n) {
-  if (!n->ref) {
+  if (!n->ref || (n->flags & NF_UNKNOWN)) {
     n->ref = lookup(a, n->name);
     if UNLIKELY(!n->ref)
       return unknown_identifier(a, n);
@@ -1603,6 +1938,8 @@ static void idexpr(typecheck_t* a, idexpr_t* n) {
   if (node_istype(n->ref)) {
     n->type = (type_t*)n->ref;
     type(a, &n->type);
+  } else if ((n->flags & NF_NARROWED) && n->type->kind == TYPE_OPTIONAL) {
+    assert(((opttype_t*)n->type)->elem->kind != TYPE_UNKNOWN);
   } else {
     n->type = asexpr(n->ref)->type;
   }
@@ -1633,13 +1970,13 @@ static bool check_assign_to_member(typecheck_t* a, member_t* m) {
       ((idexpr_t*)m->recv)->ref->kind == EXPR_PARAM &&
       ((local_t*)((idexpr_t*)m->recv)->ref)->isthis)
     {
-      error(a, m->recv, "assignment to immutable struct %s", fmtnode(a, 0, m->recv));
+      error(a, m->recv, "assignment to immutable struct %s", fmtnode(0, m->recv));
       return false;
     }
     return true;
 
   case TYPE_REF:
-    error(a, m->recv, "assignment to immutable reference %s", fmtnode(a, 0, m->recv));
+    error(a, m->recv, "assignment to immutable reference %s", fmtnode(0, m->recv));
     return false;
 
   default:
@@ -1681,7 +2018,7 @@ static bool check_assign(typecheck_t* a, expr_t* target) {
       // dereference target, e.g. "var x &int ; *x = 3"
       type_t* t = ((unaryop_t*)target)->expr->type;
       if (t->kind == TYPE_REF) {
-        const char* s = fmtnode(a, 0, t);
+        const char* s = fmtnode(0, t);
         error(a, target, "cannot assign via immutable reference of type %s", s);
         return false;
       }
@@ -1718,7 +2055,7 @@ static void assign(typecheck_t* a, binop_t* n) {
   n->type = n->left->type;
 
   if UNLIKELY(!type_isassignable(a->compiler, n->left->type, n->right->type))
-    error_unassignable_type(a, n, n->right->type);
+    error_unassignable_type(a, n, n->right);
 
   check_assign(a, n->left);
 }
@@ -1832,6 +2169,11 @@ static bool type_has_binop(const compiler_t* c, const type_t* t, op_t op) {
 }
 
 
+static void error_cannot_use_as_bool(typecheck_t* a, expr_t* x) {
+  error(a, x, "cannot use type %s as bool", fmtnode(0, x->type));
+}
+
+
 static void binop(typecheck_t* a, binop_t* n) {
   expr(a, n->left);
   use(n->left);
@@ -1854,6 +2196,32 @@ static void binop(typecheck_t* a, binop_t* n) {
       n->type = type_bool;
       break;
 
+    case OP_LAND:
+      // e.g. "x && y"
+      if UNLIKELY(
+        (n->left->flags & NF_NARROWED) == 0 &&
+        n->left->type != type_bool && n->left->type->kind != TYPE_OPTIONAL)
+      {
+        error_cannot_use_as_bool(a, n->left);
+      }
+      if UNLIKELY(
+        (n->right->flags & NF_NARROWED) == 0 &&
+        n->right->type != type_bool && n->right->type->kind != TYPE_OPTIONAL)
+      {
+        error_cannot_use_as_bool(a, n->right);
+      }
+      n->type = type_bool;
+      break;
+
+    case OP_LOR:
+      // e.g. "x || y"
+      if UNLIKELY(n->left->type != type_bool && n->left->type->kind != TYPE_OPTIONAL)
+        error_cannot_use_as_bool(a, n->left);
+      if UNLIKELY(n->right->type != type_bool && n->right->type->kind != TYPE_OPTIONAL)
+        error_cannot_use_as_bool(a, n->right);
+      n->type = type_bool;
+      break;
+
     default: {
       // e.g. "x + y"
       type_t* lt = unwrap_alias(n->left->type);
@@ -1869,8 +2237,8 @@ static void binop(typecheck_t* a, binop_t* n) {
   }
 
   if UNLIKELY(!type_has_binop(a->compiler, n->left->type, n->op)) {
-    error(a, n, "type %s has no '%s' operator defined",
-      fmtnode(a, 0, n->left->type), op_fmt(n->op));
+    error(a, n, "type %s has no '%s' operator",
+      fmtnode(0, n->left->type), op_fmt(n->op));
   }
 }
 
@@ -1893,6 +2261,16 @@ static void unaryop(typecheck_t* a, unaryop_t* n) {
       // (ownership et al)
       check_assign(a, n->expr);
       break;
+    case OP_NOT:
+      if UNLIKELY(
+        n->expr->type->kind != TYPE_BOOL &&
+        n->expr->type->kind != TYPE_OPTIONAL)
+      {
+        error(a, n, "type %s has no '%s' operator",
+          fmtnode(0, n->expr->type), op_fmt(n->op));
+      }
+      n->type = type_bool;
+      break;
     default:
       assertf(0, "unexpected unaryop %s", op_name(n->op));
       break;
@@ -1906,7 +2284,7 @@ static void deref(typecheck_t* a, unaryop_t* n) {
   type_t* t = n->expr->type;
 
   if UNLIKELY(!type_isptrlike(t))
-    return error(a, n, "dereferencing non-pointer value of type %s", fmtnode(a, 0, t));
+    return error(a, n, "dereferencing non-pointer value of type %s", fmtnode(0, t));
 
   // note: deref as store target is handled by check_assign,
   // e.g. in "var x &int ...", "*x = 3" is an error but "_ = *x" is okay if
@@ -1915,7 +2293,7 @@ static void deref(typecheck_t* a, unaryop_t* n) {
 
   // check for deref of ref to non-copyable value
   if UNLIKELY(type_isref(t) && type_isowner(n->type))
-    error(a, n, "cannot transfer ownership of borrowed %s", fmtnode(a, 0, t));
+    error(a, n, "cannot transfer ownership of borrowed %s", fmtnode(0, t));
 }
 
 
@@ -2002,7 +2380,7 @@ again:
   }
 
   if UNLIKELY(uintval > maxval) {
-    const char* ts = fmtnode(a, 0, type);
+    const char* ts = fmtnode(0, type);
     error(a, n, "integer constant overflows %s", ts);
   }
 
@@ -2079,7 +2457,7 @@ static void arraylit(typecheck_t* a, arraylit_t* n) {
     exprp(a, (expr_t**)&n->values.v[i]);
     expr_t* v = (expr_t*)n->values.v[i];
     if UNLIKELY(!type_isassignable(a->compiler, at->elem, v->type)) {
-      error_unassignable_type(a, v, v->type);
+      error_unassignable_type(a, n, v);
       break;
     }
   }
@@ -2170,10 +2548,10 @@ static expr_t* nullable find_member(
 static void error_optional_access(
   typecheck_t* a, const opttype_t* t, const expr_t* expr, const expr_t* access)
 {
-  error(a, expr, "optional value of type %s may not be valid", fmtnode(a, 0, t));
+  error(a, expr, "optional value of type %s may not be valid", fmtnode(0, t));
   if (loc_line(access->loc)) {
     help(a, access, "check %s before access, e.g: if %s %s",
-      fmtnode(a, 0, access), fmtnode(a, 1, access), fmtnode(a, 2, expr));
+      fmtnode(0, access), fmtnode(1, access), fmtnode(2, expr));
   }
 }
 
@@ -2205,7 +2583,7 @@ static void member(typecheck_t* a, member_t* n) {
   } else {
     n->type = a->typectx; // avoid cascading errors
     if (recvt != type_unknown || !a->reported_error)
-      error(a, n, "%s has no field or method \"%s\"", fmtnode(a, 0, recvt), n->name);
+      error(a, n, "%s has no field or method \"%s\"", fmtnode(0, recvt), n->name);
   }
 }
 
@@ -2231,7 +2609,7 @@ static void unsigned_index_expr(typecheck_t* a, expr_t* n, u64* constval) {
         break;
       FALLTHROUGH;
     default:
-      error(a, n, "invalid index type %s; expecting uint", fmtnode(a, 0, n->type));
+      error(a, n, "invalid index type %s; expecting uint", fmtnode(0, n->type));
   }
 }
 
@@ -2256,7 +2634,7 @@ static void subscript(typecheck_t* a, subscript_t* n) {
         (n->index->flags & NF_CONST) && at->lenexpr && n->index_val >= at->len)
       {
         error(a, n, "out of bounds: element %llu of array %s",
-          n->index_val, fmtnode(a, 0, recvt));
+          n->index_val, fmtnode(0, recvt));
       }
       break;
     }
@@ -2279,7 +2657,7 @@ static void subscript(typecheck_t* a, subscript_t* n) {
       return error_optional_access(a, (opttype_t*)recvt, (expr_t*)n, n->recv);
 
     default:
-      return error(a, n, "cannot index into type %s", fmtnode(a, 0, recvt));
+      return error(a, n, "cannot index into type %s", fmtnode(0, recvt));
   }
 }
 
@@ -2302,8 +2680,8 @@ static void finalize_typecons(typecheck_t* a, typecons_t** np) {
   }
 
   if UNLIKELY(!type_isconvertible(t, expr->type)) {
-    const char* dst_s = fmtnode(a, 0, t);
-    const char* src_s = fmtnode(a, 1, expr->type);
+    const char* dst_s = fmtnode(0, t);
+    const char* src_s = fmtnode(1, expr->type);
     error(a, *np, "cannot convert value of type %s to type %s", src_s, dst_s);
     return;
   }
@@ -2327,8 +2705,8 @@ static void typecons(typecheck_t* a, typecons_t** np) {
 
 
 static void error_field_type(typecheck_t* a, const expr_t* arg, const local_t* f) {
-  const char* got = fmtnode(a, 0, arg->type);
-  const char* expect = fmtnode(a, 1, f->type);
+  const char* got = fmtnode(0, arg->type);
+  const char* expect = fmtnode(1, f->type);
   const void* origin = arg;
   if (arg->kind == EXPR_PARAM)
     origin = assertnotnull(((local_t*)arg)->init);
@@ -2396,7 +2774,7 @@ static void check_call_type_struct(typecheck_t* a, call_t* call, structtype_t* t
     // lookup field
     void** vp = map_lookup_ptr(&fieldmap, name);
     if UNLIKELY(!vp || ((node_t*)*vp)->kind != EXPR_FIELD) {
-      const char* s = fmtnode(a, 0, t);
+      const char* s = fmtnode(0, t);
       if (!vp) {
         error(a, arg, "no \"%s\" field in struct %s", name, s);
       } else {
@@ -2448,7 +2826,7 @@ static void call_type_prim(typecheck_t* a, call_t** np, type_t* dst) {
 
   if UNLIKELY(arg->kind == EXPR_PARAM) {
     return error(a, arg, "%s type cast does not accept named arguments",
-      fmtnode(a, 0, dst));
+      fmtnode(0, dst));
   }
 
   typectx_push(a, dst);
@@ -2467,7 +2845,7 @@ static void error_call_type_arity(
   typecheck_t* a, call_t* call, type_t* t, u32 minargs, u32 maxargs)
 {
   assert(minargs > call->args.len || call->args.len > maxargs);
-  const char* typstr = fmtnode(a, 1, t);
+  const char* typstr = fmtnode(1, t);
 
   const char* logical_op = "type cast";
   type_t* basetype = unwrap_alias(t);
@@ -2484,7 +2862,7 @@ static void error_call_type_arity(
   }
 
   const node_t* arg = call->args.v[maxargs];
-  const char* argstr = fmtnode(a, 0, arg);
+  const char* argstr = fmtnode(0, arg);
   if (maxargs == 0) {
     // e.g. "void(x)"
     error(a, arg, "unexpected value %s; %s %s accepts no arguments",
@@ -2613,7 +2991,7 @@ static void call_fun(typecheck_t* a, call_t* call, funtype_t* ft) {
         }
         const char* condition = (j == paramsc) ? "unknown" : "invalid position of";
         error(a, arg, "%s named argument \"%s\", in function call %s", condition,
-          namedarg->name, fmtnode(a, 0, ft));
+          namedarg->name, fmtnode(0, ft));
       }
     } else {
       // positional argument
@@ -2637,13 +3015,13 @@ static void call_fun(typecheck_t* a, call_t* call, funtype_t* ft) {
       arg->type != type_unknown )
     {
       error(a, arg, "passing value of type %s to parameter of type %s",
-        fmtnode(a, 0, arg->type), fmtnode(a, 1, param->type));
+        fmtnode(0, arg->type), fmtnode(1, param->type));
       // if (param->type->kind == TYPE_MUT &&
       //     arg->type->kind != TYPE_MUT &&
       //     (arg->kind == EXPR_ID || arg->kind == EXPR_MEMBER) &&
       //     loc_line(arg->loc))
       // {
-      //   const char* name = fmtnode(a, 0, arg);
+      //   const char* name = fmtnode(0, arg);
       //   help(a, arg, "mark %s as mutable: &%s", name, name);
       // }
     } else {
@@ -2666,6 +3044,7 @@ static void call(typecheck_t* a, call_t** np) {
   if (a->reported_error)
     return;
 
+
   node_t* recv = unwrap_id(n->recv);
   type_t* recvtype;
 
@@ -2682,9 +3061,9 @@ static void call(typecheck_t* a, call_t** np) {
   n->type = a->typectx; // avoid cascading errors
   if (node_isexpr(recv)) {
     error(a, n->recv, "calling an expression of type %s, expected function or type",
-      fmtnode(a, 0, ((expr_t*)recv)->type));
+      fmtnode(0, ((expr_t*)recv)->type));
   } else {
-    error(a, n->recv, "calling %s; expected function or type", fmtnode(a, 0, recv));
+    error(a, n->recv, "calling %s; expected function or type", fmtnode(0, recv));
   }
 }
 
@@ -2708,7 +3087,7 @@ static node_t* nullable instantiate_trfn(
   UNUSED typecheck_t* a = ctx->a; // for trace
 
   #ifdef TRACE_TEMPLATE_EXPANSION
-    trace_tplexp("%s %p %s ...", nodekind_name(n->kind), n, fmtnode(a, 0, n));
+    trace_tplexp("%s %p %s ...", nodekind_name(n->kind), n, fmtnode(0, n));
     ctx->traceindent++;
   #endif
 
@@ -2767,11 +3146,11 @@ end:
     ctx->traceindent--;
     if (n == n1) {
       trace_tplexp("%s#%p %s == (verbatim)",
-        nodekind_name(n->kind), n, fmtnode(a, 0, n));
+        nodekind_name(n->kind), n, fmtnode(0, n));
     } else {
       trace_tplexp("%s#%p %s => %s#%p %s",
-        nodekind_name(n1->kind), n1, fmtnode(a, 0, n1),
-        nodekind_name(n->kind), n, fmtnode(a, 1, n));
+        nodekind_name(n1->kind), n1, fmtnode(0, n1),
+        nodekind_name(n->kind), n, fmtnode(1, n));
     }
   #endif
 
@@ -2811,9 +3190,9 @@ static void templateimap_add(
     buf_t tmpbuf = buf_make(a->ma);
     buf_appendrepr(&tmpbuf, a->tmpbuf.p, a->tmpbuf.len);
     trace("[templateimap_add] %s#%p %s (key '%.*s') => %s#%p %s",
-      nodekind_name(template->kind), template, fmtnode(a, 0, template),
+      nodekind_name(template->kind), template, fmtnode(0, template),
       (int)tmpbuf.len, tmpbuf.chars,
-      nodekind_name(instance->kind), instance, fmtnode(a, 0, instance));
+      nodekind_name(instance->kind), instance, fmtnode(0, instance));
     buf_dispose(&tmpbuf);
   }
   #endif
@@ -2835,12 +3214,12 @@ static usertype_t* nullable templateimap_lookup(
     buf_appendrepr(&tmpbuf, a->tmpbuf.p, a->tmpbuf.len);
     if (instance) {
       trace("lookup_interned_usertype %s#%p %s (key '%.*s') => %s#%p %s",
-        nodekind_name(template->kind), template, fmtnode(a, 0, template),
+        nodekind_name(template->kind), template, fmtnode(0, template),
         (int)tmpbuf.len, tmpbuf.chars,
-        nodekind_name(instance->kind), instance, fmtnode(a, 0, instance));
+        nodekind_name(instance->kind), instance, fmtnode(0, instance));
     } else {
       trace("lookup_interned_usertype %s#%p %s (key '%.*s') => (not found)",
-        nodekind_name(template->kind), template, fmtnode(a, 0, template),
+        nodekind_name(template->kind), template, fmtnode(0, template),
         (int)tmpbuf.len, tmpbuf.chars);
     }
     buf_dispose(&tmpbuf);
@@ -2856,17 +3235,17 @@ static void instantiate_templatetype(typecheck_t* a, templatetype_t** tp) {
   usertype_t* template = tt->recv;
   assert(tt->args.len <= template->templateparams.len);
 
-  trace("expand template %s with %u args", fmtnode(a,0,template), tt->args.len);
+  trace("expand template %s with %u args", fmtnode(0, template), tt->args.len);
   #ifdef TRACE_TEMPLATE_EXPANSION
     for (u32 i = 0; i < tt->args.len; i++) {
       trace("  - [%u] %s %p %s => %s %p %s",
         i,
         nodekind_name(template->templateparams.v[i]->kind),
         template->templateparams.v[i],
-        fmtnode(a, 0, template->templateparams.v[i]),
+        fmtnode(0, template->templateparams.v[i]),
         nodekind_name(tt->args.v[i]->kind),
         tt->args.v[i],
-        fmtnode(a, 1, tt->args.v[i]));
+        fmtnode(1, tt->args.v[i]));
     }
     a->traceindent++;
   #endif
@@ -2950,7 +3329,7 @@ static void instantiate_templatetype(typecheck_t* a, templatetype_t** tp) {
   // We rely on this when we call templateimap_add ahead of time.
   if ((usertype_t*)*tp != instance) {
     dlog("instance was transformed: %s -> %s",
-      fmtnode(a, 0, instance), fmtnode(a, 1, *tp));
+      fmtnode(0, instance), fmtnode(1, *tp));
   }
   assert((usertype_t*)*tp == instance);
   assert(nodekind_isusertype(instance->kind));
@@ -3063,7 +3442,7 @@ static void unresolvedtype(typecheck_t* a, unresolvedtype_t** tp) {
   sym_t name = (*tp)->name;
   type_t* t = (type_t*)lookup(a, name);
   trace("resolve type \"%s\" (%p) => %s %s",
-    name, name, nodekind_name(t ? t->kind : 0), t ? fmtnode(a, 0, t) : "(null)");
+    name, name, nodekind_name(t ? t->kind : 0), t ? fmtnode(0, t) : "(null)");
 
   if LIKELY(t && nodekind_istype(t->kind)) {
     type(a, &t);
@@ -3136,8 +3515,8 @@ static void aliastype(typecheck_t* a, aliastype_t** tp) {
   if (a->pubnest) {
     if UNLIKELY((t->elem->flags & NF_VIS_PUB) == 0) {
       error(a, t, "internal type %s in public alias %s",
-        fmtnode(a, 0, t->elem), t->name);
-      help(a, t->elem, "mark %s `pub`", fmtnode(a, 0, t->elem));
+        fmtnode(0, t->elem), t->name);
+      help(a, t->elem, "mark %s `pub`", fmtnode(0, t->elem));
     }
     node_set_visibility((node_t*)t, NF_VIS_PUB);
   }
@@ -3410,7 +3789,7 @@ static void postanalyze_structtype(typecheck_t* a, structtype_t* st) {
 
 
 static void postanalyze_any(typecheck_t* a, node_t* n) {
-  trace("postanalyze %s#%p %s", nodekind_name(n->kind), n, fmtnode(a, 0, n));
+  trace("postanalyze %s#%p %s", nodekind_name(n->kind), n, fmtnode(0, n));
   switch (n->kind) {
   case TYPE_STRUCT: return postanalyze_structtype(a, (structtype_t*)n);
   case TYPE_ALIAS:  return postanalyze_any(a, (node_t*)((aliastype_t*)n)->elem);

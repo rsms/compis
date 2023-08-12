@@ -114,7 +114,7 @@ typedef u16 nodeflag_t;
 #define NF_VIS_PUB     ((nodeflag_t)1<< 1)  // visible to other packages
 #define NF_CHECKED     ((nodeflag_t)1<< 2)  // has been typecheck'ed (or doesn't need it)
 #define NF_RVALUE      ((nodeflag_t)1<< 3)  // expression is used as an rvalue
-#define NF_OPTIONAL    ((nodeflag_t)1<< 4)  // type-narrowed from optional
+#define NF_NARROWED    ((nodeflag_t)1<< 4)  // type-narrowed from optional
 #define NF_UNKNOWN     ((nodeflag_t)1<< 5)  // has or contains unresolved identifier
 #define NF_NAMEDPARAMS ((nodeflag_t)1<< 6)  // function has named parameters
 #define NF_DROP        ((nodeflag_t)1<< 7)  // type has drop() function
@@ -137,29 +137,10 @@ static_assert(NF_VIS_PKG < NF_VIS_PUB, "");
 
 // NODEFLAGS_TYPEID_MASK: flags included in typeid
 #define NODEFLAGS_TYPEID_MASK NF_VIS_MASK \
-                            | NF_OPTIONAL \
+                            | NF_NARROWED \
                             | NF_TEMPLATE \
                             | NF_TEMPLATEI \
 // end NODEFLAGS_TYPEID_MASK
-
-// NODEFLAGS_ALL are all flags, used by AST decoder
-#define NODEFLAGS_ALL ((nodeflag_t) \
-  ( NF_VIS_UNIT \
-  | NF_VIS_PKG \
-  | NF_VIS_PUB \
-  | NF_CHECKED \
-  | NF_RVALUE \
-  | NF_OPTIONAL \
-  | NF_UNKNOWN \
-  | NF_NAMEDPARAMS \
-  | NF_DROP \
-  | NF_SUBOWNERS \
-  | NF_EXIT \
-  | NF_CONST \
-  | NF_PKGNS \
-  | NF_TEMPLATE \
-  | NF_TEMPLATEI \
-))
 
 typedef const u8* typeid_t;
 

@@ -1551,7 +1551,32 @@ static irval_t* bincond(ircons_t* c, expr_t* n) {
   if (v->type == type_bool)
     return v;
 
-  assertf(v->type->kind == TYPE_OPTIONAL, "%s", nodekind_name(v->type->kind));
+  opttype_t* opttype = (opttype_t*)v->type;
+  if (opttype->kind != TYPE_OPTIONAL) {
+    assert(node_islocal((node_t*)n));
+    opttype = (opttype_t*)assertnotnull(((local_t*)n)->init)->type;
+    // TODO: this needs more work for when there's a type-narrowed local.
+    // Currently we generate invalid IR, for e.g.
+    //   fun example(a ?int) int
+    //     if let x = a { x } else { 0 }
+    // ----------------------------
+    //   fun example(a ?int) int
+    //     v2  i64  = ICONST 0x0     # [1] b2
+    //     v0  int  = ARG    0       # [2] b1  <——
+    //     v1  bool = OCHECK v0      # [1]
+    //   switch v1 -> b3 b1
+    //   b1: <- b0                   # b0.then
+    //   goto -> b3
+    //   b3: <- b0 b1                # b0.cont
+    //     v3  i64  = PHI    v0  v2  # [1] if
+    //   ret v3              ~~
+    //
+    // Somehow we manage to alter the type of the function argument.
+    // It should be "?int" but it has been converted to "int", likely from
+    // our phi/var implementation which is based on names.
+    //
+  }
+  assertf(opttype->kind == TYPE_OPTIONAL, "%s", nodekind_name(opttype->kind));
 
   irval_t* optcheck = pushval(c, c->b, OP_OCHECK, n->loc, type_bool);
   pusharg(optcheck, v);

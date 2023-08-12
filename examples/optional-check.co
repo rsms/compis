@@ -1,0 +1,34 @@
+fun id(a ?int) int
+  if a
+    let _ int = a // typeof(a)=int here
+  else
+    // let _ int = a // error: optional value a is empty here
+  0
+
+fun vardef(a ?int, b ?int) int
+  if let b = a
+    let _ int = b
+  else
+    let _ ?int = b // outer b
+  0
+
+fun vardef_multiple(a ?int, b ?int) int
+  if (let x = a) && (let y = b)
+    let _ int = x
+    let _ int = y
+  0
+
+fun complex_cond(a ?int, b ?int) int
+  // if a && foo(b)
+  let c = make_opt_int()
+  if !(a && !b && c) && !a
+    // let _ int = a // error: optional value a is empty here
+    let _ int = b
+    // let _ int = c // error: optional value c is empty here
+  else
+    let _ int = a
+    // let _ int = b // error: optional value b is empty here
+    let _ int = c
+  0
+
+fun make_opt_int() ?int

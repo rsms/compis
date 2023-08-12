@@ -726,9 +726,17 @@ static void scan1(scanner_t* s) {
   case '=': OP2( TASSIGN,  '=', TEQ); break;
   case '*': OP2( TSTAR,    '=', TMULASSIGN); break;
   case '%': OP2( TPERCENT, '=', TMODASSIGN); break;
-  case '&': OP2( TAND,     '=', TANDASSIGN); break;
-  case '|': OP2( TOR,      '=', TORASSIGN); break;
   case '^': OP2( TXOR,     '=', TXORASSIGN); break;
+  case '&': switch (nextc) {
+    case '&': s->tok = TANDAND; s->inp++; break;
+    case '=': s->tok = TANDASSIGN; s->inp++; break;
+    default: s->tok = TAND;
+  } break;
+  case '|': switch (nextc) {
+    case '|': s->tok = TOROR; s->inp++; break;
+    case '=': s->tok = TORASSIGN; s->inp++; break;
+    default: s->tok = TOR;
+  } break;
   case '+': switch (nextc) {
     case '+': s->insertsemi = true; s->tok = TPLUSPLUS; s->inp++; break;
     case '=': s->tok = TADDASSIGN; s->inp++; break;

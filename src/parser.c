@@ -647,20 +647,20 @@ static node_t* nullable lookup(parser_t* p, sym_t name) {
 }
 
 
-static void define_replace(parser_t* p, sym_t name, node_t* n) {
-  trace("redefine %s %s", name, nodekind_name(n->kind));
-  assert(n->kind != EXPR_ID);
-  assert(name != sym__);
+// static void define_replace(parser_t* p, sym_t name, node_t* n) {
+//   trace("redefine %s %s", name, nodekind_name(n->kind));
+//   assert(n->kind != EXPR_ID);
+//   assert(name != sym__);
 
-  if UNLIKELY(!scope_define(&p->scope, p->ma, name, n))
-    out_of_mem(p);
+//   if UNLIKELY(!scope_define(&p->scope, p->ma, name, n))
+//     out_of_mem(p);
 
-  // define top-level statements in package
-  if (scope_istoplevel(&p->scope)) {
-    if UNLIKELY(pkg_def_set(currpkg(p), p->ma, name, n))
-      return out_of_mem(p);
-  }
-}
+//   // define top-level statements in package
+//   if (scope_istoplevel(&p->scope)) {
+//     if UNLIKELY(pkg_def_set(currpkg(p), p->ma, name, n))
+//       return out_of_mem(p);
+//   }
+// }
 
 
 static void define(parser_t* p, sym_t name, node_t* n) {
@@ -1407,74 +1407,27 @@ static expr_t* expr_block(parser_t* p, const parselet_t* pl, nodeflag_t fl) {
 }
 
 
-static void narrow_optional_check(parser_t* p, expr_t* cond) {
-  assert(type_isopt(cond->type));
-
-  // apply negation, e.g. "if (!x)"
-  bool neg = false;
-  while (cond->kind == EXPR_PREFIXOP) {
-    unaryop_t* op = (unaryop_t*)cond;
-    if UNLIKELY(op->op != OP_NOT) {
-      error_at(p, cond, "invalid operation %s on optional type", fmtnode(p, 0, cond));
-      return;
-    }
-    neg = !neg;
-    cond = assertnotnull(op->expr);
-  }
-
-  // effective_type is either T or void, depending on "!" prefix ops.
-  // e.g. "var x ?T ... ; if (x) { ... /* x is definitely T here */ }"
-  // e.g. "var x ?T ... ; if (!x) { ... /* x is definitely void here */ }"
-  type_t* effective_type = neg ? type_void : ((opttype_t*)cond->type)->elem;
-
-  // redefine with effective_type
-  switch (cond->kind) {
-    case EXPR_ID: {
-      // e.g. "if x { ... }"
-      idexpr_t* id = (idexpr_t*)cond;
-      if (!node_isexpr(id->ref))
-        return error_at(p, cond, "conditional is not an expression");
-
-      idexpr_t* id2 = CLONE_NODE(p, id);
-      id2->type = effective_type;
-
-      expr_t* ref2 = (expr_t*)clone_node(p, id->ref);
-      ref2->type = effective_type;
-      define_replace(p, id->name, (node_t*)ref2);
-
-      break;
-    }
-    case EXPR_LET:
-    case EXPR_VAR: {
-      // e.g. "if let x = expr { ... }"
-      ((local_t*)cond)->type = effective_type;
-      cond->flags |= NF_OPTIONAL;
-      break;
-    }
-  }
-}
-
-
 static expr_t* expr_if(parser_t* p, const parselet_t* pl, nodeflag_t fl) {
   ifexpr_t* n = mkexpr(p, ifexpr_t, EXPR_IF, fl);
   next(p);
 
-  // enter "cond" scope
+  // enter "then" scope
   enter_scope(p);
 
   // condition
   n->cond = expr(p, PREC_COMMA, fl | NF_RVALUE);
   bubble_flags(n, n->cond);
-  if (n->cond->type->kind == TYPE_OPTIONAL)
-    narrow_optional_check(p, n->cond);
 
-  // "then"
-  enter_scope(p);
+  // perform type narrowing (e.g. optional-type refinement)
+  nodearray_t elsedefs = {0};
+  type_narrow_cond(p->scanner.compiler, p->ast_ma, &p->scope, &elsedefs, n->cond);
+
+  // "then" branch
   n->thenb = any_as_block(p, fl);
   bubble_flags(n, n->thenb);
   leave_scope(p);
 
-  // "else"
+  // "else" branch
   // allow else to follow on a new line, i.e. both of these are accepted:
   //
   //   if {} else {}
@@ -1491,14 +1444,14 @@ static expr_t* expr_if(parser_t* p, const parselet_t* pl, nodeflag_t fl) {
   }
   next(p);
   enter_scope(p);
+  if (!type_narrow_elsedefs(p->scanner.compiler, &p->scope, &elsedefs))
+    out_of_mem(p);
   n->elseb = any_as_block(p, fl);
   bubble_flags(n, n->elseb);
   leave_scope(p);
 
 end:
-  // leave "cond" scope
-  leave_scope(p);
-
+  nodearray_dispose(&elsedefs, p->ma);
   return (expr_t*)n;
 }
 
@@ -1552,6 +1505,7 @@ static expr_t* expr_return(parser_t* p, const parselet_t* pl, nodeflag_t fl) {
     return (expr_t*)n;
   n->value = expr(p, PREC_COMMA, fl | NF_RVALUE);
   n->type = n->value->type;
+  n->nuse = 1;
   bubble_flags(n, n->value);
   return (expr_t*)n;
 }

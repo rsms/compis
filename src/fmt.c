@@ -166,6 +166,46 @@ static void fmt_nodearray(FMT_PARAMS, const nodearray_t* nodes, const char* sep)
 }
 
 
+// parenthesize returns true if x should be surrounded by "(...)" when
+// used as a value in another expression that might be ambiguous,
+// for example "!(x && y)" = (PREFIXOP "!" (BINOP (ID x) (ID y))).
+//
+// TODO: generalize this for operator precedence so we can use it everywhere
+//
+static bool parenthesize(const expr_t* x) {
+  switch (x->kind) {
+  case EXPR_VAR:
+  case EXPR_LET:
+  case EXPR_BINOP:
+    return true;
+  // case EXPR_FUN:
+  // case EXPR_BLOCK:
+  // case EXPR_CALL:
+  // case EXPR_TYPECONS:
+  // case EXPR_ID:
+  // case EXPR_NS:
+  // case EXPR_FIELD:
+  // case EXPR_PARAM:
+  // case EXPR_MEMBER:
+  // case EXPR_SUBSCRIPT:
+  // case EXPR_PREFIXOP:
+  // case EXPR_POSTFIXOP:
+  // case EXPR_DEREF:
+  // case EXPR_ASSIGN:
+  // case EXPR_IF:
+  // case EXPR_FOR:
+  // case EXPR_RETURN:
+  // case EXPR_BOOLLIT:
+  // case EXPR_INTLIT:
+  // case EXPR_FLOATLIT:
+  // case EXPR_STRLIT:
+  // case EXPR_ARRAYLIT:
+  default:
+    return false;
+  }
+}
+
+
 static void fmt(FMT_PARAMS, const node_t* nullable n) {
   if (maxdepth == 0)
     return;
@@ -332,27 +372,38 @@ static void fmt(FMT_PARAMS, const node_t* nullable n) {
     break;
 
   case EXPR_DEREF:
-  case EXPR_PREFIXOP:
-    switch ( ((unaryop_t*)n)->op ) {
+  case EXPR_PREFIXOP: {
+    const unaryop_t* op = (unaryop_t*)n;
+    switch (op->op) {
     case OP_INC: PRINT("++"); break;
     case OP_DEC: PRINT("--"); break;
     case OP_INV: PRINT("~"); break;
     case OP_NOT: PRINT("!"); break;
     }
-    return fmt(FMT_ARGS, (node_t*)((unaryop_t*)n)->expr);
-
-  case EXPR_POSTFIXOP:
-    fmt(FMT_ARGS, (node_t*)((unaryop_t*)n)->expr);
-    PRINT(op_fmt(((unaryop_t*)n)->op));
+    bool group = parenthesize(op->expr);
+    if (group) CHAR('(');
+    fmt(FMT_ARGS, (node_t*)op->expr);
+    if (group) CHAR(')');
     break;
+  }
+
+  case EXPR_POSTFIXOP: {
+    const unaryop_t* op = (unaryop_t*)n;
+    bool group = parenthesize(op->expr);
+    if (group) CHAR('(');
+    fmt(FMT_ARGS, (node_t*)op->expr);
+    if (group) CHAR(')');
+    PRINT(op_fmt(op->op));
+    break;
+  }
 
   case EXPR_ASSIGN:
   case EXPR_BINOP:
-    fmt(FMT_ARGSD(maxdepth - 1), (node_t*)((binop_t*)n)->left);
+    fmt(FMT_ARGS, (node_t*)((binop_t*)n)->left);
     CHAR(' ');
     PRINT(op_fmt(((binop_t*)n)->op));
     CHAR(' ');
-    fmt(FMT_ARGSD(maxdepth - 1), (node_t*)((binop_t*)n)->right);
+    fmt(FMT_ARGS, (node_t*)((binop_t*)n)->right);
     break;
 
   case EXPR_BOOLLIT:

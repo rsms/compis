@@ -484,13 +484,6 @@ bool compiler_mangle_type(
 }
 
 
-static bool encoder_finalize_ptrtype(encoder_t* e, buf_t* buf, const ptrtype_t* t) {
-  type(e, t->elem);
-  //buf_print(&e->buf, CO_TYPE_SUFFIX);
-  return encoder_finalize(e, buf);
-}
-
-
 bool compiler_mangle(
   const compiler_t* c, const pkg_t* pkg, buf_t* buf, const node_t* n)
 {

@@ -34,7 +34,7 @@ static bool has_side_effects(const irval_t* v) {
 
 static void val(fmtctx_t* ctx, const irval_t* v, bool isdot) {
   u32 start = ctx->out.len + 1;
-  PRINTF(isdot ? "\n" : "\n    ");
+  PRINTF(isdot ? "\n" : "\n      ");
 
   // showtype: enable to include syntax-formatted type after name
   // e.g. "v1 int = ..." instead of "v1 = ..."

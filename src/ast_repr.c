@@ -120,7 +120,7 @@ static bool seen(repr_t* r, const void* n) {
   }
   if (!vp)
     seterr(r, ErrNoMem);
-  CHAR('\'');
+  PRINT("ʹ");
   return true;
 }
 
@@ -265,12 +265,12 @@ static void flags(RPARAMS, const node_t* n) {
   // don't include NF_UNKNOWN for TYPE_UNKNOWN (always and obviously true)
   flags &= ~(NF_UNKNOWN * (nodeflag_t)(n->kind == TYPE_UNKNOWN));
 
-  if (flags & ( NF_RVALUE | NF_OPTIONAL | NF_UNKNOWN
+  if (flags & ( NF_RVALUE | NF_NARROWED | NF_UNKNOWN
               | NF_TEMPLATE | NF_TEMPLATEI | NF_CYCLIC))
   {
     PRINT(" {");
     if (flags & NF_RVALUE)    CHAR('r');
-    if (flags & NF_OPTIONAL)  CHAR('o');
+    if (flags & NF_NARROWED)  CHAR('n');
     if (flags & NF_UNKNOWN)   CHAR('u');
     if (flags & NF_TEMPLATE)  CHAR('t');
     if (flags & NF_TEMPLATEI) CHAR('i');
@@ -615,7 +615,7 @@ static void repr(RPARAMS, const node_t* nullable n) {
     const local_t* var = (local_t*)n;
     if (var->init) {
       CHAR(' ');
-      repr(RARGS, (node_t*)var->init);
+      repr(RARGSFL(fl | REPRFLAG_HEAD), (node_t*)var->init);
     }
     break;
   }

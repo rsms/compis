@@ -72,6 +72,8 @@ AST encoding format:
 
 #define FILE_MAGIC "cAST"
 #define AST_ENC_VERSION 1
+#define AST_ENC_EXCLUDED_NODEFLAGS \
+    NF_MARK1 | NF_MARK2
 
 // DEBUG_LOG_ENCODE_STATS: define to dlog some encoder stats
 //#define DEBUG_LOG_ENCODE_STATS
@@ -396,8 +398,8 @@ static void encode_node(astencoder_t* a, buf_t* outbuf, const node_t* n) {
   } else {
     // it's a standard node, not a universal one
 
-    // exclude NF_MARK* from flags
-    nodeflag_t flags = n->flags & ~(NF_MARK1 | NF_MARK2);
+    // exclude some flags
+    nodeflag_t flags = n->flags & ~AST_ENC_EXCLUDED_NODEFLAGS;
 
     // base attributes of node_t
     *p++ = '\t'; p += fmt_u64_base16((char*)p, 4, (u64)flags);
@@ -1654,9 +1656,7 @@ static const u8* decode_node(DEC_PARAMS, u32 node_id) {
   // read flags
   p = dec_whitespace(DEC_ARGS);
   p = dec_u16x(DEC_ARGS, &n->flags);
-  if (n->flags & ~NODEFLAGS_ALL)
-    dlog("scrubbed invalid nodeflags %x from %x", n->flags & ~NODEFLAGS_ALL, n->flags);
-  n->flags = n->flags & NODEFLAGS_ALL; // scrub away invalid flags
+  n->flags &= ~AST_ENC_EXCLUDED_NODEFLAGS; // scrub away
 
   // read nuse
   p = dec_whitespace(DEC_ARGS);

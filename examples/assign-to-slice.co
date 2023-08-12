@@ -1,4 +1,4 @@
-fun main() int {
+pub fun main() {
   // str is an alias of &[u8]; immutable slice of u8 values
   var a str = "cat"
 
@@ -11,6 +11,4 @@ fun main() int {
 
   // can NOT do the opposite:
   //b = a // error: incompatible types, &[u8 5] and string
-
-  return 0
 }
