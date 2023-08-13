@@ -250,6 +250,72 @@ let f i8      // error: missing value
 
 
 
+## Functions
+
+Amazingly, Compis has functions!
+Here are a few examples:
+
+```co
+fun mul_or_div(x, y int, mul bool) int
+  if mul x * y
+  else   x / y
+
+fun no_args() int { return 42 }
+fun no_args_implicit_return() int { 42 }
+fun no_result(message str) { print(message) }
+fun inferred_result(x, y f32) = x * y
+let f = fun(x, y int) = x * y
+```
+
+
+### Type functions
+
+Compis doesn't have classes, but it has something called "type functions" that allows
+you to clearly associate functions with data:
+
+```co
+type Account
+  id   uint
+  name str
+
+fun Account.isRoot(this) bool
+  this.id == 0
+
+fun Account.setName(mut this, newname str) str
+  let prevname = .name
+  .name = newname
+  prevname
+
+fun example()
+  let account Account
+  account.setName("anne")
+```
+
+
+### Using C ABI functions
+
+To access a C ABI function you need to declare it in the compis source file
+that accesses it using `pub "C" fun ...`:
+
+`example/a.c`:
+
+```c
+long mul_or_div(long x, long y, _Bool mul) {
+  return mul ? x*y : x/y;
+}
+```
+
+`example/b.co`:
+
+```co
+pub "C" fun mul_or_div(x, y int, mul bool) int
+fun example() int
+  mul_or_div(1, 2, true)
+```
+
+
+
+
 ## Arrays
 
 An array in Compis is a representation of a region of linear memory,
