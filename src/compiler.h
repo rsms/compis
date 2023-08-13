@@ -311,15 +311,6 @@ err_t iranalyze(compiler_t*, memalloc_t ast_ma, pkg_t* pkg, unit_t** unitv, u32 
 err_t check_typedeps(compiler_t* c, unit_t** unitv, u32 unitc);
 bool check_typedep(compiler_t* c, node_t* n);
 
-// used during both parsing and typecheck
-bool type_narrow_cond(
-  compiler_t*           c,
-  memalloc_t            ast_ma,
-  scope_t*              scope,
-  nodearray_t* nullable elsedefs,
-  expr_t*               cond);
-bool type_narrow_elsedefs(compiler_t* c, scope_t* scope, const nodearray_t* elsedefs);
-
 // importing of packages
 bool import_validate_path(const char* path, const char** errmsgp, usize* erroffsp);
 err_t import_pkgs(compiler_t* c, pkg_t* importer_pkg, unit_t* unitv[], u32 unitc);

@@ -136,6 +136,9 @@ typedef enum {
 #define trace(fmt, va...) \
   _trace(opt_trace_parse, 2, "P", "%*s" fmt, p->traceindent*2, "", ##va)
 
+#define tracex(fmt, va...) \
+  _trace(opt_trace_parse, 2, "P", fmt, ##va)
+
 
 #ifdef DEBUG
   static void _traceindent_decr(parser_t** cp) { (*cp)->traceindent--; }
@@ -371,17 +374,6 @@ static const char* fmttok(parser_t* p, u32 bufindex, tok_t tok, slice_t lit) {
 }
 
 
-static const char* fmtnode(parser_t* p, u32 bufindex, const void* n) {
-  buf_t* buf = tmpbuf_get(bufindex);
-  err_t err = node_fmt(buf, n, /*depth*/0);
-  if (!err)
-    return buf->chars;
-  dlog("node_fmt: %s", err_str(err));
-  out_of_mem(p);
-  return "?";
-}
-
-
 static void unexpected(parser_t* p, const char* errmsg) {
   if (currtok(p) == TEOF && p->scanner.errcount > 0)
     return;
@@ -404,14 +396,12 @@ static void expect_fail(parser_t* p, tok_t expecttok, const char* errmsg) {
   error(p, "expected %s%*s, got %s", want, msglen, errmsg, got);
 }
 
-
 static bool expect_token(parser_t* p, tok_t expecttok, const char* errmsg) {
   if LIKELY(currtok(p) == expecttok)
     return true;
   expect_fail(p, expecttok, errmsg);
   return false;
 }
-
 
 static bool expect(parser_t* p, tok_t expecttok, const char* errmsg) {
   bool ok = expect_token(p, expecttok, errmsg);
@@ -420,15 +410,33 @@ static bool expect(parser_t* p, tok_t expecttok, const char* errmsg) {
 }
 
 
+static bool expect2_fail(parser_t* p, tok_t tok, const char* errmsg) {
+  unexpected(p, errmsg);
+  fastforward(p, (const tok_t[]){ tok, TSEMI, 0 });
+  if (currtok(p) == tok)
+    next(p);
+  return false;
+}
+
 static bool expect2(parser_t* p, tok_t tok, const char* errmsg) {
   if LIKELY(currtok(p) == tok) {
     next(p);
     return true;
   }
-  unexpected(p, errmsg);
-  fastforward(p, (const tok_t[]){ tok, TSEMI, 0 });
-  if (currtok(p) == tok)
-    next(p);
+  return expect2_fail(p, tok, errmsg);
+}
+
+
+// maybe_start_of_type returns true if tok can possibly be the start of a type decl
+static bool maybe_start_of_type(parser_t* p, tok_t tok) {
+  switch (tok) {
+    case TLPAREN:   // (  tuple type
+    case TLBRACK:   // [  array type
+    case TAND:      // &  ref type
+    case TQUESTION: // ?  optional type
+    case TID:       //    named type
+      return true;
+  }
   return false;
 }
 
@@ -526,8 +534,6 @@ node_t* clone_node(parser_t* p, const node_t* n) {
 
 // —————————————————————————————————————————————————————————————————————————————————————
 // pnodearray
-
-
 
 
 static bool nodearray_copy(nodearray_t* dst, memalloc_t ma, const nodearray_t* src) {
@@ -647,22 +653,6 @@ static node_t* nullable lookup(parser_t* p, sym_t name) {
 }
 
 
-// static void define_replace(parser_t* p, sym_t name, node_t* n) {
-//   trace("redefine %s %s", name, nodekind_name(n->kind));
-//   assert(n->kind != EXPR_ID);
-//   assert(name != sym__);
-
-//   if UNLIKELY(!scope_define(&p->scope, p->ma, name, n))
-//     out_of_mem(p);
-
-//   // define top-level statements in package
-//   if (scope_istoplevel(&p->scope)) {
-//     if UNLIKELY(pkg_def_set(currpkg(p), p->ma, name, n))
-//       return out_of_mem(p);
-//   }
-// }
-
-
 static void define(parser_t* p, sym_t name, node_t* n) {
   if (name == sym__)
     return;
@@ -700,12 +690,6 @@ err_duplicate:
 
 
 // —————————————————————————————————————————————————————————————————————————————————————
-
-
-// static void push_child(parser_t* p, ptrarray_t* children, void* child) {
-//   if UNLIKELY(!ptrarray_push(children, p->ast_ma, child))
-//     out_of_mem(p);
-// }
 
 
 static void dotctx_push(parser_t* p, expr_t* nullable n) {
@@ -921,7 +905,7 @@ static bool struct_fieldset(parser_t* p, structtype_t* st, nodearray_t* fields) 
     if LIKELY(!existing)
       existing = (node_t*)lookup_typefun(p, (type_t*)st, f->name);
     if UNLIKELY(existing) {
-      const char* s = fmtnode(p, 0, st);
+      const char* s = fmtnode(0, st);
       error_at(p, f, "duplicate %s \"%s\" for type %s",
         (existing->kind == EXPR_FIELD) ? "field" : "member", f->name, s);
       if (loc_line(existing->loc))
@@ -1418,10 +1402,6 @@ static expr_t* expr_if(parser_t* p, const parselet_t* pl, nodeflag_t fl) {
   n->cond = expr(p, PREC_COMMA, fl | NF_RVALUE);
   bubble_flags(n, n->cond);
 
-  // perform type narrowing (e.g. optional-type refinement)
-  nodearray_t elsedefs = {0};
-  type_narrow_cond(p->scanner.compiler, p->ast_ma, &p->scope, &elsedefs, n->cond);
-
   // "then" branch
   n->thenb = any_as_block(p, fl);
   bubble_flags(n, n->thenb);
@@ -1439,19 +1419,15 @@ static expr_t* expr_if(parser_t* p, const parselet_t* pl, nodeflag_t fl) {
     if (currtok(p) == TSEMI && lookahead(p, 1) == TELSE) {
       next(p);
     } else {
-      goto end;
+      return (expr_t*)n;
     }
   }
   next(p);
   enter_scope(p);
-  if (!type_narrow_elsedefs(p->scanner.compiler, &p->scope, &elsedefs))
-    out_of_mem(p);
   n->elseb = any_as_block(p, fl);
   bubble_flags(n, n->elseb);
   leave_scope(p);
 
-end:
-  nodearray_dispose(&elsedefs, p->ma);
   return (expr_t*)n;
 }
 
@@ -1741,13 +1717,13 @@ static expr_t* expr_ref1(parser_t* p, nodeflag_t fl, bool ismut) {
   bubble_flags(n, n->expr);
 
   if UNLIKELY(n->expr->type->kind == TYPE_REF) {
-    const char* ts = fmtnode(p, 0, n->expr->type);
+    const char* ts = fmtnode(0, n->expr->type);
     error_at(p, n, "referencing reference type %s", ts);
   } else if UNLIKELY(!expr_isstorage(n->expr)) {
-    const char* ts = fmtnode(p, 0, n->expr->type);
+    const char* ts = fmtnode(0, n->expr->type);
     error_at(p, n, "referencing ephemeral value of type %s", ts);
   } else if UNLIKELY(ismut && !expr_ismut(n->expr)) {
-    const char* s = fmtnode(p, 0, n->expr);
+    const char* s = fmtnode(0, n->expr);
     nodekind_t k = n->expr->kind;
     if (k == EXPR_ID)
       k = ((idexpr_t*)n->expr)->ref->kind;
@@ -2144,7 +2120,7 @@ static funtype_t* funtype(parser_t* p, loc_t loc, type_t* nullable recvt) {
   ft->loc = loc;
   ft->size = p->scanner.compiler->target.ptrsize;
   ft->align = p->scanner.compiler->target.ptrsize;
-  ft->result = type_void;
+  ft->result = type_unknown;
 
   // parameters
   ft->paramsloc = currloc(p);
@@ -2159,7 +2135,7 @@ static funtype_t* funtype(parser_t* p, loc_t loc, type_t* nullable recvt) {
 
   // result type
   // no result type implies "void", e.g. "fun foo()" == "fun foo() void"
-  if (currtok(p) != TLBRACE && currtok(p) != TSEMI) {
+  if (maybe_start_of_type(p, currtok(p))) {
     ft->resultloc = currloc(p);
     ft->result = type(p, PREC_MEMBER);
     if (loc_line(ft->result->loc) && ft->result->loc > ft->loc)
@@ -2174,69 +2150,22 @@ static funtype_t* funtype(parser_t* p, loc_t loc, type_t* nullable recvt) {
 static type_t* type_fun(parser_t* p) {
   loc_t loc = currloc(p);
   next(p); // consume TFUN
-  return (type_t*)funtype(p, loc, /*recvt*/NULL);
+  funtype_t* ft = funtype(p, loc, /*recvt*/NULL);
+  if UNLIKELY(ft->result == type_unknown)
+    ft->result = type_void;
+  return (type_t*)ft;
 }
 
 
-err_t typefuntab_add(
-  typefuntab_t* tfuns, memalloc_t ma, type_t* t, sym_t name, fun_t** fun_inout)
-{
-  err_t err = 0;
-  rwmutex_lock(&tfuns->mu);
-
-  map_t** namefunmp = (map_t**)map_assign_ptr(&tfuns->m, ma, t);
-  if UNLIKELY(!namefunmp) {
-    err = ErrNoMem;
-    goto end;
-  }
-
-  // load or create name-to-fun map {sym_t name => fun_t*}
-  map_t* namefunm = *namefunmp;
-  if (!namefunm) {
-    *namefunmp = namefunm = mem_alloct(ma, map_t);
-    if UNLIKELY(namefunm == NULL) {
-      map_del_ptr(&tfuns->m, t); // undo earlier map_assign_ptr
-      err = ErrNoMem;
-      goto end;
-    }
-    if UNLIKELY(!map_init(namefunm, ma, 8)) {
-      map_del_ptr(&tfuns->m, t);
-      mem_freet(ma, namefunm);
-      err = ErrNoMem;
-      goto end;
-    }
-  }
-
-  // lookup function for name in the type t's function map
-  fun_t** funp = (fun_t**)map_assign_ptr(namefunm, ma, name);
-  if UNLIKELY(!funp) {
-    err = ErrNoMem;
-    goto end;
-  }
-
-  // if there's an existing entry, "return" that in fun_inout,
-  // else set the map entry to *fun_inout.
-  if (*funp) {
-    *fun_inout = *funp;
-  } else {
-    *funp = assertnotnull(*fun_inout);
-  }
-
-end:
-  rwmutex_unlock(&tfuns->mu);
-  return err;
-}
-
-
-static void typefun_add(parser_t* p, type_t* recvt, sym_t name, fun_t* fun, loc_t loc) {
-  assertnotnull(fun->name);
-  assert(fun->recvt == NULL || fun->recvt == recvt);
+static void typefun_add(parser_t* p, type_t* recvt, sym_t name, fun_t* fn, loc_t loc) {
+  assertnotnull(fn->name);
+  assert(fn->recvt == NULL || fn->recvt == recvt);
   assert(name != sym__);
 
-  if (fun->name == sym__)
-    fun->name = name;
+  if (fn->name == sym__)
+    fn->name = name;
 
-  fun->recvt = recvt;
+  fn->recvt = recvt;
 
   // first, search struct type for field named "name"
   expr_t* existing = NULL;
@@ -2245,21 +2174,17 @@ static void typefun_add(parser_t* p, type_t* recvt, sym_t name, fun_t* fun, loc_
 
   // next, add (or retrieve existing) function to the type-function table
   if (!existing) {
-    fun_t* fun_inout = fun;
-    err_t err = typefuntab_add(&currpkg(p)->tfundefs, p->ma, recvt, name, &fun_inout);
-    if UNLIKELY(err) {
-      dlog("typefuntab_add: %s", err_str(err));
-      out_of_mem(p);
-      return;
-    }
-    if (fun_inout != fun)
-      existing = (expr_t*)fun_inout;
+    fun_t* fn2 = typefuntab_add(&currpkg(p)->tfundefs, recvt, name, fn);
+    if UNLIKELY(!fn2)
+      return out_of_mem(p);
+    if (fn2 != fn)
+      existing = (expr_t*)fn2;
   }
 
   // report an error if the type function is already defined,
   // or if there's a struct field with the same name on the recvt.
   if UNLIKELY(existing) {
-    const char* s = fmtnode(p, 0, recvt);
+    const char* s = fmtnode(0, recvt);
     error_at(p, loc, "duplicate %s \"%s\" for type %s",
       (existing->kind == EXPR_FUN) ? "function" : "member", name, s);
     if (loc_line(existing->loc))
@@ -2347,8 +2272,6 @@ static fun_t* fun(parser_t* p, nodeflag_t fl, type_t* nullable recvt, bool requi
         }
       }
     }
-    if (n->recvt)
-      typefun_add(p, n->recvt, n->name, n, n->nameloc);
   } else if (requirename) {
     error(p, "missing function name");
   }
@@ -2363,13 +2286,20 @@ static fun_t* fun(parser_t* p, nodeflag_t fl, type_t* nullable recvt, bool requi
   n->paramsendloc = ft->paramsendloc; // location of ")"
   n->resultloc = ft->resultloc;       // location of result
 
-  // define named function
-  if (n->name && n->type->kind != NODE_BAD && !n->recvt)
+  // define type function or named function
+  if (n->recvt) {
+    typefun_add(p, n->recvt, n->name, n, n->nameloc);
+  } else if (n->name && n->type->kind != NODE_BAD) {
+    // define named function
     define(p, n->name, (node_t*)n);
+  }
 
   // no body?
-  if (currtok(p) == TSEMI)
+  if (currtok(p) == TSEMI) {
+    if (ft->result == type_unknown)
+      ft->result = type_void;
     return n;
+  }
 
   // define named parameters
   if (ft->flags & NF_NAMEDPARAMS) {
@@ -2382,6 +2312,26 @@ static fun_t* fun(parser_t* p, nodeflag_t fl, type_t* nullable recvt, bool requi
     _diag(p, origin, DIAG_HELP, "name parameter%s \"_\"", ft->params.len > 1 ? "s" : "");
     // TODO: fix to_origin macro so that this works:
     // help_at(p, origin, "name parameter%s \"_\"", ft->params.len > 1 ? "s" : "");
+  }
+
+  if (currtok(p) == TASSIGN) {
+    // e.g. "fun foo(x int) = x * x"
+    if (!n->resultloc)
+      n->resultloc = currloc(p);
+    next(p); // consume "="
+  } else {
+    // e.g. "fun foo(x int) int { x * x }"
+    // e.g. "fun foo(x int) { print(x) }"
+    if UNLIKELY(currtok(p) != TLBRACE) {
+      if (ft->result == type_unknown) {
+        expect2_fail(p, TLBRACE, "expected type, '{' or '='");
+      } else {
+        expect2_fail(p, TLBRACE, "expected '{' or '='");
+      }
+      return n;
+    }
+    if (ft->result == type_unknown)
+      ft->result = type_void;
   }
 
   fun_body(p, n, fl);

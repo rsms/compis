@@ -41,7 +41,7 @@ typedef struct { usize v[2]; } sizetuple_t;
 // REPRNODE is used for trace and dlog
 #define REPRNODE_FMT "%s#%p %s"
 #define REPRNODE_ARGS(n, bufno) \
-  nodekind_name((n)->kind), (n), fmtnode(g,(bufno),(n))
+  nodekind_name((n)->kind), (n), fmtnode((bufno),(n))
 
 
 bool cgen_init(
@@ -113,17 +113,6 @@ static void _error(cgen_t* g, origin_t origin, const char* fmt, ...) {
   report_diagv(g->compiler, origin, DIAG_ERR, fmt, ap);
   va_end(ap);
   seterr(g, ErrInvalid);
-}
-
-
-UNUSED static const char* fmtnode(cgen_t* g, u32 bufindex, const void* nullable n) {
-  buf_t* buf = tmpbuf_get(bufindex);
-  err_t err = node_fmt(buf, n, /*depth*/0);
-  if (!err)
-    return buf->chars;
-  dlog("node_fmt: %s", err_str(err));
-  seterr(g, err);
-  return "?";
 }
 
 
@@ -925,7 +914,7 @@ static void gen_drop_array(cgen_t* g, const drop_t* d, const arraytype_t* at) {
 
 static void gen_drop(cgen_t* g, const drop_t* d) {
   const type_t* effective_type = d->type;
-  const type_t* bt = type_unwrap_ptr((type_t*)effective_type);
+  const type_t* bt = type_unwrap_ptr_and_opt((type_t*)effective_type);
 
   // dlog("drop \"%s\" " REPRNODE_FMT, d->name, REPRNODE_ARGS(d->type, 0));
 
@@ -1792,7 +1781,7 @@ static void gen_doref(cgen_t* g, const unaryop_t* n) {
       break;
     default:
       panic("TODO ref to expr `%s` of type kind %s",
-        fmtnode(g, 0, n->expr), nodekind_name(n->expr->type->kind));
+        fmtnode(0, n->expr), nodekind_name(n->expr->type->kind));
   }
   gen_expr_rvalue(g, n->expr, n->type);
 }
@@ -2377,10 +2366,10 @@ static err_t finalize(cgen_t* g, usize headstart) {
         const node_t* d = ((fwddecl_t*)n)->decl;
         dlog("%s%s#%p -> %s#%p %s", prefix,
           nodekind_name(n->kind), n,
-          nodekind_name(d->kind), d, fmtnode(g, 0, d));
+          nodekind_name(d->kind), d, fmtnode(0, d));
       } else {
         dlog("%s%s#%p %s%s", prefix,
-          nodekind_name(n->kind), n, fmtnode(g, 0, n),
+          nodekind_name(n->kind), n, fmtnode(0, n),
           (n->flags & NF_CYCLIC) ? " (cyclic)" : "");
       }
     }
@@ -2393,7 +2382,7 @@ static err_t finalize(cgen_t* g, usize headstart) {
 static void assign_mangledname(cgen_t* g, node_t* n) {
   char** p;
 
-  trace("%s> %s#%p %s", __FUNCTION__, nodekind_name(n->kind), n, fmtnode(g, 0, n));
+  trace("%s> %s#%p %s", __FUNCTION__, nodekind_name(n->kind), n, fmtnode(0, n));
 
   if (n == (node_t*)&g->compiler->strtype) {
     // note: strtype has predefined mangledname.

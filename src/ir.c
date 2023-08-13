@@ -77,13 +77,6 @@ static const char* fmttmp(ircons_t* c, u32 bufindex, const char* fmt, ...) {
 }
 
 
-UNUSED static const char* fmtnode(u32 bufindex, const void* nullable n) {
-  buf_t* buf = tmpbuf_get(bufindex);
-  safecheckexpr( node_fmt(buf, n, /*depth*/0), ErrOk);
-  return buf->chars;
-}
-
-
 #ifdef DEBUG
   // static void trace_node(ircons_t* c, const char* msg, const node_t* n)
   #define trace_node(msg, n) \
@@ -2007,7 +2000,8 @@ static bool addfun(ircons_t* c, fun_t* n, irfun_t** fp) {
     return out_of_mem(c), &bad_irfun;
   *fp = f;
   *funmp = f;
-  f->name = mem_strdup(c->ir_ma, slice_cstr(n->name), 0);
+  if (n->name)
+    f->name = mem_strdup(c->ir_ma, slice_cstr(n->name), 0);
   f->ast = n;
 
   // add to current unit
@@ -2180,8 +2174,13 @@ static irval_t* load_rvalue(ircons_t* c, expr_t* origin, expr_t* n) {
 static irval_t* load_expr(ircons_t* c, expr_t* n) {
   if (n->kind == EXPR_ID) {
     node_t* rvalue = ((idexpr_t*)n)->ref;
-    assert(node_isexpr(rvalue));
-    return load_rvalue(c, n, (expr_t*)rvalue);
+    if (node_istype(rvalue)) {
+      dlog("TODO: deref id referring to type");
+      return push_TODO_val(c, c->b, (type_t*)rvalue, "type");
+    } else {
+      assert(node_isexpr(rvalue));
+      return load_rvalue(c, n, (expr_t*)rvalue);
+    }
   }
   return expr(c, n);
 }

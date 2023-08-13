@@ -42,7 +42,7 @@ void pkg_dispose(pkg_t* pkg, memalloc_t ma) {
   if (pkg->defs.cap != 0)
     map_dispose(&pkg->defs, ma);
   rwmutex_dispose(&pkg->defs_mu);
-  typefuntab_dispose(&pkg->tfundefs, ma);
+  typefuntab_dispose(&pkg->tfundefs);
 }
 
 

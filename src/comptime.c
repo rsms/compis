@@ -89,17 +89,6 @@ static void* error_operation_not_supported(
 }
 
 
-UNUSED static const char* fmtnode(ctx_t* ctx, u32 bufindex, const void* nullable n) {
-  buf_t* buf = tmpbuf_get(bufindex);
-  err_t err = node_fmt(buf, n, /*depth*/0);
-  if (!err)
-    return buf->chars;
-  dlog("node_fmt: %s", err_str(err));
-  seterr(ctx, err);
-  return "?";
-}
-
-
 #define mknode(ctx, TYPE, kind, loc) \
   ( (TYPE*)_mknode1((ctx), sizeof(TYPE), (kind), (loc)) )
 

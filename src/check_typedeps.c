@@ -3,16 +3,6 @@
 #include "compiler.h"
 
 
-UNUSED static const char* fmtnode(u32 bufindex, const void* nullable n) {
-  buf_t* buf = tmpbuf_get(bufindex);
-  err_t err = node_fmt(buf, n, /*depth*/0);
-  if (!err)
-    return buf->chars;
-  dlog("node_fmt: %s", err_str(err));
-  return "?";
-}
-
-
 static bool type_isowner_safe1(const type_t* t, u32 n) {
   t = type_isopt(t) ? ((opttype_t*)t)->elem : t;
   return (

@@ -263,7 +263,8 @@ static void fmt(FMT_PARAMS, const node_t* nullable n) {
     if (n->flags & NF_VIS_PUB)
       PRINT("pub ");
     fun_t* fn = (fun_t*)n;
-    funtype_t* ft = (funtype_t*)fn->type;
+    funtype_t* ft = (funtype_t*)assertnotnull(fn->type);
+    assert_nodekind(ft, TYPE_FUN);
     PRINTF("fun %s(", fn->name);
     fmt_nodearray(FMT_ARGS, &ft->params, ", ");
     PRINT(") ");
@@ -571,4 +572,12 @@ err_t node_fmt(buf_t* outbuf, const node_t* n, u32 maxdepth) {
   outbuf->oom = false;
 
   return oom ? ErrNoMem : 0;
+}
+
+
+const char* fmtnode(u32 bufindex, const void* nullable n) {
+  buf_t* buf = tmpbuf_get(bufindex);
+  err_t err = node_fmt(buf, n, /*depth*/0);
+  safecheck(err == 0);
+  return buf->chars;
 }

@@ -7,6 +7,7 @@
 #include "buf.h"
 #include "future.h"
 #include "map.h"
+#include "hashtable.h"
 #include "sha256.h"
 #include "str.h"
 #include "thread.h"
@@ -158,8 +159,8 @@ DEF_ARRAY_TYPE_API(node_t*, nodearray)
 // Each pkg_t has a typefuntab_t describing type functions defined by that package.
 // Each unit_t has a typefuntab_t describing imported type functions.
 typedef struct {
-  map_t     m;  // { sym_t typeid => map_t*{ sym_t name => fun_t* } }
-  rwmutex_t mu; // guards access to m
+  hashtable_t ht; // { (type_t* type, sym_t name) => fun_t* }
+  rwmutex_t   mu; // guards access to m
 } typefuntab_t;
 
 // pkg_t represents a package
@@ -467,6 +468,7 @@ typedef struct compiler_ compiler_t;
 const char* nodekind_name(nodekind_t); // e.g. "EXPR_INTLIT"
 const char* nodekind_fmt(nodekind_t); // e.g. "variable"
 err_t node_fmt(buf_t* buf, const node_t* nullable n, u32 depth); // e.g. i32, x, "foo"
+const char* fmtnode(u32 bufindex, const void* nullable n); // node_fmt with tmpbuf
 err_t ast_repr(buf_t* buf, const node_t* n); // S-expr AST tree
 err_t ast_repr_pkg(buf_t* buf, const pkg_t* pkg, const unit_t*const* unitv, u32 unitc);
 node_t* nullable ast_mknode(memalloc_t ast_ma, usize size, nodekind_t kind);
@@ -554,9 +556,15 @@ inline static bool funtype_hasthis(const funtype_t* ft) {
   return ft->params.len && ((local_t*)ft->params.v[0])->isthis;
 }
 
+// type_unwrap_ptr unwraps ref and ptr.
+// e.g. "&T" => "T"
+// e.g. "*T" => "T"
+type_t* type_unwrap_ptr(type_t* t);
+
 // type_unwrap_ptr unwraps optional, ref and ptr.
 // e.g. "?&T" => "&T" => "T"
-type_t* type_unwrap_ptr(type_t* t);
+// e.g. "?*T" => "*T" => "T"
+type_t* type_unwrap_ptr_and_opt(type_t* t);
 
 // expr_no_side_effects returns true if materializing n has no side effects.
 // I.e. if removing n has no effect on the semantic of any other code outside it.
@@ -613,7 +621,8 @@ bool pkg_imports_add(pkg_t* importer_pkg, pkg_t* dep, memalloc_t ma);
 
 // typefuntab
 err_t typefuntab_init(typefuntab_t* tfuns, memalloc_t ma);
-void typefuntab_dispose(typefuntab_t* tfuns, memalloc_t ma);
+void typefuntab_dispose(typefuntab_t* tfuns);
+fun_t* nullable typefuntab_add(typefuntab_t* tfuns, type_t* t, sym_t name, fun_t* fn);
 fun_t* nullable typefuntab_lookup(typefuntab_t* tfuns, type_t* t, sym_t name);
 
 

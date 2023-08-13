@@ -257,8 +257,14 @@ static void end_path(encoder_t* e, const node_t* n) {
     break;
 
   case EXPR_FUN:
-    assertf(((fun_t*)n)->name, "unnamed %s in ns path", nodekind_name(n->kind));
-    append_zname(e, ((fun_t*)n)->name);
+    if (((fun_t*)n)->name) {
+      append_zname(e, ((fun_t*)n)->name);
+    } else {
+      dlog("TODO: mangle anonymous function");
+      // TODO: include closure in signature
+      buf_print(&e->buf, "1_");
+      type(e, ((fun_t*)n)->type);
+    }
     break;
 
   case TYPE_STRUCT:
