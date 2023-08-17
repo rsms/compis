@@ -1762,9 +1762,21 @@ static void gen_vartype(cgen_t* g, const local_t* n, const type_t* t) {
 }
 
 
-static void gen_vardef1(
-  cgen_t* g, const local_t* n, const char* name, bool wrap_rvalue)
-{
+static void gen_varinit(cgen_t* g, const local_t* n) {
+  if (n->init) {
+    if (n->type->kind == TYPE_OPTIONAL && n->init->type->kind != TYPE_OPTIONAL) {
+      gen_optinit(g, n->init, /*isshort*/true);
+      //gen_optinit(g, ((const opttype_t*)n->type)->elem, n->init, /*isshort*/true);
+    } else {
+      gen_expr_rvalue(g, n->init, n->type);
+    }
+  } else {
+    gen_zeroinit(g, n->type);
+  }
+}
+
+
+static void gen_vardef1(cgen_t* g, const local_t* n, const char* name) {
   // elide unused variable without side effects.
   // Note: This isn't very useful in practice as clang will optimize away
   // unused code anyway (when optimizing), but it's a nice thing to do.
@@ -1788,39 +1800,37 @@ static void gen_vardef1(
     return;
   }
 
-  if ((n->flags & NF_RVALUE) && wrap_rvalue)
+  if (n->flags & NF_RVALUE) {
+    if (n->nuse == 1) {
+      assertf(!n->written, "local is used as rvalue but also written to");
+      // local is used as a value, not referenced elsewhere and never written to
+      gen_varinit(g, n);
+      return;
+    }
     PRINT("({");
+  }
 
+  // type
   gen_vartype(g, n, n->type), CHAR(' '), gen_id(g, name);
 
+  // attributes
   if (n->nuse == 0)
     CHAR(' '), PRINT(ATTR_UNUSED);
-
   // if (type_isptr(n->type)) {
   //   PRINTF(" __attribute__((__consumable__(%s)))",
   //     owner_islive(n) ? "unconsumed" : "consumed");
   // }
 
-  PRINT(" = ");
+  // value
+  PRINT(" = "), gen_varinit(g, n);
 
-  if (n->init) {
-    if (n->type->kind == TYPE_OPTIONAL && n->init->type->kind != TYPE_OPTIONAL) {
-      gen_optinit(g, n->init, /*isshort*/true);
-      //gen_optinit(g, ((const opttype_t*)n->type)->elem, n->init, /*isshort*/true);
-    } else {
-      gen_expr_rvalue(g, n->init, n->type);
-    }
-  } else {
-    gen_zeroinit(g, n->type);
-  }
-
-  if ((n->flags & NF_RVALUE) && wrap_rvalue)
+  if (n->flags & NF_RVALUE)
     PRINT("; "), PRINT(name), PRINT(";})");
 }
 
 
 static void gen_vardef(cgen_t* g, const local_t* n) {
-  gen_vardef1(g, n, n->name, /*wrap_rvalue*/true);
+  gen_vardef1(g, n, n->name);
 }
 
 
@@ -2177,7 +2187,7 @@ static bool gen_ifexpr_varcond(cgen_t* g, const ifexpr_t* n) {
   // simple vardef if either it's a regular vardef
   // or if an optional type is represented as a pointer
   if ((var->flags & NF_NARROWED) == 0 || type_isptr(ot->elem)) {
-    gen_vardef1(g, var, var->name, /*wrap_rvalue*/false);
+    gen_vardef1(g, var, var->name);
     PRINTF("; if (%s) ", var->name);
     return /*has_tmp*/true;
   }
