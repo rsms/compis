@@ -25,6 +25,9 @@ fun narrowing(a, b, c ?int, d ?*Foo) int
   if !a || a > 0 { 1 } else { 0 } // ok
   // if !a || a > 0 { a * 2 } else { 0 } // error: type ?int has no '*' operator
   if !(a && b) { 0 } else { a * b }
+  // if !(a || b) { 0 } else { a * b } // error: optional value may be empty
+  // if !(a && b) { a * 2 } else { a * b } // error: optional value a is empty
+  // if a && b { a * b } else { a * 2 } // [else] error: optional value may be empty
 
   // "has value" variable definition as branch condition
   if let x = true { x } else { 0 } // regular bool var, not narrowed opt
@@ -37,7 +40,7 @@ fun narrowing(a, b, c ?int, d ?*Foo) int
   if let x = d { 1 } else { 0 } // owner dropped in "then" branch
   // if let x ?int = 1 { x * x } else { 0 } // error: cannot use int as boolean in cond
   // if var x = a { x = maybe_int() } // error: var x has type int, not ?int
-  if var x = a { x = 3 } // ok
+  if var x = a { x = 3 } // warning: unused variable written to, not read
 
   // explicit "is empty" check
   if a != void { a * 2 } else { 0 }

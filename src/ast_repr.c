@@ -616,6 +616,7 @@ static void repr(RPARAMS, const node_t* nullable n) {
   case EXPR_LET:
   case EXPR_VAR: {
     const local_t* var = (local_t*)n;
+    PRINTF(" {r=%u,w=%d}", var->nuse, var->written);
     if (var->init) {
       CHAR(' ');
       repr(RARGSFL(fl | REPRFLAG_HEAD), (node_t*)var->init);

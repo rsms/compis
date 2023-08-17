@@ -431,6 +431,7 @@ typedef struct { // PARAM, VAR, LET
   sym_t   nullable name;    // may be NULL for PARAM
   loc_t            nameloc; // source location of name
   expr_t* nullable init;    // may be NULL for VAR and PARAM
+  bool             written; // true if ever written to (used with nuse)
   bool             isthis;  // [PARAM only] it's the special "this" parameter
   bool             ismut;   // [PARAM only] true if "this" parameter is "mut"
   u64              offset;  // [FIELD only] memory offset in bytes

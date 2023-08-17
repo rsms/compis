@@ -139,11 +139,61 @@ static const char* fmtkind(const void* node) {
   ( ((node)->flags & NF_CHECKED) == 0 && ((node)->flags |= NF_CHECKED) )
 
 
-static void incuse(void* node) {
+// field_of_member returns the EXPR_FIELD that member m points to,
+// or NULL if m does not point to a field.
+static local_t* nullable field_of_member(member_t* m) {
+  expr_t* n = m->target;
+  while (n) switch (n->kind) {
+    case EXPR_FIELD:
+      return (local_t*)n;
+    case EXPR_MEMBER:
+      n = ((member_t*)n)->target;
+      break;
+    default:
+      tracex("[%s] canceled by %s#%p", __FUNCTION__, nodekind_name(n->kind), n);
+      return NULL;
+  }
+  return NULL;
+}
+
+
+static void incuse_read(void* node) {
   node_t* n = node;
-  n->nuse++;
-  // if (n->kind == EXPR_ID && ((idexpr_t*)n)->ref)
-  //   incuse(((idexpr_t*)n)->ref);
+  // dlog("%s %s#%p %s", __FUNCTION__, nodekind_name(n->kind), n, fmtnode(0,n));
+  if UNLIKELY(__builtin_add_overflow(n->nuse, 1, &n->nuse)) {
+    // wrap around to 1 on overflow, not to 0
+    n->nuse = 1;
+  }
+}
+
+
+static void incuse_write(void* node) {
+  for (;;) switch (((node_t*)node)->kind) {
+    case EXPR_FIELD:
+    case EXPR_PARAM:
+    case EXPR_VAR:
+    case EXPR_LET: { local_t* n = node;
+      n->written = true;
+      return;
+    }
+    case EXPR_MEMBER: { member_t* n = node;
+      local_t* field = field_of_member(n);
+      if (field)
+        field->written = true;
+      return;
+    }
+    case EXPR_ID: { idexpr_t* n = node;
+      if (!n->ref)
+        return;
+      node = n->ref;
+      break;
+    }
+    // case EXPR_SUBSCRIPT: { subscript_t* n = node; break; } // TODO
+    default: { node_t* n = node;
+      dlog("TODO: %s %s", __FUNCTION__, nodekind_name(n->kind));
+      return;
+    }
+  }
 }
 
 
@@ -729,12 +779,12 @@ bool expr_no_side_effects(const expr_t* n) { switch (n->kind) {
 }}
 
 
-static bool isnarrowed(const void* node) {
-  const node_t* n = node;
-  return ( n->flags & NF_NARROWED ) ||
-         ( n->kind == EXPR_ID && ((idexpr_t*)n)->ref &&
-           (((idexpr_t*)n)->ref->flags & NF_NARROWED) );
-}
+// static bool isnarrowed(const void* node) {
+//   const node_t* n = node;
+//   return ( n->flags & NF_NARROWED ) ||
+//          ( n->kind == EXPR_ID && ((idexpr_t*)n)->ref &&
+//            (((idexpr_t*)n)->ref->flags & NF_NARROWED) );
+// }
 
 
 static void error_incompatible_types(
@@ -851,7 +901,6 @@ static node_t* nullable lookup(typecheck_t* a, sym_t name) {
     // if (!scope_define(&a->scope, a->ma, name, n))
     //   out_of_mem(a);
   }
-  incuse(n);
   return n;
 }
 
@@ -916,21 +965,22 @@ static bool name_is_reserved(sym_t name) {
 }
 
 
-static bool report_unused(typecheck_t* a, const void* expr_node) {
-  assert(node_isexpr(expr_node));
-  const expr_t* n = expr_node;
-
+static bool report_unused(typecheck_t* a, const expr_t* n) {
   switch (n->kind) {
     case EXPR_FIELD:
     case EXPR_PARAM:
     case EXPR_LET:
     case EXPR_VAR: {
       local_t* var = (local_t*)n;
-      if (var->name != sym__ && !name_is_reserved(var->name) && noerror(a)) {
+      if (var->name == sym__ || name_is_reserved(var->name) || !noerror(a))
+        return false;
+      if (var->written) {
+        warning(a, var->nameloc, "unused %s %s is written to but never read",
+          fmtkind(n), var->name);
+      } else {
         warning(a, var->nameloc, "unused %s %s", fmtkind(n), var->name);
-        return true;
       }
-      return false;
+      return true;
     }
     case EXPR_IF:
       if ((n->flags & NF_RVALUE) == 0)
@@ -947,6 +997,17 @@ static bool report_unused(typecheck_t* a, const void* expr_node) {
     return true;
   }
   return false;
+}
+
+
+static void check_unused(typecheck_t* a, const node_t** nodev, u32 nodec) {
+  for (u32 i = 0; i < nodec; i++) {
+    const node_t* n = nodev[i];
+    if UNLIKELY(n->nuse == 0 && nodekind_isexpr(n->kind)) {
+      if (report_unused(a, (expr_t*)n))
+        return; // stop after the first reported diagnostic
+    }
+  }
 }
 
 
@@ -993,18 +1054,11 @@ static void block_noscope(typecheck_t* a, block_t* n) {
   exprp(a, (expr_t**)&stmtv[stmt_end]);
   lastexpr = (expr_t*)stmtv[stmt_end]; // reload; expr might have edited
 
-  incuse(lastexpr);
+  incuse_read(lastexpr);
   n->type = lastexpr->type;
 
 end:
-  // report unused expressions
-  for (u32 i = 0; i < stmt_end; i++) {
-    stmt_t* cn = stmtv[i];
-    if UNLIKELY(cn->nuse == 0 && nodekind_isexpr(cn->kind)) {
-      if (report_unused(a, cn))
-        break; // stop after the first reported diagnostic
-    }
-  }
+  check_unused(a, (const node_t**)stmtv, stmt_end);
 }
 
 
@@ -1091,14 +1145,7 @@ static void local(typecheck_t* a, local_t* n) {
 
 static void vardef(typecheck_t* a, local_t* n) {
   assert(nodekind_isvar(n->kind));
-
-  // bool need_def = (n->flags & NF_UNKNOWN) || n->type == type_unknown;
-
   local(a, n);
-
-  // n->flags = COND_FLAG(n->flags, NF_MUT, n->kind == EXPR_VAR);
-
-  // if (need_def || scope_istoplevel(&a->scope))
   define(a, n->name, n);
 }
 
@@ -1281,7 +1328,7 @@ static type_t* check_retval(typecheck_t* a, const void* originptr, expr_t*nullab
 
   type_t* t;
   if (*np) {
-    incuse(*np);
+    incuse_read(*np);
     exprp(a, np);
     expr_t* n = *np;
     t = n->type;
@@ -1673,7 +1720,9 @@ static void idexpr(typecheck_t* a, idexpr_t** np) {
     "unresolved import '%s'", ((importid_t*)n->ref)->name);
 
   expr(a, n->ref);
-  incuse(n->ref);
+
+  // if (n->flags & NF_RVALUE)
+  //   incuse_read(n->ref);
 
   // // mutability of ref extends to id
   // n->flags |= (n->ref->flags & NF_MUT);
@@ -1698,9 +1747,15 @@ typedef array_type(narrowed_t) narrowedarray_t;
 DEF_ARRAY_TYPE_API(narrowed_t, narrowedarray)
 
 
-static void condition(typecheck_t* a, narrowedarray_t* narrowed, expr_t** cond);
+#define COND_FLAG_NEG     (1u << 0)  // negated; parent "!" operation
+#define COND_FLAG_OR      (1u << 1)  // inside "||" binop (no narrowing)
+#define COND_FLAG_AND     (1u << 2)  // inside "&&" binop
+#define COND_FLAG_CHECKED (1u << 3)  // inside OP_OCHECK
 
-static void condition_expr(
+
+static u32 condition(typecheck_t* a, narrowedarray_t* narrowed, expr_t** cond);
+
+static u32 condition_expr(
   typecheck_t* a, narrowedarray_t* narrowed, u32 flags, expr_t** xp);
 
 
@@ -1732,6 +1787,24 @@ static void define_narrowed(
 }
 
 
+static void define_narrowed_then(
+  typecheck_t* a, const narrowed_t* narrowedv, u32 narrowedc)
+{
+  define_narrowed(a, narrowedv, narrowedc, /*negate*/false);
+}
+
+
+static void define_narrowed_else(
+  typecheck_t* a, const narrowed_t* narrowedv, u32 narrowedc, u32 narrowflags)
+{
+  // only define narrowed types in "else" branch if we definitively know
+  bool is_definitive = (narrowflags & (COND_FLAG_OR | COND_FLAG_AND)) == 0;
+  is_definitive ^= (narrowflags & COND_FLAG_NEG) != 0;
+  if (is_definitive)
+    define_narrowed(a, narrowedv, narrowedc, /*negate*/true);
+}
+
+
 static void binop_and_or(typecheck_t* a, binop_t** np) {
   // e.g. "x && y", "x || y" (outside of "if")
   assert((*np)->op == OP_LAND || (*np)->op == OP_LOR);
@@ -1744,12 +1817,7 @@ static void binop_and_or(typecheck_t* a, binop_t** np) {
 }
 
 
-#define COND_FLAG_NEG     (1u << 0)  // negated; parent "!" operation
-#define COND_FLAG_OR      (1u << 1)  // inside "||" binop (no narrowing)
-#define COND_FLAG_CHECKED (1u << 2)  // inside OP_OCHECK
-
-
-static void condition_binop_and_or(
+static u32 condition_binop_and_or(
   typecheck_t* a, narrowedarray_t* narrowed, u32 flags, binop_t* n)
 {
   assert(n->op == OP_LAND || n->op == OP_LOR); // "x && y", "x || y"
@@ -1760,8 +1828,8 @@ static void condition_binop_and_or(
   u32 scope_start = a->scope.len;
 
   // visit Left Hand-Side expression
-  incuse(n->left);
-  condition_expr(a, narrowed, flags, &n->left);
+  incuse_read(n->left);
+  u32 outflags = condition_expr(a, narrowed, flags, &n->left);
 
   // define narrowed values made in LHS for use in RHS
   if (narrowed->len > 0) {
@@ -1772,10 +1840,10 @@ static void condition_binop_and_or(
   }
 
   // visit Right Hand-Side expression
-  incuse(n->right);
-  if (n->op == OP_LOR)
-    flags |= COND_FLAG_OR;
-  condition_expr(a, narrowed, flags, &n->right);
+  incuse_read(n->right);
+  flags |= (n->op == OP_LOR) ? COND_FLAG_OR : COND_FLAG_AND;
+  outflags |= (n->op == OP_LOR) ? COND_FLAG_OR : COND_FLAG_AND;
+  outflags |= condition_expr(a, narrowed, flags, &n->right);
 
   if (n->op == OP_LOR) {
     // "or" branch does not cause narrowing
@@ -1790,13 +1858,15 @@ static void condition_binop_and_or(
       a, narrowed->v + narrowed_start, narrowed->len - narrowed_start,
       /*negate*/false);
   }
+
+  return outflags;
 }
 
 
 static void binop(typecheck_t* a, binop_t** np);
 
 
-static void condition_binop_eq(
+static u32 condition_binop_eq(
   typecheck_t* a, narrowedarray_t* narrowed, u32 flags, expr_t** xp)
 {
   // "x == y", "x != y"
@@ -1809,7 +1879,7 @@ static void condition_binop_eq(
   // "x == void", "x != void", "void == x", "void != x"
   expr_t* x = *xp;
   if (x->kind != EXPR_PREFIXOP)
-    return;
+    return 0;
 
   unaryop_t* n = (unaryop_t*)x;
   if (n->op == OP_NOT) {
@@ -1819,7 +1889,7 @@ static void condition_binop_eq(
   }
 
   assert(n->op == OP_OCHECK); // only op we can see here is OP_OCHECK
-  condition_expr(a, narrowed, flags | COND_FLAG_CHECKED, &n->expr);
+  return condition_expr(a, narrowed, flags | COND_FLAG_CHECKED, &n->expr);
 }
 
 
@@ -1840,13 +1910,13 @@ static void wrap_optcheck(typecheck_t* a, expr_t** xp) {
 }
 
 
-static void condition_expr(
+static u32 condition_expr(
   typecheck_t* a, narrowedarray_t* narrowed, u32 flags, expr_t** xp)
 {
   expr_t* x = *xp;
 
   if (x->kind != EXPR_LET && x->kind != EXPR_VAR)
-    incuse(x);
+    incuse_read(x);
 
   switch (x->kind) {
 
@@ -1860,7 +1930,8 @@ static void condition_expr(
       n->type = type_bool;
       n->flags |= NF_CHECKED;
       flags ^= COND_FLAG_NEG;
-      return condition_expr(a, narrowed, flags, &n->expr);
+      u32 outflags = condition_expr(a, narrowed, flags, &n->expr);
+      return outflags ^ COND_FLAG_NEG;
     } else {
       // OP_OCHECK is synthesized; always has type and is always NF_CHECKED
       assert(n->op == OP_OCHECK);
@@ -1893,7 +1964,7 @@ static void condition_expr(
     }
     idexpr_t* n = (idexpr_t*)x;
     if (n->type->kind != TYPE_OPTIONAL)
-      return;
+      return 0;
 
     trace("[%s] %s %s", __FUNCTION__, nodekind_name(x->kind), fmtnode(0, x));
 
@@ -1902,7 +1973,7 @@ static void condition_expr(
       // dlog(">> %s#%p %s \"%s\" (isneg %d)",
       //   nodekind_name(x->kind),x,fmtnode(0,x), n->name, !!(flags & COND_FLAG_NEG));
       narrowed_t* r = narrowedarray_alloc(narrowed, a->ma, 1);
-      if (!r) return out_of_mem(a);
+      if (!r) return out_of_mem(a), 0;
       r->x = x;
       r->isneg = !!(flags & COND_FLAG_NEG);
     }
@@ -1910,7 +1981,7 @@ static void condition_expr(
     if ((flags & COND_FLAG_CHECKED) == 0)
       wrap_optcheck(a, xp);
 
-    return;
+    return 0;
   }
 
   case EXPR_LET:
@@ -1922,7 +1993,7 @@ static void condition_expr(
       if UNLIKELY(n->init->type->kind != TYPE_OPTIONAL) {
         error(a, n->init,
           "cannot use %s as boolean in condition", fmtnode(0, n->init->type));
-        return;
+        return 0;
       }
       assert((flags & COND_FLAG_NEG) == 0); // parser only allows "if let x ..."
       n->flags |= NF_NARROWED;
@@ -1931,7 +2002,7 @@ static void condition_expr(
       error(a, n, "cannot use %s as boolean in condition", fmtnode(0, n->type));
     }
     define(a, n->name, n);
-    return;
+    return 0;
   }
 
   }
@@ -1945,14 +2016,17 @@ static void condition_expr(
       error(a, x, "cannot use %s as boolean in condition", fmtnode(0, x->type));
     }
   }
+
+  return 0;
 }
 
 
-static void condition(typecheck_t* a, narrowedarray_t* narrowed, expr_t** cond) {
+static u32 condition(typecheck_t* a, narrowedarray_t* narrowed, expr_t** cond) {
   trace("condition %s", fmtnode(0, *cond));
   typectx_push(a, type_bool);
-  condition_expr(a, narrowed, /*flags*/0, cond);
+  u32 narrowflags = condition_expr(a, narrowed, /*flags*/0, cond);
   typectx_pop(a);
+  return narrowflags;
 }
 
 
@@ -1966,17 +2040,21 @@ static void ifexpr(typecheck_t* a, ifexpr_t* n) {
 
   // process condition, recording narrowed types
   narrowedarray_t narrowed = {0};
-  condition(a, &narrowed, &n->cond);
+  u32 narrowflags = condition(a, &narrowed, &n->cond);
 
   // visit "then" branch
-  define_narrowed(a, narrowed.v, narrowed.len, /*negate*/false);
+  define_narrowed_then(a, narrowed.v, narrowed.len);
   block_noscope(a, n->thenb);
   leave_scope(a); // leave "then" branch's scope
+
+  // report unused var/let in "if var x = ..."
+  if (node_islocal((node_t*)n->cond))
+    check_unused(a, (const node_t**)&n->cond, 1);
 
   // visit "else" branch
   if (n->elseb) {
     enter_scope(a);
-    define_narrowed(a, narrowed.v, narrowed.len, /*negate*/true);
+    define_narrowed_else(a, narrowed.v, narrowed.len, narrowflags);
     block_noscope(a, n->elseb);
     leave_scope(a);
   }
@@ -2107,7 +2185,7 @@ static void assign(typecheck_t* a, binop_t* n) {
     // "_ = expr"
     typectx_push(a, n->left->type);
     expr(a, n->right);
-    incuse(n->right);
+    incuse_read(n->right);
     typectx_pop(a);
 
     n->type = n->right->type;
@@ -2115,11 +2193,11 @@ static void assign(typecheck_t* a, binop_t* n) {
   }
 
   expr(a, n->left);
-  incuse(n->left);
+  incuse_write(n->left);
 
   typectx_push(a, n->left->type);
   expr(a, n->right);
-  incuse(n->right);
+  incuse_read(n->right);
   typectx_pop(a);
 
   n->type = n->left->type;
@@ -2264,17 +2342,42 @@ static void binop_convert_to_optcheck(typecheck_t* a, binop_t** np) {
 }
 
 
+static void error_optional_access(
+  typecheck_t* a, const expr_t* expr, const opttype_t* t, const expr_t* access)
+{
+  error(a, expr, "optional value of type %s may be empty", fmtnode(0, t));
+  if (loc_line(access->loc)) {
+    help(a, access, "check %s before access, e.g: if %s %s",
+      fmtnode(0, access), fmtnode(1, access), fmtnode(2, expr));
+  }
+}
+
+
+static void error_no_operator(
+  typecheck_t* a, const expr_t* expr, const expr_t* operand, op_t op)
+{
+  assertnotnull(operand->type);
+  if (operand->type->kind == TYPE_OPTIONAL)
+    return error_optional_access(a, expr, (opttype_t*)operand->type, operand);
+
+  const char* opstr = op_fmt(op);
+  if (*opstr == 0)
+    opstr = op_name(op);
+  error(a, expr, "type %s has no '%s' operator", fmtnode(0, operand->type), opstr);
+}
+
+
 static void binop(typecheck_t* a, binop_t** np) {
   binop_t* n = *np;
   if (n->op == OP_LAND || n->op == OP_LOR)
     return binop_and_or(a, np);
 
   expr(a, n->left);
-  incuse(n->left);
+  incuse_read(n->left);
 
   typectx_push(a, n->left->type);
   expr(a, n->right);
-  incuse(n->right);
+  incuse_read(n->right);
   typectx_pop(a);
 
   switch (n->op) {
@@ -2319,18 +2422,17 @@ static void binop(typecheck_t* a, binop_t** np) {
 
   if UNLIKELY(!type_has_binop(a->compiler, n->left->type, n->op)) {
     if (noerror(a) || n->left->type != type_unknown) {
-      const char* opstr = op_fmt(n->op);
-      if (*opstr == 0)
-        opstr = op_name(n->op);
-      error(a, n, "type %s has no '%s' operator",
-        fmtnode(0, n->left->type), opstr);
+      expr_t* operand = n->left;
+      if (operand->type == type_unknown || n->right->type->kind == TYPE_OPTIONAL)
+        operand = n->right;
+      error_no_operator(a, (expr_t*)n, operand, n->op);
     }
   }
 }
 
 
 static void unaryop(typecheck_t* a, unaryop_t* n) {
-  incuse(n->expr);
+  incuse_read(n->expr);
   expr(a, n->expr);
 
   if (n->type->kind == TYPE_UNRESOLVED || n->type == type_unknown)
@@ -2345,6 +2447,7 @@ static void unaryop(typecheck_t* a, unaryop_t* n) {
     case OP_DEC:
       // TODO: specialized check here since it's not actually assignment
       // (ownership et al)
+      incuse_write(n->expr);
       check_assign(a, n->expr);
       break;
     case OP_NOT:
@@ -2352,8 +2455,7 @@ static void unaryop(typecheck_t* a, unaryop_t* n) {
         n->expr->type->kind != TYPE_BOOL &&
         n->expr->type->kind != TYPE_OPTIONAL)
       {
-        error(a, n, "type %s has no '%s' operator",
-          fmtnode(0, n->expr->type), op_fmt(n->op));
+        error_no_operator(a, (expr_t*)n, n->expr, n->op);
       }
       n->type = type_bool;
       break;
@@ -2570,7 +2672,7 @@ static void member_ns(typecheck_t* a, member_t* n) {
         return;
       }
       target = (expr_t*)ns->members.v[i];
-      incuse(target);
+      incuse_read(target);
       n->target = target;
       n->type = target->type;
       return;
@@ -2634,19 +2736,8 @@ static expr_t* nullable find_member(
 }
 
 
-static void error_optional_access(
-  typecheck_t* a, const opttype_t* t, const expr_t* expr, const expr_t* access)
-{
-  error(a, expr, "optional value of type %s may not be valid", fmtnode(0, t));
-  if (loc_line(access->loc)) {
-    help(a, access, "check %s before access, e.g: if %s %s",
-      fmtnode(0, access), fmtnode(1, access), fmtnode(2, expr));
-  }
-}
-
-
 static void member(typecheck_t* a, member_t* n) {
-  incuse(n->recv);
+  incuse_read(n->recv);
   expr(a, n->recv);
 
   // get receiver type without ref or optional
@@ -2660,7 +2751,7 @@ static void member(typecheck_t* a, member_t* n) {
   // can't access members through optional unless it has been checked (narrowed)
   if (recvbt->kind == TYPE_OPTIONAL) {
     // if UNLIKELY(!isnarrowed(n->recv))
-    return error_optional_access(a, (opttype_t*)recvbt, (expr_t*)n, n->recv);
+    return error_optional_access(a, (expr_t*)n, (opttype_t*)recvbt, n->recv);
     // recvbt = ((opttype_t*)recvbt)->elem;
   }
 
@@ -2670,7 +2761,7 @@ static void member(typecheck_t* a, member_t* n) {
   typectx_pop(a);
 
   if (target) {
-    incuse(target);
+    incuse_read(target);
     n->target = target;
     n->type = target->type;
   } else {
@@ -2682,7 +2773,7 @@ static void member(typecheck_t* a, member_t* n) {
 
 
 static void unsigned_index_expr(typecheck_t* a, expr_t* n, u64* constval) {
-  incuse(n);
+  incuse_read(n);
 
   typectx_push(a, type_uint);
   expr(a, n);
@@ -2708,7 +2799,7 @@ static void unsigned_index_expr(typecheck_t* a, expr_t* n, u64* constval) {
 
 
 static void subscript(typecheck_t* a, subscript_t* n) {
-  incuse(n->recv);
+  incuse_read(n->recv);
 
   typectx_push(a, type_unknown);
   expr(a, n->recv);
@@ -2747,7 +2838,7 @@ static void subscript(typecheck_t* a, subscript_t* n) {
       // example.co:1:23: help: check x before access, e.g: if x x[2]
       // 8 → │ fun f(x ?[int]) int { x[2] }
       //     │                        ~
-      return error_optional_access(a, (opttype_t*)recvt, (expr_t*)n, n->recv);
+      return error_optional_access(a, (expr_t*)n, (opttype_t*)recvt, n->recv);
 
     default:
       return error(a, n, "cannot index into type %s", fmtnode(0, recvt));
@@ -2784,7 +2875,7 @@ static void finalize_typecons(typecheck_t* a, typecons_t** np) {
 static void typecons(typecheck_t* a, typecons_t** np) {
   typecons_t* n = *np;
   if (n->expr) {
-    incuse(n->expr);
+    incuse_read(n->expr);
     typectx_push(a, n->type);
     expr(a, n->expr);
     typectx_pop(a);
@@ -2893,7 +2984,7 @@ static void check_call_type_struct(typecheck_t* a, call_t* call, structtype_t* t
       idexpr(a, (idexpr_t**)&arg);
     }
 
-    incuse(arg);
+    incuse_read(arg);
 
     typectx_pop(a);
 
@@ -2926,7 +3017,7 @@ static void call_type_prim(typecheck_t* a, call_t** np, type_t* dst) {
   expr(a, arg);
   typectx_pop(a);
 
-  incuse(arg);
+  incuse_read(arg);
 
   call->type = dst;
 
@@ -3097,7 +3188,7 @@ static void call_fun(typecheck_t* a, call_t* call, funtype_t* ft) {
       arg = (expr_t*)call->args.v[i]; // reload
     }
 
-    incuse(arg);
+    incuse_read(arg);
 
     typectx_pop(a);
 
@@ -3539,7 +3630,7 @@ static void unresolvedtype(typecheck_t* a, unresolvedtype_t** tp) {
 
   if LIKELY(t && nodekind_istype(t->kind)) {
     type(a, &t);
-    t->nuse += (*tp)->nuse;
+    t->nuse = (*tp)->nuse; //incuse_read(t); t->nuse += (*tp)->nuse;
     (*tp)->resolved = t;
     *(type_t**)tp = t;
 

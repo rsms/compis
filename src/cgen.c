@@ -1768,12 +1768,12 @@ static void gen_vardef1(
   // elide unused variable without side effects.
   // Note: This isn't very useful in practice as clang will optimize away
   // unused code anyway (when optimizing), but it's a nice thing to do.
-  if (n->nuse == 0 &&
-      #if DEBUG
-      // disable for -d during in debug builds of compis itself
-      g->compiler->buildmode != BUILDMODE_DEBUG &&
-      #endif
-      expr_no_side_effects((expr_t*)n))
+  if (
+    n->nuse == 0 &&
+    !n->written &&
+    (n->flags & NF_RVALUE) == 0 &&
+    g->compiler->buildmode != BUILDMODE_DEBUG &&
+    expr_no_side_effects((expr_t*)n) )
   {
     PRINT("/* elided unused ");
     PRINT(nodekind_fmt(n->kind));
@@ -2158,7 +2158,7 @@ static bool gen_ifexpr_varcond(cgen_t* g, const ifexpr_t* n) {
   // becomes
   //     if (a.ok) { 1; } else { 0; }
   //
-  if (var->nuse == 0 && !type_isowner(var->type)) {
+  if (var->nuse == 0 && !var->written && !type_isowner(var->type)) {
     PRINT("if (");
     if ((var->flags & NF_NARROWED) == 0) {
       gen_expr_rvalue(g, var->init, var->init->type);
@@ -2196,6 +2196,7 @@ static bool gen_ifexpr_varcond(cgen_t* g, const ifexpr_t* n) {
   //   _co_opt_T tmp = init;  T x = tmp.v;  if (tmp.ok) ...
   if (expr_no_side_effects(var->init)) {
     gen_vartype(g, var, var->type), CHAR(' '), PRINT(var->name);
+    if (var->nuse == 0) CHAR(' '), PRINT(ATTR_UNUSED);
     PRINT(" = "), gen_expr_rvalue1(g, var->init, var->init->type, /*parenwrap*/false);
     gen_opttype_deref(g, ot);
     PRINT("; if ("), gen_optcheck(g, var->init), PRINT(") ");
@@ -2206,6 +2207,7 @@ static bool gen_ifexpr_varcond(cgen_t* g, const ifexpr_t* n) {
     PRINT(" = "), gen_expr_rvalue1(g, var->init, var->init->type, /*parenwrap*/false);
     PRINT("; ");
     gen_vartype(g, var, var->type), CHAR(' '), PRINT(var->name);
+    if (var->nuse == 0) CHAR(' '), PRINT(ATTR_UNUSED);
     PRINT(" = "), PRINT(tmp), gen_opttype_deref(g, ot);
     PRINT("; if ("), gen_optcheck_named(g, ot, tmp), PRINT(") ");
   }
