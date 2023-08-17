@@ -9,41 +9,41 @@ fun maybe_int() ?int
 fun maybe_owned_foo() ?*Foo
 
 fun narrowing(a, b, c ?int, d ?*Foo) int
-  // let _ = (let b = 3) // error: cannot use binding definition as value
-  // let _ = a && a > 0
-  // let _ = !a || a > 0
+  let _ = a && a > 0
+  let _ = !a || a > 0
   // let _ = a || a > 0 // error: optional value a is empty
+  // let _ = (let b = 3) // error: cannot use binding definition as value
 
-  // // "has value" check in branch condition
-  // if a { a } else { 0 }
-  // if a { a * 2 } else { 0 }
-  // if a && a > 0 { a * 2 } else { 0 }
-  // if a && b { a * b } else { 0 }
+  // "has value" check in branch condition
+  if a { a } else { 0 }
+  if a { a * 2 } else { 0 }
+  if a && a > 0 { a * 2 } else { 0 }
+  if a && b { a * b } else { 0 }
   // if (a && b) || c { a * 2 } else { 0 } // error: type ?int has no '*' operator
-  // if a && (b || c) { a * 2 } else { 0 } // ok
+  if a && (b || c) { a * 2 } else { 0 } // ok
   // if a || a > 0 { 1 } else { 0 }  // error: optional value a is empty
-  // if !a || a > 0 { 1 } else { 0 } // ok
+  if !a || a > 0 { 1 } else { 0 } // ok
   // if !a || a > 0 { a * 2 } else { 0 } // error: type ?int has no '*' operator
-  // if !(a && b) { 0 } else { a * b }
+  if !(a && b) { 0 } else { a * b }
 
-  // // "has value" variable definition as branch condition
-  // if let x = true { x } else { 0 }
-  // if let x = a { 1 } else { 0 }
-  // if let x = a { x * x } else { 0 }
+  // "has value" variable definition as branch condition
+  if let x = true { x } else { 0 } // regular bool var, not narrowed opt
+  if let x = a { 1 } else { 0 }
+  if let x = a { x * x } else { 0 }
   // if let x = maybe_owned_foo() { 1 } else { 0 } // TODO: [ir]
-  // if maybe_int() { 1 } else { 0 }
-  // if let x = maybe_int() { 1 } else { 0 }
+  if maybe_int() { 1 } else { 0 }
+  if let x = maybe_int() { 1 } else { 0 }
   if let x = maybe_int() { x * x } else { 0 }
-  // if let x = d { 1 } else { 0 } // owner dropped in "then" branch
+  if let x = d { 1 } else { 0 } // owner dropped in "then" branch
   // if let x ?int = 1 { x * x } else { 0 } // error: cannot use int as boolean in cond
   // if var x = a { x = maybe_int() } // error: var x has type int, not ?int
-  // if var x = a { x = 3 } // ok
+  if var x = a { x = 3 } // ok
 
-  // // explicit "is empty" check
-  // if a != void { a * 2 } else { 0 }
-  // if a == void { 0 } else { a * 2 }
-  // let _ = a != void
-  // let _ = a == void
+  // explicit "is empty" check
+  if a != void { a * 2 } else { 0 }
+  if a == void { 0 } else { a * 2 }
+  let _ = a != void
+  let _ = a == void
 
   // // [TODO] writing to optional var broadens (un-narrows) its type
   // //        when the value is either "void" or another optional value.
