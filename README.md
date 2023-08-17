@@ -209,19 +209,30 @@ When the scope of an owning value ends that value is "dropped":
 Compis has _optional types_ `?T` rather than nullable types.
 
 ```co
-fun example(x ?i32) {
+fun example(x ?i32)
   // let y i32 = x  // error
-  if x {
+  if x
     // type of x is "i32" here, not "?i32"
     let y i32 = x // ok
-  }
-}
 ```
 
-You can use variable definitions with `if` expressions:
+The compiler is clever enough to know when an optional value is
+definitely available or not, based on prior tests:
+
+```co
+fun example(name ?str)
+  if name && name.len() > 0
+    print(name)
+
+fun example2(a, b ?int) = if a && b { a * b } else 0
+fun example3(a, b ?int) = if !(a && b) 0 else { a * b }
+```
+
+You can use variable definitions with `if` expressions, which is useful for taking some action on the result of a function call, without spamming your scope with temporary variables:
 
 ```co
 fun try_read_file(path str) ?str
+
 if let contents = try_read_file("/etc/passwd")
   // in here, the type of contents is str, not ?str
   print(contents)
