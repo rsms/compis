@@ -78,6 +78,35 @@ typedef struct compiler_ {
   pkg_t* nullable stdruntime_pkg; // std/runtime package
 } compiler_t;
 
+typedef struct { // compiler_config_t
+  // Required fields
+  const target_t* target;    // target to compile for
+  const char*     buildroot; // directory for user build products
+
+  // Optional fields; zero value is assumed to be a common default
+  buildmode_t buildmode; // BUILDMODE_ constant. 0 = BUILDMODE_DEBUG
+
+  // Options which maps to compiler_t.opt_
+  bool nolto;    // prevent use of LTO, even if that would be the default
+  bool nomain;   // don't auto-generate C ABI "main" for main.main
+  bool printast;
+  bool printir;
+  bool genirdot;
+  bool genasm;   // write machine assembly .S source file to build dir
+  bool nolibc;
+  bool nolibcxx;
+  bool nostdruntime; // do not include or link with std/runtime
+  u8   verbose;
+
+  // sysver sets the minimum system version. Ignored if NULL or "".
+  // Currently only supported for macos via -mmacosx-version-min=sysver.
+  // Defaults to the target's sysver if not set (common case.)
+  const char* nullable sysver;
+
+  // sysroot sets a custom sysroot. Ignored if NULL or "".
+  const char* nullable sysroot;
+} compiler_config_t;
+
 typedef struct {
   u32    cap;  // capacity of ptr (in number of entries)
   u32    len;  // current length of ptr (entries currently stored)
@@ -171,35 +200,6 @@ typedef struct {
   // responsibility of the cgen_pkgapi caller to free these with cgen_pkgapi_dispose.
   nodearray_t defs;
 } cgen_pkgapi_t;
-
-typedef struct { // compiler_config_t
-  // Required fields
-  const target_t* target;    // target to compile for
-  const char*     buildroot; // directory for user build products
-
-  // Optional fields; zero value is assumed to be a common default
-  buildmode_t buildmode; // BUILDMODE_ constant. 0 = BUILDMODE_DEBUG
-
-  // Options which maps to compiler_t.opt_
-  bool nolto;    // prevent use of LTO, even if that would be the default
-  bool nomain;   // don't auto-generate C ABI "main" for main.main
-  bool printast;
-  bool printir;
-  bool genirdot;
-  bool genasm;   // write machine assembly .S source file to build dir
-  bool verbose;
-  bool nolibc;
-  bool nolibcxx;
-  bool nostdruntime; // do not include or link with std/runtime
-
-  // sysver sets the minimum system version. Ignored if NULL or "".
-  // Currently only supported for macos via -mmacosx-version-min=sysver.
-  // Defaults to the target's sysver if not set (common case.)
-  const char* nullable sysver;
-
-  // sysroot sets a custom sysroot. Ignored if NULL or "".
-  const char* nullable sysroot;
-} compiler_config_t;
 
 
 extern node_t* last_resort_node;
