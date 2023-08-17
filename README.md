@@ -225,9 +225,6 @@ fun try_read_file(path str) ?str
 if let contents = try_read_file("/etc/passwd")
   // in here, the type of contents is str, not ?str
   print(contents)
-
-// "contents" is not defined outside the "if"
-// expression's "then" branch
 ```
 
 In the above example, `contents` is only defined inside the "then" branch.
