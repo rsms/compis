@@ -1259,10 +1259,10 @@ static void gen_id(cgen_t* g, sym_t nullable name) {
 
 static bool noalias(const type_t* t) {
   // PTR: pointers are always unique (one owner)
-  // REF: there can only be one mutable ref at any given time
+  // REF: there can only be one mutable ref at any given time (FUTURE)
   return (
-    t->kind == TYPE_PTR ||
-    t->kind == TYPE_MUTREF
+    t->kind == TYPE_PTR
+    // || t->kind == TYPE_MUTREF
   );
 }
 
