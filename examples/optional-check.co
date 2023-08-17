@@ -1,40 +1,66 @@
+type Foo
+  x int
+  y ?int
 
-fun id(a ?int) int
-  if a
-    let _ int = a // typeof(a)=int here
-  else
-    // let _ int = a // error: optional value a is empty here
+fun maybe_int() ?int
+  let v ?int = 1
+  v
+
+fun maybe_owned_foo() ?*Foo
+
+fun narrowing(a, b, c ?int, d ?*Foo) int
+  // let _ = (let b = 3) // error: cannot use binding definition as value
+  // let _ = a && a > 0
+  // let _ = !a || a > 0
+  // let _ = a || a > 0 // error: optional value a is empty
+
+  // // "has value" check in branch condition
+  // if a { a } else { 0 }
+  // if a { a * 2 } else { 0 }
+  // if a && a > 0 { a * 2 } else { 0 }
+  // if a && b { a * b } else { 0 }
+  // if (a && b) || c { a * 2 } else { 0 } // error: type ?int has no '*' operator
+  // if a && (b || c) { a * 2 } else { 0 } // ok
+  // if a || a > 0 { 1 } else { 0 }  // error: optional value a is empty
+  // if !a || a > 0 { 1 } else { 0 } // ok
+  // if !a || a > 0 { a * 2 } else { 0 } // error: type ?int has no '*' operator
+  // if !(a && b) { 0 } else { a * b }
+
+  // // "has value" variable definition as branch condition
+  // if let x = true { x } else { 0 }
+  // if let x = a { 1 } else { 0 }
+  // if let x = a { x * x } else { 0 }
+  // if let x = maybe_owned_foo() { 1 } else { 0 } // TODO: [ir]
+  // if maybe_int() { 1 } else { 0 }
+  // if let x = maybe_int() { 1 } else { 0 }
+  if let x = maybe_int() { x * x } else { 0 }
+  // if let x = d { 1 } else { 0 } // owner dropped in "then" branch
+  // if let x ?int = 1 { x * x } else { 0 } // error: cannot use int as boolean in cond
+  // if var x = a { x = maybe_int() } // error: var x has type int, not ?int
+  // if var x = a { x = 3 } // ok
+
+  // // explicit "is empty" check
+  // if a != void { a * 2 } else { 0 }
+  // if a == void { 0 } else { a * 2 }
+  // let _ = a != void
+  // let _ = a == void
+
+  // // [TODO] writing to optional var broadens (un-narrows) its type
+  // //        when the value is either "void" or another optional value.
+  // if a { a; a = b; a }    // a broadened to int? (typeof(b)=?int)
+  // if a { a; a = 3; a }    // a remains valid
+  // if a { a; a = void; a } // a is definitely invalid
+  //
+  // if var x = a { x; x = b; x }    // x broadened to int? (typeof(b)=?int)
+  // if var x = a { x; x = 3; x }    // x remains valid
+  // if var x = a { x; x = void; x } // x is definitely invalid
+
   0
 
-fun vardef(a ?int, b ?int) int
-  if let b = a
-    let _ int = b
-  else
-    let _ ?int = b // outer b
-  0
 
-fun vardef_multiple(a ?int, b ?int) int
-  if (let x = a) && (let y = b)
-    let _ int = x
-    let _ int = y
-  0
-
-fun complex_cond(a ?int, b ?int) int
-  // if a && foo(b)
-  let c = make_opt_int()
-  if !(a && !b && c) && !a
-    // let _ int = a // error: optional value a is empty here
-    let _ int = b
-    // let _ int = c // error: optional value c is empty here
-  else
-    let _ int = a
-    // let _ int = b // error: optional value b is empty here
-    let _ int = c
-  0
-
-fun make_opt_int() ?int
-
-fun other_branch(a ?int) int
-  if !a
-    return 0
-  a // implicit "not then" branch
+// // [TODO] exiting "then" branch of "if" has effect on "cont" branch
+// fun other_branch(a ?int) int
+//   if !a // "then" branch
+//     return 0
+//   // "cont" branch
+//   a // implicit "not then" branch
