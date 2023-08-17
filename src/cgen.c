@@ -95,7 +95,7 @@ inline static locmap_t* locmap(cgen_t* g) {
 static void seterr(cgen_t* g, err_t err) {
   #if DEBUG
     dlog("cgen seterr \"%s\"", err_str(err));
-    //fprint_stacktrace(stderr, /*frame_offset*/1);
+    fprint_stacktrace(stderr, /*frame_offset*/1);
   #endif
   if (!g->err)
     g->err = err;
@@ -174,6 +174,7 @@ static void startline(cgen_t* g, loc_t loc) {
   if (g->flags & CGEN_SRCINFO)
     startloc(g, loc);
   CHAR('\n');
+  assert(g->indent < USIZE_MAX/2);
   buf_fill(&g->outbuf, ' ', g->indent*2);
 }
 
@@ -249,6 +250,7 @@ static const char* operator(op_t op) {
   case OP_MOVE:
   case OP_NOOP:
   case OP_OCHECK:
+  case OP_ODEREF:
   case OP_PHI:
   case OP_STORE:
   case OP_VAR:
@@ -433,7 +435,8 @@ static void gen_aliastype_def(cgen_t* g, const aliastype_t* t) {
 
 
 static void gen_opttype_name(cgen_t* g, const opttype_t* t) {
-  PRINT("struct "), PRINT(assertnotnull(t->mangledname));
+  assertf(t->mangledname, "%s#%p %s", nodekind_name(t->kind), t, fmtnode(0, t));
+  PRINT("struct "), PRINT(t->mangledname);
 }
 
 static void gen_opttype_def(cgen_t* g, opttype_t* t) {
@@ -624,6 +627,7 @@ static void gen_type(cgen_t* g, const type_t* t) {
 // true if n needs to be wrapped in "(...)" for op C <> Compis precedence differences
 static bool has_ambiguous_prec(const expr_t* n) {
   switch (n->kind) {
+  case EXPR_BOOLLIT:
   case EXPR_INTLIT:
   case EXPR_FLOATLIT:
   case EXPR_ID:
@@ -642,9 +646,14 @@ static bool has_ambiguous_prec(const expr_t* n) {
 }
 
 
-static void gen_expr_rvalue(cgen_t* g, const expr_t* n, const type_t* lt) {
+static void gen_expr_rvalue1(
+  cgen_t* g, const expr_t* n, const type_t* lt, bool parenwrap)
+{
+  trace("%s %s#%p %s (LHS, RHS = [%s], [%s])",
+    __FUNCTION__, nodekind_name(n->kind), n,
+    fmtnode(0, n), fmtnode(1, lt), fmtnode(2, n->type));
+
   const type_t* rt = n->type;
-  bool parenwrap = has_ambiguous_prec(n);
   if (parenwrap)
     CHAR('(');
 
@@ -693,22 +702,36 @@ static void gen_expr_rvalue(cgen_t* g, const expr_t* n, const type_t* lt) {
 }
 
 
-#define ID_SIZE(key) (sizeof(ANON_PREFIX key) + sizeof(uintptr)*8 + 1)
-#define TMP_ID_SIZE  ID_SIZE("tmp")
+static void gen_expr_rvalue(cgen_t* g, const expr_t* n, const type_t* lt) {
+  bool parenwrap = has_ambiguous_prec(n);
+  gen_expr_rvalue1(g, n, lt, parenwrap);
+}
+
+
+#define ANON_ID_SIZE(key) (sizeof(ANON_PREFIX key) + sizeof(uintptr)*8 + 1)
+#define TMP_ID_SIZE  ANON_ID_SIZE("tmp")
 
 #define FMT_ID(buf, bufcap, key, ptr) ( \
-  assert((bufcap) >= ID_SIZE(key)), \
+  assert((bufcap) >= ANON_ID_SIZE(key)), \
   snprintf((buf), (bufcap), ANON_PREFIX key "%zx", (uintptr)(ptr)) )
 
+// DEPRECATED (use localtmpid)
 static usize fmt_tmp_id(char* buf, usize bufcap, const void* n) {
   return FMT_ID(buf, bufcap, "tmp", n);
 }
 
-// static void print_tmp_id(cgen_t* g, const void* n) {
-//   char tmp[TMP_ID_SIZE];
-//   usize len = fmt_tmp_id(tmp, sizeof(tmp), n);
-//   buf_append(&g->outbuf, tmp, len);
-// }
+
+#define LOCALTMPID_SIZE  (strlen(ANON_PREFIX)+11+1)
+
+
+static usize localtmpid(cgen_t* g, char buf[LOCALTMPID_SIZE]) {
+  assert(buf[LOCALTMPID_SIZE-1] || true); // trigger msan
+  usize n = strlen(ANON_PREFIX);
+  memcpy(buf, ANON_PREFIX, n);
+  n += (usize)fmt_u64_base62(buf+n, 11, g->idgen_local++);
+  buf[n] = 0;
+  return n;
+}
 
 
 
@@ -778,6 +801,43 @@ static type_t* unwrap_ptr_and_alias(type_t* t) {
     case TYPE_ALIAS:    t = assertnotnull(((aliastype_t*)t)->elem); break;
     default:            return t;
   }
+}
+
+
+static void gen_opttype_deref(cgen_t* g, const opttype_t* t) {
+  if (!type_isptr(t->elem))
+    PRINT(".v");
+}
+
+
+static void gen_optderef(cgen_t* g, const expr_t* x) {
+  assert_nodekind(x->type, TYPE_OPTIONAL);
+  if (has_ambiguous_prec(x)) {
+    CHAR('('), gen_expr(g, x), CHAR(')');
+  } else {
+    gen_expr(g, x);
+  }
+  gen_opttype_deref(g, (opttype_t*)x->type);
+}
+
+
+static void gen_optcheck(cgen_t* g, const expr_t* x) {
+  assert_nodekind(x->type, TYPE_OPTIONAL);
+  if (has_ambiguous_prec(x)) {
+    CHAR('('), gen_expr(g, x), CHAR(')');
+  } else {
+    gen_expr(g, x);
+  }
+  if (!type_isptr(((opttype_t*)x->type)->elem))
+    PRINT(".ok");
+}
+
+
+static void gen_optcheck_named(cgen_t* g, const opttype_t* t, const char* name) {
+  assert_nodekind(t, TYPE_OPTIONAL);
+  PRINT(name);
+  if (!type_isptr(t->elem))
+    PRINT(".ok");
 }
 
 
@@ -895,13 +955,13 @@ static void gen_drop_subowners(cgen_t* g, const drop_t* d, const type_t* bt) {
 
 
 static void gen_drop_ptr(cgen_t* g, const drop_t* d, const ptrtype_t* pt) {
-  startlinex(g);
+  assertf(pt->elem->size > 0, "%s (elem=%s %s)",
+    fmtnode(0, pt), nodekind_name(pt->elem->kind), fmtnode(1, pt->elem));
   PRINTF(RT_mem_free "(%s, %llu);", d->name, pt->elem->size);
 }
 
 
 static void gen_drop_array(cgen_t* g, const drop_t* d, const arraytype_t* at) {
-  startlinex(g);
   if (at->len == 0) {
     // dynamic runtime-sized array
     PRINTF(RT_mem_free "(%s.ptr, %s.cap * %llu);", d->name, d->name, at->elem->size);
@@ -916,29 +976,34 @@ static void gen_drop(cgen_t* g, const drop_t* d) {
   const type_t* effective_type = d->type;
   const type_t* bt = type_unwrap_ptr_and_opt((type_t*)effective_type);
 
-  // dlog("drop \"%s\" " REPRNODE_FMT, d->name, REPRNODE_ARGS(d->type, 0));
+  trace("drop \"%s\" " REPRNODE_FMT, d->name, REPRNODE_ARGS(d->type, 0));
 
-  startlinex(g);
   if (effective_type->kind == TYPE_OPTIONAL) {
-    effective_type = ((opttype_t*)effective_type)->elem;
-    if (type_isptr(effective_type)) {
-      PRINTF("if (%s) {", d->name);
-    } else {
-      PRINTF("if (%s.ok) {", d->name);
-    }
-    g->indent++;
     startlinex(g);
+    PRINT("if (");
+    gen_optcheck_named(g, (opttype_t*)effective_type, d->name);
+    PRINT(") {");
+    g->indent++;
+    const opttype_t* ot = (opttype_t*)effective_type;
+    if (type_isptr(ot->elem))
+      effective_type = ot->elem;
   }
 
-  if (bt->flags & NF_DROP)
+  if (bt->flags & NF_DROP) {
+    startlinex(g);
     gen_drop_custom(g, d, bt);
+  }
 
-  if (bt->flags & NF_SUBOWNERS)
+  if (bt->flags & NF_SUBOWNERS) {
+    startlinex(g);
     gen_drop_subowners(g, d, bt);
+  }
 
   if (type_isptr(effective_type)) {
+    startlinex(g);
     gen_drop_ptr(g, d, (ptrtype_t*)effective_type);
   } else if (bt->kind == TYPE_ARRAY) {
+    startlinex(g);
     gen_drop_array(g, d, (arraytype_t*)bt);
   }
 
@@ -1078,7 +1143,7 @@ static void gen_block(cgen_t* g, const block_t* n) {
   CHAR('{');
 
   bool block_isrvalue = n->type != type_void && (n->flags & NF_RVALUE);
-  char block_resvar[ID_SIZE("block")];
+  char block_resvar[ANON_ID_SIZE("block")];
   if (block_isrvalue) {
     FMT_ID(block_resvar, sizeof(block_resvar), "block", n);
     gen_type(g, n->type), CHAR(' '), PRINT(block_resvar), CHAR(';');
@@ -1682,6 +1747,21 @@ static void gen_assign(cgen_t* g, const binop_t* n) {
 }
 
 
+static void gen_vartype(cgen_t* g, const local_t* n, const type_t* t) {
+  gen_type(g, t);
+
+  // "const" qualifier for &T that's a pointer
+  if (n->kind == EXPR_LET &&
+    ( type_isprim(n->type) ||
+      n->type->kind == TYPE_OPTIONAL ||
+      ( type_isref(n->type) && !reftype_byvalue(g, (reftype_t*)n->type) )
+    )
+  ){
+    PRINT(" const");
+  }
+}
+
+
 static void gen_vardef1(
   cgen_t* g, const local_t* n, const char* name, bool wrap_rvalue)
 {
@@ -1711,19 +1791,7 @@ static void gen_vardef1(
   if ((n->flags & NF_RVALUE) && wrap_rvalue)
     PRINT("({");
 
-  gen_type(g, n->type);
-
-  // "const" qualifier for &T that's a pointer
-  if (n->kind == EXPR_LET &&
-    ( type_isprim(n->type) ||
-      n->type->kind == TYPE_OPTIONAL ||
-      ( type_isref(n->type) && !reftype_byvalue(g, (reftype_t*)n->type) )
-    )
-  ){
-    PRINT(" const");
-  }
-  CHAR(' ');
-  gen_id(g, name);
+  gen_vartype(g, n, n->type), CHAR(' '), gen_id(g, name);
 
   if (n->nuse == 0)
     CHAR(' '), PRINT(ATTR_UNUSED);
@@ -1752,7 +1820,7 @@ static void gen_vardef1(
 
 
 static void gen_vardef(cgen_t* g, const local_t* n) {
-  gen_vardef1(g, n, n->name, true);
+  gen_vardef1(g, n, n->name, /*wrap_rvalue*/true);
 }
 
 
@@ -1788,8 +1856,15 @@ static void gen_doref(cgen_t* g, const unaryop_t* n) {
 
 
 static void gen_prefixop(cgen_t* g, const unaryop_t* n) {
-  if (n->op == OP_REF || n->op == OP_MUTREF)
-    return gen_doref(g, n);
+  switch (n->op) {
+    case OP_REF:
+    case OP_MUTREF:
+      return gen_doref(g, n);
+    case OP_OCHECK:
+      return gen_optcheck(g, n->expr);
+    case OP_ODEREF:
+      return gen_optderef(g, n->expr);
+  }
   if (n->expr->kind == EXPR_INTLIT && n->expr->type->kind < TYPE_I32)
     CHAR('('), gen_type(g, n->expr->type), CHAR(')');
   PRINT(operator(n->op));
@@ -1831,10 +1906,6 @@ static void gen_member_op(cgen_t* g, const type_t* recvt) {
 
 
 static void gen_member(cgen_t* g, const member_t* n) {
-  if (n->recv->type->kind == TYPE_OPTIONAL) {
-    panic("TODO optional access");
-  }
-
   // Usertype ref fields on struct that qualify for reftype_byvalue are stored
   // as pointers, not as value.
   // When this is the case, we must dereference the pointer and "return" a copy
@@ -1998,138 +2069,160 @@ static void gen_expr_in_block(cgen_t* g, const expr_t* n) {
 }
 
 
-static void gen_ifexpr(cgen_t* g, const ifexpr_t* n) {
-  // TODO: rewrite and clean up this monster of a function
-  bool hasvar = n->cond->kind == EXPR_LET || n->cond->kind == EXPR_VAR;
-  bool has_tmp_opt = false;
+static bool gen_ifexpr_cond(cgen_t* g, const ifexpr_t* n) {
+  // regular conditional (not a vardef)
   char tmp[TMP_ID_SIZE];
+  bool has_tmp = (
+    n->cond->kind == EXPR_ID &&
+    type_isopt(n->cond->type) &&
+    !type_isptrlike(((const opttype_t*)n->cond->type)->elem)
+  );
+  const idexpr_t* id = NULL;
 
+  if (has_tmp) {
+    // e.g.
+    //   let x ?int
+    //   if x {
+    //     let y int = x
+    //   }
+    id = (const idexpr_t*)n->cond;
+    if (assertnotnull(id->ref)->nuse > 0) {
+      g->indent++;
+      if (n->flags & NF_RVALUE)
+        CHAR('(');
+      PRINT("{ ");
+      gen_opttype(g, (const opttype_t*)n->cond->type);
+      fmt_tmp_id(tmp, sizeof(tmp), id);
+      PRINTF(" %s = %s; ", tmp, id->name);
+
+      // "T x = tmp.v;"
+      gen_type(g, ((const opttype_t*)n->cond->type)->elem);
+      PRINTF(" %s = %s.v; ", id->name, tmp);
+    } else {
+      has_tmp = false;
+    }
+  }
+
+  if (n->flags & NF_RVALUE) {
+    if (id) {
+      PRINTF("(%s.ok ? ", has_tmp ? tmp : id->name);
+    } else {
+      CHAR('('), gen_expr_rvalue(g, n->cond, n->cond->type);
+      if (n->cond->type->kind == TYPE_OPTIONAL &&
+        !type_isptrlike(((const opttype_t*)n->cond->type)->elem))
+      {
+        PRINT(".ok");
+      }
+      PRINT(" ? ");
+    }
+  } else {
+    PRINT("if (");
+    if (id) {
+      PRINTF("%s.ok", has_tmp ? tmp : id->name);
+    } else {
+      gen_expr_rvalue1(g, n->cond, n->cond->type, /*parenwrap*/false);
+    }
+    PRINT(") ");
+  }
+
+  return has_tmp;
+}
+
+
+static bool gen_ifexpr_varcond(cgen_t* g, const ifexpr_t* n) {
+  // optional check with var assignment
+  // e.g.
+  //   fun maybe_int() ?int
+  //   fun some_bool() bool
+  //   if let x = maybe_int() // typeof(x)==int (not ?int)
+  //     x * x
+  //   if let x = some_bool()
+  //     x
+  // becomes
+  //   { _co_opt_int tmp = maybe_int(); _co_int x = tmp.v; if (tmp.ok) {
+  //       x * x;
+  //   } }
+  //   { _co_opt_int x = some_bool(); if (x) {
+  //       x;
+  //   } }
+  //
+  const local_t* var = (local_t*)n->cond;
+
+  const opttype_t* ot = (opttype_t*)var->init->type;
+  assert((var->flags & NF_NARROWED) == 0 || ot->kind == TYPE_OPTIONAL);
+
+  // if the var is unused, keep it simple:
+  // e.g.
+  //   fun example(a ?int)
+  //     if let x = a { 1 } else { 0 }
+  // becomes
+  //     if (a.ok) { 1; } else { 0; }
+  //
+  if (var->nuse == 0 && !type_isowner(var->type)) {
+    PRINT("if (");
+    if ((var->flags & NF_NARROWED) == 0) {
+      gen_expr_rvalue(g, var->init, var->init->type);
+    } else {
+      gen_optcheck(g, var->init);
+    }
+    PRINT(") ");
+    return /*has_tmp*/false;
+  }
+
+  // generate scope for vardef (it will be "closed" by the caller)
+  if (n->flags & NF_RVALUE) CHAR('(');
+  PRINT("{ ");
+  g->indent++;
+
+  // simple vardef if either it's a regular vardef
+  // or if an optional type is represented as a pointer
+  if ((var->flags & NF_NARROWED) == 0 || type_isptr(ot->elem)) {
+    gen_vardef1(g, var, var->name, /*wrap_rvalue*/false);
+    PRINTF("; if (%s) ", var->name);
+    return /*has_tmp*/true;
+  }
+
+  // typecheck() stops with an error if condition vardef is not bool or opttype,
+  // so we should only see opttype at this point
+  assert_nodekind(ot, TYPE_OPTIONAL);
+
+  // used variable can't be unnamed
+  assert(var->name != sym__);
+
+  // if the initializer expression of the vardef has no side effects,
+  // we can skip the temporary, e.g.
+  //   T x = init.v;  if (init.ok) ...
+  // otherwise we store the initializer result in a temporary, e.g.
+  //   _co_opt_T tmp = init;  T x = tmp.v;  if (tmp.ok) ...
+  if (expr_no_side_effects(var->init)) {
+    gen_vartype(g, var, var->type), CHAR(' '), PRINT(var->name);
+    PRINT(" = "), gen_expr_rvalue1(g, var->init, var->init->type, /*parenwrap*/false);
+    gen_opttype_deref(g, ot);
+    PRINT("; if ("), gen_optcheck(g, var->init), PRINT(") ");
+  } else {
+    char tmp[LOCALTMPID_SIZE];
+    localtmpid(g, tmp);
+    gen_vartype(g, var, var->init->type), CHAR(' '), PRINT(tmp);
+    PRINT(" = "), gen_expr_rvalue1(g, var->init, var->init->type, /*parenwrap*/false);
+    PRINT("; ");
+    gen_vartype(g, var, var->type), CHAR(' '), PRINT(var->name);
+    PRINT(" = "), PRINT(tmp), gen_opttype_deref(g, ot);
+    PRINT("; if ("), gen_optcheck_named(g, ot, tmp), PRINT(") ");
+  }
+
+  return /*has_tmp*/true;
+}
+
+
+static void gen_ifexpr(cgen_t* g, const ifexpr_t* n) {
   if (n->flags & NF_RVALUE)
     g->indent++;
 
-  if (hasvar) {
-    // optional check with var assignment
-    // e.g. "if let x = optional_x { x }" becomes:
-    //   ({ optional0 tmp = varinit; T x = tmp.v; if (tmp.ok) ... })
-    // or, when varinit has no side effects:
-    //   ({ T x = varinit.v; if (varinit.ok) ... })
-    const local_t* var = (const local_t*)n->cond;
-    assert(!type_isopt(var->type)); // should be narrowed & have NF_NARROWED
-
-    if (n->flags & NF_RVALUE)
-      CHAR('(');
-    PRINT("{ ");
-
-    g->indent++;
-
-    if ((var->flags & NF_NARROWED) == 0 ||
-        expr_no_side_effects(var->init) ||
-        type_isptrlike(var->type))
-    {
-      // avoid tmp var when var->init is guaranteed to not have side effects
-      startline(g, var->loc);
-
-      // "T x = init;" | "T x = init.v;"
-      gen_vardef1(g, var, var->name, false);
-      if ((var->flags & NF_NARROWED) && !type_isptrlike(var->type))
-        PRINT(".v");
-      PRINT("; ");
-
-      //   "if (x != NULL)" | "((x != NULL) ?"
-      // | "if (init.ok)"   | "((init.ok) ?"
-      // | "if (x)"         | "((x) ?"
-      if (n->flags & NF_RVALUE) {
-        CHAR('(');
-      } else {
-        PRINT("if ");
-      }
-      if ((var->flags & NF_NARROWED) && !type_isptrlike(var->type)) {
-        CHAR('('), gen_expr_rvalue(g, var->init, var->init->type), PRINT(".ok)");
-      } else {
-        PRINTF("(%s)", var->name);
-      }
-      CHAR(' ');
-      if (n->flags & NF_RVALUE)
-        CHAR('?');
-    } else {
-      assert(var->flags & NF_NARROWED);
-      fmt_tmp_id(tmp, sizeof(tmp), var);
-
-      // "opt0 tmp = init;"
-      assert(!type_isopt(var->type));
-      opttype_t t = { .kind = TYPE_OPTIONAL, .elem = (type_t*)var->type };
-      gen_opttype(g, &t);
-      PRINT(" const "), PRINT(tmp), PRINT(" = ");
-      gen_expr_rvalue(g, var->init, (type_t*)&t);
-      CHAR(';');
-
-      // "K x = tmp.v;"
-      startline(g, var->loc);
-      gen_type(g, var->type);
-      if (var->kind == EXPR_LET)
-        PRINT(" const");
-      PRINTF(" %s = %s.v; ", var->name, tmp);
-
-      //   "if (x != NULL)" | "((x != NULL) ?"
-      // | "if (init.ok)"   | "((init.ok) ?"
-      if (n->flags & NF_RVALUE) {
-        PRINTF("(%s.ok ?", tmp);
-      } else {
-        PRINTF("if (%s.ok) ", tmp);
-      }
-    }
+  bool has_tmp;
+  if (n->cond->kind == EXPR_LET || n->cond->kind == EXPR_VAR) {
+    has_tmp = gen_ifexpr_varcond(g, n);
   } else {
-    // no var definition in conditional
-    has_tmp_opt = (
-      n->cond->kind == EXPR_ID &&
-      type_isopt(n->cond->type) &&
-      !type_isptrlike(((const opttype_t*)n->cond->type)->elem)
-    );
-    const idexpr_t* id = NULL;
-
-    if (has_tmp_opt) {
-      // e.g.
-      //   let x ?int
-      //   if x {
-      //     let y int = x
-      //   }
-      id = (const idexpr_t*)n->cond;
-      if (assertnotnull(id->ref)->nuse > 0) {
-        g->indent++;
-        if (n->flags & NF_RVALUE)
-          CHAR('(');
-        PRINT("{ ");
-        gen_opttype(g, (const opttype_t*)n->cond->type);
-        fmt_tmp_id(tmp, sizeof(tmp), id);
-        PRINTF(" %s = %s; ", tmp, id->name);
-
-        // "T x = tmp.v;"
-        gen_type(g, ((const opttype_t*)n->cond->type)->elem);
-        PRINTF(" %s = %s.v; ", id->name, tmp);
-      } else {
-        has_tmp_opt = false;
-      }
-    }
-
-    if (n->flags & NF_RVALUE) {
-      if (id) {
-        PRINTF("(%s.ok ? ", has_tmp_opt ? tmp : id->name);
-      } else {
-        CHAR('('), gen_expr_rvalue(g, n->cond, n->cond->type);
-        if (n->cond->type->kind == TYPE_OPTIONAL &&
-          !type_isptrlike(((const opttype_t*)n->cond->type)->elem))
-        {
-          PRINT(".ok");
-        }
-        PRINT(" ? ");
-      }
-    } else {
-      if (id) {
-        PRINTF("if (%s.ok) ", has_tmp_opt ? tmp : id->name);
-      } else {
-        PRINT("if ("), gen_expr_rvalue(g, n->cond, n->cond->type), CHAR(')');
-      }
-    }
+    has_tmp = gen_ifexpr_cond(g, n);
   }
 
   if (n->flags & NF_RVALUE) {
@@ -2170,7 +2263,7 @@ static void gen_ifexpr(cgen_t* g, const ifexpr_t* n) {
   if (n->flags & NF_RVALUE)
     g->indent--;
 
-  if (hasvar || has_tmp_opt) {
+  if (has_tmp) {
     g->indent--;
     bool needsemi = lastchar(g) != '}';
     if (needsemi)
@@ -2198,6 +2291,7 @@ static void gen_forexpr(cgen_t* g, const forexpr_t* n) {
 
 
 static void gen_expr(cgen_t* g, const expr_t* n) {
+  trace("%s %s#%p %s", __FUNCTION__, nodekind_name(n->kind), n, fmtnode(0, n));
   switch ((enum nodekind)n->kind) {
   case EXPR_FUN:       return gen_fun(g, (const fun_t*)n);
   case EXPR_INTLIT:    return gen_intlit(g, (const intlit_t*)n);
@@ -2352,8 +2446,10 @@ static err_t finalize(cgen_t* g, usize headstart) {
   if (g->outbuf.len > 0 && g->outbuf.chars[g->outbuf.len-1] != '\n')
     CHAR('\n');
   buf_nullterm(&g->outbuf);
-  if (g->outbuf.oom)
+  if (g->outbuf.oom) {
+    dlog("g->outbuf.oom");
     seterr(g, ErrNoMem);
+  }
   return g->err;
 }
 

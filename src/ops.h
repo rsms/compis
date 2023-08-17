@@ -46,7 +46,8 @@ _( OP_MOVE,   "" ) // T -> T
 _( OP_REF,    "" ) // T -> &T
 _( OP_MUTREF, "" ) // T -> mut&T
 _( OP_DROP,   "" ) //
-_( OP_OCHECK, "" ) // test if T? has value
+_( OP_OCHECK, "" ) // test if ?T has value
+_( OP_ODEREF, "" ) // dereference ?T => T
 
 // unary
 _( OP_INC,  "++" )

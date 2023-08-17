@@ -16,6 +16,18 @@ static_assert(offsetof(slice_t,len) == offsetof(mem_t,size), "");
 static const char* kHexchars = "0123456789abcdef";
 
 
+#ifdef DEBUG
+  #define SET_OOM(b, yes) ( \
+    (( (b)->oom = (yes) )) ? ( \
+      dlog("buf_t#%p OOM", (b)), \
+      fprint_stacktrace(stderr, /*frame_offset*/1) \
+    ) : ((void)0) \
+  )
+#else
+  #define SET_OOM(b, yes) (b)->oom = (yes)
+#endif
+
+
 void buf_init(buf_t* b, memalloc_t ma) {
   b->p = NULL;
   b->cap = 0;
@@ -56,7 +68,7 @@ bool buf_grow(buf_t* b, usize extracap) {
     if (check_add_overflow(b->cap, CEIL_POW2(extracap), &newcap)) {
       // fall back to exact growth
       if (check_add_overflow(b->cap, extracap, &newcap)) {
-        b->oom = true;
+        SET_OOM(b, true);
         return false;
       }
     }
@@ -67,13 +79,13 @@ bool buf_grow(buf_t* b, usize extracap) {
   if (!b->external) {
     // note: buf_t{void*p;usize} is compatible with mem_t{void*;usize}
     bool ok = mem_resize(b->ma, (mem_t*)b, newcap);
-    b->oom = !ok;
+    SET_OOM(b, !ok);
     return ok;
   }
 
   mem_t m = mem_alloc(b->ma, newcap);
   if (!m.p) {
-    b->oom = true;
+    SET_OOM(b, true);
     return false;
   }
 
@@ -91,7 +103,7 @@ bool buf_reserve(buf_t* b, usize minavail) {
     return true;
   usize newlen;
   if (check_add_overflow(b->len, minavail, &newlen)) {
-    b->oom = true;
+    SET_OOM(b, true);
     return false;
   }
   return buf_grow(b, newlen - b->cap);
@@ -110,7 +122,7 @@ void* nullable buf_alloc(buf_t* b, usize len) {
   usize newlen;
   if (len == 0 || check_add_overflow(b->len, len, &newlen)) {
     if (len > 0)
-      b->oom = true;
+      SET_OOM(b, true);
     return NULL;
   }
   if (newlen > b->cap && UNLIKELY(!buf_grow(b, newlen - b->cap)))

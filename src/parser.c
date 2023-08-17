@@ -1310,6 +1310,9 @@ static expr_t* expr_var(parser_t* p, const parselet_t* pl, nodeflag_t fl) {
     }
   }
 
+  if UNLIKELY(fl & NF_RVALUE)
+    error_at(p, n, "cannot use %s definition as value", nodekind_fmt(n->kind));
+
   define(p, n->name, (node_t*)n);
 
   // check for required initializer expression
@@ -1398,8 +1401,12 @@ static expr_t* expr_if(parser_t* p, const parselet_t* pl, nodeflag_t fl) {
   // enter "then" scope
   enter_scope(p);
 
-  // condition
-  n->cond = expr(p, PREC_COMMA, fl | NF_RVALUE);
+  // vardef or condition
+  if (currtok(p) == TLET || currtok(p) == TVAR) {
+    n->cond = expr_var(p, &expr_parsetab[TLET], fl & ~NF_RVALUE);
+  } else {
+    n->cond = expr(p, PREC_COMMA, fl | NF_RVALUE);
+  }
   bubble_flags(n, n->cond);
 
   // "then" branch
@@ -2218,16 +2225,12 @@ static void fun_body(parser_t* p, fun_t* n, nodeflag_t fl) {
   if (ft->result == type_void)
     fl &= ~NF_RVALUE;
 
-  enter_scope(p);
-
   n->body = any_as_block(p, fl);
 
   // even though it may have implicit return, in practice a function body
   // block is never an expression itself.
   n->body->flags &= ~NF_RVALUE;
   bubble_flags(n, n->body);
-
-  leave_scope(p);
 
   p->fun = outer_fun;
 
@@ -2301,9 +2304,10 @@ static fun_t* fun(parser_t* p, nodeflag_t fl, type_t* nullable recvt, bool requi
     return n;
   }
 
+  enter_scope(p);
+
   // define named parameters
   if (ft->flags & NF_NAMEDPARAMS) {
-    enter_scope(p);
     for (u32 i = 0; i < ft->params.len; i++)
       define(p, ((local_t*)ft->params.v[i])->name, ft->params.v[i]);
   } else if UNLIKELY(ft->params.len > 0) {
@@ -2328,6 +2332,7 @@ static fun_t* fun(parser_t* p, nodeflag_t fl, type_t* nullable recvt, bool requi
       } else {
         expect2_fail(p, TLBRACE, "expected '{' or '='");
       }
+      leave_scope(p);
       return n;
     }
     if (ft->result == type_unknown)
@@ -2336,8 +2341,7 @@ static fun_t* fun(parser_t* p, nodeflag_t fl, type_t* nullable recvt, bool requi
 
   fun_body(p, n, fl);
 
-  if (ft->flags & NF_NAMEDPARAMS)
-    leave_scope(p);
+  leave_scope(p);
 
   return n;
 }

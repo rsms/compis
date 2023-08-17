@@ -91,8 +91,7 @@ const char* op_name(op_t op) {
 
 
 const char* op_fmt(op_t op) {
-  const char* s = STRTAB_GET(op_fmttab, op);
-  return *s ? s : op_name(op);
+  return STRTAB_GET(op_fmttab, op);
 }
 
 

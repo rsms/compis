@@ -828,7 +828,7 @@ static void backpropagate_drop_to_ast(ircons_t* c, irval_t* v, irval_t* dropv) {
   if (!name)
     name = dropv->var.dst ? dropv->var.dst : dropv->var.src;
 
-  assertf(name != NULL, "%s of v%u without var name", __FUNCTION__, v->id);
+  assertf(name != NULL, "TODO %s of v%u without var name", __FUNCTION__, v->id);
   // if this is triggered, there might be a bug in assign_local
 
   // TODO FIXME ast_ma instead of ir_ma:
@@ -1602,6 +1602,9 @@ static irval_t* ifexpr(ircons_t* c, ifexpr_t* n) {
   irfun_t* f = c->f;
   c->condnest++;
 
+  // enter "then" scope
+  owners_enter_scope(c, &n->thenb->drops);
+
   // generate control condition
   irval_t* control = bincond(c, n->cond);
 
@@ -1626,7 +1629,6 @@ static irval_t* ifexpr(ircons_t* c, ifexpr_t* n) {
   thenb->preds[0] = ifb; // then <- if
   start_block(c, thenb);
   seal_block(c, thenb);
-  owners_enter_scope(c, &n->thenb->drops);
   irval_t* thenv = blockexpr_noscope(c, n->thenb, /*isfunbody*/false);
   owners_unwind_scope(c, entry_deadset);
   owners_leave_scope(c);

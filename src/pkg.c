@@ -399,9 +399,16 @@ static err_t pkg_resolve_adhoc(
     // set path to basename(dir)
     pkg->dir.len = 0;
     str_appendlen(&pkg->dir, dir, dirlen);
-    pkg->root = str_makelen(dir, path_dir_len(dir, dirlen));
-    const char* path = path_basen(dir, &dirlen); // note: updates dirlen
-    pkg->path = str_makelen(path, dirlen);
+    #if 0
+      // {dir=/foo/bar/baz, root=/foo/bar, path=baz}
+      pkg->root = str_makelen(dir, path_dir_len(dir, dirlen));
+      const char* path = path_basen(dir, &dirlen); // note: updates dirlen
+      pkg->path = str_makelen(path, dirlen);
+    #else
+      // {dir=/foo/bar/baz, root=/foo/bar/baz, path=main}
+      pkg->root = str_copy(pkg->dir);
+      pkg->path = str_make("main");
+    #endif
   }
 
   if (pkg->dir.cap == 0 || pkg->path.cap == 0 || pkg->root.cap == 0) {

@@ -399,8 +399,9 @@ static void drops(RPARAMS, const droparray_t* drops) {
 
 static void repr(RPARAMS, const node_t* nullable n) {
   if (n == NULL) {
-    REPR_BEGIN('(', "null");
-    REPR_END(')');
+    if ((fl & REPRFLAG_HEAD) == 0)
+      NEWLINE();
+    PRINT("null");
     return;
   }
 
@@ -538,7 +539,9 @@ static void repr(RPARAMS, const node_t* nullable n) {
 
   case EXPR_MEMBER:
     CHAR(' '), repr(RARGS, (node_t*)((member_t*)n)->recv);
-    CHAR(' '), repr(RARGS, (node_t*)((member_t*)n)->target);
+    REPR_BEGIN('(', "target ");
+    repr(RARGSFL(fl | REPRFLAG_HEAD), (node_t*)((member_t*)n)->target);
+    REPR_END(')');
     break;
 
   case NODE_TPLPARAM:

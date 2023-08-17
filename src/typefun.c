@@ -11,14 +11,14 @@ typedef struct {
 } tfunent_t;
 
 
-usize tfunent_hash(usize seed, const void* entp) {
+static usize tfunent_hash(usize seed, const void* entp) {
   const tfunent_t* ent = entp;
   u64 hash = wyhash64(seed, (uintptr)ent->name);
   return wyhash64(hash, (uintptr)ent->recvt);
 }
 
 
-bool tfunent_eq(const void* ent1, const void* ent2) {
+static bool tfunent_eq(const void* ent1, const void* ent2) {
   const tfunent_t* a = ent1;
   const tfunent_t* b = ent2;
   return (a->recvt == b->recvt && a->name == b->name);

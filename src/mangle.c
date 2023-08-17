@@ -118,24 +118,6 @@ static usize offstab_ent_hashfn(usize seed, const void* entp) {
 }
 
 
-static const char k_base62chars[] = {
-  "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"};
-
-// 0xffffffffffffffff => "LygHa16AHYF"
-#define BASE62_U64_MAX 11
-
-static usize base62_enc_u64(char dst[BASE62_U64_MAX], u64 val) {
-  char* p = dst;
-  u64 rem;
-  while (val > 0) {
-    rem = val % 62;
-    val = val / 62;
-    *p++ = k_base62chars[rem];
-  }
-  return (usize)(uintptr)(p - dst);
-}
-
-
 static void type(encoder_t* e, const type_t* t);
 
 
@@ -347,9 +329,9 @@ static void type(encoder_t* e, const type_t* t) {
   //
   UNUSED usize offs = offstab_add(e, (node_t*)t, e->buf.len);
   if (offs > 0) {
-    if (buf_reserve(&e->buf, BASE62_U64_MAX+2)) {
+    if (buf_reserve(&e->buf, 11+2)) {
       e->buf.chars[e->buf.len++] = BACKREF_TAG;
-      e->buf.len += base62_enc_u64(&e->buf.chars[e->buf.len], offs);
+      e->buf.len += fmt_u64_base62(&e->buf.chars[e->buf.len], 11, offs);
       e->buf.chars[e->buf.len++] = '_';
     }
     //dlog("backref '%.*s'", (int)e->buf.len, e->buf.chars);
@@ -372,7 +354,7 @@ static void type(encoder_t* e, const type_t* t) {
   case TYPE_STRUCT: {
     const structtype_t* st = (structtype_t*)t;
     if (st->mangledname) {
-      buf_print(&e->buf, st->mangledname);
+      buf_print(&e->buf, st->mangledname + strlen(CO_MANGLE_PREFIX));
     } else {
       // anonymous struct
       //   TAG nfields typeof(field0) typeof(field1) ... typeof(fieldN)

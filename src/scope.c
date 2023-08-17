@@ -23,26 +23,26 @@
 // ├───────────────────┼──────────────────────────────────────────────────
  0 │                   │ base=0 len=0  []
  1 │ { push            │ base=0 len=1  [0]
- 2 │   a = 1           │ base=0 len=3  [0 1,a]
- 3 │   { push          │ base=3 len=4  [0 1,a  0]
- 4 │     b = 2         │ base=3 len=6  [0 1,a  0 2,b]
- 5 │     { push        │ base=6 len=7  [0 1,a  0 2,b  3]
- 6 │       c = 3       │ base=6 len=9  [0 1,a  0 2,b  3 3,c]
+ 2 │   def A 1         │ base=0 len=3  [0 1,A]
+ 3 │   { push          │ base=3 len=4  [0 1,A  0]
+ 4 │     def B 2       │ base=3 len=6  [0 1,A  0 2,B]
+ 5 │     { push        │ base=6 len=7  [0 1,A  0 2,B  3]
+ 6 │       def C 3     │ base=6 len=9  [0 1,A  0 2,B  3 3,C]
    │                   │ //       Note: Parent base ──┘
- 7 │     } pop         │ base=3 len=6  [0 1,a  0 2,b]
- 8 │   } pop           │ base=0 len=3  [0 1,a]
- 9 │   { push          │ base=3 len=4  [0 1,a  0]
-10 │     d = 4         │ base=3 len=6  [0 1,a  0 4,d]
-11 │     lookup d      │ // d==d? => found
-12 │   } stash         │ base=7 len=8  [0 1,a  0 4,d  3,STASH]
+ 7 │     } pop         │ base=3 len=6  [0 1,A  0 2,B]
+ 8 │   } pop           │ base=0 len=3  [0 1,A]
+ 9 │   { push          │ base=3 len=4  [0 1,A  0]
+10 │     def D 4       │ base=3 len=6  [0 1,A  0 4,D]
+11 │     lookup D      │ // D==D? => found
+12 │   } stash         │ base=7 len=8  [0 1,A  0 4,D  3,STASH]
    │                   │ //       Note: Parent base ──┘
-13 │   { push          │ base=8 len=9  [0 1,a  0 4,d  3,STASH  7]
-14 │     e = 5         │ base=8 len=11 [0 1,a  0 4,d  3,STASH  7 5,e]
-15 │     lookup d      │ // e==d?, a==d? => not found
-16 │   } pop           │ base=7 len=8  [0 1,a  0 4,d  3,STASH]
-17 │   unstash         │ base=3 len=6  [0 1,a  0 4,d]
-18 │   lookup d        │ // d==d? => found
-19 │   pop             │ base=0 len=3  [0 1,a]
+13 │   { push          │ base=8 len=9  [0 1,A  0 4,D  3,STASH  7]
+14 │     def E 5       │ base=8 len=11 [0 1,A  0 4,D  3,STASH  7 5,e]
+15 │     lookup D      │ // E==D?, A==D? => not found
+16 │   } pop           │ base=7 len=8  [0 1,A  0 4,D  3,STASH]
+17 │   unstash         │ base=3 len=6  [0 1,A  0 4,D]
+18 │   lookup D        │ // D==D? => found
+19 │   pop             │ base=0 len=3  [0 1,A]
 20 │ } pop             │ base=0 len=0  []
 //
 //
@@ -50,16 +50,16 @@
 //
 state
   //              0 1 2  3 4 5  6 7      8 9 10
-  base=8 len=11  [0 1,a  0 4,d  3,STASH  7 5,e]
+  base=8 len=11  [0 1,A  0 4,D  3,STASH  7 5,E]
   //                     ↑      │
   //                     └──────┘ Parent base
   //
-lookup(a)
+lookup(A)
   i = 11               // i=len
   if i > 2
     i = 10             // i--
     if i == base       // 10 == 8 : false
-    if [i] == key      // e == a : false
+    if [i] == key      // E == A : false
     i = 9              // i--
   if i > 2
     i = 8              // i--
@@ -75,7 +75,7 @@ lookup(a)
   if i > 2
     i = 2              // i--
     if i == base       // 2 == 0 : false
-    if [i] == key      // a == a : true
+    if [i] == key      // A == A : true
       return [1]       // value = [i-1]
 
 // algorithms:

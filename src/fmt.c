@@ -375,13 +375,18 @@ static void fmt(FMT_PARAMS, const node_t* nullable n) {
   case EXPR_DEREF:
   case EXPR_PREFIXOP: {
     const unaryop_t* op = (unaryop_t*)n;
-    switch (op->op) {
-    case OP_INC: PRINT("++"); break;
-    case OP_DEC: PRINT("--"); break;
-    case OP_INV: PRINT("~"); break;
-    case OP_NOT: PRINT("!"); break;
-    }
     bool group = parenthesize(op->expr);
+    const char* opstr = op_fmt(op->op);
+    #ifdef DEBUG
+      if (*opstr) {
+        PRINT(opstr);
+      } else {
+        PRINTF("«%s»", op_name(op->op)+strlen("OP_"));
+        group = true;
+      }
+    #else
+      PRINT(op_fmt(op->op));
+    #endif
     if (group) CHAR('(');
     fmt(FMT_ARGS, (node_t*)op->expr);
     if (group) CHAR(')');

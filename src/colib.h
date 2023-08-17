@@ -740,13 +740,23 @@ EXTERN_C const char* err_str(err_t);
 #define strcmp __builtin_strcmp
 #define strncmp __builtin_strncmp
 
-// void __builtin_unreachable()
-#if __has_builtin(__builtin_unreachable)
-  #define UNREACHABLE __builtin_unreachable()
-#elif __has_builtin(__builtin_trap)
-  #define UNREACHABLE __builtin_trap
+// __attribute__((noreturn)) void UNREACHABLE()
+#ifdef DEBUG
+  #if __has_builtin(__builtin_unreachable)
+    #define UNREACHABLE (panic("unreachable"),__builtin_unreachable())
+  #elif __has_builtin(__builtin_trap)
+    #define UNREACHABLE (panic("unreachable"),__builtin_trap)
+  #else
+    #define UNREACHABLE (panic("unreachable"),abort())
+  #endif
 #else
-  #define UNREACHABLE abort()
+  #if __has_builtin(__builtin_unreachable)
+    #define UNREACHABLE __builtin_unreachable()
+  #elif __has_builtin(__builtin_trap)
+    #define UNREACHABLE __builtin_trap
+  #else
+    #define UNREACHABLE abort()
+  #endif
 #endif
 
 
@@ -1073,6 +1083,7 @@ usize sfmtu64(char* buf, u64 v, u32 base);
 u32 fmt_u64_base10(char* dst, usize cap, u64 value);
 u32 fmt_i64_base10(char* dst, usize cap, i64 svalue);
 u32 fmt_u64_base16(char* dst, usize cap, u64 value);
+u32 fmt_u64_base62(char dst[11], usize cap, u64 value);
 
 // co_intscan parses an integer from a string
 // After returning, *srcp points to the end of the parsed segment.

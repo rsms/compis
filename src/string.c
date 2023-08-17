@@ -235,6 +235,32 @@ u32 fmt_u64_base16(char* dst, usize cap, u64 value) {
 }
 
 
+u32 fmt_u64_base62(char dst[11], usize cap, u64 val) {
+  // 0xffffffffffffffff => "LygHa16AHYF"
+  char* p = dst;
+  u64 rem;
+  if UNLIKELY(cap < 11) {
+    if (val == 0) return 1;
+    for (;;) {
+      rem = val % 62;
+      val = val / 62;
+      p++;
+      if (val == 0)
+        break;
+    }
+  } else {
+    for (;;) {
+      rem = val % 62;
+      val = val / 62;
+      *p++ = kEncChars[rem];
+      if (val == 0)
+        break;
+    }
+  }
+  return (u32)(uintptr)(p - dst);
+}
+
+
 bool string_startswith(const char* s, const char* prefix) {
   usize slen = strlen(s);
   usize prefixlen = strlen(prefix);
