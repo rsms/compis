@@ -31,11 +31,11 @@ fun narrowing(a, b, c ?int, d ?*Foo) int
 
   // "has value" variable definition as branch condition
   if let x = true { x } else { 0 } // regular bool var, not narrowed opt
-  if let x = a { 1 } else { 0 }
+  if let x = a { 1 } else { 0 } // warning: unused binding x
   if let x = a { x * x } else { 0 }
   // if let x = maybe_owned_foo() { 1 } else { 0 } // TODO: [ir]
   if maybe_int() { 1 } else { 0 }
-  if let x = maybe_int() { 1 } else { 0 }
+  if let x = maybe_int() { 1 } else { 0 } // warning: unused binding x
   if let x = maybe_int() { x * x } else { 0 }
   if let x = d { 1 } else { 0 } // owner dropped in "then" branch
   // if let x ?int = 1 { x * x } else { 0 } // error: cannot use int as boolean in cond

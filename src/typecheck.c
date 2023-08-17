@@ -159,10 +159,19 @@ static local_t* nullable field_of_member(member_t* m) {
 
 static void incuse_read(void* node) {
   node_t* n = node;
-  // dlog("%s %s#%p %s", __FUNCTION__, nodekind_name(n->kind), n, fmtnode(0,n));
-  if UNLIKELY(__builtin_add_overflow(n->nuse, 1, &n->nuse)) {
-    // wrap around to 1 on overflow, not to 0
-    n->nuse = 1;
+  assert(!node_islocal(n) || ((local_t*)n)->name != sym__);
+  for (;;) {
+    // dlog("%s %s#%p %s", __FUNCTION__, nodekind_name(n->kind), n, fmtnode(0,n));
+    if UNLIKELY(__builtin_add_overflow(n->nuse, 1, &n->nuse)) {
+      // wrap around to 1 on overflow, not to 0
+      n->nuse = 1;
+    }
+    if (n->kind != EXPR_ID ||
+        (n = ((idexpr_t*)n)->ref) == NULL ||
+        (node_islocal(n) && ((local_t*)n)->name == sym__))
+    {
+      break;
+    }
   }
 }
 
@@ -542,11 +551,13 @@ static node_t* _mknode(typecheck_t* a, usize size, nodekind_t kind) {
 }
 
 
-static void transfer_nuse_to_wrapper(void* wrapper_node, void* wrapee_node) {
+static void transfer_1_nuse_to_wrapper(void* wrapper_node, void* wrapee_node) {
   node_t* wrapper = wrapper_node;
   node_t* wrapee = wrapee_node;
-  wrapper->nuse = wrapee->nuse;
-  wrapee->nuse -= (u32)!!wrapee->nuse;
+  u32 one_use = (u32)!!wrapee->nuse;
+  wrapper->nuse = one_use;
+  if (!node_islocal(wrapee))
+    wrapee->nuse -= one_use;
 }
 
 
@@ -556,7 +567,7 @@ static reftype_t* mkreftype(typecheck_t* a, type_t* elem, bool ismut) {
   t->size = a->compiler->target.ptrsize;
   t->align = t->size;
   t->elem = elem;
-  transfer_nuse_to_wrapper(t, elem);
+  transfer_1_nuse_to_wrapper(t, elem);
   return t;
 }
 
@@ -567,7 +578,7 @@ static expr_t* mkderef(typecheck_t* a, expr_t* refval, loc_t loc) {
   n->flags = refval->flags & (NF_RVALUE | NF_CHECKED);
   n->loc = loc;
   n->expr = refval;
-  transfer_nuse_to_wrapper(n, refval);
+  transfer_1_nuse_to_wrapper(n, refval);
   switch (refval->type->kind) {
     case TYPE_PTR:
     case TYPE_REF:
@@ -589,7 +600,7 @@ static expr_t* mkretexpr(typecheck_t* a, expr_t* value, loc_t loc) {
   n->loc = loc;
   n->value = value;
   n->type = value->type;
-  transfer_nuse_to_wrapper(n, value);
+  transfer_1_nuse_to_wrapper(n, value);
   return (expr_t*)n;
 }
 
@@ -932,7 +943,7 @@ static void define(typecheck_t* a, sym_t name, void* n) {
 
 
 static void _type(typecheck_t* a, type_t** tp);
-static void stmt(typecheck_t* a, stmt_t* n);
+static void stmt(typecheck_t* a, stmt_t** np);
 static void exprp(typecheck_t* a, expr_t** np);
 #define expr(a, n)  exprp(a, (expr_t**)&(n))
 
@@ -1027,8 +1038,8 @@ static void block_noscope(typecheck_t* a, block_t* n) {
   stmt_end -= (u32)( (n->flags & NF_RVALUE) && stmtv[count-1]->kind != EXPR_RETURN );
 
   for (u32 i = 0; i < stmt_end; i++) {
+    stmt(a, &stmtv[i]);
     stmt_t* cn = stmtv[i];
-    stmt(a, cn);
 
     if (cn->kind == EXPR_RETURN) {
       // mark remaining expressions as unused
@@ -1050,10 +1061,8 @@ static void block_noscope(typecheck_t* a, block_t* n) {
   expr_t* lastexpr = (expr_t*)stmtv[stmt_end];
   assert(nodekind_isexpr(lastexpr->kind));
   lastexpr->flags |= NF_RVALUE;
-
   exprp(a, (expr_t**)&stmtv[stmt_end]);
   lastexpr = (expr_t*)stmtv[stmt_end]; // reload; expr might have edited
-
   incuse_read(lastexpr);
   n->type = lastexpr->type;
 
@@ -1328,8 +1337,7 @@ static type_t* check_retval(typecheck_t* a, const void* originptr, expr_t*nullab
 
   type_t* t;
   if (*np) {
-    incuse_read(*np);
-    exprp(a, np);
+    assert((*np)->flags & NF_CHECKED); // should be typechecked already
     expr_t* n = *np;
     t = n->type;
   } else {
@@ -1721,9 +1729,6 @@ static void idexpr(typecheck_t* a, idexpr_t** np) {
 
   expr(a, n->ref);
 
-  // if (n->flags & NF_RVALUE)
-  //   incuse_read(n->ref);
-
   // // mutability of ref extends to id
   // n->flags |= (n->ref->flags & NF_MUT);
 
@@ -1864,6 +1869,7 @@ static u32 condition_binop_and_or(
 
 
 static void binop(typecheck_t* a, binop_t** np);
+static void member(typecheck_t* a, member_t* n);
 
 
 static u32 condition_binop_eq(
@@ -1907,6 +1913,26 @@ static void wrap_optcheck(typecheck_t* a, expr_t** xp) {
   op->type = type_bool;
 
   *xp = (expr_t*)op;
+}
+
+
+static u32 condition_expr2(
+  typecheck_t* a, narrowedarray_t* narrowed, u32 flags, expr_t** xp)
+{
+  expr_t* x = *xp;
+  if (x->type->kind != TYPE_OPTIONAL)
+    return 0;
+  trace("[%s] %s %s", __FUNCTION__, nodekind_name(x->kind), fmtnode(0, x));
+  if ((flags & COND_FLAG_OR) == 0) {
+    // COND_FLAG_OR: no narrowing for LHS of "||" binop
+    narrowed_t* r = narrowedarray_alloc(narrowed, a->ma, 1);
+    if (!r) return out_of_mem(a), 0;
+    r->x = x;
+    r->isneg = !!(flags & COND_FLAG_NEG);
+  }
+  if ((flags & COND_FLAG_CHECKED) == 0)
+    wrap_optcheck(a, xp);
+  return 0;
 }
 
 
@@ -1954,35 +1980,14 @@ static u32 condition_expr(
   }
 
   case EXPR_MEMBER:
-    dlog("TODO %s#%p `%s`", nodekind_name(x->kind),x,fmtnode(0,x));
-    break;
+    if CHECK_ONCE(x)
+      member(a, (member_t*)x);
+    return condition_expr2(a, narrowed, flags, xp);
 
-  case EXPR_ID: {
-    if CHECK_ONCE(x) {
+  case EXPR_ID:
+    if CHECK_ONCE(x)
       idexpr(a, (idexpr_t**)xp);
-      x = *xp;
-    }
-    idexpr_t* n = (idexpr_t*)x;
-    if (n->type->kind != TYPE_OPTIONAL)
-      return 0;
-
-    trace("[%s] %s %s", __FUNCTION__, nodekind_name(x->kind), fmtnode(0, x));
-
-    if ((flags & COND_FLAG_OR) == 0) {
-      // COND_FLAG_OR: no narrowing for LHS of "||" binop
-      // dlog(">> %s#%p %s \"%s\" (isneg %d)",
-      //   nodekind_name(x->kind),x,fmtnode(0,x), n->name, !!(flags & COND_FLAG_NEG));
-      narrowed_t* r = narrowedarray_alloc(narrowed, a->ma, 1);
-      if (!r) return out_of_mem(a), 0;
-      r->x = x;
-      r->isneg = !!(flags & COND_FLAG_NEG);
-    }
-
-    if ((flags & COND_FLAG_CHECKED) == 0)
-      wrap_optcheck(a, xp);
-
-    return 0;
-  }
+    return condition_expr2(a, narrowed, flags, xp);
 
   case EXPR_LET:
   case EXPR_VAR: { local_t* n = (local_t*)x;
@@ -2102,6 +2107,8 @@ static void nsexpr(typecheck_t* a, nsexpr_t* n) {
 static void retexpr(typecheck_t* a, retexpr_t* n) {
   if UNLIKELY(!a->fun)
     return error(a, n, "return outside of function");
+  exprp(a, &n->value);
+  incuse_read(n->value);
   n->type = check_retval(a, n, &n->value);
 }
 
@@ -3662,7 +3669,13 @@ static void unresolvedtype(typecheck_t* a, unresolvedtype_t** tp) {
 }
 
 
-static void define_typedef(typecheck_t* a, typedef_t* n) {
+static void typedef_(typecheck_t* a, typedef_t* n) {
+  a->pubnest += (u32)!!(n->flags & NF_VIS_PUB);
+  type(a, &n->type);
+  a->pubnest -= (u32)!!(n->flags & NF_VIS_PUB);
+
+  incuse_read(n->type);
+
   sym_t name;
   if (n->type->kind == TYPE_STRUCT) {
     name = assertnotnull(((structtype_t*)n->type)->name);
@@ -3671,14 +3684,6 @@ static void define_typedef(typecheck_t* a, typedef_t* n) {
     name = assertnotnull(((aliastype_t*)n->type)->name);
   }
   define(a, name, (node_t*)n->type);
-}
-
-
-static void typedef_(typecheck_t* a, typedef_t* n) {
-  a->pubnest += (u32)!!(n->flags & NF_VIS_PUB);
-  type(a, &n->type);
-  a->pubnest -= (u32)!!(n->flags & NF_VIS_PUB);
-  define_typedef(a, n);
 }
 
 
@@ -3837,9 +3842,10 @@ end:
 }
 
 
-static void stmt(typecheck_t* a, stmt_t* n) {
+static void stmt(typecheck_t* a, stmt_t** np) {
   if UNLIKELY(a->reported_error)
     return;
+  stmt_t* n = *np;
   if (n->kind == STMT_TYPEDEF) {
     if (n->flags & NF_CHECKED)
       return;
@@ -3848,7 +3854,13 @@ static void stmt(typecheck_t* a, stmt_t* n) {
     return typedef_(a, (typedef_t*)n);
   }
   assertf(node_isexpr((node_t*)n), "unexpected node %s", nodekind_name(n->kind));
-  return expr(a, n);
+  exprp(a, (expr_t**)np);
+  if (n != *np) {
+    trace("statement transformed %s#%p -> %s#%p",
+      nodekind_name(n->kind),n, nodekind_name((*np)->kind),(*np));
+  }
+  if (!node_islocal((node_t*)*np) && ((*np)->flags & NF_RVALUE) == 0)
+    incuse_read(*np);
 }
 
 
@@ -4202,7 +4214,7 @@ err_t typecheck(
     }
 
     for (u32 i = 0; i < unit->children.len; i++)
-      stmt(&a, (stmt_t*)unit->children.v[i]);
+      stmt(&a, (stmt_t**)&unit->children.v[i]);
 
     leave_ns(&a);
     leave_scope(&a);
