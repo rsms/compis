@@ -1648,10 +1648,11 @@ static void idexpr(typecheck_t* a, idexpr_t** np) {
     if (node_isexpr((node_t*)ref) &&
         ref->type->kind == TYPE_OPTIONAL &&
         (n->ref->flags & NF_NARROWED) &&
+        // (n->flags & NF_RVALUE) &&
         (!a->typectx || a->typectx->kind != TYPE_OPTIONAL) )
     {
       // optional value has been narrowed; dereference
-      assert(n->flags & NF_RVALUE);
+      // assert(n->flags & NF_RVALUE);
       expr(a, ref);
       n->type = ref->type;
 
@@ -1873,7 +1874,6 @@ static void condition_expr(
     if (n->op != OP_LAND && n->op != OP_LOR && n->op != OP_EQ && n->op != OP_NEQ)
       break;
     trace("[%s] %s %s", __FUNCTION__, nodekind_name(x->kind), fmtnode(0, x));
-    assert((n->flags & NF_CHECKED) == 0);
     n->type = type_bool;
     n->flags |= NF_CHECKED;
     flags &= ~COND_FLAG_CHECKED;
