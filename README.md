@@ -218,6 +218,24 @@ fun example(x ?i32) {
 }
 ```
 
+You can use variable definitions with `if` expressions:
+
+```co
+fun try_read_file(path str) ?str
+if let contents = try_read_file("/etc/passwd")
+  // in here, the type of contents is str, not ?str
+  print(contents)
+
+// "contents" is not defined outside the "if"
+// expression's "then" branch
+```
+
+In the above example, `contents` is only defined inside the "then" branch.
+Accessing `contents` in an "else" branch or outside the "then" branch either
+leads to an "undefined identifier" error or referencing some other variable in
+the outer scope.
+
+
 ### No uninitialized memory
 
 Memory in Compis is always initialized. When no initializer or initial value is provided, memory is zeroed. Therefore, all types in Compis are valid when their memory is all zero.
