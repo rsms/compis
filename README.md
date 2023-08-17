@@ -224,8 +224,15 @@ fun example(name ?str)
   if name && name.len() > 0
     print(name)
 
-fun example2(a, b ?int) = if a && b { a * b } else 0
-fun example3(a, b ?int) = if !(a && b) 0 else { a * b }
+fun example2(a, b ?int) int
+  if a && b { a * b } else 0
+fun example3(a, b ?int) int
+  if !(a && b) 0 else { a * b }
+fun example4(a, b ?int) int
+  if a && b { a * b } else
+    a * 2  // error: a may be valid, but must be checked first
+fun example5(a ?int) int
+  if !a { a * 2 } // error: a is definitely empty
 ```
 
 You can use variable definitions with `if` expressions, which is useful for taking some action on the result of a function call, without spamming your scope with temporary variables:
