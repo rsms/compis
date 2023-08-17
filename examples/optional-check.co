@@ -1,19 +1,14 @@
-type Foo
-  x int
-  y ?int
-
 fun maybe_int() ?int
   let v ?int = 1
   v
 
-fun maybe_owned_foo() ?*Foo
-
-fun narrowing(a, b, c ?int, d ?*Foo) int
+fun binop_narrowing(a, b ?int)
   let _ = a && a > 0
   let _ = !a || a > 0
   // let _ = a || a > 0 // error: optional value a is empty
   // let _ = (let b = 3) // error: cannot use binding definition as value
 
+fun if_narrowing(a, b, c ?int)
   // "has value" check in branch condition
   if a { a } else { 0 }
   if a { a * 2 } else { 0 }
@@ -29,39 +24,58 @@ fun narrowing(a, b, c ?int, d ?*Foo) int
   // if !(a && b) { a * 2 } else { a * b } // error: optional value a is empty
   // if a && b { a * b } else { a * 2 } // [else] error: optional value may be empty
 
+fun ifvar_narrowing(a, b ?int)
   // "has value" variable definition as branch condition
   if let x = true { x } else { 0 } // regular bool var, not narrowed opt
   if let x = a { 1 } else { 0 } // warning: unused binding x
   if let x = a { x * x } else { 0 }
-  // if let x = maybe_owned_foo() { 1 } else { 0 } // TODO: [ir]
   if maybe_int() { 1 } else { 0 }
   if let x = maybe_int() { 1 } else { 0 } // warning: unused binding x
   if let x = maybe_int() { x * x } else { 0 }
-  if let x = d { 1 } else { 0 } // owner dropped in "then" branch
   // if let x ?int = 1 { x * x } else { 0 } // error: cannot use int as boolean in cond
   // if var x = a { x = maybe_int() } // error: var x has type int, not ?int
   if var x = a { x = 3 } // warning: unused variable written to, not read
 
+fun explicit_check_narrowing(a, b ?int)
   // explicit "is empty" check
   if a != void { a * 2 } else { 0 }
   if a == void { 0 } else { a * 2 }
   let _ = a != void
   let _ = a == void
 
-  // // [TODO] writing to optional var broadens (un-narrows) its type
-  // //        when the value is either "void" or another optional value.
-  // if a { a; a = b; a }    // a broadened to int? (typeof(b)=?int)
-  // if a { a; a = 3; a }    // a remains valid
-  // if a { a; a = void; a } // a is definitely invalid
-  //
-  // if var x = a { x; x = b; x }    // x broadened to int? (typeof(b)=?int)
-  // if var x = a { x; x = 3; x }    // x remains valid
-  // if var x = a { x; x = void; x } // x is definitely invalid
+// [TODO] writing to optional var broadens (un-narrows) its type
+//        when the value is either "void" or another optional value.
+// fun write_updates_narrowing(a, b ?int)
+//   // if a { a; a = b; a }    // a broadened to int? (typeof(b)=?int)
+//   // if a { a; a = 3; a }    // a remains valid
+//   // if a { a; a = void; a } // a is definitely invalid
+//   //
+//   // if var x = a { x; x = b; x }    // x broadened to int? (typeof(b)=?int)
+//   // if var x = a { x; x = 3; x }    // x remains valid
+//   // if var x = a { x; x = void; x } // x is definitely invalid
 
+type Foo
+  x, y ?int
+
+fun field_narrowing(a Foo)
+  // let x ?int = a.x // no implicit optderef
+  if a.x { a.x++ } else { 0 }
+  if a.x { a.x * 2 } else { 0 }
+  // if a.x { 0 } else { a.x * 2 } // error: optional field a.x is empty
+  if a.x && a.y { a.x * a.y } else { 0 }
+  // if a.x || a.y { a.x * a.y } else { 0 } // error: optional value may be empty
+  if a.x && a.x > 0 { a.x * 2 } else { 0 }
+
+fun owner_narrowing(a ?*Foo) int
+  if let x = a { 1 } else { 0 } // owner dropped in "then" branch
   0
 
+// [TODO] owner dropped; limitation in IR analysiz
+// fun maybe_owned_foo() ?*Foo
+// fun owner_narrowing_anon_drop()
+//   if let x = maybe_owned_foo() { 1 } else { 0 } // TODO: [ir]
 
-// // [TODO] exiting "then" branch of "if" has effect on "cont" branch
+// [TODO] exiting "then" branch of "if" has effect on "cont" branch
 // fun other_branch(a ?int) int
 //   if !a // "then" branch
 //     return 0

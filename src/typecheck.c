@@ -159,19 +159,14 @@ static local_t* nullable field_of_member(member_t* m) {
 
 static void incuse_read(void* node) {
   node_t* n = node;
-  assert(!node_islocal(n) || ((local_t*)n)->name != sym__);
-  for (;;) {
+  while (!node_islocal(n) || ((local_t*)n)->name != sym__) {
     // dlog("%s %s#%p %s", __FUNCTION__, nodekind_name(n->kind), n, fmtnode(0,n));
     if UNLIKELY(__builtin_add_overflow(n->nuse, 1, &n->nuse)) {
       // wrap around to 1 on overflow, not to 0
       n->nuse = 1;
     }
-    if (n->kind != EXPR_ID ||
-        (n = ((idexpr_t*)n)->ref) == NULL ||
-        (node_islocal(n) && ((local_t*)n)->name == sym__))
-    {
+    if (n->kind != EXPR_ID || (n = ((idexpr_t*)n)->ref) == NULL)
       break;
-    }
   }
 }
 
@@ -195,6 +190,12 @@ static void incuse_write(void* node) {
       if (!n->ref)
         return;
       node = n->ref;
+      break;
+    }
+    case EXPR_PREFIXOP: { unaryop_t* n = node;
+      if (n->op != OP_ODEREF)
+        return;
+      node = n->expr;
       break;
     }
     // case EXPR_SUBSCRIPT: { subscript_t* n = node; break; } // TODO
@@ -953,21 +954,6 @@ inline static void type(typecheck_t* a, type_t** tp) {
 }
 
 
-static void implicit_rvalue_deref(typecheck_t* a, const type_t* ltype, expr_t** rvalp) {
-  expr_t* rval = *rvalp;
-  ltype = unwrap_alias_const(ltype);
-  const type_t* rtype = unwrap_alias(rval->type);
-
-  // dlog("%s ltype: %s (kind %s, isreflike %d), rtype: %s (kind %s, isreflike %d)",
-  //   __FUNCTION__,
-  //   fmtnode(0, ltype), nodekind_name(ltype->kind), type_isreflike(ltype),
-  //   fmtnode(1, rtype), nodekind_name(rtype->kind), type_isreflike(rtype) );
-
-  if (!type_isreflike(ltype) && type_isreflike(rtype))
-    *rvalp = mkderef(a, rval, rval->loc);
-}
-
-
 static bool name_is_reserved(sym_t name) {
   return (
     *name == CO_ABI_GLOBAL_PREFIX[0] &&
@@ -1019,6 +1005,97 @@ static void check_unused(typecheck_t* a, const node_t** nodev, u32 nodec) {
         return; // stop after the first reported diagnostic
     }
   }
+}
+
+
+// wrap_optcheck wraps expression in optional-check operation, e.g.
+// (EXPR [T?]) => (PREFIXOP [BOOL] OCHECK (EXPR [T?]))
+static void wrap_optcheck(typecheck_t* a, expr_t** xp) {
+  assertnotnull((*xp)->type);
+  assert((*xp)->type->kind == TYPE_OPTIONAL);
+
+  unaryop_t* op = mknode(a, unaryop_t, EXPR_PREFIXOP);
+  op->flags |= NF_CHECKED | NF_RVALUE;
+  op->loc = (*xp)->loc;
+  op->op = OP_OCHECK;
+  op->expr = *xp;
+  op->type = type_bool;
+
+  *xp = (expr_t*)op;
+}
+
+
+static void wrap_optderef(typecheck_t* a, expr_t** xp) {
+  assertnotnull((*xp)->type);
+
+  opttype_t* ot = (opttype_t*)(*xp)->type;
+  assert(ot->kind == TYPE_OPTIONAL);
+
+  unaryop_t* op = mknode(a, unaryop_t, EXPR_PREFIXOP);
+  op->flags |= NF_CHECKED | ((*xp)->flags & NF_RVALUE);
+  op->loc = (*xp)->loc;
+  op->op = OP_ODEREF;
+  op->expr = *xp;
+  op->type = ot->elem;
+
+  *xp = (expr_t*)op;
+}
+
+
+static void implicit_rvalue_deref(typecheck_t* a, const type_t* ltype, expr_t** rvalp) {
+  expr_t* rval = *rvalp;
+
+  // unwrap type alias e.g. "MyMyT" => "MyT" => "T"
+  ltype = unwrap_alias_const(ltype);
+  const type_t* rtype = unwrap_alias_const(rval->type);
+
+  // implicit dereference
+  switch (rtype->kind) {
+  case TYPE_OPTIONAL:
+    if (ltype->kind == TYPE_OPTIONAL)
+      break;
+    if (rval->kind == EXPR_MEMBER) {
+      const void* key = assertnotnull(field_of_member((member_t*)rval));
+      node_t* sub = scope_lookup(&a->scope, key, 0);
+      if (sub && (sub->flags & NF_NARROWED)) {
+        if UNLIKELY(sub == (node_t*)g_noval) {
+          error(a, rval, "optional field %s is empty", fmtnode(0,rval));
+          rval->type = type_unknown; // prevent cascading errors
+          return;
+        }
+        trace("implicit optderef of narrowed %s#%p", nodekind_name(sub->kind),sub);
+        wrap_optderef(a, rvalp);
+      }
+    } else if (rval->kind != EXPR_ID) { // note: id handled explicitly by idexpr
+      dlog("TODO: [%s] %s", __FUNCTION__, nodekind_name(rval->kind));
+    }
+    break;
+
+  // case TYPE_SLICE:
+  // case TYPE_MUTSLICE:
+
+  case TYPE_REF:
+  case TYPE_MUTREF:
+    if (ltype->kind != TYPE_REF && ltype->kind != TYPE_MUTREF)
+      *rvalp = mkderef(a, rval, rval->loc);
+    break;
+    // // old "implicit_rvalue_deref" function
+    // void implicit_rvalue_deref(typecheck_t* a, const type_t* ltype, expr_t** rvalp) {
+    //   expr_t* rval = *rvalp;
+    //   ltype = unwrap_alias_const(ltype);
+    //   const type_t* rtype = unwrap_alias(rval->type);
+    //   if (!type_isreflike(ltype) && type_isreflike(rtype))
+    //     *rvalp = mkderef(a, rval, rval->loc);
+    // }
+  }
+}
+
+
+static void rvalue_expr(typecheck_t* a, const type_t* ltype, expr_t** rvalp) {
+  exprp(a, rvalp);
+  expr_t* rval = *rvalp;
+  incuse_read(rval);
+  implicit_rvalue_deref(a, ltype, rvalp);
 }
 
 
@@ -1713,13 +1790,8 @@ static void idexpr(typecheck_t* a, idexpr_t** np) {
 
       trace("wrap ID \"%s\" [%s] in ODEREF op", n->name, fmtnode(0, n->type));
       // e.g. (ID x [T?]) => (PREFIXOP [T] OP_ODEREF (ID x [T?]))
-      unaryop_t* op = mknode(a, unaryop_t, EXPR_PREFIXOP);
-      op->flags |= NF_CHECKED;
-      op->loc = n->loc;
-      op->op = OP_ODEREF;
-      op->expr = (expr_t*)n;
-      op->type = ((opttype_t*)ref->type)->elem;
-      *np = (idexpr_t*)op;
+      assert(*np == n);
+      wrap_optderef(a, (expr_t**)np);
       return;
     }
   }
@@ -1768,26 +1840,43 @@ static void define_narrowed(
   typecheck_t* a, const narrowed_t* narrowedv, u32 narrowedc, bool negate)
 {
   expr_t* narrowed_val;
+
   for (u32 i = 0; i < narrowedc; i++) {
-    idexpr_t* id = (idexpr_t*)narrowedv[i].x;
-    if (id->kind != EXPR_ID)
-      panic("TODO %s", nodekind_name(id->kind));
+    expr_t* x = narrowedv[i].x;
 
     bool isneg = narrowedv[i].isneg ^ negate;
     if (isneg) {
       narrowed_val = g_noval;
     } else {
-      narrowed_val = ast_clone_node(a->ast_ma, (expr_t*)assertnotnull(id->ref));
+      narrowed_val = ast_clone_node(a->ast_ma, x);
       if (!narrowed_val) return out_of_mem(a);
       narrowed_val->flags |= NF_NARROWED;
     }
 
-    trace("narrow type of local %s %s %s -> %s%s",
-      fmtkind(id), id->name, fmtnode(0,id->type),
-      narrowed_val == g_noval ? "noval" : fmtnode(1, narrowed_val->type),
+    trace("narrow type of %s %s (type %s) -> %s%s",
+      fmtkind(x), fmtnode(0,x), fmtnode(1,x->type),
+      narrowed_val == g_noval ? "noval" : fmtnode(2, narrowed_val->type),
       narrowed_val == g_noval ? "" : "!");
 
-    define_allow_replace(a, id->name, narrowed_val);
+    // define narrowed_val in scope
+    switch (x->kind) {
+    case EXPR_FIELD:
+    case EXPR_PARAM:
+    case EXPR_VAR:
+    case EXPR_LET:
+      define_allow_replace(a, ((local_t*)x)->name, narrowed_val);
+      break;
+    case EXPR_MEMBER: {
+      local_t* field = assertnotnull(field_of_member((member_t*)x));
+      trace("define %s#%p => %s (%s)", nodekind_name(field->kind),field,
+        fmtnode(0, narrowed_val), fmtnode(1, narrowed_val->type));
+      if (!scope_define(&a->scope, a->ma, field, narrowed_val))
+        return out_of_mem(a);
+      break;
+    }
+    default:
+      panic("TODO %s", nodekind_name(x->kind));
+    }
   }
 }
 
@@ -1899,39 +1988,36 @@ static u32 condition_binop_eq(
 }
 
 
-// wrap_optcheck wraps expression in optional-check operation, e.g.
-// (EXPR [T?]) => (PREFIXOP [BOOL] OCHECK (EXPR [T?]))
-static void wrap_optcheck(typecheck_t* a, expr_t** xp) {
-  assertnotnull((*xp)->type);
-  assert((*xp)->type->kind == TYPE_OPTIONAL);
-
-  unaryop_t* op = mknode(a, unaryop_t, EXPR_PREFIXOP);
-  op->flags |= NF_CHECKED | NF_RVALUE;
-  op->loc = (*xp)->loc;
-  op->op = OP_OCHECK;
-  op->expr = *xp;
-  op->type = type_bool;
-
-  *xp = (expr_t*)op;
-}
-
-
-static u32 condition_expr2(
+static u32 condition_narrow_expr(
   typecheck_t* a, narrowedarray_t* narrowed, u32 flags, expr_t** xp)
 {
   expr_t* x = *xp;
   if (x->type->kind != TYPE_OPTIONAL)
     return 0;
+
   trace("[%s] %s %s", __FUNCTION__, nodekind_name(x->kind), fmtnode(0, x));
+
   if ((flags & COND_FLAG_OR) == 0) {
     // COND_FLAG_OR: no narrowing for LHS of "||" binop
+
+    // This is the only place where we add to the "narrowed" array.
     narrowed_t* r = narrowedarray_alloc(narrowed, a->ma, 1);
     if (!r) return out_of_mem(a), 0;
-    r->x = x;
     r->isneg = !!(flags & COND_FLAG_NEG);
+
+    // store the local an ID points to rather than the ID itself
+    if (x->kind == EXPR_ID) {
+      expr_t* ref = assertnotnull((expr_t*)((idexpr_t*)x)->ref);
+      assertf(node_islocal((node_t*)ref), "%s", nodekind_name(ref->kind));
+      r->x = ref;
+    } else {
+      r->x = x;
+    }
   }
+
   if ((flags & COND_FLAG_CHECKED) == 0)
     wrap_optcheck(a, xp);
+
   return 0;
 }
 
@@ -1982,12 +2068,12 @@ static u32 condition_expr(
   case EXPR_MEMBER:
     if CHECK_ONCE(x)
       member(a, (member_t*)x);
-    return condition_expr2(a, narrowed, flags, xp);
+    return condition_narrow_expr(a, narrowed, flags, xp);
 
   case EXPR_ID:
     if CHECK_ONCE(x)
       idexpr(a, (idexpr_t**)xp);
-    return condition_expr2(a, narrowed, flags, xp);
+    return condition_narrow_expr(a, narrowed, flags, xp);
 
   case EXPR_LET:
   case EXPR_VAR: { local_t* n = (local_t*)x;
@@ -2191,10 +2277,8 @@ static void assign(typecheck_t* a, binop_t* n) {
   if (n->left->kind == EXPR_ID && ((idexpr_t*)n->left)->name == sym__) {
     // "_ = expr"
     typectx_push(a, n->left->type);
-    expr(a, n->right);
-    incuse_read(n->right);
+    rvalue_expr(a, a->typectx, &n->right);
     typectx_pop(a);
-
     n->type = n->right->type;
     return;
   }
@@ -2203,8 +2287,7 @@ static void assign(typecheck_t* a, binop_t* n) {
   incuse_write(n->left);
 
   typectx_push(a, n->left->type);
-  expr(a, n->right);
-  incuse_read(n->right);
+  rvalue_expr(a, a->typectx, &n->right);
   typectx_pop(a);
 
   n->type = n->left->type;
@@ -2379,12 +2462,9 @@ static void binop(typecheck_t* a, binop_t** np) {
   if (n->op == OP_LAND || n->op == OP_LOR)
     return binop_and_or(a, np);
 
-  expr(a, n->left);
-  incuse_read(n->left);
-
+  rvalue_expr(a, a->typectx, &n->left);
   typectx_push(a, n->left->type);
-  expr(a, n->right);
-  incuse_read(n->right);
+  rvalue_expr(a, a->typectx, &n->right);
   typectx_pop(a);
 
   switch (n->op) {
@@ -2439,8 +2519,14 @@ static void binop(typecheck_t* a, binop_t** np) {
 
 
 static void unaryop(typecheck_t* a, unaryop_t* n) {
-  incuse_read(n->expr);
-  expr(a, n->expr);
+  if (n->flags & NF_RVALUE) {
+    rvalue_expr(a, a->typectx, &n->expr);
+  } else {
+    exprp(a, &n->expr);
+    if (n->op != OP_INC && n->op != OP_DEC)
+      incuse_read(n->expr);
+    implicit_rvalue_deref(a, a->typectx, &n->expr);
+  }
 
   if (n->type->kind == TYPE_UNRESOLVED || n->type == type_unknown)
     n->type = n->expr->type;
@@ -2452,10 +2538,11 @@ static void unaryop(typecheck_t* a, unaryop_t* n) {
       break;
     case OP_INC:
     case OP_DEC:
-      // TODO: specialized check here since it's not actually assignment
-      // (ownership et al)
-      incuse_write(n->expr);
-      check_assign(a, n->expr);
+      expr_t* dst = n->expr;
+      if (dst->kind == EXPR_PREFIXOP && ((unaryop_t*)dst)->op == OP_ODEREF)
+        dst = ((unaryop_t*)dst)->expr;
+      incuse_write(dst);
+      check_assign(a, dst);
       break;
     case OP_NOT:
       if UNLIKELY(
