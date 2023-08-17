@@ -1020,11 +1020,11 @@ static err_t report_bad_mainfun(pkgbuild_t* pb, const fun_t* fn) {
 }
 
 
-err_t pkgbuild_typecheck(pkgbuild_t* pb) {
+err_t pkgbuild_analyze(pkgbuild_t* pb) {
   err_t err;
   compiler_t* c = pb->c;
 
-  pkgbuild_begintask(pb, "typecheck");
+  pkgbuild_begintask(pb, "analyze");
 
   if (pb->unitc == 0)
     return 0;
@@ -1542,8 +1542,8 @@ static err_t build_pkg(
   // resolve and import dependencies
   DO_STEP(pkgbuild_import);
 
-  // typecheck package
-  DO_STEP(pkgbuild_typecheck);
+  // analyze (typecheck) package
+  DO_STEP(pkgbuild_analyze);
 
   // set package info like pkg->api and pb->flags&PKGBUILD_EXE
   DO_STEP(pkgbuild_setinfo);

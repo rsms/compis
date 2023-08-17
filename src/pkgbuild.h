@@ -41,7 +41,7 @@ err_t pkgbuild_locate_sources(pkgbuild_t* pb);
 err_t pkgbuild_begin_early_compilation(pkgbuild_t* pb);
 err_t pkgbuild_parse(pkgbuild_t* pb);
 err_t pkgbuild_import(pkgbuild_t* pb);
-err_t pkgbuild_typecheck(pkgbuild_t* pb);
+err_t pkgbuild_analyze(pkgbuild_t* pb);
 err_t pkgbuild_setinfo(pkgbuild_t* pb);
 err_t pkgbuild_metagen(pkgbuild_t* pb);
 err_t pkgbuild_cgen(pkgbuild_t* pb);
