@@ -2887,7 +2887,8 @@ static void unsigned_index_expr(typecheck_t* a, expr_t* n, u64* constval) {
         break;
       FALLTHROUGH;
     default:
-      error(a, n, "invalid index type %s; expecting uint", fmtnode(0, n->type));
+      if (n->type != type_unknown || noerror(a))
+        error(a, n, "invalid index type %s; expecting uint", fmtnode(0, n->type));
   }
 }
 
@@ -2935,7 +2936,8 @@ static void subscript(typecheck_t* a, subscript_t* n) {
       return error_optional_access(a, (expr_t*)n, (opttype_t*)recvt, n->recv);
 
     default:
-      return error(a, n, "cannot index into type %s", fmtnode(0, recvt));
+      if (recvt != type_unknown || noerror(a))
+        return error(a, n, "cannot index into type %s", fmtnode(0, recvt));
   }
 }
 
@@ -3803,7 +3805,9 @@ static void opttype(typecheck_t* a, opttype_t** tp) {
   opttype_t* t = *tp;
   type(a, &t->elem);
 
-  assert(t->elem == type_unknown || t->elem->align > 0);
+  assertf(t->elem == type_unknown || t->elem->align > 0,
+    "%s (align=%u)", fmtnode(0,t->elem), t->elem->align);
+
   type_t* elem = concrete_type(a->compiler, t->elem);
   t->align = elem->align;
   t->size = MAX(elem->align, elem->size) * 2;

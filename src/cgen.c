@@ -318,18 +318,35 @@ static const type_t* unwind_aliastypes(const type_t* t) {
 }
 
 
-// static void maybe_gen_ptrtype_defguard(cgen_t* g, const ptrtype_t* t) {
-//   if (nodekind_isprimtype(t->elem->kind)) {
-//     assertnotnull(t->mangledname);
-//     PRINTF("\n#ifndef " CO_ABI_GLOBAL_PREFIX "DEF_%s", t->mangledname), g->lineno++;
-//     PRINTF("\n#define " CO_ABI_GLOBAL_PREFIX "DEF_%s", t->mangledname), g->lineno++;
-//   }
-// }
+static bool is_compound_primtype(const type_t* t) {
+  for (;;) switch (t->kind) {
+    case TYPE_PTR:
+    case TYPE_REF:
+    case TYPE_MUTREF:
+    case TYPE_SLICE:
+    case TYPE_MUTSLICE:
+    case TYPE_OPTIONAL:
+    case TYPE_ARRAY:
+      t = ((ptrtype_t*)t)->elem;
+      break;
+    default:
+      return nodekind_isprimtype(t->kind);
+  }
+}
 
-// static void maybe_gen_ptrtype_defguard_end(cgen_t* g, const ptrtype_t* t) {
-//   if (nodekind_isprimtype(t->elem->kind))
-//     PRINT("\n#endif"), g->lineno++;
-// }
+
+static bool maybe_gen_ptrtype_defguard(cgen_t* g, const ptrtype_t* t) {
+  if (!is_compound_primtype(t->elem))
+    return false;
+  assertnotnull(t->mangledname);
+  PRINTF("\n#ifndef " CO_ABI_GLOBAL_PREFIX "DEF_%s", t->mangledname), g->lineno++;
+  PRINTF("\n#define " CO_ABI_GLOBAL_PREFIX "DEF_%s", t->mangledname), g->lineno++;
+  return true;
+}
+
+static void gen_ptrtype_defguard_end(cgen_t* g) {
+  PRINT("\n#endif"), g->lineno++;
+}
 
 
 static void gen_slicetype(cgen_t* g, const slicetype_t* t) {
@@ -339,7 +356,9 @@ static void gen_slicetype(cgen_t* g, const slicetype_t* t) {
 static void gen_slicetype_def(cgen_t* g, const slicetype_t* t) {
   if (nodekind_isprimtype(t->elem->kind))
     return; // predefined in prelude
-  //maybe_gen_ptrtype_defguard(g, (ptrtype_t*)t);
+
+  bool defguard = maybe_gen_ptrtype_defguard(g, (ptrtype_t*)t);
+
   startline(g, t->loc);
   gen_slicetype(g, t), PRINT(" {");
   gen_type(g, g->compiler->uinttype);
@@ -348,7 +367,8 @@ static void gen_slicetype_def(cgen_t* g, const slicetype_t* t) {
     PRINT("const ");
   gen_type(g, t->elem);
   PRINT("* ptr;};");
-  //maybe_gen_ptrtype_defguard_end(g, (ptrtype_t*)t);
+
+  if (defguard) gen_ptrtype_defguard_end(g);
 }
 
 
@@ -368,14 +388,17 @@ static void gen_arraytype_def(cgen_t* g, const arraytype_t* t) {
   // dynamic array -- typedef struct { uint cap, len; T* ptr; }
   if (nodekind_isprimtype(t->elem->kind))
     return; // predefined in prelude
-  //maybe_gen_ptrtype_defguard(g, (ptrtype_t*)t);
+
+  bool defguard = maybe_gen_ptrtype_defguard(g, (ptrtype_t*)t);
+
   startline(g, t->loc);
   gen_arraytype(g, t), PRINT(" {");
   gen_type(g, g->compiler->uinttype);
   PRINT(" cap, len; ");
   gen_type(g, t->elem);
   PRINT("* ptr;};");
-  //maybe_gen_ptrtype_defguard_end(g, (ptrtype_t*)t);
+
+  if (defguard) gen_ptrtype_defguard_end(g);
 }
 
 
@@ -445,9 +468,14 @@ static void gen_opttype_def(cgen_t* g, opttype_t* t) {
     return;
   if (nodekind_isprimtype(t->elem->kind))
     return; // predefined in prelude
+
+  bool defguard = maybe_gen_ptrtype_defguard(g, (ptrtype_t*)t);
+
   startline(g, t->loc);
   gen_opttype_name(g, t);
   PRINT("{bool ok; "); gen_type(g, t->elem); PRINT(" v;};");
+
+  if (defguard) gen_ptrtype_defguard_end(g);
 }
 
 static void gen_opttype(cgen_t* g, const opttype_t* t) {

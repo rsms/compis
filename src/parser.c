@@ -1071,6 +1071,14 @@ static type_t* type_ref1(parser_t* p, bool ismut) {
     st->kind = ismut ? TYPE_MUTSLICE : TYPE_SLICE;
     st->endloc = endloc;
     st->elem = elem;
+    // slice is represented as {uint len; T* p}
+    // mutslice is represented as {uint len, cap; T* p}
+    st->align = p->scanner.compiler->target.ptrsize;
+    const type_t* uinttype = p->scanner.compiler->uinttype;
+    assert(uinttype->align <= st->align);
+    st->size = p->scanner.compiler->target.ptrsize + uinttype->size;
+    if (ismut)
+      st->size += uinttype->size;
 
     return (type_t*)st;
   }

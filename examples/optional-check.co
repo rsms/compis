@@ -54,6 +54,26 @@ fun explicit_check_narrowing(a, b ?int)
 //   // if var x = a { x; x = 3; x }    // x remains valid
 //   // if var x = a { x; x = void; x } // x is definitely invalid
 
+fun subscript_narrowing_slice(a ?&[u8])
+  if a { a[0] } else { 0 }
+  // if !a { 0 } else { a[0] } // TODO
+  // if a { 0 } else { a[0] } // error: optional value is empty
+
+fun subscript_narrowing_mutslice(a ?mut&[u8])
+  if a { a[0] } else { 0 }
+  // if !a { 0 } else { a[0] } // TODO
+  // if a { 0 } else { a[0] } // error: optional value is empty
+
+fun subscript_narrowing_dynarray(a ?[u8])
+  if a { a[0] } else { 0 }
+  // if !a { 0 } else { a[0] } // TODO
+  // if a { 0 } else { a[0] } // error: optional value is empty
+
+fun subscript_narrowing_fixarray(a ?[u8 3])
+  if a { a[0] } else { 0 }
+  // if !a { 0 } else { a[0] } // TODO
+  // if a { 0 } else { a[0] } // error: optional value is empty
+
 type Foo
   x, y ?int
 

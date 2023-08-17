@@ -261,8 +261,11 @@ static void end_path(encoder_t* e, const node_t* n) {
     append_zname(e, ((aliastype_t*)n)->name);
     break;
 
-  case TYPE_OPTIONAL:
   case TYPE_ARRAY:
+    if (((arraytype_t*)n)->len)
+      buf_print_u64(&e->buf, ((arraytype_t*)n)->len, 10);
+    FALLTHROUGH;
+  case TYPE_OPTIONAL:
   case TYPE_SLICE:
   case TYPE_MUTSLICE:
     type(e, ((ptrtype_t*)n)->elem);
@@ -340,12 +343,18 @@ static void type(encoder_t* e, const type_t* t) {
 
   switch (t->kind) {
 
+  case TYPE_ARRAY:
+    buf_push(&e->buf, tag);
+    if (((arraytype_t*)t)->len)
+      buf_print_u64(&e->buf, ((arraytype_t*)t)->len, 10);
+    type(e, ((ptrtype_t*)t)->elem);
+    break;
+
   case TYPE_PTR:
   case TYPE_REF:
   case TYPE_MUTREF:
   case TYPE_SLICE:
   case TYPE_MUTSLICE:
-  case TYPE_ARRAY:
   case TYPE_OPTIONAL:
     buf_push(&e->buf, tag);
     type(e, ((ptrtype_t*)t)->elem);
