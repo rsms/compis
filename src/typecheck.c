@@ -1899,8 +1899,8 @@ static void condition_expr(
 
     if ((flags & COND_FLAG_OR) == 0) {
       // COND_FLAG_OR: no narrowing for LHS of "||" binop
-      dlog(">> %s#%p %s \"%s\" (isneg %d)",
-        nodekind_name(x->kind),x,fmtnode(0,x), n->name, !!(flags & COND_FLAG_NEG));
+      // dlog(">> %s#%p %s \"%s\" (isneg %d)",
+      //   nodekind_name(x->kind),x,fmtnode(0,x), n->name, !!(flags & COND_FLAG_NEG));
       narrowed_t* r = narrowedarray_alloc(narrowed, a->ma, 1);
       if (!r) return out_of_mem(a);
       r->x = x;
