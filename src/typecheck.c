@@ -1092,6 +1092,7 @@ static void implicit_rvalue_deref(typecheck_t* a, const type_t* ltype, expr_t** 
 
 
 static void rvalue_expr(typecheck_t* a, const type_t* ltype, expr_t** rvalp) {
+  (*rvalp)->flags |= NF_RVALUE;
   exprp(a, rvalp);
   expr_t* rval = *rvalp;
   incuse_read(rval);
@@ -1780,7 +1781,7 @@ static void idexpr(typecheck_t* a, idexpr_t** np) {
     if (node_isexpr((node_t*)ref) &&
         ref->type->kind == TYPE_OPTIONAL &&
         (n->ref->flags & NF_NARROWED) &&
-        // (n->flags & NF_RVALUE) &&
+        (n->flags & NF_RVALUE) &&
         (!a->typectx || a->typectx->kind != TYPE_OPTIONAL) )
     {
       // optional value has been narrowed; dereference
@@ -2936,7 +2937,7 @@ static void subscript(typecheck_t* a, subscript_t* n) {
       return error_optional_access(a, (expr_t*)n, (opttype_t*)recvt, n->recv);
 
     default:
-      if (recvt != type_unknown || noerror(a))
+      if ((type_t*)recvt != type_unknown || noerror(a))
         return error(a, n, "cannot index into type %s", fmtnode(0, recvt));
   }
 }
