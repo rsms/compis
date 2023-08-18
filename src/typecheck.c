@@ -791,14 +791,6 @@ bool expr_no_side_effects(const expr_t* n) { switch (n->kind) {
 }}
 
 
-// static bool isnarrowed(const void* node) {
-//   const node_t* n = node;
-//   return ( n->flags & NF_NARROWED ) ||
-//          ( n->kind == EXPR_ID && ((idexpr_t*)n)->ref &&
-//            (((idexpr_t*)n)->ref->flags & NF_NARROWED) );
-// }
-
-
 static void error_incompatible_types(
   typecheck_t* a, const void* nullable origin_node, const type_t* x, const type_t* y)
 {
@@ -1076,6 +1068,11 @@ static void implicit_rvalue_deref(typecheck_t* a, const type_t* ltype, expr_t** 
 
   case TYPE_REF:
   case TYPE_MUTREF:
+    if (ltype->kind == TYPE_OPTIONAL) {
+      // e.g. here 'b' should not be implicitly deref'd:
+      //   fun example(a ?&int, b &int) { a = b }
+      ltype = ((opttype_t*)ltype)->elem;
+    }
     if (ltype->kind != TYPE_REF && ltype->kind != TYPE_MUTREF)
       *rvalp = mkderef(a, rval, rval->loc);
     break;
@@ -1785,7 +1782,6 @@ static void idexpr(typecheck_t* a, idexpr_t** np) {
         (!a->typectx || a->typectx->kind != TYPE_OPTIONAL) )
     {
       // optional value has been narrowed; dereference
-      // assert(n->flags & NF_RVALUE);
       expr(a, ref);
       n->type = ref->type;
 
@@ -2274,6 +2270,25 @@ static bool check_assign(typecheck_t* a, expr_t* target) {
 }
 
 
+static bool is_narrowed(const void* node) {
+  const node_t* n = node;
+  return ( n->flags & NF_NARROWED ) ||
+         ( n->kind == EXPR_ID && ((idexpr_t*)n)->ref &&
+           (((idexpr_t*)n)->ref->flags & NF_NARROWED) );
+}
+
+
+static void error_optional_access(
+  typecheck_t* a, const expr_t* expr, const opttype_t* t, const expr_t* access)
+{
+  error(a, expr, "optional value of type %s may be empty", fmtnode(0, t));
+  if (loc_line(access->loc)) {
+    help(a, access, "check %s before access, e.g: if %s %s",
+      fmtnode(0, access), fmtnode(1, access), fmtnode(2, expr));
+  }
+}
+
+
 static void assign(typecheck_t* a, binop_t* n) {
   if (n->left->kind == EXPR_ID && ((idexpr_t*)n->left)->name == sym__) {
     // "_ = expr"
@@ -2292,6 +2307,30 @@ static void assign(typecheck_t* a, binop_t* n) {
   typectx_pop(a);
 
   n->type = n->left->type;
+
+  // note: n->op can be any of
+  //   =  +=  -=  *=  /=  %=  &=  |=  ^=  <<=  >>=
+  if UNLIKELY(n->right->type->kind == TYPE_OPTIONAL && n->op != OP_ASSIGN) {
+    // operation-and-assign is not available for optional types
+    // e.g.
+    //   fun example(a, b ?int) { if a a += b }
+    error_optional_access(a, n->right, (opttype_t*)n->right->type, n->right);
+    return;
+  }
+
+  // Take special care when assigning to a location that has been type narrowed
+  if (n->right->type->kind == TYPE_OPTIONAL && is_narrowed(n->left)) {
+    // e.g.
+    //   fun example(a, b ?int)
+    //     if a
+    //       a * 2           // ok; type is narrowed from ?int to int
+    //       a = maybe_int() // type widened from int to ?int
+    //       a * 2           // error: optional value may be empty
+    //
+    // invariant: n->op==OP_ASSIGN (checked for earlier)
+    dlog("TODO un-narrow %s %s [%s]",
+      nodekind_name(n->left->kind), fmtnode(0,n->left), fmtnode(1,n->left->type));
+  }
 
   if UNLIKELY(!type_isassignable(a->compiler, n->left->type, n->right->type))
     error_unassignable_type(a, n, n->right);
@@ -2429,17 +2468,6 @@ static void binop_convert_to_optcheck(typecheck_t* a, binop_t** np) {
     notop->op = OP_NOT;
     notop->expr = (expr_t*)op;
     *np = (binop_t*)notop;
-  }
-}
-
-
-static void error_optional_access(
-  typecheck_t* a, const expr_t* expr, const opttype_t* t, const expr_t* access)
-{
-  error(a, expr, "optional value of type %s may be empty", fmtnode(0, t));
-  if (loc_line(access->loc)) {
-    help(a, access, "check %s before access, e.g: if %s %s",
-      fmtnode(0, access), fmtnode(1, access), fmtnode(2, expr));
   }
 }
 

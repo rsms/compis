@@ -311,13 +311,6 @@ static const char* operator(op_t op) {
 }
 
 
-static const type_t* unwind_aliastypes(const type_t* t) {
-  while (t->kind == TYPE_ALIAS)
-    t = assertnotnull(((aliastype_t*)t)->elem);
-  return t;
-}
-
-
 static bool is_compound_primtype(const type_t* t) {
   for (;;) switch (t->kind) {
     case TYPE_PTR:
@@ -457,17 +450,34 @@ static void gen_aliastype_def(cgen_t* g, const aliastype_t* t) {
 }
 
 
+// opttype_byptr returns true if opttype(elemt) is represented as a pointer
+// rather than struct{bool,T}.
+static bool opttype_byptr(cgen_t* g, const type_t* elemt) {
+  switch (elemt->kind) {
+    case TYPE_PTR:
+      return true;
+    case TYPE_REF:
+    case TYPE_MUTREF:
+      // note: ?&int is represented as opt struct, not pointer
+      // since &int is represented by value, not pointer.
+      return !reftype_byvalue(g, (reftype_t*)elemt);
+    default:
+      return false;
+  }
+}
+
+
 static void gen_opttype_name(cgen_t* g, const opttype_t* t) {
   assertf(t->mangledname, "%s#%p %s", nodekind_name(t->kind), t, fmtnode(0, t));
   PRINT("struct "), PRINT(t->mangledname);
 }
 
 static void gen_opttype_def(cgen_t* g, opttype_t* t) {
-  // ?*T is represented as a nullable pointer (not a struct) e.g. "T*"
-  if (type_isptrlike(t->elem))
+  // do nothing if either
+  // - ?*T is represented as a nullable pointer (not a struct) e.g. "T*"
+  // - elem type is primitive (predefined in prelude)
+  if (opttype_byptr(g, t->elem) || nodekind_isprimtype(t->elem->kind))
     return;
-  if (nodekind_isprimtype(t->elem->kind))
-    return; // predefined in prelude
 
   bool defguard = maybe_gen_ptrtype_defguard(g, (ptrtype_t*)t);
 
@@ -479,28 +489,31 @@ static void gen_opttype_def(cgen_t* g, opttype_t* t) {
 }
 
 static void gen_opttype(cgen_t* g, const opttype_t* t) {
-  // ?*T is represented as a nullable pointer (not a struct) e.g. "T*"
-  if (type_isptrlike(t->elem))
+  if (opttype_byptr(g, t->elem)) {
+    // ?*T is represented as a nullable pointer (not a struct) e.g. "T*"
     return gen_type(g, t->elem);
+  }
   gen_opttype_name(g, t);
 }
 
 
-static void gen_optinit(cgen_t* g, const expr_t* init, bool isshort) {
-  if (type_isptrlike(init->type))
+static void gen_optinit(
+  cgen_t* g, const opttype_t* nullable ot, const expr_t* init)
+{
+  // if ot != NULL e.g. "(struct _co_opt_xyz){true,init}"
+  // if ot == NULL e.g. "{true,init}"
+  if (opttype_byptr(g, init->type))
     return gen_expr_rvalue(g, init, init->type);
   assert(init->type->kind != TYPE_OPTIONAL);
-  if (!isshort) {
-    opttype_t t = { .kind = TYPE_OPTIONAL, .elem = (type_t*)init->type };
-    CHAR('('), gen_opttype(g, &t), CHAR(')');
-  }
+  if (ot)
+    CHAR('('), gen_opttype(g, ot), CHAR(')');
   PRINT("{true,"); gen_expr_rvalue(g, init, init->type); CHAR('}');
 }
 
 
 static void gen_optzero(cgen_t* g, const type_t* elem, bool isshort) {
   assert(elem->kind != TYPE_OPTIONAL);
-  if (type_isptrlike(elem)) {
+  if (opttype_byptr(g, elem)) {
     PRINT("NULL");
   } else {
     if (!isshort) {
@@ -674,6 +687,28 @@ static bool has_ambiguous_prec(const expr_t* n) {
 }
 
 
+static const type_t* unwrap_aliastypes(const type_t* t) {
+  while (t->kind == TYPE_ALIAS)
+    t = assertnotnull(((aliastype_t*)t)->elem);
+  return t;
+}
+
+
+// unwrap_ptr_and_alias unwraps optional, ref, ptr and alias
+// e.g. "?&MyT" => "&MyT" => "MyT" => "T"
+static type_t* unwrap_ptr_and_alias(type_t* t) {
+  assertnotnull(t);
+  for (;;) switch (t->kind) {
+    case TYPE_OPTIONAL: t = assertnotnull(((opttype_t*)t)->elem); break;
+    case TYPE_REF:
+    case TYPE_MUTREF:   t = assertnotnull(((reftype_t*)t)->elem); break;
+    case TYPE_PTR:      t = assertnotnull(((ptrtype_t*)t)->elem); break;
+    case TYPE_ALIAS:    t = assertnotnull(((aliastype_t*)t)->elem); break;
+    default:            return t;
+  }
+}
+
+
 static void gen_expr_rvalue1(
   cgen_t* g, const expr_t* n, const type_t* lt, bool parenwrap)
 {
@@ -686,12 +721,12 @@ static void gen_expr_rvalue1(
     CHAR('(');
 
   if (lt->kind != rt->kind) {
-    lt = unwind_aliastypes(lt);
-    rt = unwind_aliastypes(rt);
+    lt = unwrap_aliastypes(lt);
+    rt = unwrap_aliastypes(rt);
     if (lt->kind != rt->kind) switch (lt->kind) {
       case TYPE_OPTIONAL:
         // ?T <= T
-        return gen_optinit(g, n, /*isshort*/false);
+        return gen_optinit(g, (opttype_t*)lt, n);
 
       case TYPE_SLICE:
       case TYPE_MUTSLICE:
@@ -817,23 +852,8 @@ static void as_ptr(cgen_t* g, buf_t* buf, const type_t* t, const char* name) {
 }
 
 
-// unwrap_ptr_and_alias unwraps optional, ref, ptr and alias
-// e.g. "?&MyT" => "&MyT" => "MyT" => "T"
-static type_t* unwrap_ptr_and_alias(type_t* t) {
-  assertnotnull(t);
-  for (;;) switch (t->kind) {
-    case TYPE_OPTIONAL: t = assertnotnull(((opttype_t*)t)->elem); break;
-    case TYPE_REF:
-    case TYPE_MUTREF:   t = assertnotnull(((reftype_t*)t)->elem); break;
-    case TYPE_PTR:      t = assertnotnull(((ptrtype_t*)t)->elem); break;
-    case TYPE_ALIAS:    t = assertnotnull(((aliastype_t*)t)->elem); break;
-    default:            return t;
-  }
-}
-
-
 static void gen_opttype_deref(cgen_t* g, const opttype_t* t) {
-  if (!type_isptr(t->elem))
+  if (!opttype_byptr(g, t->elem))
     PRINT(".v");
 }
 
@@ -856,7 +876,7 @@ static void gen_optcheck(cgen_t* g, const expr_t* x) {
   } else {
     gen_expr(g, x);
   }
-  if (!type_isptr(((opttype_t*)x->type)->elem))
+  if (!opttype_byptr(g, ((opttype_t*)x->type)->elem))
     PRINT(".ok");
 }
 
@@ -864,7 +884,7 @@ static void gen_optcheck(cgen_t* g, const expr_t* x) {
 static void gen_optcheck_named(cgen_t* g, const opttype_t* t, const char* name) {
   assert_nodekind(t, TYPE_OPTIONAL);
   PRINT(name);
-  if (!type_isptr(t->elem))
+  if (!opttype_byptr(g, t->elem))
     PRINT(".ok");
 }
 
@@ -1371,8 +1391,8 @@ static void gen_fun_def(cgen_t* g, const fun_t* fn) {
 
 
 static void gen_structinit_field(cgen_t* g, const type_t* t, const expr_t* value) {
-  if (t->kind == TYPE_OPTIONAL && !type_isptrlike(((const opttype_t*)t)->elem)) {
-    PRINT("{.ok=1,.v="); gen_expr(g, value); CHAR('}');
+  if (t->kind == TYPE_OPTIONAL && !opttype_byptr(g, ((const opttype_t*)t)->elem)) {
+    PRINT("{true,"); gen_expr(g, value); CHAR('}');
   } else {
     gen_expr(g, value);
   }
@@ -1459,7 +1479,7 @@ static void gen_zeroinit_array(cgen_t* g, const arraytype_t* t) {
 
 
 static void gen_zeroinit(cgen_t* g, const type_t* t) {
-  t = unwind_aliastypes(t);
+  t = unwrap_aliastypes(t);
 again:
   switch (t->kind) {
   case TYPE_VOID:
@@ -1521,7 +1541,7 @@ again:
 
 
 static void gen_primtype_cast(cgen_t* g, const type_t* t, const expr_t* nullable val) {
-  const type_t* basetype = unwind_aliastypes(t);
+  const type_t* basetype = unwrap_aliastypes(t);
 
   // skip redundant "(T)v" when v is T
   if (val && (val->type == t || val->type == basetype))
@@ -1645,7 +1665,7 @@ static void gen_call(cgen_t* g, const call_t* n) {
 
 
 static void gen_typecons(cgen_t* g, const typecons_t* n) {
-  assert(type_isprim(unwind_aliastypes(n->type)));
+  assert(type_isprim(unwrap_aliastypes(n->type)));
   return gen_primtype_cast(g, n->type, n->expr);
 }
 
@@ -1707,9 +1727,9 @@ static void gen_strlit(cgen_t* g, const strlit_t* n) {
     PRINT("\"}");
   } else {
     // string, alias for &[u8]
-    // t = unwind_aliastypes(t);
+    // t = unwrap_aliastypes(t);
     // const slicetype_t* st = (slicetype_t*)t;
-    assert(type_isslice(unwind_aliastypes(t)));
+    assert(type_isslice(unwrap_aliastypes(t)));
     PRINT("(");
     gen_type(g, t);
     PRINTF("){%llu,(const u8[%llu]){\"", n->len, n->len);
@@ -1758,6 +1778,14 @@ static void gen_arraylit(cgen_t* g, const arraylit_t* n) {
 }
 
 
+static bool is_narrowed(const void* node) {
+  const node_t* n = node;
+  return ( n->flags & NF_NARROWED ) ||
+         ( n->kind == EXPR_ID && ((idexpr_t*)n)->ref &&
+           (((idexpr_t*)n)->ref->flags & NF_NARROWED) );
+}
+
+
 static void gen_assign(cgen_t* g, const binop_t* n) {
   if UNLIKELY(n->left->kind == EXPR_ID && ((idexpr_t*)n->left)->name == sym__) {
     // "_ = expr" => "expr"  if expr may have side effects or building in debug mode
@@ -1768,9 +1796,42 @@ static void gen_assign(cgen_t* g, const binop_t* n) {
     return;
   }
   gen_expr(g, n->left);
-  CHAR(' ');
-  PRINT(operator(n->op));
-  CHAR(' ');
+
+  // Special case for RHS when assigning non-optional value to optional receiver.
+  // Optimization: generate .v= when we know LHS is valid
+  // e.g.
+  //   fun example(a ?int)
+  //     if a
+  //       a = 3  // here we can just store to a's value
+  //     a = 3    // here we need to store full opt struct
+  // becomes
+  //   void example(_co_opt_int a) {
+  //     if (a.ok) {
+  //       a.v = 3;
+  //     }
+  //     a = (_co_opt_int){.ok=true,.v=3};
+  //   }
+  //
+  if (n->op == OP_ASSIGN) {
+    const type_t* lt = unwrap_aliastypes(n->type);
+    if (lt->kind == TYPE_OPTIONAL &&
+        lt->kind != unwrap_aliastypes(n->right->type)->kind)
+    {
+      if (opttype_byptr(g, n->right->type)) {
+        // doesn't matter if LHS is narrowed or not; optional type for pointers
+        // is just a pointer (NULL is used for "empty").
+        PRINT(" = "), gen_expr_rvalue(g, n->right, n->right->type);
+      } else if (is_narrowed(n->left)) {
+        PRINT(".v = "), gen_expr_rvalue(g, n->right, n->right->type);
+      } else {
+        PRINT(" = "), gen_optinit(g, (opttype_t*)lt, n->right);
+      }
+      return;
+    }
+  }
+
+  // generic case for RHS
+  CHAR(' '), PRINT(operator(n->op)), CHAR(' ');
   gen_expr_rvalue(g, n->right, n->type);
 }
 
@@ -1793,8 +1854,7 @@ static void gen_vartype(cgen_t* g, const local_t* n, const type_t* t) {
 static void gen_varinit(cgen_t* g, const local_t* n) {
   if (n->init) {
     if (n->type->kind == TYPE_OPTIONAL && n->init->type->kind != TYPE_OPTIONAL) {
-      gen_optinit(g, n->init, /*isshort*/true);
-      //gen_optinit(g, ((const opttype_t*)n->type)->elem, n->init, /*isshort*/true);
+      gen_optinit(g, NULL, n->init);
     } else {
       gen_expr_rvalue(g, n->init, n->type);
     }
@@ -2110,14 +2170,14 @@ static void gen_expr_in_block(cgen_t* g, const expr_t* n) {
 static bool gen_ifexpr_cond(cgen_t* g, const ifexpr_t* n) {
   // regular conditional (not a vardef)
   char tmp[TMP_ID_SIZE];
-  bool has_tmp = (
-    n->cond->kind == EXPR_ID &&
-    type_isopt(n->cond->type) &&
-    !type_isptrlike(((const opttype_t*)n->cond->type)->elem)
-  );
+  bool has_tmp = false;
   const idexpr_t* id = NULL;
 
-  if (has_tmp) {
+  if (
+    n->cond->kind == EXPR_ID &&
+    type_isopt(n->cond->type) &&
+    !opttype_byptr(g, ((const opttype_t*)n->cond->type)->elem))
+  {
     // e.g.
     //   let x ?int
     //   if x {
@@ -2136,18 +2196,18 @@ static bool gen_ifexpr_cond(cgen_t* g, const ifexpr_t* n) {
       // "T x = tmp.v;"
       gen_type(g, ((const opttype_t*)n->cond->type)->elem);
       PRINTF(" %s = %s.v; ", id->name, tmp);
-    } else {
-      has_tmp = false;
+      has_tmp = true;
     }
   }
 
   if (n->flags & NF_RVALUE) {
     if (id) {
+      assert(!opttype_byptr(g, ((const opttype_t*)n->cond->type)->elem));
       PRINTF("(%s.ok ? ", has_tmp ? tmp : id->name);
     } else {
       CHAR('('), gen_expr_rvalue(g, n->cond, n->cond->type);
-      if (n->cond->type->kind == TYPE_OPTIONAL &&
-        !type_isptrlike(((const opttype_t*)n->cond->type)->elem))
+      if (type_isopt(n->cond->type) &&
+          !opttype_byptr(g, ((const opttype_t*)n->cond->type)->elem))
       {
         PRINT(".ok");
       }
@@ -2156,6 +2216,7 @@ static bool gen_ifexpr_cond(cgen_t* g, const ifexpr_t* n) {
   } else {
     PRINT("if (");
     if (id) {
+      assert(!opttype_byptr(g, ((const opttype_t*)n->cond->type)->elem));
       PRINTF("%s.ok", has_tmp ? tmp : id->name);
     } else {
       gen_expr_rvalue1(g, n->cond, n->cond->type, /*parenwrap*/false);
@@ -2214,7 +2275,7 @@ static bool gen_ifexpr_varcond(cgen_t* g, const ifexpr_t* n) {
 
   // simple vardef if either it's a regular vardef
   // or if an optional type is represented as a pointer
-  if ((var->flags & NF_NARROWED) == 0 || type_isptr(ot->elem)) {
+  if ((var->flags & NF_NARROWED) == 0 || opttype_byptr(g, ot->elem)) {
     gen_vardef1(g, var, var->name);
     PRINTF("; if (%s) ", var->name);
     return /*has_tmp*/true;
@@ -2269,7 +2330,10 @@ static void gen_ifexpr(cgen_t* g, const ifexpr_t* n) {
     startline(g, n->thenb->loc);
 
     if ((!n->elseb || n->elseb->type == type_void) && !type_isopt(n->thenb->type)) {
-      gen_optinit(g, (expr_t*)n->thenb, /*isshort*/false);
+      // when the "if" is used as an rvalue expression without an "else" branch,
+      // it becomes an optional-type initializer
+      assert(n->type->kind == TYPE_OPTIONAL);
+      gen_optinit(g, (opttype_t*)n->type, (expr_t*)n->thenb);
     } else {
       gen_block(g, n->thenb);
     }

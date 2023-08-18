@@ -90,7 +90,20 @@ fun owner_narrowing(a ?*Foo) int
   if let x = a { 1 } else { 0 } // owner dropped in "then" branch
   0
 
-// [TODO] owner dropped; limitation in IR analysiz
+fun if_narrowing_assign(a, b ?int)
+  if a { a = b }  // ok
+  // if a { a += b }  // error: optional value may be empty
+  // if a { a -= b }  // error: optional value may be empty
+  // if a { a *= b }  // error: optional value may be empty
+  // if a { a /= b }  // error: optional value may be empty
+  // if a { a %= b }  // error: optional value may be empty
+  // if a { a &= b }  // error: optional value may be empty
+  // if a { a |= b }  // error: optional value may be empty
+  // if a { a ^= b }  // error: optional value may be empty
+  // if a { a <<= b } // error: optional value may be empty
+  // if a { a >>= b } // error: optional value may be empty
+
+// [TODO] owner dropped; limitation in IR analysis
 // fun maybe_owned_foo() ?*Foo
 // fun owner_narrowing_anon_drop()
 //   if let x = maybe_owned_foo() { 1 } else { 0 } // TODO: [ir]
