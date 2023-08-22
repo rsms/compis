@@ -6,13 +6,13 @@ fun var_narrowing1(a ?int)
   a = void
   // a * 2 // error: optional value a is empty
   a = 3
-  a * 2 // ok
+  a * 2 // ok (optional value a is not empty)
 
 fun var_narrowing2(a, b ?int)
   a = b
   // a * 2 // error: optional value may be empty
   a = 3
-  a * 2 // ok
+  a * 2 // ok (optional value a is not empty)
 
 fun var_narrowing_in_branch(a ?int)
   if make_bool()
@@ -67,17 +67,6 @@ fun explicit_check_narrowing(a, b ?int)
   if a == void { 0 } else { a * 2 }
   let _ = a != void
   let _ = a == void
-
-// [TODO] writing to optional var broadens (un-narrows) its type
-//        when the value is either "void" or another optional value.
-// fun write_updates_narrowing(a, b ?int)
-//   // if a { a; a = b; a }    // a broadened to int? (typeof(b)=?int)
-//   // if a { a; a = 3; a }    // a remains valid
-//   // if a { a; a = void; a } // a is definitely invalid
-//   //
-//   // if var x = a { x; x = b; x }    // x broadened to int? (typeof(b)=?int)
-//   // if var x = a { x; x = 3; x }    // x remains valid
-//   // if var x = a { x; x = void; x } // x is definitely invalid
 
 fun subscript_narrowing_slice(a ?&[u8])
   if a { a[0] } else { 0 }

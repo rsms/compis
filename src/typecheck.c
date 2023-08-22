@@ -130,6 +130,15 @@ static const char* fmtkind(const void* node) {
     nodetrace_t __nt __attribute__((__cleanup__(_trace_cleanup),__unused__)) = \
       {(a), (const node_t**)(np), (msg)};
 
+  static void _traceindent_cleanup(typecheck_t** ap) {
+    (*ap)->traceindent--;
+  }
+
+  #define TRACEINDENT_SCOPE(a) \
+    typecheck_t* CONCAT(__traceindent,__COUNTER__) \
+    __attribute__((__cleanup__(_traceindent_cleanup),__unused__)) \
+    = ((a)->traceindent++, (a))
+
 #else
   #define trace_node(a,msg,n) ((void)0)
   #define TRACE_NODE(a,msg,n) ((void)0)
@@ -1942,7 +1951,7 @@ DEF_ARRAY_TYPE_API(narrowed_t, narrowedarray)
 #define COND_FLAG_CHECKED (1u << 3)  // inside OP_OCHECK
 
 
-static u32 condition(typecheck_t* a, narrowedarray_t* narrowed, expr_t** cond);
+static u32 val_condition(typecheck_t* a, narrowedarray_t* narrowed, expr_t** cond);
 
 static u32 condition_expr(
   typecheck_t* a, narrowedarray_t* narrowed, u32 flags, expr_t** xp);
@@ -1983,7 +1992,7 @@ static void binop_and_or(typecheck_t* a, binop_t** np) {
   assert((*np)->op == OP_LAND || (*np)->op == OP_LOR);
   enter_scope(a);
   narrowedarray_t narrowed = {0};
-  condition(a, &narrowed, (expr_t**)np);
+  val_condition(a, &narrowed, (expr_t**)np);
   leave_scope(a);
   narrowedarray_dispose(&narrowed, a->ma);
   (*np)->type = type_bool;
@@ -1998,7 +2007,7 @@ static u32 condition_binop_and_or(
   flags &= ~COND_FLAG_OR;
   u32 narrowed_start = narrowed->len;
   u32 narrowed_start1 = narrowed->len;
-  u32 scope_start = a->scope.len;
+  u32 narrowscope_start = a->narrowscope.len;
 
   // visit Left Hand-Side expression
   incuse_read(n->left);
@@ -2025,7 +2034,7 @@ static u32 condition_binop_and_or(
     // remove any narrowed entries
     narrowed->len = narrowed_start1;
     // undo any definitions
-    a->scope.len = scope_start;
+    a->narrowscope.len = narrowscope_start;
   } else if (narrowed->len > 0) {
     define_narrowed(
       a, narrowed->v + narrowed_start, narrowed->len - narrowed_start,
@@ -2105,12 +2114,12 @@ static u32 condition_expr(
   typecheck_t* a, narrowedarray_t* narrowed, u32 flags, expr_t** xp)
 {
   expr_t* x = *xp;
-
-  if (x->kind != EXPR_LET && x->kind != EXPR_VAR)
-    incuse_read(x);
+  assert(x->kind != EXPR_LET && x->kind != EXPR_VAR); // parser guards
+  incuse_read(x);
 
   switch (x->kind) {
 
+  // e.g. "!x"
   case EXPR_PREFIXOP: { unaryop_t* n = (unaryop_t*)x;
     if (n->op != OP_NOT && n->op != OP_OCHECK)
       break;
@@ -2132,6 +2141,7 @@ static u32 condition_expr(
     }
   }
 
+  // e.g. "x || y", "x > y", "x == void"
   case EXPR_BINOP: { binop_t* n = (binop_t*)x;
     if (n->op != OP_LAND && n->op != OP_LOR && n->op != OP_EQ && n->op != OP_NEQ)
       break;
@@ -2139,45 +2149,34 @@ static u32 condition_expr(
     n->type = type_bool;
     n->flags |= NF_CHECKED;
     flags &= ~COND_FLAG_CHECKED;
+    TRACEINDENT_SCOPE(a);
     if (n->op == OP_LAND || n->op == OP_LOR)
       return condition_binop_and_or(a, narrowed, flags, n);
     return condition_binop_eq(a, narrowed, flags, xp);
   }
 
-  case EXPR_MEMBER:
+  // e.g. "x.y"
+  case EXPR_MEMBER: {
+    trace("[%s] %s %s", __FUNCTION__, nodekind_name(x->kind), fmtnode(0, x));
+    TRACEINDENT_SCOPE(a);
     if CHECK_ONCE(x)
       member1(a, (member_t**)xp, /*iscond*/true);
     return condition_narrow_expr(a, narrowed, flags, xp);
+  }
 
-  case EXPR_ID:
+  // e.g. "x"
+  case EXPR_ID: {
+    trace("[%s] %s %s", __FUNCTION__, nodekind_name(x->kind), fmtnode(0, x));
+    TRACEINDENT_SCOPE(a);
     if CHECK_ONCE(x)
       idexpr1(a, (idexpr_t**)xp, /*iscond*/true);
     return condition_narrow_expr(a, narrowed, flags, xp);
+  }
 
+  // e.g "x[3]"
   case EXPR_SUBSCRIPT:
     dlog("TODO %s", nodekind_name(x->kind));
     break;
-
-  case EXPR_LET:
-  case EXPR_VAR: { local_t* n = (local_t*)x;
-    trace("[%s] %s %s", __FUNCTION__, nodekind_name(x->kind), fmtnode(0, x));
-    if CHECK_ONCE(n)
-      local(a, n);
-    if (n->type->kind == TYPE_OPTIONAL) {
-      if UNLIKELY(n->init->type->kind != TYPE_OPTIONAL) {
-        error(a, n->init,
-          "cannot use %s as boolean in condition", fmtnode(0, n->init->type));
-        return 0;
-      }
-      assert((flags & COND_FLAG_NEG) == 0); // parser only allows "if let x ..."
-      n->flags |= NF_NARROWED;
-      n->type = ((opttype_t*)n->type)->elem;
-    } else if UNLIKELY(n->type != type_bool) {
-      error(a, n, "cannot use %s as boolean in condition", fmtnode(0, n->type));
-    }
-    define(a, n->name, n);
-    return 0;
-  }
 
   }
 
@@ -2195,10 +2194,46 @@ static u32 condition_expr(
 }
 
 
-static u32 condition(typecheck_t* a, narrowedarray_t* narrowed, expr_t** cond) {
-  trace("condition %s", fmtnode(0, *cond));
+static u32 val_condition(typecheck_t* a, narrowedarray_t* narrowed, expr_t** cond) {
+  trace("val_condition %s", fmtnode(0, *cond));
   typectx_push(a, type_bool);
   u32 narrowflags = condition_expr(a, narrowed, /*flags*/0, cond);
+  typectx_pop(a);
+  return narrowflags;
+}
+
+
+static u32 if_condition(typecheck_t* a, narrowedarray_t* narrowed, expr_t** cond) {
+  trace("if_condition %s", fmtnode(0, *cond));
+  typectx_push(a, type_bool);
+
+  u32 narrowflags;
+
+  // check for e.g. "if let x = ..."
+  expr_t* x = *cond;
+  if (x->kind == EXPR_LET || x->kind == EXPR_VAR) {
+    local_t* n = (local_t*)x;
+    trace("[%s] %s %s", __FUNCTION__, nodekind_name(x->kind), fmtnode(0, x));
+    TRACEINDENT_SCOPE(a);
+    if CHECK_ONCE(n)
+      local(a, n);
+    if (n->type->kind == TYPE_OPTIONAL) {
+      if UNLIKELY(n->init->type->kind != TYPE_OPTIONAL) {
+        error(a, n->init,
+          "cannot use %s as boolean in condition", fmtnode(0, n->init->type));
+        return 0;
+      }
+      n->flags |= NF_NARROWED;
+      n->type = ((opttype_t*)n->type)->elem;
+    } else if UNLIKELY(n->type != type_bool) {
+      error(a, n, "cannot use %s as boolean in condition", fmtnode(0, n->type));
+    }
+    define(a, n->name, n);
+    narrowflags = 0;
+  } else {
+    narrowflags = condition_expr(a, narrowed, /*flags*/0, cond);
+  }
+
   typectx_pop(a);
   return narrowflags;
 }
@@ -2214,7 +2249,7 @@ static void ifexpr(typecheck_t* a, ifexpr_t* n) {
 
   // process condition, recording narrowed types
   narrowedarray_t narrowed = {0};
-  u32 narrowflags = condition(a, &narrowed, &n->cond);
+  u32 narrowflags = if_condition(a, &narrowed, &n->cond);
 
   // visit "then" branch
   define_narrowed_then(a, narrowed.v, narrowed.len);
