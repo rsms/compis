@@ -38,6 +38,7 @@ typedef struct {
   memalloc_t      ma;        // compiler->ma
   memalloc_t      ast_ma;    // compiler->ast_ma
   scope_t         scope;
+  scope_t         narrowscope;
   err_t           err;
   fun_t* nullable fun;       // current function
   type_t*         typectx;
@@ -51,7 +52,7 @@ typedef struct {
   bool            reported_error; // true if an error diagnostic has been reported
   u32             pubnest;        // NF_VIS_PUB nesting level
   u32             templatenest;   // NF_TEMPLATE nesting level
-  //u32             narrownest;     // >0 when there may be type-narrowed identifiers
+
 
   // didyoumean tracks names that we might want to consider for help messages
   // when an identifier can not be resolved
@@ -395,8 +396,11 @@ static bool _type_compat(
       // ?T <= T
       // ?T <= ?T
       const opttype_t* d = (opttype_t*)x;
-      if (y->kind == TYPE_OPTIONAL)
+      if (y->kind == TYPE_OPTIONAL) {
         y = ((opttype_t*)y)->elem;
+      } else if (y == type_void) {
+        return true;
+      }
       return type_compat(c, d->elem, y, assignment);
     }
 
@@ -864,7 +868,7 @@ static void typectx_pop(typecheck_t* a) {
 
 
 static void enter_scope(typecheck_t* a) {
-  if (!scope_push(&a->scope, a->ma))
+  if (!scope_push(&a->scope, a->ma) || !scope_push(&a->narrowscope, a->ma))
     out_of_mem(a);
   trace("enter scope #%u", scope_level(&a->scope));
 }
@@ -872,6 +876,7 @@ static void enter_scope(typecheck_t* a) {
 
 static void leave_scope(typecheck_t* a) {
   trace("leave scope #%u", scope_level(&a->scope));
+  scope_pop(&a->narrowscope);
   scope_pop(&a->scope);
 }
 
@@ -884,6 +889,77 @@ static void enter_ns(typecheck_t* a, void* node) {
 
 static void leave_ns(typecheck_t* a) {
   ptrarray_pop(&a->nspath);
+}
+
+
+// narrowinfo_t
+typedef struct {
+  u8 available;
+  #define NARROW_AVAIL_MAYBE ((u8)1)  // may have value
+  #define NARROW_AVAIL_YES   ((u8)2)  // definitely has value
+  #define NARROW_AVAIL_NO    ((u8)3)  // definitely no value
+} __attribute__((aligned(sizeof(void*)))) narrowinfo_t;
+
+static_assert(sizeof(narrowinfo_t) == sizeof(void*), "");
+
+
+static const char* narrowinfo_fmt(u32 bufindex, narrowinfo_t info) {
+  buf_t* buf = tmpbuf_get(bufindex);
+  buf_print(buf, "{available=");
+  switch (info.available) {
+    case 0:
+    case NARROW_AVAIL_MAYBE: buf_print(buf, "MAYBE"); break;
+    case NARROW_AVAIL_YES:   buf_print(buf, "YES"); break;
+    case NARROW_AVAIL_NO:    buf_print(buf, "NO"); break;
+    default: buf_printf(buf, "%u", info.available);
+  }
+  buf_print(buf, "}");
+  buf_nullterm(buf);
+  safecheck(buf->oom == false);
+  return buf->chars;
+}
+
+
+static const node_t* storage_of_node(const node_t* n) {
+  for (;;) switch (n->kind) {
+    case EXPR_FIELD:
+    case EXPR_PARAM:
+    case EXPR_LET:
+    case EXPR_VAR:
+      return n;
+    case EXPR_ID:
+      n = assertnotnull(((idexpr_t*)n)->ref);
+      break;
+    case EXPR_MEMBER:
+      return (node_t*)assertnotnull(field_of_member((member_t*)n));
+    // TODO: subscript, e.g. "x[3]"
+    default:
+      assertf(0,"[%s] unexpected %s", __FUNCTION__, nodekind_name(n->kind));
+      UNREACHABLE;
+  }
+}
+
+
+static narrowinfo_t narrowinfo_lookup(typecheck_t* a, const void* storage_node) {
+  const node_t* storage = storage_of_node(storage_node);
+  void* v = scope_lookup(&a->narrowscope, storage, U32_MAX);
+  narrowinfo_t info = *(narrowinfo_t*)&v;
+  trace("narrowinfo_lookup %s#%p => %s",
+    nodekind_name(storage->kind),storage, narrowinfo_fmt(0,info));
+  return info;
+}
+
+
+static void narrowinfo_define(
+  typecheck_t* a, const void* storage_node, narrowinfo_t info)
+{
+  assert(*(uintptr*)&info != 0);
+  const node_t* storage = storage_of_node(storage_node);
+  void* infop = *(void**)&info;
+  trace("narrowinfo_define %s#%p => %s",
+    nodekind_name(storage->kind), storage, narrowinfo_fmt(0,info));
+  if (!scope_define(&a->narrowscope, a->ma, storage, infop))
+    out_of_mem(a);
 }
 
 
@@ -939,6 +1015,15 @@ static void _type(typecheck_t* a, type_t** tp);
 static void stmt(typecheck_t* a, stmt_t** np);
 static void exprp(typecheck_t* a, expr_t** np);
 #define expr(a, n)  exprp(a, (expr_t**)&(n))
+
+
+static void expr_nosub(typecheck_t* a, expr_t* n) {
+  expr_t* n2 = n;
+  exprp(a, &n2);
+  assertf(n2 == n, "%s#%p replaced by %s#%p",
+    nodekind_name(n->kind),n, nodekind_name(n2->kind),n2);
+}
+
 
 inline static void type(typecheck_t* a, type_t** tp) {
   if ( *tp != type_unknown && ((*tp)->flags & NF_CHECKED) == 0 )
@@ -1040,6 +1125,8 @@ static void implicit_rvalue_deref(typecheck_t* a, const type_t* ltype, expr_t** 
   // unwrap type alias e.g. "MyMyT" => "MyT" => "T"
   ltype = unwrap_alias_const(ltype);
   const type_t* rtype = unwrap_alias_const(rval->type);
+  // dlog("[%s] ltype %s, rtype %s",
+  //   __FUNCTION__, nodekind_name(ltype->kind), nodekind_name(rtype->kind));
 
   // implicit dereference
   switch (rtype->kind) {
@@ -1761,54 +1848,82 @@ static void unknown_identifier(typecheck_t* a, idexpr_t* n) {
 }
 
 
-static void idexpr(typecheck_t* a, idexpr_t** np) {
+static intlit_t* mkboollit(typecheck_t* a, loc_t loc, bool value) {
+  intlit_t* n = mknode(a, intlit_t, EXPR_BOOLLIT);
+  n->flags |= NF_CHECKED | NF_RVALUE;
+  n->loc = loc;
+  n->type = type_bool;
+  n->intval = value;
+  return n;
+}
+
+
+static void check_optional_rvalue(
+  typecheck_t* a, expr_t** np, const void* storage_node, bool iscond)
+{
+  expr_t* n = *np;
+  if (n->type->kind != TYPE_OPTIONAL || (n->flags & NF_RVALUE) == 0)
+    return;
+  narrowinfo_t info1 = narrowinfo_lookup(a, storage_node);
+  if (info1.available == NARROW_AVAIL_YES) {
+    if (iscond) {
+      // e.g.
+      //   fun(a ?int)
+      //     a = 3
+      //     if a ...
+      //        ~
+      // replace with "true" since we know the value is available
+      *np = (expr_t*)mkboollit(a, n->loc, true);
+    } else if (a->typectx->kind != TYPE_OPTIONAL) {
+      // insert implicit "dereference optional"
+      trace("wrap %s#%p [%s] in ODEREF op",
+        nodekind_name(n->kind), n, fmtnode(0, n->type));
+      wrap_optderef(a, (expr_t**)np);
+    }
+  } else if (info1.available == NARROW_AVAIL_NO) {
+    if (iscond) {
+      *np = (expr_t*)mkboollit(a, n->loc, false);
+    } else {
+      n->type = type_unknown;
+      return error(a, n, "optional value %s is empty", fmtnode(0, n));
+    }
+  }
+  // else if (info1.available == 0 || info1.available == NARROW_AVAIL_MAYBE)
+  //   leave it as is, as ?T -- value may be legitimately used as ?T, e.g.
+  //     fun foo(x ?int); fun example(x ?int) { foo(x) }
+}
+
+
+static void idexpr1(typecheck_t* a, idexpr_t** np, bool iscond) {
   idexpr_t* n = *np;
 
-  if (!n->ref || (n->flags & NF_UNKNOWN) || n->type->kind == TYPE_OPTIONAL) {
+  if (!n->ref || (n->flags & NF_UNKNOWN)) {
     n->ref = lookup(a, n->name);
     if UNLIKELY(!n->ref)
       return unknown_identifier(a, n);
-    if UNLIKELY(n->ref == (node_t*)g_noval) {
-      n->type = type_unknown;
-      return error(a, n, "optional value %s is empty", n->name);
-    }
-
-    // insert implicit "dereference optional" of type-narrowed value
-    expr_t* ref = (expr_t*)n->ref;
-    if (node_isexpr((node_t*)ref) &&
-        ref->type->kind == TYPE_OPTIONAL &&
-        (n->ref->flags & NF_NARROWED) &&
-        (n->flags & NF_RVALUE) &&
-        (!a->typectx || a->typectx->kind != TYPE_OPTIONAL) )
-    {
-      // optional value has been narrowed; dereference
-      expr(a, ref);
-      n->type = ref->type;
-
-      trace("wrap ID \"%s\" [%s] in ODEREF op", n->name, fmtnode(0, n->type));
-      // e.g. (ID x [T?]) => (PREFIXOP [T] OP_ODEREF (ID x [T?]))
-      assert(*np == n);
-      wrap_optderef(a, (expr_t**)np);
-      return;
-    }
   }
-
-  assertf(n->ref->kind != NODE_IMPORTID && n->ref->kind != STMT_IMPORT,
-    "unresolved import '%s'", ((importid_t*)n->ref)->name);
-
-  expr(a, n->ref);
-
-  // // mutability of ref extends to id
-  // n->flags |= (n->ref->flags & NF_MUT);
 
   if (node_istype(n->ref)) {
     n->type = (type_t*)n->ref;
     type(a, &n->type);
-  } else if ((n->flags & NF_NARROWED) && n->type->kind == TYPE_OPTIONAL) {
-    assert(((opttype_t*)n->type)->elem->kind != TYPE_UNKNOWN);
-  } else {
-    n->type = asexpr(n->ref)->type;
+    return;
   }
+
+  // assertion to check for unresolved import
+  assertf(n->ref->kind != NODE_IMPORTID && n->ref->kind != STMT_IMPORT,
+    "unresolved import '%s'", ((importid_t*)n->ref)->name);
+
+  // visit ref
+  expr_t* ref = asexpr(n->ref);
+  expr_nosub(a, ref);
+  n->type = ref->type;
+
+  check_optional_rvalue(a, (expr_t**)np, ref, iscond);
+}
+
+
+static void idexpr(typecheck_t* a, idexpr_t** np) {
+  idexpr1(a, np, /*iscond*/false);
 }
 
 
@@ -1836,44 +1951,11 @@ static u32 condition_expr(
 static void define_narrowed(
   typecheck_t* a, const narrowed_t* narrowedv, u32 narrowedc, bool negate)
 {
-  expr_t* narrowed_val;
-
   for (u32 i = 0; i < narrowedc; i++) {
-    expr_t* x = narrowedv[i].x;
-
-    bool isneg = narrowedv[i].isneg ^ negate;
-    if (isneg) {
-      narrowed_val = g_noval;
-    } else {
-      narrowed_val = ast_clone_node(a->ast_ma, x);
-      if (!narrowed_val) return out_of_mem(a);
-      narrowed_val->flags |= NF_NARROWED;
-    }
-
-    trace("narrow type of %s %s (type %s) -> %s%s",
-      fmtkind(x), fmtnode(0,x), fmtnode(1,x->type),
-      narrowed_val == g_noval ? "noval" : fmtnode(2, narrowed_val->type),
-      narrowed_val == g_noval ? "" : "!");
-
-    // define narrowed_val in scope
-    switch (x->kind) {
-    case EXPR_FIELD:
-    case EXPR_PARAM:
-    case EXPR_VAR:
-    case EXPR_LET:
-      define_allow_replace(a, ((local_t*)x)->name, narrowed_val);
-      break;
-    case EXPR_MEMBER: {
-      local_t* field = assertnotnull(field_of_member((member_t*)x));
-      trace("define %s#%p => %s (%s)", nodekind_name(field->kind),field,
-        fmtnode(0, narrowed_val), fmtnode(1, narrowed_val->type));
-      if (!scope_define(&a->scope, a->ma, field, narrowed_val))
-        return out_of_mem(a);
-      break;
-    }
-    default:
-      panic("TODO %s", nodekind_name(x->kind));
-    }
+    narrowinfo_t info = {
+      .available = (narrowedv[i].isneg ^ negate) ? NARROW_AVAIL_NO : NARROW_AVAIL_YES
+    };
+    narrowinfo_define(a, narrowedv[i].x, info);
   }
 }
 
@@ -1955,7 +2037,7 @@ static u32 condition_binop_and_or(
 
 
 static void binop(typecheck_t* a, binop_t** np);
-static void member(typecheck_t* a, member_t* n);
+static void member1(typecheck_t* a, member_t** np, bool iscond);
 
 
 static u32 condition_binop_eq(
@@ -2064,13 +2146,17 @@ static u32 condition_expr(
 
   case EXPR_MEMBER:
     if CHECK_ONCE(x)
-      member(a, (member_t*)x);
+      member1(a, (member_t**)xp, /*iscond*/true);
     return condition_narrow_expr(a, narrowed, flags, xp);
 
   case EXPR_ID:
     if CHECK_ONCE(x)
-      idexpr(a, (idexpr_t**)xp);
+      idexpr1(a, (idexpr_t**)xp, /*iscond*/true);
     return condition_narrow_expr(a, narrowed, flags, xp);
+
+  case EXPR_SUBSCRIPT:
+    dlog("TODO %s", nodekind_name(x->kind));
+    break;
 
   case EXPR_LET:
   case EXPR_VAR: { local_t* n = (local_t*)x;
@@ -2270,14 +2356,6 @@ static bool check_assign(typecheck_t* a, expr_t* target) {
 }
 
 
-static bool is_narrowed(const void* node) {
-  const node_t* n = node;
-  return ( n->flags & NF_NARROWED ) ||
-         ( n->kind == EXPR_ID && ((idexpr_t*)n)->ref &&
-           (((idexpr_t*)n)->ref->flags & NF_NARROWED) );
-}
-
-
 static void error_optional_access(
   typecheck_t* a, const expr_t* expr, const opttype_t* t, const expr_t* access)
 {
@@ -2287,6 +2365,24 @@ static void error_optional_access(
       fmtnode(0, access), fmtnode(1, access), fmtnode(2, expr));
   }
 }
+
+
+// static bool is_narrowed(const void* node) {
+//   const node_t* n = node;
+//   return ( n->flags & NF_NARROWED ) ||
+//          ( n->kind == EXPR_ID && ((idexpr_t*)n)->ref &&
+//            (((idexpr_t*)n)->ref->flags & NF_NARROWED) );
+// }
+
+
+// static void undo_narrowed(void* node) {
+//   node_t* n = node;
+//   assert(is_narrowed(n));
+//   n->flags &= ~NF_NARROWED;
+//   idexpr_t* id = node;
+//   if (n->kind == EXPR_ID && assertnotnull(id->ref)->flags & NF_NARROWED)
+//     id->ref->flags &= ~NF_NARROWED;
+// }
 
 
 static void assign(typecheck_t* a, binop_t* n) {
@@ -2318,18 +2414,19 @@ static void assign(typecheck_t* a, binop_t* n) {
     return;
   }
 
-  // Take special care when assigning to a location that has been type narrowed
-  if (n->right->type->kind == TYPE_OPTIONAL && is_narrowed(n->left)) {
-    // e.g.
-    //   fun example(a, b ?int)
-    //     if a
-    //       a * 2           // ok; type is narrowed from ?int to int
-    //       a = maybe_int() // type widened from int to ?int
-    //       a * 2           // error: optional value may be empty
-    //
-    // invariant: n->op==OP_ASSIGN (checked for earlier)
-    dlog("TODO un-narrow %s %s [%s]",
-      nodekind_name(n->left->kind), fmtnode(0,n->left), fmtnode(1,n->left->type));
+  if (n->left->type->kind == TYPE_OPTIONAL) {
+    // assume e.g. "x = 123"
+    narrowinfo_t info2 = { .available=NARROW_AVAIL_YES };
+    if (n->right->type->kind == TYPE_OPTIONAL) { // e.g. "x = y"
+      info2.available = NARROW_AVAIL_MAYBE;
+    } else if (n->right->type == type_void) { // e.g. "x = void"
+      info2.available = NARROW_AVAIL_NO;
+    }
+    narrowinfo_t info1 = narrowinfo_lookup(a, n->left);
+    if (info1.available == 0)
+      info1.available = NARROW_AVAIL_MAYBE;
+    if (info1.available != info2.available)
+      narrowinfo_define(a, n->left, info2);
   }
 
   if UNLIKELY(!type_isassignable(a->compiler, n->left->type, n->right->type))
@@ -2547,41 +2644,94 @@ static void binop(typecheck_t* a, binop_t** np) {
 }
 
 
-static void unaryop(typecheck_t* a, unaryop_t* n) {
-  if (n->flags & NF_RVALUE) {
-    rvalue_expr(a, a->typectx, &n->expr);
-  } else {
-    exprp(a, &n->expr);
-    if (n->op != OP_INC && n->op != OP_DEC)
-      incuse_read(n->expr);
-    implicit_rvalue_deref(a, a->typectx, &n->expr);
+static bool expr_ismut(const void* expr_node) {
+  // TODO: this implementation is not complete
+  const expr_t* n = asexpr(expr_node);
+  const type_t* t = unwrap_alias_const(n->type);
+  switch (t->kind) {
+  case TYPE_SLICE:
+  case TYPE_REF:
+    return false;
+  default:
+    return true;
+  }
+}
+
+
+static void prefixop_ref(typecheck_t* a, unaryop_t* n) {
+  // e.g. "var x = &y"
+
+  bool ismut = false;
+  if (n->op == OP_MUTREF) {
+    // explicitly reference as mutable, e.g. "let y = mut&x"
+    ismut = true;
+  } else if (a->typectx->kind == TYPE_MUTREF) {
+    ismut = true;
   }
 
-  if (n->type->kind == TYPE_UNRESOLVED || n->type == type_unknown)
+  // check if operand is mutable
+  if UNLIKELY(ismut && !expr_ismut(n->expr)) {
+    error(a, n->expr, "cannot make mutable reference to immutable value of type %s",
+      fmtnode(0, n->expr->type));
+  }
+
+  switch (n->expr->type->kind) {
+  case TYPE_REF:
+  case TYPE_MUTREF:
+  case TYPE_SLICE:
+  case TYPE_MUTSLICE:
+    // ref of ref yields ref, not ref ref.
+    // e.g. "var x int; var y = &x; var z = &x" // typeof(z)=&int (not &&int)
+    //                                      ~~
     n->type = n->expr->type;
+    break;
+  default:
+    n->type = (type_t*)mkreftype(a, n->expr->type, ismut);
+  }
+}
+
+
+static void unaryop(typecheck_t* a, unaryop_t* n) {
+  n->expr->flags |= NF_RVALUE;
+  exprp(a, &n->expr);
 
   switch (n->op) {
     case OP_REF:
     case OP_MUTREF:
-      n->type = (type_t*)mkreftype(a, n->expr->type, n->op == OP_MUTREF);
-      break;
-    case OP_INC:
-    case OP_DEC:
-      expr_t* dst = n->expr;
-      if (dst->kind == EXPR_PREFIXOP && ((unaryop_t*)dst)->op == OP_ODEREF)
-        dst = ((unaryop_t*)dst)->expr;
-      incuse_write(dst);
-      check_assign(a, dst);
-      break;
+      // e.g. "var x = &y"
+      incuse_read(n->expr);
+      return prefixop_ref(a, n);
+
     case OP_NOT:
+      // e.g. "!x"
       if UNLIKELY(
         n->expr->type->kind != TYPE_BOOL &&
         n->expr->type->kind != TYPE_OPTIONAL)
       {
         error_no_operator(a, (expr_t*)n, n->expr, n->op);
       }
+      incuse_read(n->expr);
+      implicit_rvalue_deref(a, a->typectx, &n->expr);
       n->type = type_bool;
       break;
+
+    case OP_INC:
+    case OP_DEC: {
+      // e.g. "++x", "x--"
+      expr_t* dst = n->expr;
+      if (dst->kind == EXPR_PREFIXOP && ((unaryop_t*)dst)->op == OP_ODEREF) {
+        // e.g. "fun(x ?int) { if x { x++ } }"
+        //                            ~~~
+        //      (PREFIXOP [int] ODEREF (ID [?int] x (LOCAL ...)))
+        dst = ((unaryop_t*)dst)->expr;
+      }
+      incuse_write(dst);
+      implicit_rvalue_deref(a, a->typectx, &n->expr);
+      check_assign(a, dst);
+      if (n->type->kind == TYPE_UNRESOLVED || n->type == type_unknown)
+        n->type = n->expr->type;
+      break;
+    }
     default:
       assertf(0, "unexpected unaryop %s", op_name(n->op));
       break;
@@ -2859,7 +3009,8 @@ static expr_t* nullable find_member(
 }
 
 
-static void member(typecheck_t* a, member_t* n) {
+static void member1(typecheck_t* a, member_t** np, bool iscond) {
+  member_t* n = *np;
   incuse_read(n->recv);
   expr(a, n->recv);
 
@@ -2872,26 +3023,31 @@ static void member(typecheck_t* a, member_t* n) {
     return member_ns(a, n);
 
   // can't access members through optional unless it has been checked (narrowed)
-  if (recvbt->kind == TYPE_OPTIONAL) {
-    // if UNLIKELY(!isnarrowed(n->recv))
+  if (recvbt->kind == TYPE_OPTIONAL)
     return error_optional_access(a, (expr_t*)n, (opttype_t*)recvbt, n->recv);
-    // recvbt = ((opttype_t*)recvbt)->elem;
-  }
 
   // resolve target
   typectx_push(a, type_unknown);
   expr_t* target = find_member(a, recvbt, recvt, n->name);
   typectx_pop(a);
 
-  if (target) {
-    incuse_read(target);
-    n->target = target;
-    n->type = target->type;
-  } else {
+  if UNLIKELY(!target) {
     n->type = type_unknown; // avoid cascading errors
     if (recvt != type_unknown || !a->reported_error)
       error(a, n, "%s has no field or method \"%s\"", fmtnode(0, recvt), n->name);
+    return;
   }
+
+  incuse_read(target);
+  n->target = target;
+  n->type = target->type;
+
+  check_optional_rvalue(a, (expr_t**)np, target, iscond);
+}
+
+
+static void member(typecheck_t* a, member_t** np) {
+  member1(a, np, /*iscond*/false);
 }
 
 
@@ -2922,11 +3078,11 @@ static void unsigned_index_expr(typecheck_t* a, expr_t* n, u64* constval) {
 }
 
 
-static void subscript(typecheck_t* a, subscript_t* n) {
-  incuse_read(n->recv);
+static void subscript(typecheck_t* a, subscript_t** np) {
+  subscript_t* n = *np;
 
   typectx_push(a, type_unknown);
-  expr(a, n->recv);
+  rvalue_expr(a, a->typectx, &n->recv);
   typectx_pop(a);
 
   unsigned_index_expr(a, n->index, &n->index_val);
@@ -2968,6 +3124,8 @@ static void subscript(typecheck_t* a, subscript_t* n) {
       if ((type_t*)recvt != type_unknown || noerror(a))
         return error(a, n, "cannot index into type %s", fmtnode(0, recvt));
   }
+
+  check_optional_rvalue(a, (expr_t**)np, n, /*iscond*/false);
 }
 
 
@@ -3206,13 +3364,13 @@ static void call_type(typecheck_t* a, call_t** np, type_t* t) {
   case TYPE_VOID: {
     // no arguments
     if UNLIKELY(!check_call_type_arity(a, call, origt, 0, 0))
-      return;
+      break;
     // convert to typecons
     typecons_t* tc = (typecons_t*)*np;
     tc->kind = EXPR_TYPECONS;
     tc->type = origt;
     tc->expr = NULL;
-    return;
+    break;
   }
 
   case TYPE_BOOL:
@@ -3224,20 +3382,22 @@ static void call_type(typecheck_t* a, call_t** np, type_t* t) {
   case TYPE_F32:
   case TYPE_F64:
     if UNLIKELY(!check_call_type_arity(a, call, origt, 1, 1))
-      return;
-    return call_type_prim(a, np, origt);
+      break;
+    call_type_prim(a, np, origt);
+    break;
 
   case TYPE_STRUCT: {
     u32 maxargs = ((structtype_t*)t)->fields.len;
     if UNLIKELY(!check_call_type_arity(a, call, origt, 0, maxargs))
-      return;
-    return check_call_type_struct(a, call, (structtype_t*)t);
+      break;
+    check_call_type_struct(a, call, (structtype_t*)t);
+    break;
   }
 
   // TODO
   case TYPE_ARRAY:
     if UNLIKELY(!check_call_type_arity(a, call, origt, 1, U32_MAX))
-      return;
+      break;
     FALLTHROUGH;
   case TYPE_FUN:
   case TYPE_PTR:
@@ -3245,16 +3405,16 @@ static void call_type(typecheck_t* a, call_t** np, type_t* t) {
   case TYPE_OPTIONAL:
     trace("TODO IMPLEMENT %s", nodekind_name(t->kind));
     error(a, call->recv, "NOT IMPLEMENTED: %s", nodekind_name(t->kind));
-    return;
+    break;
 
   case TYPE_UNRESOLVED:
     // this only happens when there was a type error
     assert(compiler_errcount(a->compiler) > 0);
-    return;
+    break;
 
   default:
     assertf(0,"unexpected %s", nodekind_name(t->kind));
-    return;
+    break;
   }
 }
 
@@ -3280,7 +3440,6 @@ static void call_fun(typecheck_t* a, call_t* call, funtype_t* ft) {
   for (u32 i = 0; i < paramsc; i++) {
     expr_t* arg = (expr_t*)call->args.v[i];
     local_t* param = paramsv[i];
-
 
     typectx_push(a, param->type);
 
@@ -3352,7 +3511,6 @@ static void call(typecheck_t* a, call_t** np) {
 
   if (a->reported_error)
     return;
-
 
   node_t* recv = unwrap_id(n->recv);
   type_t* recvtype;
@@ -4016,8 +4174,8 @@ static void exprp(typecheck_t* a, expr_t** np) {
   case EXPR_BLOCK:     return block(a, (block_t*)n);
   case EXPR_CALL:      return call(a, (call_t**)np);
   case EXPR_TYPECONS:  return typecons(a, (typecons_t**)np);
-  case EXPR_MEMBER:    return member(a, (member_t*)n);
-  case EXPR_SUBSCRIPT: return subscript(a, (subscript_t*)n);
+  case EXPR_MEMBER:    return member(a, (member_t**)np);
+  case EXPR_SUBSCRIPT: return subscript(a, (subscript_t**)np);
   case EXPR_DEREF:     return deref(a, (unaryop_t*)n);
   case EXPR_INTLIT:    return intlit(a, (intlit_t*)n);
   case EXPR_FLOATLIT:  return floatlit(a, (floatlit_t*)n);
@@ -4345,6 +4503,8 @@ err_t typecheck(
 
   leave_scope(&a); // package
 
+  scope_dispose(&a.scope, a.ma);
+  scope_dispose(&a.narrowscope, a.ma);
   ptrarray_dispose(&a.nspath, a.ma);
   ptrarray_dispose(&a.typectxstack, a.ma);
   array_dispose(didyoumean_t, (array_t*)&a.didyoumean, a.ma);

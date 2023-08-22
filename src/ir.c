@@ -1546,7 +1546,7 @@ static irval_t* bincond(ircons_t* c, expr_t* n) {
 
   opttype_t* opttype = (opttype_t*)v->type;
   if (opttype->kind != TYPE_OPTIONAL) {
-    assert(node_islocal((node_t*)n));
+    assertf(node_islocal((node_t*)n), "%s", nodekind_name(n->kind));
     opttype = (opttype_t*)assertnotnull(((local_t*)n)->init)->type;
     // TODO: this needs more work for when there's a type-narrowed local.
     // Currently we generate invalid IR, for e.g.

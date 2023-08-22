@@ -580,7 +580,8 @@ bool expr_no_side_effects(const expr_t* n);
 // asexpr(const void* ptr) -> const expr_t*
 #define asexpr(ptr) ({ \
   __typeof__(ptr) ptr__ = (ptr); \
-  assertf(node_isexpr((const node_t*)assertnotnull(ptr__)), "not an expression"), \
+  assertf(node_isexpr((const node_t*)assertnotnull(ptr__)), \
+    "%s not an expression", nodekind_name(((node_t*)ptr__)->kind)), \
   _Generic(ptr__, \
     const node_t*: (const expr_t*)ptr__, \
     node_t*:       (expr_t*)ptr__, \

@@ -16,3 +16,13 @@ fun Thing.refs(mut this) {
   var v = 3
   .ref = &v
 }
+
+type Vec2
+  x, y int
+
+fun ref_of_ref()
+  var x Vec2
+  var y = &x
+  //var z = mut&y // error: cannot make mutable reference to immutable value
+  var z = &y // typeof(z)=&int (not &&int)
+  z.x * 2

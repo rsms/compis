@@ -139,7 +139,7 @@ static u8 kStash;
 
 #if defined(TRACE_SCOPESTACK) && defined(DEBUG)
   #define trace(s, fmt, args...) \
-    _trace(true, 7, "scope", "[%u] " fmt, level(s), ##args)
+    _trace(true, 7, "scope", "[%u] " fmt, scope_level(s), ##args)
   static void trace_state(const scope_t* nullable s) {
     fprintf(stderr, "(len %u, base %u) ", s->len, s->base);
     if (!s)          return fprintf(stderr, "null\n"), ((void)0);
@@ -212,7 +212,7 @@ void scope_dispose(scope_t* s, memalloc_t ma) {
 
 
 static bool scope_grow(scope_t* s, memalloc_t ma) {
-  u32 initcap = 4;
+  u32 initcap = 16;
   u32 newcap = (s->cap + ((initcap/2) * !s->cap)) * 2;
 
   trace(s, "grow: cap %u -> %u", s->cap, newcap);

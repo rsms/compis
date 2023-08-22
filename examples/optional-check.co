@@ -1,6 +1,24 @@
 fun maybe_int() ?int
-  let v ?int = 1
-  v
+fun make_bool() bool
+
+fun var_narrowing1(a ?int)
+  // a * 2 // error: optional value may be empty
+  a = void
+  // a * 2 // error: optional value a is empty
+  a = 3
+  a * 2 // ok
+
+fun var_narrowing2(a, b ?int)
+  a = b
+  // a * 2 // error: optional value may be empty
+  a = 3
+  a * 2 // ok
+
+fun var_narrowing_in_branch(a ?int)
+  if make_bool()
+    a = 3
+    a * 2 // ok
+  // a * 2 // error: optional value may be empty
 
 fun binop_narrowing(a, b ?int)
   let _ = a && a > 0
@@ -23,6 +41,13 @@ fun if_narrowing(a, b, c ?int)
   // if !(a || b) { 0 } else { a * b } // error: optional value may be empty
   // if !(a && b) { a * 2 } else { a * b } // error: optional value a is empty
   // if a && b { a * b } else { a * 2 } // [else] error: optional value may be empty
+
+fun if_bool_narrowing(a, b ?bool)
+  let c = a
+  a = void  // makes a "empty"
+  if a 1    // branch never taken (compile-time 'false')
+  b = false // makes b "not empty"
+  if b 1    // branch always taken (compile-time 'true')
 
 fun ifvar_narrowing(a, b ?int)
   // "has value" variable definition as branch condition
@@ -78,7 +103,6 @@ type Foo
   x, y ?int
 
 fun field_narrowing(a Foo)
-  // let x ?int = a.x // no implicit optderef
   if a.x { a.x++ } else { 0 }
   if a.x { a.x * 2 } else { 0 }
   // if a.x { 0 } else { a.x * 2 } // error: optional field a.x is empty
@@ -102,6 +126,11 @@ fun if_narrowing_assign(a, b ?int)
   // if a { a ^= b }  // error: optional value may be empty
   // if a { a <<= b } // error: optional value may be empty
   // if a { a >>= b } // error: optional value may be empty
+
+fun if_narrowing_assign_implicit_deref(a ?int)
+  if a
+    let x = a     // typeof(val)=?int
+    let y int = a // implicit deref
 
 // [TODO] owner dropped; limitation in IR analysis
 // fun maybe_owned_foo() ?*Foo

@@ -397,12 +397,9 @@ static void gen_arraytype_def(cgen_t* g, const arraytype_t* t) {
 
 // reftype_byvalue returns true if &T is passed by value rather than by reference
 static bool reftype_byvalue(cgen_t* g, const reftype_t* t) {
-  return ( t->elem->kind == TYPE_SLICE ||
-           t->elem->kind == TYPE_MUTSLICE ||
-           t->elem->kind == TYPE_ARRAY ||
-           ( t->kind == TYPE_REF && // note: not MUTRET, only REF
-             t->elem->size <= (u64)g->compiler->target.ptrsize )
-  );
+  assert(t->kind == TYPE_REF || t->kind == TYPE_MUTREF);
+  assertf(!type_isref(t->elem), "ref to a ref should not be possible");
+  return t->kind == TYPE_REF && t->elem->size <= (u64)g->compiler->target.ptrsize;
 }
 
 
@@ -502,12 +499,21 @@ static void gen_optinit(
 {
   // if ot != NULL e.g. "(struct _co_opt_xyz){true,init}"
   // if ot == NULL e.g. "{true,init}"
-  if (opttype_byptr(g, init->type))
-    return gen_expr_rvalue(g, init, init->type);
+  if (opttype_byptr(g, init->type)) {
+    if (init->type == type_void) {
+      PRINT("NULL");
+    } else {
+      return gen_expr_rvalue(g, init, init->type);
+    }
+  }
   assert(init->type->kind != TYPE_OPTIONAL);
   if (ot)
     CHAR('('), gen_opttype(g, ot), CHAR(')');
-  PRINT("{true,"); gen_expr_rvalue(g, init, init->type); CHAR('}');
+  if (init->type == type_void) {
+    PRINT("{false}");
+  } else {
+    PRINT("{true,"), gen_expr_rvalue(g, init, init->type), CHAR('}');
+  }
 }
 
 
@@ -1939,17 +1945,71 @@ static void gen_deref(cgen_t* g, const unaryop_t* n) {
 }
 
 
-static void gen_doref(cgen_t* g, const unaryop_t* n) {
-  // e.g. "&x"
-  switch (n->expr->type->kind) {
-    case TYPE_ARRAY:
-      // nothing to do; array is already a pointer
-      break;
-    default:
-      panic("TODO ref to expr `%s` of type kind %s",
-        fmtnode(0, n->expr), nodekind_name(n->expr->type->kind));
+static void gen_take_addr(cgen_t* g, const expr_t* n) {
+  // Take the address of a value.
+  // e.g. for
+  //   var x int; var y = &x
+  // we generate
+  //   int x = 0; const int* y = &x
+  //
+  // In C, taking the address requires memory storage for most expressions
+  switch (n->kind) {
+  case EXPR_FUN:       // fun_t
+  case EXPR_ID:        // idexpr_t
+  case EXPR_NS:        // nsexpr_t
+  case EXPR_FIELD:     // local_t
+  case EXPR_PARAM:     // local_t
+  case EXPR_VAR:       // local_t
+  case EXPR_LET:       // local_t
+  case EXPR_MEMBER:    // member_t
+  case EXPR_SUBSCRIPT: // subscript_t
+    CHAR('&');
+    break;
+  default:
+    error(g, n, "cannot make a reference to %s expression", nodekind_fmt(n->kind));
+    return;
   }
-  gen_expr_rvalue(g, n->expr, n->type);
+  gen_expr_rvalue(g, n, n->type);
+}
+
+
+static void gen_doref(cgen_t* g, const unaryop_t* op) {
+  // e.g. "&x"
+
+  // check if the final type is represented as a plain value
+  if (op->type->kind == TYPE_REF && reftype_byvalue(g, (reftype_t*)op->type))
+    goto load_rvalue;
+
+  const type_t* t = op->expr->type;
+  for (;;) switch (t->kind) {
+    case TYPE_ALIAS:
+      // unwrap alias
+      t = assertnotnull(((aliastype_t*)t)->elem);
+      break;
+    case TYPE_ARRAY:
+      // array of fixed size is already a pointer
+      if (((arraytype_t*)t)->size > 0)
+        goto load_rvalue;
+      goto take_addr;
+    case TYPE_OPTIONAL:
+      if (opttype_byptr(g, ((opttype_t*)t)->elem))
+        goto load_rvalue;
+      goto take_addr;
+    case TYPE_REF:
+      // if (reftype_byvalue(g, (reftype_t*)t))
+    case TYPE_MUTREF:
+    case TYPE_SLICE:
+    case TYPE_MUTSLICE:
+      // e.g. var a &int; let b = &a // typeof(b)=&int (not &&int)
+      // e.g. var a &[int]; let b = &a // typeof(b)=&[int] (not &&[int])
+      goto load_rvalue;
+    default:
+      goto take_addr;
+  }
+take_addr:
+  return gen_take_addr(g, op->expr); // e.g. "&x"
+load_rvalue:
+  gen_expr_rvalue(g, op->expr, op->expr->type);
 }
 
 
