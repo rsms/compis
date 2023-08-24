@@ -2,7 +2,6 @@
 #include "colib.h"
 #include "compiler.h"
 #include "path.h"
-#include "abuf.h"
 #include "subproc.h"
 #include "llvm/llvm.h"
 #include "clang/Basic/Version.inc" // CLANG_VERSION_STRING
@@ -24,7 +23,7 @@ void compiler_init(compiler_t* c, memalloc_t ma, diaghandler_t dh) {
   safecheckxf(rwmutex_init(&c->diag_mu) == 0, "rwmutex_init");
   safecheckxf(locmap_init(&c->locmap) == 0, "locmap_init");
   safecheckxf(rwmutex_init(&c->pkgindex_mu) == 0, "rwmutex_init");
-  safecheckxf(map_init(&c->pkgindex, c->ma, 32), "rwmutex_init");
+  safecheckxf(map_init(&c->pkgindex, c->ma, 32), "map_init");
 }
 
 

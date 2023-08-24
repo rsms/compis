@@ -44,9 +44,9 @@ typedef struct {
   type_t*         typectx;
   ptrarray_t      typectxstack;
   ptrarray_t      nspath;
+  map_t           usertypes;
   map_t           postanalyze;    // set of nodes to analyze at the very end (keys only)
   map_t           tmpmap;
-  map_t           typeidmap;      // typeid_t => type_t*
   map_t           templateimap;   // typeid_t => usertype_t*
   buf_t           tmpbuf;
   bool            reported_error; // true if an error diagnostic has been reported
@@ -619,24 +619,28 @@ static expr_t* mkretexpr(typecheck_t* a, expr_t* value, loc_t loc) {
 }
 
 
-// intern_usertype interns *tp in c->typeidmap.
-// Returns true if *tp was added
+// intern_usertype interns *tp in c->usertypes.
+// Returns true if *tp was newfound, false if *tp was updated to other, existing type.
 static bool intern_usertype(typecheck_t* a, usertype_t** tp) {
+  assertnotnull(*tp);
   assert(nodekind_isusertype((*tp)->kind));
 
   typeid_t typeid = typeid_intern((type_t*)*tp);
+  usertype_t** p = (usertype_t**)map_assign_ptr(&a->usertypes, a->ma, typeid);
 
-  usertype_t** p = (usertype_t**)map_assign_ptr(&a->typeidmap, a->ma, typeid);
   if UNLIKELY(!p)
     return out_of_mem(a), false;
 
   if (*p) {
     if (*tp != *p) {
       // update caller's tp argument with existing type
-      trace("[intern_usertype] dedup %s#%p %s",
+      trace("[%s] dedup %s#%p %s", __FUNCTION__,
         nodekind_name((*p)->kind), *p, fmtnode(0, *p));
       assert((*p)->kind == (*tp)->kind);
       *tp = *p;
+    } else {
+      trace("[%s] existing %s#%p %s", __FUNCTION__,
+        nodekind_name((*p)->kind), *p, fmtnode(0, *p));
     }
     return false;
   }
@@ -646,15 +650,15 @@ static bool intern_usertype(typecheck_t* a, usertype_t** tp) {
 
   #if 0
   if (opt_trace_typecheck) {
-    buf_t tmpbuf = buf_make(a->ma);
+    buf_t tmpbuf = buf_make(c->ma);
     buf_appendrepr(&tmpbuf, typeid, typeid_len(typeid));
-    trace("[intern_usertype] add %s#%p %s (typeid='%.*s')",
+    trace("[%s] add %s#%p %s (typeid='%.*s')", __FUNCTION__,
       nodekind_name((*tp)->kind), *tp, fmtnode(0, *tp),
       (int)tmpbuf.len, tmpbuf.chars);
     buf_dispose(&tmpbuf);
   }
   #else
-    trace("[intern_usertype] add %s#%p %s",
+    trace("[%s] add %s#%p %s", __FUNCTION__,
       nodekind_name((*tp)->kind), *tp, fmtnode(0, *tp));
   #endif
 
@@ -1308,7 +1312,8 @@ static void local(typecheck_t* a, local_t* n) {
 
   if UNLIKELY(
     (n->type == type_void || n->type == type_unknown) &&
-    (n->flags & NF_NARROWED) == 0)
+    (n->flags & NF_NARROWED) == 0 &&
+    noerror(a))
   {
     error(a, n, "cannot define %s of type void", fmtkind(n));
   }
@@ -1468,6 +1473,23 @@ static void arraytype(typecheck_t* a, arraytype_t** tp) {
   //assertf(at->_typeid == NULL, "%s", fmtnode(0, at));
   arraytype_calc_size(a, at);
   intern_usertype(a, (usertype_t**)tp);
+}
+
+
+static void intern_opttype(typecheck_t* a, opttype_t** tp) {
+  opttype_t* t = *tp;
+  assertf(t->elem == type_unknown || t->elem->align > 0,
+    "%s (align=%u)", fmtnode(0,t->elem), t->elem->align);
+  type_t* elem = concrete_type(a->compiler, t->elem);
+  t->align = elem->align;
+  t->size = MAX(elem->align, elem->size) * 2;
+  intern_usertype(a, (usertype_t**)tp);
+}
+
+
+static void opttype(typecheck_t* a, opttype_t** tp) {
+  type(a, &(*tp)->elem);
+  intern_opttype(a, tp);
 }
 
 
@@ -2110,6 +2132,18 @@ static u32 condition_narrow_expr(
 }
 
 
+typedef long __co_int;
+struct _coOi { bool ok; __co_int v; };
+static void test_example(struct _coOi a, struct _coOi b) {
+  // a = (struct _coOi){false}; a = (struct _coOi){true,3ll}; a.v * 2ll;
+  // if (true) { a.v * 2ll; }
+  // { __co_int const k = a.v; if (a.ok) { k * 2ll; } }
+  // { __co_int k; if (a.ok ? ((k = a.v), 1) : 0) { k * 2ll; } }
+  if (a.ok) { __co_int const k = a.v; { k * 2ll; } }
+
+}
+
+
 static u32 condition_expr(
   typecheck_t* a, narrowedarray_t* narrowed, u32 flags, expr_t** xp)
 {
@@ -2257,8 +2291,12 @@ static void ifexpr(typecheck_t* a, ifexpr_t* n) {
   leave_scope(a); // leave "then" branch's scope
 
   // report unused var/let in "if var x = ..."
-  if (node_islocal((node_t*)n->cond))
+  if (node_islocal((node_t*)n->cond)) {
     check_unused(a, (const node_t**)&n->cond, 1);
+  } else {
+    // condition is either a variable definition or a boolean expression
+    assertf(n->cond->type == type_bool, "%s", nodekind_name(n->cond->type->kind));
+  }
 
   // visit "else" branch
   if (n->elseb) {
@@ -2292,11 +2330,17 @@ static void ifexpr(typecheck_t* a, ifexpr_t* n) {
     // "if T" => ?T
     n->type = n->thenb->type;
     if (n->type->kind != TYPE_OPTIONAL) {
+      if UNLIKELY(n->type == type_void) {
+        // e.g.
+        //   let x = if true {}
+        return error(a, n->thenb,
+          "cannot use 'if' as an expression where 'then' branch has no value");
+      }
       dlog("TODO: wrap 'then' result in 'makeopt'");
       opttype_t* t = mknode(a, opttype_t, TYPE_OPTIONAL);
       t->elem = n->type;
       t->flags = NF_CHECKED;
-      intern_usertype(a, (usertype_t**)&t);
+      intern_opttype(a, &t);
       n->type = (type_t*)t;
     }
   }
@@ -2775,7 +2819,8 @@ static void unaryop(typecheck_t* a, unaryop_t* n) {
 
 
 static void deref(typecheck_t* a, unaryop_t* n) {
-  expr(a, n->expr);
+  expr(a, n->expr); // NOT rvalue_expr
+  incuse_read(n->expr);
 
   type_t* t = n->expr->type;
 
@@ -4023,21 +4068,6 @@ static void aliastype(typecheck_t* a, aliastype_t** tp) {
 }
 
 
-static void opttype(typecheck_t* a, opttype_t** tp) {
-  opttype_t* t = *tp;
-  type(a, &t->elem);
-
-  assertf(t->elem == type_unknown || t->elem->align > 0,
-    "%s (align=%u)", fmtnode(0,t->elem), t->elem->align);
-
-  type_t* elem = concrete_type(a->compiler, t->elem);
-  t->align = elem->align;
-  t->size = MAX(elem->align, elem->size) * 2;
-
-  intern_usertype(a, (usertype_t**)tp);
-}
-
-
 static void check_template(typecheck_t* a, usertype_t** tp) {
   usertype_t* t = *tp;
   assert(nodekind_isusertype(t->kind));
@@ -4503,7 +4533,7 @@ err_t typecheck(
     a.err = ErrNoMem;
     goto end2;
   }
-  if (!map_init(&a.typeidmap, a.ma, 32)) {
+  if (!map_init(&a.usertypes, a.ma, 32)) {
     a.err = ErrNoMem;
     goto end3;
   }
@@ -4544,7 +4574,7 @@ err_t typecheck(
   ptrarray_dispose(&a.typectxstack, a.ma);
   array_dispose(didyoumean_t, (array_t*)&a.didyoumean, a.ma);
   buf_dispose(&a.tmpbuf);
-  map_dispose(&a.typeidmap, a.ma);
+  map_dispose(&a.usertypes, a.ma);
 end3:
   map_dispose(&a.templateimap, a.ma);
 end2:

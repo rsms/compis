@@ -396,7 +396,7 @@ static void gen_arraytype_def(cgen_t* g, const arraytype_t* t) {
 
 
 // reftype_byvalue returns true if &T is passed by value rather than by reference
-static bool reftype_byvalue(cgen_t* g, const reftype_t* t) {
+static bool reftype_byvalue(const cgen_t* g, const reftype_t* t) {
   assert(t->kind == TYPE_REF || t->kind == TYPE_MUTREF);
   assertf(!type_isref(t->elem), "ref to a ref should not be possible");
   return t->kind == TYPE_REF && t->elem->size <= (u64)g->compiler->target.ptrsize;
@@ -449,7 +449,7 @@ static void gen_aliastype_def(cgen_t* g, const aliastype_t* t) {
 
 // opttype_byptr returns true if opttype(elemt) is represented as a pointer
 // rather than struct{bool,T}.
-static bool opttype_byptr(cgen_t* g, const type_t* elemt) {
+static bool opttype_byptr(const cgen_t* g, const type_t* elemt) {
   switch (elemt->kind) {
     case TYPE_PTR:
       return true;
@@ -461,6 +461,12 @@ static bool opttype_byptr(cgen_t* g, const type_t* elemt) {
     default:
       return false;
   }
+}
+
+
+static bool is_opttype_byvalue(const cgen_t* g, const void* node) {
+  const opttype_t* t = assertnotnull(node);
+  return t->kind == TYPE_OPTIONAL && !opttype_byptr(g, t->elem);
 }
 
 
@@ -486,6 +492,7 @@ static void gen_opttype_def(cgen_t* g, opttype_t* t) {
 }
 
 static void gen_opttype(cgen_t* g, const opttype_t* t) {
+  assert(t->elem->kind != TYPE_OPTIONAL); // "??T" is not possible
   if (opttype_byptr(g, t->elem)) {
     // ?*T is represented as a nullable pointer (not a struct) e.g. "T*"
     return gen_type(g, t->elem);
@@ -517,16 +524,11 @@ static void gen_optinit(
 }
 
 
-static void gen_optzero(cgen_t* g, const type_t* elem, bool isshort) {
-  assert(elem->kind != TYPE_OPTIONAL);
-  if (opttype_byptr(g, elem)) {
+static void gen_optzero(cgen_t* g, const opttype_t* ot) {
+  if (opttype_byptr(g, ot->elem)) {
     PRINT("NULL");
   } else {
-    if (!isshort) {
-      opttype_t t = { .kind = TYPE_OPTIONAL, .elem = (type_t*)elem };
-      CHAR('('), gen_opttype(g, &t), CHAR(')');
-    }
-    PRINT("{0}");
+    CHAR('('), gen_opttype(g, ot), PRINT("){0}");
   }
 }
 
@@ -2226,217 +2228,216 @@ static void gen_expr_in_block(cgen_t* g, const expr_t* n) {
   PRINT("; }");
 }
 
+typedef u32 ifkind_t;
+#define IFKIND_PLAIN  0u  // if (x) ... else ...
+#define IFKIND_INNER  1u  // if (init.ok) { T x = init.v; ... } else ...
+#define IFKIND_OUTER  2u  // { T* x = y; if (x) ... else ... }
+#define IFKIND_DOUBLE 3u  // { tmp = y; if (tmp.ok) { x = tmp.v; ... } else ... }
 
-static bool gen_ifexpr_cond(cgen_t* g, const ifexpr_t* n) {
-  // regular conditional (not a vardef)
-  char tmp[TMP_ID_SIZE];
-  bool has_tmp = false;
-  const idexpr_t* id = NULL;
 
-  if (
-    n->cond->kind == EXPR_ID &&
-    type_isopt(n->cond->type) &&
-    !opttype_byptr(g, ((const opttype_t*)n->cond->type)->elem))
-  {
-    // e.g.
-    //   let x ?int
-    //   if x {
-    //     let y int = x
-    //   }
-    id = (const idexpr_t*)n->cond;
-    if (assertnotnull(id->ref)->nuse > 0) {
-      g->indent++;
-      if (n->flags & NF_RVALUE)
-        CHAR('(');
-      PRINT("{ ");
-      gen_opttype(g, (const opttype_t*)n->cond->type);
-      fmt_tmp_id(tmp, sizeof(tmp), id);
-      PRINTF(" %s = %s; ", tmp, id->name);
-
-      // "T x = tmp.v;"
-      gen_type(g, ((const opttype_t*)n->cond->type)->elem);
-      PRINTF(" %s = %s.v; ", id->name, tmp);
-      has_tmp = true;
-    }
-  }
-
-  if (n->flags & NF_RVALUE) {
-    if (id) {
-      assert(!opttype_byptr(g, ((const opttype_t*)n->cond->type)->elem));
-      PRINTF("(%s.ok ? ", has_tmp ? tmp : id->name);
-    } else {
-      CHAR('('), gen_expr_rvalue(g, n->cond, n->cond->type);
-      if (type_isopt(n->cond->type) &&
-          !opttype_byptr(g, ((const opttype_t*)n->cond->type)->elem))
-      {
-        PRINT(".ok");
-      }
-      PRINT(" ? ");
-    }
+static void gen_expr_rvalue_or_optcheck(cgen_t* g, expr_t* n, bool parenwrap) {
+  if (n->type->kind == TYPE_OPTIONAL) {
+    gen_optcheck(g, n);
   } else {
-    PRINT("if (");
-    if (id) {
-      assert(!opttype_byptr(g, ((const opttype_t*)n->cond->type)->elem));
-      PRINTF("%s.ok", has_tmp ? tmp : id->name);
-    } else {
-      gen_expr_rvalue1(g, n->cond, n->cond->type, /*parenwrap*/false);
-    }
-    PRINT(") ");
+    gen_expr_rvalue1(g, n, n->type, parenwrap);
   }
-
-  return has_tmp;
 }
 
 
-static bool gen_ifexpr_varcond(cgen_t* g, const ifexpr_t* n) {
+static ifkind_t gen_ifexpr_varcond(cgen_t* g, const ifexpr_t* n) {
   // optional check with var assignment
-  // e.g.
-  //   fun maybe_int() ?int
-  //   fun some_bool() bool
-  //   if let x = maybe_int() // typeof(x)==int (not ?int)
-  //     x * x
-  //   if let x = some_bool()
-  //     x
-  // becomes
-  //   { _co_opt_int tmp = maybe_int(); _co_int x = tmp.v; if (tmp.ok) {
-  //       x * x;
-  //   } }
-  //   { _co_opt_int x = some_bool(); if (x) {
-  //       x;
-  //   } }
-  //
   const local_t* var = (local_t*)n->cond;
+  bool is_rvalue = (n->flags & NF_RVALUE);
 
-  const opttype_t* ot = (opttype_t*)var->init->type;
-  assert((var->flags & NF_NARROWED) == 0 || ot->kind == TYPE_OPTIONAL);
-
-  // if the var is unused, keep it simple:
-  // e.g.
-  //   fun example(a ?int)
-  //     if let x = a { 1 } else { 0 }
-  // becomes
-  //     if (a.ok) { 1; } else { 0; }
-  //
+  // if the var is unused, keep it simple, e.g.
+  //   stmt> if (a.ok) ... else ...
+  //   expr> a.ok ? ... : ...
   if (var->nuse == 0 && !var->written && !type_isowner(var->type)) {
-    PRINT("if (");
-    if ((var->flags & NF_NARROWED) == 0) {
-      gen_expr_rvalue(g, var->init, var->init->type);
-    } else {
-      gen_optcheck(g, var->init);
-    }
-    PRINT(") ");
-    return /*has_tmp*/false;
+    if (!is_rvalue) PRINT("if (");
+    gen_expr_rvalue_or_optcheck(g, var->init, /*parenwrap*/is_rvalue);
+    PRINT(is_rvalue ? " ?" : ") ");
+    return IFKIND_PLAIN;
   }
 
-  // generate scope for vardef (it will be "closed" by the caller)
-  if (n->flags & NF_RVALUE) CHAR('(');
-  PRINT("{ ");
-  g->indent++;
-
-  // simple vardef if either it's a regular vardef
-  // or if an optional type is represented as a pointer
-  if ((var->flags & NF_NARROWED) == 0 || opttype_byptr(g, ot->elem)) {
+  // simple vardef when var.init is either non-optional,
+  // or represented as a pointer of an optional type, e.g.
+  //   stmt> { bool x = y; if (x) ... else ... }
+  //   expr> ({ bool x = y; x ? ... else ... })
+  //   stmt> { T* x = y; if (x) ... else ... }
+  //   expr> ({ T* x = y; x ? ... : ... })
+  assert(var->name != sym__);
+  const opttype_t* ot = (opttype_t*)var->init->type;
+  if (ot->kind != TYPE_OPTIONAL || opttype_byptr(g, ot->elem)) {
+    PRINT("{ ");
+    g->indent++;
     gen_vardef1(g, var, var->name);
-    PRINTF("; if (%s) ", var->name);
-    return /*has_tmp*/true;
+    if (is_rvalue) {
+      PRINTF("; %s ?", var->name);
+    } else {
+      PRINTF("; if (%s) ", var->name);
+    }
+    return IFKIND_OUTER;
   }
 
   // typecheck() stops with an error if condition vardef is not bool or opttype,
-  // so we should only see opttype at this point
+  // so we should only see opttype at this point (we checked for NF_NARROWED earlier.)
   assert_nodekind(ot, TYPE_OPTIONAL);
-
-  // used variable can't be unnamed
-  assert(var->name != sym__);
 
   // if the initializer expression of the vardef has no side effects,
   // we can skip the temporary, e.g.
-  //   T x = init.v;  if (init.ok) ...
-  // otherwise we store the initializer result in a temporary, e.g.
-  //   _co_opt_T tmp = init;  T x = tmp.v;  if (tmp.ok) ...
+  //   stmt> if (init.ok) { T x = init.v; ... } else ...
+  //   expr> init.ok ? ({ T x = init.v; ... }) else ...
   if (expr_no_side_effects(var->init)) {
+    if (is_rvalue) {
+      gen_optcheck(g, var->init), PRINT(" ? ({ ");
+    } else {
+      PRINT("if ("), gen_optcheck(g, var->init), PRINT(") { ");
+    }
+    g->indent++; // scope will be "closed" by the caller
     gen_vartype(g, var, var->type), CHAR(' '), PRINT(var->name);
     if (var->nuse == 0) CHAR(' '), PRINT(ATTR_UNUSED);
     PRINT(" = "), gen_expr_rvalue1(g, var->init, var->init->type, /*parenwrap*/false);
-    gen_opttype_deref(g, ot);
-    PRINT("; if ("), gen_optcheck(g, var->init), PRINT(") ");
-  } else {
-    char tmp[LOCALTMPID_SIZE];
-    localtmpid(g, tmp);
-    gen_vartype(g, var, var->init->type), CHAR(' '), PRINT(tmp);
-    PRINT(" = "), gen_expr_rvalue1(g, var->init, var->init->type, /*parenwrap*/false);
-    PRINT("; ");
-    gen_vartype(g, var, var->type), CHAR(' '), PRINT(var->name);
-    if (var->nuse == 0) CHAR(' '), PRINT(ATTR_UNUSED);
-    PRINT(" = "), PRINT(tmp), gen_opttype_deref(g, ot);
-    PRINT("; if ("), gen_optcheck_named(g, ot, tmp), PRINT(") ");
+    gen_opttype_deref(g, ot), PRINT("; ");
+    return IFKIND_INNER;
   }
 
-  return /*has_tmp*/true;
+  // otherwise we store the initializer result in a temporary, e.g.
+  //   stmt> { _co_opt_T tmp = init; if (tmp.ok) { T x = tmp.v; ... } else ... }
+  //   expr> ({ _co_opt_T tmp = init; tmp.ok ? ({ T x = tmp.v; ... }) : ... })
+  char tmp[LOCALTMPID_SIZE];
+  localtmpid(g, tmp);
+
+  PRINT("{ ");
+  g->indent++; // scope will be "closed" by the caller
+  gen_vartype(g, var, var->init->type), CHAR(' '), PRINT(tmp);
+  PRINT(" = "), gen_expr_rvalue1(g, var->init, var->init->type, /*parenwrap*/false);
+  if (is_rvalue) {
+    PRINT("; "), gen_optcheck_named(g, ot, tmp), PRINT(" ? ({ ");
+  } else {
+    PRINT("; if ("), gen_optcheck_named(g, ot, tmp), PRINT(") { ");
+  }
+  gen_vartype(g, var, var->type), CHAR(' '), PRINT(var->name);
+  if (var->nuse == 0) CHAR(' '), PRINT(ATTR_UNUSED);
+  PRINT(" = "), PRINT(tmp), gen_opttype_deref(g, ot), PRINT("; ");
+
+  return IFKIND_DOUBLE;
+}
+
+
+static void gen_ifexpr_stmt(cgen_t* g, const ifexpr_t* n) {
+  ifkind_t ifkind;
+  if (n->cond->kind == EXPR_LET || n->cond->kind == EXPR_VAR) {
+    ifkind = gen_ifexpr_varcond(g, n);
+  } else {
+    assert(n->cond->type == type_bool); // always boolean cond when not a vardef
+    PRINT("if (");
+    gen_expr_rvalue1(g, n->cond, n->cond->type, /*parenwrap*/false);
+    PRINT(") ");
+    ifkind = IFKIND_PLAIN;
+  }
+
+  // generate 'then' block
+  gen_block(g, n->thenb);
+  if (lastchar(g) != '}') CHAR(';'); // terminate non-block "then" body
+
+  if (ifkind == IFKIND_INNER || ifkind == IFKIND_DOUBLE)
+    CHAR('}');
+
+  // generate 'else' block
+  if (n->elseb) {
+    PRINT(" else ");
+    gen_block(g, n->elseb);
+    if (lastchar(g) != '}') CHAR(';');
+  }
+
+  g->indent -= (u32)(ifkind != IFKIND_PLAIN);
+  switch (ifkind) {
+  case IFKIND_PLAIN:  // if (x) ... else ...
+  case IFKIND_INNER:  // if (init.ok) { T x = init.v; ... } else ...
+    break;
+  case IFKIND_OUTER:  // { T* x = y; if (x) ... else ... }
+  case IFKIND_DOUBLE: // { tmp = y; if (tmp.ok) { x = tmp.v; ... } else ... }
+    PRINT(" }");
+    break;
+  }
+}
+
+
+static void gen_ifexpr_rvalue(cgen_t* g, const ifexpr_t* n) {
+  // "cond ? ... : ..."
+
+  // expect gen_expr_rvalue to wrap this expr in "(...)"
+  assert(lastchar(g) == '(');
+
+  ifkind_t ifkind;
+  if (n->cond->kind == EXPR_LET || n->cond->kind == EXPR_VAR) {
+    ifkind = gen_ifexpr_varcond(g, n);
+  } else {
+    assert(n->cond->type == type_bool); // always boolean cond when not a vardef
+    gen_expr_rvalue(g, n->cond, n->cond->type);
+    PRINT(" ?");
+    ifkind = IFKIND_PLAIN;
+  }
+
+  g->indent++;
+  if (g->lineno != loc_line(n->thenb->loc))
+    startline(g, n->thenb->loc);
+
+  // generate "then" block
+  if ((!n->elseb || n->elseb->type == type_void) && !type_isopt(n->thenb->type)) {
+    // when the "if" is used as an rvalue expression without an "else" branch,
+    // it becomes an optional-type initializer
+    assert(n->type->kind == TYPE_OPTIONAL);
+    gen_optinit(g, (opttype_t*)n->type, (expr_t*)n->thenb);
+  } else {
+    gen_block(g, n->thenb);
+  }
+
+  if (ifkind == IFKIND_INNER || ifkind == IFKIND_DOUBLE)
+    PRINT("; })");
+
+  PRINT(" : ");
+  if (n->elseb) {
+    if (g->lineno != loc_line(n->elseb->loc))
+      startline(g, n->elseb->loc);
+    gen_block(g, n->elseb);
+    if (n->elseb->type == type_void)
+      PRINT(", ");
+  } else {
+    CHAR(' ');
+  }
+
+  // if there's no "else" branch, or if the result of it is 'void',
+  // generate empty optional value.
+  if (!n->elseb || n->elseb->type == type_void) {
+    assertf(n->type->kind == TYPE_OPTIONAL,
+      "typecheck bug (%s)", nodekind_name(n->type->kind));
+    gen_optzero(g, (opttype_t*)n->type);
+  }
+
+  g->indent -= 1 + (u32)(ifkind != IFKIND_PLAIN);
+
+  switch (ifkind) {
+  case IFKIND_PLAIN:  // x ? ... : ...
+  case IFKIND_INNER:  // if (init.ok) { T x = init.v; ... } else ...
+    break;
+  case IFKIND_OUTER:  // { T* x = y; if (x) ... else ... }
+  case IFKIND_DOUBLE: // { tmp = y; if (tmp.ok) { x = tmp.v; ... } else ... }
+    if (lastchar(g) != ';' && lastchar(g) != '}') {
+      PRINT("; }");
+    } else {
+      PRINT(" }");
+    }
+    break;
+  }
+
 }
 
 
 static void gen_ifexpr(cgen_t* g, const ifexpr_t* n) {
   if (n->flags & NF_RVALUE)
-    g->indent++;
-
-  bool has_tmp;
-  if (n->cond->kind == EXPR_LET || n->cond->kind == EXPR_VAR) {
-    has_tmp = gen_ifexpr_varcond(g, n);
-  } else {
-    has_tmp = gen_ifexpr_cond(g, n);
-  }
-
-  if (n->flags & NF_RVALUE) {
-    startline(g, n->thenb->loc);
-
-    if ((!n->elseb || n->elseb->type == type_void) && !type_isopt(n->thenb->type)) {
-      // when the "if" is used as an rvalue expression without an "else" branch,
-      // it becomes an optional-type initializer
-      assert(n->type->kind == TYPE_OPTIONAL);
-      gen_optinit(g, (opttype_t*)n->type, (expr_t*)n->thenb);
-    } else {
-      gen_block(g, n->thenb);
-    }
-    PRINT(" : (");
-    if (n->elseb) {
-      if (loc_line(n->elseb->loc) != g->lineno)
-        startline(g, n->elseb->loc);
-      gen_block(g, n->elseb);
-      if (n->elseb->type == type_void)
-        PRINT(", ");
-    } else {
-      CHAR(' ');
-    }
-    if (!n->elseb || n->elseb->type == type_void) {
-      type_t* elem = n->thenb->type;
-      if (type_isopt(elem))
-        elem = ((const opttype_t*)elem)->elem;
-      gen_optzero(g, elem, /*isshort*/false);
-    }
-    PRINT("))");
-  } else {
-    gen_block(g, n->thenb);
-    if (n->elseb) {
-      if (lastchar(g) != '}')
-        CHAR(';'); // terminate non-block "then" body
-      PRINT(" else ");
-      gen_block(g, n->elseb);
-    }
-  }
-
-  if (n->flags & NF_RVALUE)
-    g->indent--;
-
-  if (has_tmp) {
-    g->indent--;
-    bool needsemi = lastchar(g) != '}';
-    if (needsemi)
-      CHAR(';');
-    startlinex(g);
-    CHAR('}');
-    if (n->flags & NF_RVALUE)
-      CHAR(')');
-  }
+    return gen_ifexpr_rvalue(g, n);
+  gen_ifexpr_stmt(g, n);
 }
 
 

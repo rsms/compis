@@ -55,6 +55,7 @@ static u8 tagtab[NODEKIND_COUNT] = {
   [TYPE_STRUCT]      = 'N', // two-stage tag: Ns
   [TYPE_PTR]         = 'P',
   [TYPE_REF]         = 'R',
+  [TYPE_MUTREF]      = 'Q',
   [TYPE_OPTIONAL]    = 'O',
   [TYPE_ARRAY]       = 'A',
   [TYPE_SLICE]       = 'S',
