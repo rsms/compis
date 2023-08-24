@@ -41,6 +41,7 @@ static bool _array_resize(array_t* a, memalloc_t ma, u32 elemsize, u32 newcap) {
     return false;
 
   mem_t m = { .p = a->ptr, .size = (usize)a->cap * (usize)elemsize };
+  //dlog("%s oldsize %zu, newsize %zu", __FUNCTION__, m.size, newsize);
   if (!mem_resize(ma, &m, newsize))
     return false;
 
@@ -63,18 +64,27 @@ bool _array_grow(array_t* a, memalloc_t ma, u32 elemsize, u32 extracap) {
       const u32 ideal_nbyte = 64;
       newcap = MAX(extracap, ideal_nbyte / elemsize);
     #endif
-  } else if (a->cap < 65536 && extracap < 65536/2) {
-    // double capacity until we hit 64KiB
-    newcap = a->cap * 2;
   } else {
-    u32 addlcap = MAX(65536u / elemsize, CEIL_POW2(extracap));
-    if UNLIKELY(check_add_overflow(a->cap, addlcap, &newcap)) {
-      // try adding exactly what is needed (extracap)
-      if (check_add_overflow(a->cap, extracap, &newcap))
-        return false;
+    // grow allocation
+    usize currsize = (usize)a->cap * (usize)elemsize;
+    usize extrasize;
+    if (check_mul_overflow((usize)extracap, (usize)elemsize, &extrasize))
+      return false;
+    if (currsize < 65536 && extrasize < 65536/2) {
+      // double capacity until we hit 64KiB
+      newcap = (a->cap >= extracap) ? a->cap * 2 : a->cap + extracap;
+    } else {
+      u32 addlcap = MAX(65536u / elemsize, CEIL_POW2(extracap));
+      if (check_add_overflow(a->cap, addlcap, &newcap)) {
+        // try adding exactly what is needed (extracap)
+        if (check_add_overflow(a->cap, extracap, &newcap))
+          return false;
+      }
     }
   }
 
+  //dlog("%s(extracap=%u) cap %u -> %u", __FUNCTION__, extracap, a->cap, newcap);
+  assert(newcap - a->cap >= extracap);
   return _array_resize(a, ma, elemsize, newcap);
 }
 
