@@ -945,6 +945,9 @@ static const node_t* storage_of_node(const node_t* n) {
       break;
     case EXPR_MEMBER:
       return (node_t*)assertnotnull(field_of_member((member_t*)n));
+    case EXPR_DEREF:
+      n = (node_t*)assertnotnull(((unaryop_t*)n)->expr);
+      break;
     // TODO: subscript, e.g. "x[3]"
     default:
       assertf(0,"[%s] unexpected %s", __FUNCTION__, nodekind_name(n->kind));
@@ -1166,6 +1169,11 @@ static void implicit_rvalue_deref(typecheck_t* a, const type_t* ltype, expr_t** 
   // case TYPE_SLICE:
   // case TYPE_MUTSLICE:
 
+  case TYPE_PTR:
+    if (ltype->kind != TYPE_PTR)
+      *rvalp = mkderef(a, rval, rval->loc);
+    break;
+
   case TYPE_REF:
   case TYPE_MUTREF:
     if (ltype->kind == TYPE_OPTIONAL) {
@@ -1176,14 +1184,6 @@ static void implicit_rvalue_deref(typecheck_t* a, const type_t* ltype, expr_t** 
     if (ltype->kind != TYPE_REF && ltype->kind != TYPE_MUTREF)
       *rvalp = mkderef(a, rval, rval->loc);
     break;
-    // // old "implicit_rvalue_deref" function
-    // void implicit_rvalue_deref(typecheck_t* a, const type_t* ltype, expr_t** rvalp) {
-    //   expr_t* rval = *rvalp;
-    //   ltype = unwrap_alias_const(ltype);
-    //   const type_t* rtype = unwrap_alias(rval->type);
-    //   if (!type_isreflike(ltype) && type_isreflike(rtype))
-    //     *rvalp = mkderef(a, rval, rval->loc);
-    // }
   }
 }
 
@@ -1905,7 +1905,12 @@ static void check_optional_rvalue(
       //        ~
       // replace with "true" since we know the value is available
       *np = (expr_t*)mkboollit(a, n->loc, true);
-    } else if (a->typectx->kind != TYPE_OPTIONAL) {
+    } else if (
+      // don't wrap ?T
+      a->typectx->kind != TYPE_OPTIONAL &&
+      // don't wrap &?T
+      ( !type_isref(a->typectx) || !type_isopt(((ptrtype_t*)a->typectx)->elem) ) )
+    {
       // insert implicit "dereference optional"
       trace("wrap %s#%p [%s] in ODEREF op",
         nodekind_name(n->kind), n, fmtnode(0, n->type));

@@ -1288,32 +1288,39 @@ static irval_t* assign_local(ircons_t* c, local_t* dst, irval_t* v) {
 }
 
 
+static irval_t* var_define(ircons_t* c, local_t* var, irval_t* init) {
+  irval_t* v = move_or_copy(c, init, var->loc, NULL, var->init);
+  if (var->name != sym__) {
+    if (v == init && v->comment && *v->comment) {
+      commentf(c, v, "%s aka %s", v->comment, var->name);
+    } else {
+      comment(c, v, var->name);
+    }
+  }
+  return assign_local(c, var, v);
+}
+
+
 static irval_t* vardef(ircons_t* c, local_t* n) {
   irval_t* v;
+
   if (n->init) {
-    irval_t* v1 = load_expr(c, n->init);
-    v1->type = n->type; // needed in case dst is subtype of v, e.g. "dst ?T <= v T"
-    v = move_or_copy(c, v1, n->loc, NULL, n->init);
-    if (n->name != sym__) {
-      if (v == v1 && v->comment && *v->comment) {
-        commentf(c, v, "%s aka %s", v->comment, n->name);
-      } else {
-        comment(c, v, n->name);
-      }
-    }
-  } else {
-    v = pushval(c, c->b, OP_ZERO, n->loc, n->type);
-    if (n->name != sym__)
-      comment(c, v, n->name);
-    // owning var without initializer is initially dead
-    if (type_isowner(v->type)) {
-      // must owners_add explicitly since we don't pass replace_owner to move_or_copy
-      owners_add(c, v);
-      if (!zeroinit_owner_needs_drop(c, v->type)) {
-        // mark as dead since the type's zeroinit doesn't need drop (no side effects)
-        deadset_add(c, &c->deadset, v->id);
-        // create_liveness_var(c, v);
-      }
+    irval_t* init = load_expr(c, n->init);
+    init->type = n->type; // needed in case dst is subtype of v, e.g. "dst ?T = T"
+    return var_define(c, n, init);
+  }
+
+  v = pushval(c, c->b, OP_ZERO, n->loc, n->type);
+  if (n->name != sym__)
+    comment(c, v, n->name);
+  // owning var without initializer is initially dead
+  if (type_isowner(v->type)) {
+    // must owners_add explicitly since we don't pass replace_owner to move_or_copy
+    owners_add(c, v);
+    if (!zeroinit_owner_needs_drop(c, v->type)) {
+      // mark as dead since the type's zeroinit doesn't need drop (no side effects)
+      deadset_add(c, &c->deadset, v->id);
+      // create_liveness_var(c, v);
     }
   }
   return assign_local(c, n, v);
@@ -1535,48 +1542,6 @@ static irval_t* blockexpr(ircons_t* c, block_t* n) {
 }
 
 
-static irval_t* bincond(ircons_t* c, expr_t* n) {
-  // binary conditional is either a boolean or optional
-
-  // TODO: "!x"
-
-  irval_t* v = load_expr(c, n);
-  if (v->type == type_bool)
-    return v;
-
-  opttype_t* opttype = (opttype_t*)v->type;
-  if (opttype->kind != TYPE_OPTIONAL) {
-    assertf(node_islocal((node_t*)n), "%s", nodekind_name(n->kind));
-    opttype = (opttype_t*)assertnotnull(((local_t*)n)->init)->type;
-    // TODO: this needs more work for when there's a type-narrowed local.
-    // Currently we generate invalid IR, for e.g.
-    //   fun example(a ?int) int
-    //     if let x = a { x } else { 0 }
-    // ----------------------------
-    //   fun example(a ?int) int
-    //     v2  i64  = ICONST 0x0     # [1] b2
-    //     v0  int  = ARG    0       # [2] b1  <——
-    //     v1  bool = OCHECK v0      # [1]
-    //   switch v1 -> b3 b1
-    //   b1: <- b0                   # b0.then
-    //   goto -> b3
-    //   b3: <- b0 b1                # b0.cont
-    //     v3  i64  = PHI    v0  v2  # [1] if
-    //   ret v3              ~~
-    //
-    // Somehow we manage to alter the type of the function argument.
-    // It should be "?int" but it has been converted to "int", likely from
-    // our phi/var implementation which is based on names.
-    //
-  }
-  assertf(opttype->kind == TYPE_OPTIONAL, "%s", nodekind_name(opttype->kind));
-
-  irval_t* optcheck = pushval(c, c->b, OP_OCHECK, n->loc, type_bool);
-  pusharg(optcheck, v);
-  return optcheck;
-}
-
-
 static irval_t* ifexpr(ircons_t* c, ifexpr_t* n) {
   // if..end has the following semantics:
   //
@@ -1605,8 +1570,28 @@ static irval_t* ifexpr(ircons_t* c, ifexpr_t* n) {
   // enter "then" scope
   owners_enter_scope(c, &n->thenb->drops);
 
-  // generate control condition
-  irval_t* control = bincond(c, n->cond);
+  // create 'then' block (before control condition)
+  irblock_t* thenb = mkblock(c, f, IR_BLOCK_GOTO, n->thenb->loc);
+
+  // control condition.
+  // cond is either any boolean expression or a vardef that's either bool or optional.
+  irval_t* control;
+  irval_t* varinit = NULL;
+  if (n->cond->kind == EXPR_LET || n->cond->kind == EXPR_VAR) {
+    varinit = load_expr(c, ((local_t*)n->cond)->init);
+    if (varinit->type->kind == TYPE_OPTIONAL) {
+      control = pushval(c, c->b, OP_OCHECK, n->cond->loc, type_bool);
+      pusharg(control, varinit);
+    } else {
+      // need to set type in case dst is subtype of v, e.g. "dst ?T = T",
+      // but not when e.g. "dst T = T?" which happens for type-narrowed vardef in 'if'.
+      varinit->type = n->type;
+      control = varinit;
+    }
+    // note: var will be defined once we enter the 'then' block
+  } else {
+    control = load_expr(c, n->cond);
+  }
 
   // end predecessor block (leading up to and including "if")
   irblock_t* ifb = end_block(c);
@@ -1614,7 +1599,7 @@ static irval_t* ifexpr(ircons_t* c, ifexpr_t* n) {
   set_control(c, ifb, control);
 
   // create blocks for then and else branches
-  irblock_t* thenb = mkblock(c, f, IR_BLOCK_GOTO, n->thenb->loc);
+  // irblock_t* thenb = mkblock(c, f, IR_BLOCK_GOTO, n->thenb->loc);
   irblock_t* elseb = mkblock(c, f, IR_BLOCK_GOTO, n->elseb ? n->elseb->loc : n->loc);
   u32        elseb_index = f->blocks.len - 1; // used later for moving blocks
   ifb->succs[1] = thenb;
@@ -1629,6 +1614,24 @@ static irval_t* ifexpr(ircons_t* c, ifexpr_t* n) {
   thenb->preds[0] = ifb; // then <- if
   start_block(c, thenb);
   seal_block(c, thenb);
+
+  // If we have a variable as the 'if' control condition, we need to define it now
+  // when we have entered the 'then' block. We can't do this earlier since ownership
+  // tracking depends on the current block; the variable itself lives in the 'then'
+  // block but its initializer lives in the predecessor ('if') block.
+  if (varinit) {
+    if (varinit->type->kind == TYPE_OPTIONAL) {
+      opttype_t* ot = (opttype_t*)varinit->type;
+      // implicit optional-dereference, since the control checks for valid value
+      irval_t* oderef = pushval(c, c->b, OP_ODEREF, n->cond->loc, n->cond->type);
+      pusharg(oderef, varinit);
+      if (type_isowner(ot->elem))
+        move_owner(c, varinit, oderef, NULL, n->cond);
+      varinit = oderef;
+    }
+    var_define(c, (local_t*)n->cond, varinit);
+  }
+
   irval_t* thenv = blockexpr_noscope(c, n->thenb, /*isfunbody*/false);
   owners_unwind_scope(c, entry_deadset);
   owners_leave_scope(c);

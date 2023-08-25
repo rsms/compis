@@ -434,6 +434,7 @@ static bool maybe_start_of_type(parser_t* p, tok_t tok) {
     case TLBRACK:   // [  array type
     case TAND:      // &  ref type
     case TQUESTION: // ?  optional type
+    case TSTAR:     // *  pointer type
     case TID:       //    named type
       return true;
   }

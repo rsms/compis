@@ -1,3 +1,6 @@
+type Vec { x, y int }
+
+fun maybe_owner() ?*int
 fun maybe_int() ?int
 fun make_bool() bool
 
@@ -49,17 +52,47 @@ fun if_bool_narrowing(a, b ?bool)
   b = false // makes b "not empty"
   if b 1    // branch always taken (compile-time 'true')
 
-fun ifvar_narrowing(a, b ?int)
+fun ifvar_narrowing(a ?int, b ?&Vec, c?*int)
   // "has value" variable definition as branch condition
-  if let x = true { x } else { 0 } // regular bool var, not narrowed opt
-  if let x = a { 1 } else { 0 } // warning: unused binding x
-  if let x = a { x * x } else { 0 }
-  if maybe_int() { 1 } else { 0 }
-  if let x = maybe_int() { 1 } else { 0 } // warning: unused binding x
-  if let x = maybe_int() { x * x } else { 0 }
-  // if let x ?int = 1 { x * x } else { 0 } // error: cannot use int as boolean in cond
-  // if var x = a { x = maybe_int() } // error: var x has type int, not ?int
-  if var x = a { x = 3 } // warning: unused variable written to, not read
+  if var v = true { v } // regular bool var, not narrowed opt
+  if var v = a { 1 } // warning: unused binding v
+  if var v = a { v * 2 }
+  if var v = b { v.x * 2 }
+  if var v = maybe_int() { 1 } // warning: unused binding v
+  if var v = maybe_int() { v * 2 }
+  // if let v ?int = 1 { 1 } // error: cannot use int as boolean in cond
+  // if var v = a { v = maybe_int() } // error: var v has type int, not ?int
+  if var v = a { v = 3 } // warning: unused variable written to, not read
+  // owning value types
+  if var v = c { v * 2 }
+  if var v = maybe_owner() { v * 2 }
+  if var v = maybe_owner() { 1 }
+  if var v = maybe_owner() { v * 2 }
+
+fun ifvar_narrowing_expr(a ?int, b ?&Vec, c?*int)
+  let _ = if var v = true { v } else { false }
+  let _ = if var v = a { 1 } else { 0 }
+  let _ = if var v = a { v * 2 } else { 0 }
+  let _ = if var v = b { v.x * 2 } else { 0 }
+  let _ = if var v = maybe_int() { v * 2 } else { 0 }
+  let _ = if var v = maybe_int() { 1 } else { 0 }
+  // owning values
+  let _ = if var v = c { v * 2 } else { 0 }
+  let _ = if var v = maybe_owner() { v * 2 } else { 0 }
+  let _ = if var v = maybe_owner() { 1 } else { 0 }
+
+fun ifvar_narrowing_expr_implicit_else(a ?int, b ?&Vec, c?*int)
+  // implicit 'else' branch yields ?typeof(thenbranch)
+  let _ = if var v = true { v }
+  let _ = if var v = a { 1 }
+  let _ = if var v = a { v * 2 }
+  let _ = if var v = b { v.x * 2 }
+  let _ = if var v = maybe_int() { v * 2 }
+  let _ = if var v = maybe_int() { 1 }
+  // owning values
+  let _ = if var v = c { v * 2 }
+  let _ = if var v = maybe_owner() { v * 2 }
+  let _ = if var v = maybe_owner() { 1 }
 
 fun explicit_check_narrowing(a, b ?int)
   // explicit "is empty" check

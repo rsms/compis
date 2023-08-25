@@ -684,7 +684,6 @@ static bool has_ambiguous_prec(const expr_t* n) {
   case EXPR_MEMBER:
   case EXPR_BLOCK:
   case EXPR_CALL:
-  case EXPR_DEREF:
   case EXPR_PREFIXOP:
   case EXPR_POSTFIXOP:
   case EXPR_SUBSCRIPT:
@@ -1967,6 +1966,18 @@ static void gen_take_addr(cgen_t* g, const expr_t* n) {
   case EXPR_SUBSCRIPT: // subscript_t
     CHAR('&');
     break;
+  case EXPR_PREFIXOP: {
+    const unaryop_t* op = (unaryop_t*)n;
+    if (op->op == OP_ODEREF) {
+      // e.g.
+      //   fun modify_intref(x mut&int) { x++ }
+      //   fun example(a ?int)
+      //     if a { modify_intref(&a) }
+      CHAR('&');
+      break;
+    }
+    FALLTHROUGH;
+  }
   default:
     error(g, n, "cannot make a reference to %s expression", nodekind_fmt(n->kind));
     return;
@@ -2423,11 +2434,7 @@ static void gen_ifexpr_rvalue(cgen_t* g, const ifexpr_t* n) {
     break;
   case IFKIND_OUTER:  // { T* x = y; if (x) ... else ... }
   case IFKIND_DOUBLE: // { tmp = y; if (tmp.ok) { x = tmp.v; ... } else ... }
-    if (lastchar(g) != ';' && lastchar(g) != '}') {
-      PRINT("; }");
-    } else {
-      PRINT(" }");
-    }
+    PRINT("; }");
     break;
   }
 
