@@ -673,7 +673,7 @@ static void gen_type(cgen_t* g, const type_t* t) {
 }
 
 
-// true if n needs to be wrapped in "(...)" for op C <> Compis precedence differences
+// true if n needs to be wrapped in "(...)" for op C <-> Compis precedence differences
 static bool has_ambiguous_prec(const expr_t* n) {
   switch (n->kind) {
   case EXPR_BOOLLIT:

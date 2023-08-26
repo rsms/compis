@@ -154,10 +154,11 @@ fun if_narrowing_assign_implicit_deref(a ?int)
     let x = a     // typeof(val)=?int
     let y int = a // implicit deref
 
-// [TODO] owner dropped; limitation in IR analysis
-// fun maybe_owned_foo() ?*Foo
-// fun owner_narrowing_anon_drop()
-//   if let x = maybe_owned_foo() { 1 } else { 0 } // TODO: [ir]
+fun double_deref_optintref(x &?int) { if x { x * 2 } }
+fun double_deref_optintmutref(x mut&?int) { if x { x * 2 } }
+fun double_deref_optintptr(x *?int) { if x { x * 2 } }
+fun double_deref_optintmutref_inc(x mut&?int) { if x { x++ } }
+fun double_deref_optintptr_inc(x *?int) { if x { x++ } }
 
 // [TODO] exiting "then" branch of "if" has effect on "cont" branch
 // fun other_branch(a ?int) int

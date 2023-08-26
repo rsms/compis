@@ -948,9 +948,14 @@ static const node_t* storage_of_node(const node_t* n) {
     case EXPR_DEREF:
       n = (node_t*)assertnotnull(((unaryop_t*)n)->expr);
       break;
-    // TODO: subscript, e.g. "x[3]"
+    case EXPR_PREFIXOP:
+      assert(((unaryop_t*)n)->op == OP_ODEREF); // I *think*...
+      n = (node_t*)((unaryop_t*)n)->expr;
+      break;
     default:
-      assertf(0,"[%s] unexpected %s", __FUNCTION__, nodekind_name(n->kind));
+      // TODO: subscript, e.g. "x[3]"
+      assertf(0,"[%s] unexpected %s %s", __FUNCTION__,
+        nodekind_name(n->kind), fmtnode(0,n));
       UNREACHABLE;
   }
 }
@@ -1101,6 +1106,17 @@ static void check_unused(typecheck_t* a, const node_t** nodev, u32 nodec) {
 }
 
 
+static void error_optional_access(
+  typecheck_t* a, const expr_t* expr, const opttype_t* t, const expr_t* access)
+{
+  error(a, expr, "optional value of type %s may be empty", fmtnode(0, t));
+  if (loc_line(access->loc)) {
+    help(a, access, "check %s before access, e.g: if %s %s",
+      fmtnode(0, access), fmtnode(1, access), fmtnode(2, expr));
+  }
+}
+
+
 // wrap_optcheck wraps expression in optional-check operation, e.g.
 // (EXPR [T?]) => (PREFIXOP [BOOL] OCHECK (EXPR [T?]))
 static void wrap_optcheck(typecheck_t* a, expr_t** xp) {
@@ -1135,12 +1151,48 @@ static void wrap_optderef(typecheck_t* a, expr_t** xp) {
 }
 
 
+static bool check_optional_valid(typecheck_t* a, expr_t* rval) {
+  assert(rval->type->kind == TYPE_OPTIONAL);
+  switch (rval->kind) {
+  case EXPR_MEMBER: {
+    dlog("TODO: narrowinfo_lookup with member");
+    const void* key = assertnotnull(field_of_member((member_t*)rval));
+    node_t* sub = scope_lookup(&a->scope, key, 0);
+    if (sub && (sub->flags & NF_NARROWED)) {
+      if UNLIKELY(sub == (node_t*)g_noval)
+        goto err_empty;
+      trace("implicit optderef of narrowed %s#%p", nodekind_name(sub->kind),sub);
+      return true;
+    }
+    return false;
+  }
+  case EXPR_DEREF: {
+    unaryop_t* op = (unaryop_t*)rval;
+    assert(nodekind_isptrliketype(op->expr->type->kind));
+    narrowinfo_t info = narrowinfo_lookup(a, op->expr);
+    if UNLIKELY(info.available == NARROW_AVAIL_YES)
+      return true;
+    if UNLIKELY(info.available == NARROW_AVAIL_NO)
+      goto err_empty;
+    error_optional_access(a, rval, (opttype_t*)rval->type, rval);
+    return false;
+  }
+  }
+  panic("TODO: [%s] %s", __FUNCTION__, nodekind_name(rval->kind));
+err_empty:
+  error(a, rval, "optional field %s is empty", fmtnode(0,rval));
+  rval->type = type_unknown; // prevent cascading errors
+  return false;
+}
+
+
 static void implicit_rvalue_deref(typecheck_t* a, const type_t* ltype, expr_t** rvalp) {
   expr_t* rval = *rvalp;
 
   // unwrap type alias e.g. "MyMyT" => "MyT" => "T"
   ltype = unwrap_alias_const(ltype);
   const type_t* rtype = unwrap_alias_const(rval->type);
+
   // dlog("[%s] ltype %s, rtype %s",
   //   __FUNCTION__, nodekind_name(ltype->kind), nodekind_name(rtype->kind));
 
@@ -1149,42 +1201,47 @@ static void implicit_rvalue_deref(typecheck_t* a, const type_t* ltype, expr_t** 
   case TYPE_OPTIONAL:
     if (ltype->kind == TYPE_OPTIONAL)
       break;
-    if (rval->kind == EXPR_MEMBER) {
-      const void* key = assertnotnull(field_of_member((member_t*)rval));
-      node_t* sub = scope_lookup(&a->scope, key, 0);
-      if (sub && (sub->flags & NF_NARROWED)) {
-        if UNLIKELY(sub == (node_t*)g_noval) {
-          error(a, rval, "optional field %s is empty", fmtnode(0,rval));
-          rval->type = type_unknown; // prevent cascading errors
-          return;
-        }
-        trace("implicit optderef of narrowed %s#%p", nodekind_name(sub->kind),sub);
-        wrap_optderef(a, rvalp);
-      }
-    } else if (rval->kind != EXPR_ID) { // note: id handled explicitly by idexpr
-      dlog("TODO: [%s] %s", __FUNCTION__, nodekind_name(rval->kind));
+    if (rval->kind != EXPR_ID && check_optional_valid(a, *rvalp)) {
+      // note: id handled explicitly by idexpr
+      wrap_optderef(a, rvalp);
     }
     break;
 
-  // case TYPE_SLICE:
-  // case TYPE_MUTSLICE:
-
-  case TYPE_PTR:
-    if (ltype->kind != TYPE_PTR)
-      *rvalp = mkderef(a, rval, rval->loc);
+  case TYPE_PTR: {
+    if (ltype->kind == TYPE_PTR)
+      break;
+    *rvalp = mkderef(a, rval, rval->loc);
+    rval = *rvalp;
+    dlog("rval %s [%s]", fmtnode(0, rval), fmtnode(1, rval->type));
+    if (assertnotnull(rval->type)->kind == TYPE_OPTIONAL) {
+      // e.g. fun(x ?*int) { if x { x++ } }
+      //                            ~~~
+      if (check_optional_valid(a, rval))
+        wrap_optderef(a, rvalp);
+    }
     break;
+  }
 
   case TYPE_REF:
-  case TYPE_MUTREF:
+  case TYPE_MUTREF: {
     if (ltype->kind == TYPE_OPTIONAL) {
       // e.g. here 'b' should not be implicitly deref'd:
       //   fun example(a ?&int, b &int) { a = b }
       ltype = ((opttype_t*)ltype)->elem;
     }
-    if (ltype->kind != TYPE_REF && ltype->kind != TYPE_MUTREF)
-      *rvalp = mkderef(a, rval, rval->loc);
+    if (ltype->kind == TYPE_REF || ltype->kind == TYPE_MUTREF)
+      break;
+    *rvalp = mkderef(a, rval, rval->loc);
+    rval = *rvalp;
+    if (assertnotnull(rval->type)->kind == TYPE_OPTIONAL) {
+      // e.g. fun(x mut&?int) { if x { x++ } }
+      //                               ~~~
+      if (check_optional_valid(a, rval))
+        wrap_optderef(a, rvalp);
+    }
     break;
   }
+  }//switch
 }
 
 
@@ -1229,8 +1286,10 @@ static void block_noscope(typecheck_t* a, block_t* n) {
   }
 
   // we are done if block is not an rvalue or contains an explicit "return" statement
-  if (stmt_end == count)
+  if (stmt_end == count) {
+    n->type = type_void;
     goto end;
+  }
 
   // if the block is rvalue, treat last entry as implicitly-returned expression
   expr_t* lastexpr = (expr_t*)stmtv[stmt_end];
@@ -2107,8 +2166,24 @@ static u32 condition_narrow_expr(
   typecheck_t* a, narrowedarray_t* narrowed, u32 flags, expr_t** xp)
 {
   expr_t* x = *xp;
-  if (x->type->kind != TYPE_OPTIONAL)
-    return 0;
+
+  switch (x->type->kind) {
+    case TYPE_OPTIONAL:
+      break;
+    case TYPE_PTR:
+    case TYPE_REF:
+    case TYPE_MUTREF:
+      // e.g. "fun (x &?int) { if x }"
+      // e.g. "fun (x *?int) { if x }"
+      if (((ptrtype_t*)x->type)->elem->kind == TYPE_OPTIONAL) {
+        *xp = mkderef(a, x, x->loc);
+        x = *xp;
+        break;
+      }
+      return 0;
+    default:
+      return 0;
+  }
 
   trace("[%s] %s %s", __FUNCTION__, nodekind_name(x->kind), fmtnode(0, x));
 
@@ -2134,18 +2209,6 @@ static u32 condition_narrow_expr(
     wrap_optcheck(a, xp);
 
   return 0;
-}
-
-
-typedef long __co_int;
-struct _coOi { bool ok; __co_int v; };
-static void test_example(struct _coOi a, struct _coOi b) {
-  // a = (struct _coOi){false}; a = (struct _coOi){true,3ll}; a.v * 2ll;
-  // if (true) { a.v * 2ll; }
-  // { __co_int const k = a.v; if (a.ok) { k * 2ll; } }
-  // { __co_int k; if (a.ok ? ((k = a.v), 1) : 0) { k * 2ll; } }
-  if (a.ok) { __co_int const k = a.v; { k * 2ll; } }
-
 }
 
 
@@ -2246,7 +2309,7 @@ static u32 if_condition(typecheck_t* a, narrowedarray_t* narrowed, expr_t** cond
   trace("if_condition %s", fmtnode(0, *cond));
   typectx_push(a, type_bool);
 
-  u32 narrowflags;
+  u32 narrowflags = 0;
 
   // check for e.g. "if let x = ..."
   expr_t* x = *cond;
@@ -2260,7 +2323,7 @@ static u32 if_condition(typecheck_t* a, narrowedarray_t* narrowed, expr_t** cond
       if UNLIKELY(n->init->type->kind != TYPE_OPTIONAL) {
         error(a, n->init,
           "cannot use %s as boolean in condition", fmtnode(0, n->init->type));
-        return 0;
+        goto end;
       }
       n->flags |= NF_NARROWED;
       n->type = ((opttype_t*)n->type)->elem;
@@ -2268,11 +2331,20 @@ static u32 if_condition(typecheck_t* a, narrowedarray_t* narrowed, expr_t** cond
       error(a, n, "cannot use %s as boolean in condition", fmtnode(0, n->type));
     }
     define(a, n->name, n);
-    narrowflags = 0;
+    goto end;
   } else {
     narrowflags = condition_expr(a, narrowed, /*flags*/0, cond);
+    x = *cond;
+    if (x->type != type_bool)
+      goto error_notbool;
+    goto end;
   }
 
+error_notbool:
+  error(a, x, "cannot use %s as boolean in condition", fmtnode(0, x->type));
+  narrowflags = 0;
+
+end:
   typectx_pop(a);
   return narrowflags;
 }
@@ -2300,7 +2372,6 @@ static void ifexpr(typecheck_t* a, ifexpr_t* n) {
     check_unused(a, (const node_t**)&n->cond, 1);
   } else {
     // condition is either a variable definition or a boolean expression
-    assertf(n->cond->type == type_bool, "%s", nodekind_name(n->cond->type->kind));
   }
 
   // visit "else" branch
@@ -2437,17 +2508,6 @@ static bool check_assign(typecheck_t* a, expr_t* target) {
   }
   error(a, target, "cannot assign to %s", fmtkind(target));
   return false;
-}
-
-
-static void error_optional_access(
-  typecheck_t* a, const expr_t* expr, const opttype_t* t, const expr_t* access)
-{
-  error(a, expr, "optional value of type %s may be empty", fmtnode(0, t));
-  if (loc_line(access->loc)) {
-    help(a, access, "check %s before access, e.g: if %s %s",
-      fmtnode(0, access), fmtnode(1, access), fmtnode(2, expr));
-  }
 }
 
 
