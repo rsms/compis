@@ -64,8 +64,19 @@ typedef struct {
 } typecheck_t;
 
 
+// narrowinfo_t
+typedef struct {
+  u8 available;
+  #define NARROW_AVAIL_MAYBE ((u8)1)  // may have value
+  #define NARROW_AVAIL_YES   ((u8)2)  // definitely has value
+  #define NARROW_AVAIL_NO    ((u8)3)  // definitely no value
+} __attribute__((aligned(sizeof(void*)))) narrowinfo_t;
+
+static_assert(sizeof(narrowinfo_t) == sizeof(void*), "");
+
+
 // g_noval is a constant used to represent a narrowed "definitely unavailable" value
-static intlit_t g_noval_ = { .kind=EXPR_INTLIT, .flags=NF_NARROWED|NF_CHECKED };
+static intlit_t g_noval_ = { .kind=EXPR_INTLIT, .flags=NF_CHECKED };
 static expr_t* g_noval = (expr_t*)&g_noval_;
 
 
@@ -666,6 +677,10 @@ static bool intern_usertype(typecheck_t* a, usertype_t** tp) {
 }
 
 
+static const char* narrowinfo_fmt(u32 bufindex, narrowinfo_t info);
+static narrowinfo_t narrowinfo_lookup(typecheck_t* a, const void* storage_node);
+
+
 // true if constructing a type t has no side effects
 static bool type_cons_no_side_effects(const type_t* t) { switch (t->kind) {
   case TYPE_VOID:
@@ -834,19 +849,39 @@ static void error_unassignable_type(
   }
 
   // check if the source's type has been narrowed, e.g. from optional check
-  if (
-    (src->flags & NF_NARROWED) ||
-    (src->kind == EXPR_ID && ((idexpr_t*)src)->ref &&
-      (((idexpr_t*)src)->ref->flags & NF_NARROWED)))
-  {
-    error(a, src, "optional value %s is empty", fmtnode(0, src));
-    return;
+  if (src->type->kind == TYPE_OPTIONAL) {
+    narrowinfo_t src_narrowinfo = narrowinfo_lookup(a, src);
+    dlog("src_narrowinfo: %s", narrowinfo_fmt(0, src_narrowinfo));
+    // narrowinfo_t dst_narrowinfo = narrowinfo_lookup(a, dst);
+    // dlog("dst_narrowinfo: %s", narrowinfo_fmt(0, dst_narrowinfo));
   }
+
+  bool is_empty_optional = false;
+  dlog("src->kind %s", nodekind_name(src->kind));
+  switch (src->kind) {
+    case EXPR_FIELD:
+    case EXPR_PARAM:
+    case EXPR_LET:
+    case EXPR_VAR:
+      is_empty_optional = ((local_t*)src)->isnarrowed;
+      break;
+  }
+  // if (
+  //   ( node_islocal((node_t*)src) && ((local_t*)src)->isnarrowed ) ||
+  //   ( src->kind == EXPR_ID && ((idexpr_t*)src)->ref &&
+  //     (((idexpr_t*)src)->ref->flags & NF_NARROWED) ) )
+  // {
+  //   error(a, src, "optional value %s is empty", fmtnode(0, src));
+  //   return;
+  // }
 
   type_t* srctype = src->type;
 
   // check if destination is a narrowed local
-  if ((dst->flags & NF_NARROWED) && srctype->kind == TYPE_OPTIONAL) {
+  if (
+    srctype->kind == TYPE_OPTIONAL &&
+    node_islocal((node_t*)dst) && ((local_t*)dst)->isnarrowed )
+  {
     // instead of "cannot assign value of type ?int to binding of type i8"
     // say        "cannot assign value of type int to binding of type i8"
     // for e.g.
@@ -905,22 +940,11 @@ static void leave_ns(typecheck_t* a) {
 }
 
 
-// narrowinfo_t
-typedef struct {
-  u8 available;
-  #define NARROW_AVAIL_MAYBE ((u8)1)  // may have value
-  #define NARROW_AVAIL_YES   ((u8)2)  // definitely has value
-  #define NARROW_AVAIL_NO    ((u8)3)  // definitely no value
-} __attribute__((aligned(sizeof(void*)))) narrowinfo_t;
-
-static_assert(sizeof(narrowinfo_t) == sizeof(void*), "");
-
-
 static const char* narrowinfo_fmt(u32 bufindex, narrowinfo_t info) {
   buf_t* buf = tmpbuf_get(bufindex);
   buf_print(buf, "{available=");
   switch (info.available) {
-    case 0:
+    case 0:                  buf_print(buf, "default"); break;
     case NARROW_AVAIL_MAYBE: buf_print(buf, "MAYBE"); break;
     case NARROW_AVAIL_YES:   buf_print(buf, "YES"); break;
     case NARROW_AVAIL_NO:    buf_print(buf, "NO"); break;
@@ -1154,29 +1178,31 @@ static void wrap_optderef(typecheck_t* a, expr_t** xp) {
 static bool check_optional_valid(typecheck_t* a, expr_t* rval) {
   assert(rval->type->kind == TYPE_OPTIONAL);
   switch (rval->kind) {
-  case EXPR_MEMBER: {
-    dlog("TODO: narrowinfo_lookup with member");
-    const void* key = assertnotnull(field_of_member((member_t*)rval));
-    node_t* sub = scope_lookup(&a->scope, key, 0);
-    if (sub && (sub->flags & NF_NARROWED)) {
-      if UNLIKELY(sub == (node_t*)g_noval)
+    // case EXPR_MEMBER: {
+    //   // return true;
+    //   panic("X");
+    //   dlog("TODO: narrowinfo_lookup with member");
+    //   const void* key = assertnotnull(field_of_member((member_t*)rval));
+    //   node_t* sub = scope_lookup(&a->scope, key, 0);
+    //   if (sub && (sub->flags & NF_NARROWED)) {
+    //     if UNLIKELY(sub == (node_t*)g_noval)
+    //       goto err_empty;
+    //     trace("implicit optderef of narrowed %s#%p", nodekind_name(sub->kind),sub);
+    //     return true;
+    //   }
+    //   return false;
+    // }
+    case EXPR_DEREF: {
+      unaryop_t* op = (unaryop_t*)rval;
+      assert(nodekind_isptrliketype(op->expr->type->kind));
+      narrowinfo_t info = narrowinfo_lookup(a, op->expr);
+      if UNLIKELY(info.available == NARROW_AVAIL_YES)
+        return true;
+      if UNLIKELY(info.available == NARROW_AVAIL_NO)
         goto err_empty;
-      trace("implicit optderef of narrowed %s#%p", nodekind_name(sub->kind),sub);
-      return true;
+      error_optional_access(a, rval, (opttype_t*)rval->type, rval);
+      return false;
     }
-    return false;
-  }
-  case EXPR_DEREF: {
-    unaryop_t* op = (unaryop_t*)rval;
-    assert(nodekind_isptrliketype(op->expr->type->kind));
-    narrowinfo_t info = narrowinfo_lookup(a, op->expr);
-    if UNLIKELY(info.available == NARROW_AVAIL_YES)
-      return true;
-    if UNLIKELY(info.available == NARROW_AVAIL_NO)
-      goto err_empty;
-    error_optional_access(a, rval, (opttype_t*)rval->type, rval);
-    return false;
-  }
   }
   panic("TODO: [%s] %s", __FUNCTION__, nodekind_name(rval->kind));
 err_empty:
@@ -1199,12 +1225,16 @@ static void implicit_rvalue_deref(typecheck_t* a, const type_t* ltype, expr_t** 
   // implicit dereference
   switch (rtype->kind) {
   case TYPE_OPTIONAL:
-    if (ltype->kind == TYPE_OPTIONAL)
+    if (
+      ltype->kind == TYPE_OPTIONAL ||
+      rval->kind == EXPR_ID ||
+      rval->kind == EXPR_MEMBER)
+    {
+      // note: EXPR_ID and EXPR_MEMBER handled by check_optional_rvalue
       break;
-    if (rval->kind != EXPR_ID && check_optional_valid(a, *rvalp)) {
-      // note: id handled explicitly by idexpr
-      wrap_optderef(a, rvalp);
     }
+    if (check_optional_valid(a, *rvalp))
+      wrap_optderef(a, rvalp);
     break;
 
   case TYPE_PTR: {
@@ -1212,7 +1242,7 @@ static void implicit_rvalue_deref(typecheck_t* a, const type_t* ltype, expr_t** 
       break;
     *rvalp = mkderef(a, rval, rval->loc);
     rval = *rvalp;
-    dlog("rval %s [%s]", fmtnode(0, rval), fmtnode(1, rval->type));
+    // dlog("rval %s [%s]", fmtnode(0, rval), fmtnode(1, rval->type));
     if (assertnotnull(rval->type)->kind == TYPE_OPTIONAL) {
       // e.g. fun(x ?*int) { if x { x++ } }
       //                            ~~~
@@ -1346,7 +1376,7 @@ static void local(typecheck_t* a, local_t* n) {
       n->type = n->init->type;
     } else {
       type_t* rtype = n->init->type;
-      if ((n->flags & NF_NARROWED) && n->type != type_void) {
+      if (n->isnarrowed && n->type != type_void) {
         // handle type narrowed local, e.g.
         //   fun example(a ?int)
         //     if let x = a  <—— "let x" is of type "int" but a is "?int"
@@ -1370,9 +1400,7 @@ static void local(typecheck_t* a, local_t* n) {
   // n->flags |= NF_MUT;
 
   if UNLIKELY(
-    (n->type == type_void || n->type == type_unknown) &&
-    (n->flags & NF_NARROWED) == 0 &&
-    noerror(a))
+    (n->type == type_void || n->type == type_unknown) && !n->isnarrowed && noerror(a))
   {
     error(a, n, "cannot define %s of type void", fmtkind(n));
   }
@@ -2325,7 +2353,7 @@ static u32 if_condition(typecheck_t* a, narrowedarray_t* narrowed, expr_t** cond
           "cannot use %s as boolean in condition", fmtnode(0, n->init->type));
         goto end;
       }
-      n->flags |= NF_NARROWED;
+      n->isnarrowed = true;
       n->type = ((opttype_t*)n->type)->elem;
     } else if UNLIKELY(n->type != type_bool) {
       error(a, n, "cannot use %s as boolean in condition", fmtnode(0, n->type));
@@ -2509,24 +2537,6 @@ static bool check_assign(typecheck_t* a, expr_t* target) {
   error(a, target, "cannot assign to %s", fmtkind(target));
   return false;
 }
-
-
-// static bool is_narrowed(const void* node) {
-//   const node_t* n = node;
-//   return ( n->flags & NF_NARROWED ) ||
-//          ( n->kind == EXPR_ID && ((idexpr_t*)n)->ref &&
-//            (((idexpr_t*)n)->ref->flags & NF_NARROWED) );
-// }
-
-
-// static void undo_narrowed(void* node) {
-//   node_t* n = node;
-//   assert(is_narrowed(n));
-//   n->flags &= ~NF_NARROWED;
-//   idexpr_t* id = node;
-//   if (n->kind == EXPR_ID && assertnotnull(id->ref)->flags & NF_NARROWED)
-//     id->ref->flags &= ~NF_NARROWED;
-// }
 
 
 static void assign(typecheck_t* a, binop_t* n) {
