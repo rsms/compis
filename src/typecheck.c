@@ -151,8 +151,9 @@ static const char* fmtkind(const void* node) {
     = ((a)->traceindent++, (a))
 
 #else
-  #define trace_node(a,msg,n) ((void)0)
-  #define TRACE_NODE(a,msg,n) ((void)0)
+  #define trace_node(a,msg,n)  ((void)0)
+  #define TRACE_NODE(a,msg,n)  ((void)0)
+  #define TRACEINDENT_SCOPE(a) ((void)0)
 #endif
 
 
