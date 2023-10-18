@@ -207,17 +207,32 @@ X86_ARCH_SOURCES=( # these files are used on 32-bit and 64-bit x86
   cpu_model.c \
   i386/fp_mode.c \
 )
-# X86_80_BIT_SOURCES is ignored
+# Implement extended-precision builtins, assuming long double is 80 bits.
+# long double is not 80 bits on Android or MSVC.
+X86_80_BIT_SOURCES=(
+  divxc3.c \
+  fixxfdi.c \
+  fixxfti.c \
+  fixunsxfdi.c \
+  fixunsxfsi.c \
+  fixunsxfti.c \
+  floatdixf.c \
+  floattixf.c \
+  floatundixf.c \
+  floatuntixf.c \
+  mulxc3.c \
+  powixf2.c \
+)
 X86_64_SOURCES=(
   x86_64/floatdidf.c \
   x86_64/floatdisf.c \
   x86_64/floatundidf.S \
   x86_64/floatundisf.S \
-  \
 )
 X86_64_SOURCES+=( # cmake: if (NOT ANDROID)
   x86_64/floatdixf.c \
   x86_64/floatundixf.S \
+  "${X86_80_BIT_SOURCES[@]}" \
 )
 # X86_64_SOURCES_WIN32=( # cmake: if (WIN32)
 #   ${X86_64_SOURCES[@]} \
@@ -241,6 +256,7 @@ I386_SOURCES=(
 I386_SOURCES+=( # cmake: if (NOT ANDROID)
   i386/floatdixf.S \
   i386/floatundixf.S \
+  "${X86_80_BIT_SOURCES[@]}" \
 )
 # I386_SOURCES_WIN32=( # cmake: if (WIN32)
 #   ${I386_SOURCES[@]} \
