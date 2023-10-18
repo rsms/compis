@@ -88,19 +88,25 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
   bool iscompiling = false;
   bool ispastflags = false;
   bool print_only = false;
+  bool has_link_flags = false;
 
   // process input command-line args
   // https://clang.llvm.org/docs/ClangCommandLineReference.html
   // https://gcc.gnu.org/onlinedocs/gcc/Invoking-GCC.html
   // https://gcc.gnu.org/onlinedocs/gcc/Directory-Options.html
   for (int i = 1; i < user_argc; i++) {
-    const char* arg = user_argv[i];
+    char* arg = user_argv[i];
     if (*arg == '-' && !ispastflags) {
 
       // general options
       if (streq(arg, "-v") || streq(arg, "--verbose")) {
         config.verbose = true;
         coverbose = MAX(coverbose, 1);
+      } else if (streq(arg, "-vv")) {
+        // note: -vv is compis-specific and is converted to "-v"
+        arg[2] = 0; // "-vv" -> "-v"
+        config.verbose = true;
+        coverbose = MAX(coverbose, 2);
       } else if (streq(arg, "-###")) {
         config.verbose = true;
         coverbose = MAX(coverbose, 2);
@@ -139,6 +145,8 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
       } else if (streq(arg, "-nostdlib++")) {
         // Do not implicitly link with standard C++ libraries
         link_libcxx = false;
+      } else if (streq(arg, "-fno-lto")) {
+        config.nolto = true;
       } else if (string_startswith(arg, "-fuse-ld=")) {
         custom_ld = true;
         // must disable LTO, or else clang complains:
@@ -163,8 +171,30 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
         // at main.
         freestanding = true;
       } else if (streq(arg, "-c") || streq(arg, "-S") || streq(arg, "-E")) {
+        // -c "only compile"
+        // -S "only assemble"
+        // -E "only preprocess"
         link = false;
         iscompiling = true;
+      } else if (streq(arg, "-x")) {
+        iscompiling = true;
+      } else if (streq(arg, "-L") || streq(arg, "-l")) {
+        has_link_flags = true;
+      } else if (streq(arg, "-o")) {
+        // infer "no linking" based on output filename
+        if (i+1 < user_argc) {
+          arg = user_argv[i+1];
+          const char* ext = path_ext_cstr(arg);
+          if (*ext++ && ( // guard ""
+            strieq(ext, "o") ||
+            strieq(ext, "pch") ||
+            strieq(ext, "h") ||
+            strieq(ext, "hh") ||
+            strieq(ext, "hpp") ))
+          {
+            link = false;
+          }
+        }
       } else if (streq(arg, "-O0")) {
         config.nolto = true;
       } else if (string_startswith(arg, "-O")) {
@@ -230,17 +260,29 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
     // non-option args (does not start with "-" OR we have seen "--")
     else {
       const char* ext = path_ext_cstr(arg);
-      if (*ext++ == '.' && *ext) {
+      if (*ext && *ext == '.' && ext[1]) { // unless "" or "."
+        ext++; // skip past "."
         if (ext[1] == 0) {
           char c = *ext;
-          if (c == 'c' || c == 'C' || c == 's' || c == 'S' || c == 'm' || c == 'M')
+          if (c == 'c' || c == 'C' || c == 's' || c == 'S' || c == 'm' || c == 'M') {
             iscompiling = true;
-        } else if (strieq(ext, "cc") || strieq(ext, "cpp") || strieq(ext, "mm")) {
+          } else if (c == 'h' || c == 'H') {
+            iscompiling = true;
+            link = false;
+          }
+        } else if (
+          strieq(ext, "cc") || strieq(ext, "cpp") || strieq(ext, "mm") ||
+          strieq(ext, "pch") || strieq(ext, "hh") || strieq(ext, "hpp") )
+        {
           iscompiling = true;
         }
       }
     }
   } // end of argv loop
+
+  // if any link flags are given, then infer invocation as "linking"
+  if (has_link_flags)
+    link = true;
 
   // check if modules are enabled
   if (enable_modules && !custom_sysroot) {
@@ -309,14 +351,16 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
   if (freestanding) {
     // no builtins, no libc, no librt
     strlist_add(&args, "-nostdinc", "-nostdlib");
+    // add minimal args needed (from compiler.c's configure_cflags)
+    strlist_addf(&args, "-B%s", coroot);
+    strlist_addf(&args, "--target=%s", c.target.triple);
+    strlist_addf(&args, "-resource-dir=%s/clangres/", coroot);
   } else {
     // add fundamental "target" compilation flags
-    if (iscompiling) {
-      if (custom_sysroot) {
-        strlist_add_array(&args, c.flags_common.strings, c.flags_common.len);
-      } else {
-        strlist_add_array(&args, c.cflags_common.strings, c.cflags_common.len);
-      }
+    if (iscompiling && !custom_sysroot) {
+      strlist_add_array(&args, c.cflags_common.strings, c.cflags_common.len);
+    } else {
+      strlist_add_array(&args, c.flags_common.strings, c.flags_common.len);
     }
 
     // add include flags for system headers and libc
@@ -330,8 +374,10 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
         strlist_addf(&args, "-isystem%s/libcxxabi/include", coroot);
         strlist_addf(&args, "-isystem%s/libunwind/include", coroot);
       }
-      if (!custom_sysroot)
+      if (!custom_sysroot) {
         strlist_add_array(&args, c.cflags_sysinc.strings, c.cflags_sysinc.len);
+        strlist_addf(&args, "-isystem%s/clangres/include", coroot);
+      }
     }
   }
 
@@ -348,6 +394,10 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
       if (!print_only && ( err = symlink_ld(&c) ))
         die("failed to create linker symlink: %s", err_str(err));
       char* bindir = path_dir_alloca(coexefile);
+      // disable warning
+      //   compis: warning: '-fuse-ld=' taking a path is deprecated;
+      //   use '--ld-path=' instead [-Wfuse-ld-path]
+      strlist_add(&args, "-Wno-fuse-ld-path");
       strlist_addf(&args, "-fuse-ld=%s/%s", bindir, c.ldname); // TODO: just ldname?
     }
 
@@ -469,11 +519,12 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
   if (!args.ok)
     return dlog("strlist_array failed"), 1;
 
-  #if DEBUG
-  dlog("invoking %s", argv[0]);
-  for (u32 i = 1; i < args.len; i++)
-    fprintf(stderr, "  %s\n", argv[i]);
-  #endif
+  // print effective clang invocation in -vv and -### mode
+  if (coverbose > 1) {
+    printf("compis cc exec: %s%s", argv[0], args.len > 0 ? " \\" : "");
+    for (u32 i = 1; i < args.len; i++)
+      printf("  %s%s\n", argv[i], i+1 < args.len ? " \\" : "");
+  }
 
   // invoke clang
   return clang_main((int)args.len, argv);

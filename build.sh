@@ -13,14 +13,14 @@ DOWNLOAD_DIR="$PROJECT/deps/download"
 SRC_DIR="$PROJECT/src"
 MAIN_EXE=co
 PP_PREFIX=CO_
-WASM_SYMS="$PROJECT/etc/wasm.syms"
-TARGET=
+CO_VERSION=$(cat "$PROJECT/version.txt")
 
 WATCH=
 WATCH_ADDL_FILES=()
 RUN=
 NON_WATCH_ARGS=()
 
+TARGET=
 OUT_DIR=
 BUILD_MODE=opt  # opt | opt-fast | debug
 TESTING_ENABLED=false
@@ -28,10 +28,12 @@ ONLY_CONFIGURE=false
 STRIP=false
 DEBUGGABLE=true
 VERBOSE=false
+USE_SELF=false
 ENABLE_LTO=
 CREATE_TOOL_SYMLINKS=false
 NINJA_ARGS=()
 XFLAGS=()
+LDFLAGS=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -51,6 +53,7 @@ while [[ $# -gt 0 ]]; do
   -out=*)    OUT_DIR=${1:5}; shift; continue ;;
   -target=*) TARGET=${1:8}; shift; continue ;;
   -mklinks)  CREATE_TOOL_SYMLINKS=true; shift ;;
+  -use-self) USE_SELF=true; shift ;;
   -g)        DEBUGGABLE=true; STRIP=false; shift ;;
   -v)        VERBOSE=true; NINJA_ARGS+=(-v); shift ;;
   -n)        NINJA_ARGS+=(-n); shift ;;
@@ -76,6 +79,7 @@ Misc options:
   -wf=<file> Watch <file> for changes (can be provided multiple times)
   -run=<cmd> Run <cmd> after successful build
   -v         Verbose log messages and disables pretty ninja output
+  -use-self  Build compis with compis (requires functioning compis in out/dist)
   -help      Show help on stdout and exit
 _END
     exit ;;
@@ -102,10 +106,12 @@ case "$HOST_SYS" in
   *)      HOST_SYS=$(awk '{print tolower($0)}' <<< "$HOST_SYS") ;;
 esac
 
-# cross compilation
 TARGET_ARCH=$HOST_ARCH
 TARGET_SYS=$HOST_SYS
-if [ -n "$TARGET" ]; then
+if [ -z "$TARGET" ]; then
+  TARGET="$TARGET_ARCH-$TARGET_SYS"
+else
+  # validate -target <target> arg
   [[ "$TARGET" != *"."* ]] || _err "unexpected version in target \"$TARGET\""
   for target_info in $(_co_targets); do
     # arch,sys,sysver,intsize,ptrsize,llvm_triple
@@ -114,11 +120,11 @@ if [ -n "$TARGET" ]; then
       TARGET="$arch-$sys"
       TARGET_ARCH=$arch
       TARGET_SYS=$sys
-      TARGET_TRIPLE=$llvm_triple
+      TARGET_LLVM_TRIPLE=$llvm_triple
       break
     fi
   done
-  if [ -z "$TARGET_TRIPLE" ]; then
+  if [ -z "$TARGET_LLVM_TRIPLE" ]; then
     echo "$0: Invalid target: $TARGET" >&2
     printf "Available targets:" >&2
     for target_info in $(_co_targets); do
@@ -129,7 +135,7 @@ if [ -n "$TARGET" ]; then
     exit 1
   fi
   $VERBOSE && echo "TARGET=$TARGET"
-  $VERBOSE && echo "TARGET_TRIPLE=$TARGET_TRIPLE"
+  $VERBOSE && echo "TARGET_LLVM_TRIPLE=$TARGET_LLVM_TRIPLE"
 fi
 
 # —————————————————————————————————————————————————————————————————————————————————
@@ -154,7 +160,8 @@ _hascmd curl || _hascmd wget || _err "curl nor wget found in PATH"
 
 LLVM_RELEASE=15.0.7
 LLVMBOX_RELEASE=$LLVM_RELEASE+3
-LLVMBOX_DESTDIR="$DEPS_DIR/llvmbox"
+LLVMBOX_HOST_DESTDIR="$DEPS_DIR/llvmbox-$HOST_ARCH-$HOST_SYS"
+LLVMBOX_TARGET_DESTDIR="$DEPS_DIR/llvmbox-$TARGET_ARCH-$TARGET_SYS"
 LLVMBOX_RELEASES=( # github.com/rsms/llvmbox/releases/download/VERSION/sha256sum.txt
   "b7cc09f1864be3c2c2dca586224c932082638c8c6d60ca9e92e29564b729eb3e  llvmbox-15.0.7+3-aarch64-linux.tar.xz" \
   "2df11c8106d844957ef49997c07d970eb5730a964586dd20f7c155aa9409376f  llvmbox-15.0.7+3-aarch64-macos.tar.xz" \
@@ -166,71 +173,113 @@ LLVMBOX_RELEASES=( # github.com/rsms/llvmbox/releases/download/VERSION/sha256sum
   "746dd6fb68fe2dac217de3e81cf048829530af4c5b4f65fffb36e404d21a62bd  llvmbox-dev-15.0.7+3-x86_64-macos.tar.xz" \
 )
 LLVMBOX_URL_BASE=https://github.com/rsms/llvmbox/releases/download/v$LLVMBOX_RELEASE
-LLVM_CONFIG="$LLVMBOX_DESTDIR/bin/llvm-config"
+LLVM_CONFIG="$LLVMBOX_HOST_DESTDIR/bin/llvm-config"
 
-# find llvmbox for host system
-LLVMBOX_SHA256_FILE=
-LLVMBOX_DEV_SHA256_FILE=
-for sha256_file in "${LLVMBOX_RELEASES[@]}"; do
-  IFS=' ' read -r sha256 file <<< "$sha256_file"
+# find llvmbox sources
+LLVMBOX_HOST_SOURCE=
+LLVMBOX_HOST_DEV_SOURCE=
+LLVMBOX_TARGET_SOURCE=
+LLVMBOX_TARGET_DEV_SOURCE=
+for sha256_and_file in "${LLVMBOX_RELEASES[@]}"; do
+  IFS=' ' read -r sha256 file <<< "$sha256_and_file"
   if [[ "$file" == "llvmbox-$LLVMBOX_RELEASE-$HOST_ARCH-$HOST_SYS.tar.xz" ]]; then
-    LLVMBOX_SHA256_FILE=$sha256_file
+    LLVMBOX_HOST_SOURCE=$sha256_and_file
   elif [[ "$file" == "llvmbox-dev-$LLVMBOX_RELEASE-$HOST_ARCH-$HOST_SYS.tar.xz" ]]; then
-    LLVMBOX_DEV_SHA256_FILE=$sha256_file
+    LLVMBOX_HOST_DEV_SOURCE=$sha256_and_file
+  fi
+  if [[ "$file" == "llvmbox-$LLVMBOX_RELEASE-$TARGET_ARCH-$TARGET_SYS.tar.xz" ]]; then
+    LLVMBOX_TARGET_SOURCE=$sha256_and_file
+  elif [[ "$file" == "llvmbox-dev-$LLVMBOX_RELEASE-$TARGET_ARCH-$TARGET_SYS.tar.xz" ]]; then
+    LLVMBOX_TARGET_DEV_SOURCE=$sha256_and_file
   fi
 done
-[ -n "$LLVMBOX_SHA256_FILE" ] ||
+[ -n "$LLVMBOX_HOST_SOURCE" ] ||
   _err "llvmbox not available for llvm-$LLVMBOX_RELEASE-$HOST_ARCH-$HOST_SYS"
-[ -n "$LLVMBOX_DEV_SHA256_FILE" ] ||
+[ -n "$LLVMBOX_HOST_DEV_SOURCE" ] ||
   _err "llvmbox-dev not available for llvm-$LLVMBOX_RELEASE-$HOST_ARCH-$HOST_SYS"
+[ -n "$LLVMBOX_TARGET_SOURCE" ] ||
+  _err "llvmbox not available for llvm-$LLVMBOX_RELEASE-$TARGET_ARCH-$TARGET_SYS"
+[ -n "$LLVMBOX_TARGET_DEV_SOURCE" ] ||
+  _err "llvmbox-dev not available for llvm-$LLVMBOX_RELEASE-$TARGET_ARCH-$TARGET_SYS"
 
 # extract llvmbox
-if [ "$(cat "$LLVMBOX_DESTDIR/version" 2>/dev/null)" != "$LLVMBOX_RELEASE" ]; then
-  IFS=' ' read -r sha256 file <<< "$LLVMBOX_SHA256_FILE"
-  _download "$LLVMBOX_URL_BASE/$file" "$DOWNLOAD_DIR/$file" "$sha256"
-  _extract_tar "$DOWNLOAD_DIR/$file" "$LLVMBOX_DESTDIR"
-  echo "$LLVMBOX_RELEASE" > "$LLVMBOX_DESTDIR/version"
-else
-  $VERBOSE && echo "$(_relpath "$LLVMBOX_DESTDIR") (base): up-to-date"
-fi
+LLVMBOX_INSTALLATIONS=(
+  "$LLVMBOX_HOST_DESTDIR:$LLVMBOX_HOST_SOURCE:$LLVMBOX_HOST_DEV_SOURCE" )
+[ "$LLVMBOX_HOST_DESTDIR" = "$LLVMBOX_TARGET_DESTDIR" ] || LLVMBOX_INSTALLATIONS+=(
+  "$LLVMBOX_TARGET_DESTDIR:$LLVMBOX_TARGET_SOURCE:$LLVMBOX_TARGET_DEV_SOURCE" )
 
-# extract llvmbox-dev into llvmbox
-if [ ! -f "$LLVMBOX_DESTDIR/lib/libz.a" ]; then
-  IFS=' ' read -r sha256 file <<< "$LLVMBOX_DEV_SHA256_FILE"
-  _download "$LLVMBOX_URL_BASE/$file" "$DOWNLOAD_DIR/$file" "$sha256"
-  echo "extract $(basename "$DOWNLOAD_DIR/$file") -> $(_relpath "$LLVMBOX_DESTDIR")"
-  XZ_OPT='-T0' tar -C "$LLVMBOX_DESTDIR" --strip-components 1 -xf "$DOWNLOAD_DIR/$file"
-else
-  $VERBOSE && echo "$(_relpath "$LLVMBOX_DESTDIR") (dev): up-to-date"
-fi
+for LLVMBOX_INSTALLATION in "${LLVMBOX_INSTALLATIONS[@]}"; do
+  IFS=':' read -r LLVMBOX_DESTDIR LLVMBOX_SOURCE LLVMBOX_DEV_SOURCE \
+    <<< "$LLVMBOX_INSTALLATION"
 
-# cross compilation: extract llvmbox-dev into dedicated directory
-if test $TARGET && [ "$TARGET_ARCH-$TARGET_SYS" != "$HOST_ARCH-$HOST_SYS" ]; then
-  TARGET_LLVMBOX_DEV="$LLVMBOX_DESTDIR-$TARGET"
-  LLVMBOX_DEV_SHA256_FILE=
-  for sha256_file in "${LLVMBOX_RELEASES[@]}"; do
-    IFS=' ' read -r sha256 tar_file <<< "$sha256_file"
-    if [ "$tar_file" = "llvmbox-dev-$LLVMBOX_RELEASE-$TARGET_ARCH-$TARGET_SYS.tar.xz" ]
-    then
-      LLVMBOX_DEV_SHA256_FILE=$sha256_file
-      break
-    fi
-  done
-  [ -n "$LLVMBOX_DEV_SHA256_FILE" ] ||
-    _err "unsupported target $TARGET (no llvmbox distribution found for this target)"
-  if [ ! -f "$TARGET_LLVMBOX_DEV/lib/libz.a" ]; then
-    _download "$LLVMBOX_URL_BASE/$tar_file" "$DOWNLOAD_DIR/$tar_file" "$sha256"
-    _extract_tar "$DOWNLOAD_DIR/$tar_file" "$TARGET_LLVMBOX_DEV"
+  # # [debug]
+  # IFS=' ' read -r LLVMBOX_SOURCE_SHA256 LLVMBOX_SOURCE_FILE \
+  #   <<< "$LLVMBOX_SOURCE"
+  # IFS=' ' read -r LLVMBOX_DEV_SOURCE_SHA256 LLVMBOX_DEV_SOURCE_FILE \
+  #   <<< "$LLVMBOX_DEV_SOURCE"
+  # echo "$LLVMBOX_DESTDIR"
+  # echo "  $LLVMBOX_SOURCE_FILE"
+  # echo "    $LLVMBOX_SOURCE_SHA256"
+  # echo "  $LLVMBOX_DEV_SOURCE_FILE"
+  # echo "    $LLVMBOX_DEV_SOURCE_SHA256"
+
+  # "use" part of llvmbox
+  if [ "$(cat "$LLVMBOX_DESTDIR/version" 2>/dev/null)" != "$LLVMBOX_RELEASE" ]; then
+    IFS=' ' read -r sha256 file <<< "$LLVMBOX_SOURCE"
+    _download "$LLVMBOX_URL_BASE/$file" "$DOWNLOAD_DIR/$file" "$sha256"
+    _extract_tar "$DOWNLOAD_DIR/$file" "$LLVMBOX_DESTDIR"
+    echo "$LLVMBOX_RELEASE" > "$LLVMBOX_DESTDIR/version"
   else
-    $VERBOSE && echo "$(_relpath "$TARGET_LLVMBOX_DEV"): up-to-date"
+    $VERBOSE && echo "$(_relpath "$LLVMBOX_DESTDIR") (base): up-to-date"
   fi
+  # "dev" part of llvmbox
+  if [ ! -f "$LLVMBOX_DESTDIR/lib/libLLVMCore.a" ]; then
+    IFS=' ' read -r sha256 file <<< "$LLVMBOX_DEV_SOURCE"
+    _download "$LLVMBOX_URL_BASE/$file" "$DOWNLOAD_DIR/$file" "$sha256"
+    echo "extract $(basename "$DOWNLOAD_DIR/$file") -> $(_relpath "$LLVMBOX_DESTDIR")"
+    XZ_OPT='-T0' tar -C "$LLVMBOX_DESTDIR" --strip-components 1 -xf "$DOWNLOAD_DIR/$file"
+  else
+    $VERBOSE && echo "$(_relpath "$LLVMBOX_DESTDIR") (dev): up-to-date"
+  fi
+done
+
+# select compiler to use for compiling compis
+# if we are cross compiling, use compis itself
+if $USE_SELF || [ "$TARGET_ARCH-$TARGET_SYS" != "$HOST_ARCH-$HOST_SYS" ]; then
+  CO_HOST_DESTDIR=$PROJECT/out/dist/compis-$CO_VERSION-$HOST_ARCH-$HOST_SYS
+  if [ ! -x "$CO_HOST_DESTDIR/compis" ]; then
+    echo "building compis for host, to be used as stage-1 compiler"
+    sleep 1
+    "$PROJECT/etc/dist.sh" \
+      --force --no-codesign --no-clean --no-tar \
+      "$HOST_ARCH-$HOST_SYS"
+  fi
+  # compile with compis
+  XFLAGS+=( -target $TARGET )
+  LDFLAGS+=( -target $TARGET )
+  CC_IS_COMPIS=true
+  export CC="$CO_HOST_DESTDIR/cc"
+  export CXX="$CO_HOST_DESTDIR/c++"
+  export PATH="$CO_HOST_DESTDIR:$PATH"
+  # warm up compis
+  if [ $BUILD_MODE = debug ]; then
+    echo | $CC  -O0 -c -x c -o /dev/null -
+    echo | $CXX -O0 -c -x c++ -o /dev/null -
+  else
+    echo | $CC  -O2 -c -x c -o /dev/null -
+    echo | $CXX -O2 -c -x c++ -o /dev/null -
+  fi
+else
+  # compile with llvmbox (for host)
+  CC_IS_COMPIS=false
+  export CC="$LLVMBOX_HOST_DESTDIR/bin/clang"
+  export CXX="$LLVMBOX_HOST_DESTDIR/bin/clang++"
+  export PATH="$LLVMBOX_HOST_DESTDIR/bin:$PATH"
 fi
 
+# prefer "ninja" from system, fall back to llvmbox version
 NINJA=${NINJA:-$(command -v ninja 2>/dev/null || true)}
-export CC="$LLVMBOX_DESTDIR/bin/clang"
-export CXX="$LLVMBOX_DESTDIR/bin/clang++"
-export PATH="$LLVMBOX_DESTDIR/bin:$PATH"
-[ -n "$NINJA" ] || NINJA=$LLVMBOX_DESTDIR/bin/ninja
+[ -n "$NINJA" ] || NINJA=$LLVMBOX_HOST_DESTDIR/bin/ninja
 export NINJA  # for watch mode
 
 # —————————————————————————————————————————————————————————————————————————————————
@@ -373,20 +422,15 @@ fi
 # —————————————————————————————————————————————————————————————————————————————————
 # construct flags
 #
-#   XFLAGS             compiler flags (common to C and C++)
-#     XFLAGS_HOST      compiler flags specific to native host target
-#     XFLAGS_WASM      compiler flags specific to WASM target
-#     CFLAGS           compiler flags for C
-#       CFLAGS_HOST    compiler flags for C specific to native host target
-#       CFLAGS_WASM    compiler flags for C specific to WASM target
-#       CFLAGS_LLVM    compiler flags for C files in src/llvm/
-#     CXXFLAGS         compiler flags for C++
-#       CXXFLAGS_HOST  compiler flags for C++ specific to native host target
-#       CXXFLAGS_WASM  compiler flags for C++ specific to WASM target
-#       CXXFLAGS_LLVM  compiler flags for C++ files in src/llvm/
-#   LDFLAGS            linker flags common to all targets
-#     LDFLAGS_HOST     linker flags specific to native host target (cc suite's ld)
-#     LDFLAGS_WASM     linker flags specific to WASM target (llvm's wasm-ld)
+#   XFLAGS              compiler flags (common to C and C++)
+#     XFLAGS_NATIVE     compiler flags specific to native target
+#     CFLAGS            compiler flags for C
+#       CFLAGS_NATIVE   compiler flags for C specific to native target
+#       CFLAGS_LLVM     compiler flags for C files in src/llvm/
+#     CXXFLAGS          compiler flags for C++
+#       CXXFLAGS_NATIVE compiler flags for C++ specific to native target
+#       CXXFLAGS_LLVM   compiler flags for C++ files in src/llvm/
+#   LDFLAGS             linker flags
 #
 XFLAGS+=(
   -feliminate-unused-debug-types \
@@ -408,24 +452,19 @@ XFLAGS+=(
   -Wno-pragma-once-outside-header \
 )
 $TESTING_ENABLED && XFLAGS+=( -D${PP_PREFIX}TESTING_ENABLED )
-XFLAGS_HOST=()
-XFLAGS_WASM=( --target=wasm32 -fvisibility=hidden )
+XFLAGS_NATIVE=()
 
 CFLAGS=( -std=c11 -fms-extensions -Wno-microsoft )
-CFLAGS_HOST=( $("$LLVM_CONFIG" --cflags) )
-CFLAGS_WASM=()
+CFLAGS_NATIVE=( $("$LLVM_CONFIG" --cflags) )
 CFLAGS_LLVM=()
 
 CXXFLAGS=( -std=c++14 -fvisibility-inlines-hidden -fno-exceptions -fno-rtti )
-CXXFLAGS_HOST=()
-CXXFLAGS_WASM=()
+CXXFLAGS_NATIVE=()
 CXXFLAGS_LLVM=()
 
-LDFLAGS_HOST=( -gz=zlib )
-LDFLAGS_WASM=( --no-entry --no-gc-sections --export-dynamic --import-memory )
+LDFLAGS+=( -gz=zlib )
 
 # version
-CO_VERSION=$(cat "$PROJECT/version.txt")
 IFS=. read -r CO_VER_MAJ CO_VER_MIN CO_VER_BUILD <<< "$CO_VERSION"
 IFS=+ read -r CO_VER_BUILD CO_VER_TAG <<< "$CO_VER_BUILD"
 XFLAGS+=(
@@ -440,28 +479,28 @@ CO_VERSION_GIT=
   CO_VERSION_GIT=$(git -C "$PROJECT" rev-parse HEAD)
 
 # arch-and-system-specific flags
-case "$HOST_ARCH-$HOST_SYS" in
+case "$TARGET_ARCH-$TARGET_SYS" in
   x86_64-macos)
-    XFLAGS_HOST+=( -mmacos-version-min=10.15 )
-    LDFLAGS_HOST+=( -Wl,-platform_version,macos,10.15,10.15 )
+    XFLAGS_NATIVE+=( -mmacos-version-min=10.15 )
+    LDFLAGS+=( -Wl,-platform_version,macos,10.15,10.15 )
     ;;
   aarch64-macos)
-    XFLAGS_HOST+=( -mmacos-version-min=11.0 )
-    LDFLAGS_HOST+=( -Wl,-platform_version,macos,11.0,11.0 )
+    XFLAGS_NATIVE+=( -mmacos-version-min=11.0 )
+    LDFLAGS+=( -Wl,-platform_version,macos,11.0,11.0 )
     ;;
 esac
 
 # system-specific flags
-case "$HOST_SYS" in
-  linux) LDFLAGS_HOST+=( -static ) ;;
-  macos) LDFLAGS_HOST+=( -Wl,-adhoc_codesign ) ;;
+case "$TARGET_SYS" in
+  linux) LDFLAGS+=( -static ) ;;
+  macos) LDFLAGS+=( -Wl,-adhoc_codesign ) ;;
 esac
 
 # build-mode-specific flags
 case "$BUILD_MODE" in
   debug)
     XFLAGS+=( -g -O0 -DDEBUG -ferror-limit=6 )
-    XFLAGS_HOST+=(
+    XFLAGS_NATIVE+=(
       -fno-omit-frame-pointer \
       -fno-optimize-sibling-calls \
       -fmacro-backtrace-limit=0 \
@@ -477,51 +516,47 @@ case "$BUILD_MODE" in
     # Further, if we link with just -static-libsan, lld still creates a dynamic
     # exe, and if we add -static-pie then the executable crashes, likely because
     # use of incorrect crt start files:
-    #   XFLAGS_HOST+=( -static-libsan -fsanitize=undefined )
-    #   LDFLAGS_HOST+=( -static-pie -static-libsan -fsanitize=undefined )
+    #   XFLAGS_NATIVE+=( -static-libsan -fsanitize=undefined )
+    #   LDFLAGS+=( -static-pie -static-libsan -fsanitize=undefined )
     #
-    if [ "$HOST_SYS" != linux ]; then
-      XFLAGS_HOST+=(
+    if [ "$TARGET_SYS" != linux ]; then
+      XFLAGS_NATIVE+=(
         -fsanitize=address,undefined \
         -fsanitize-address-use-after-scope \
       )
       # ubsan options
-      XFLAGS_HOST+=( -fsanitize=signed-integer-overflow,float-divide-by-zero,null,alignment,nonnull-attribute,nullability )
-      LDFLAGS_HOST+=( -fsanitize=address,undefined )
+      XFLAGS_NATIVE+=( -fsanitize=signed-integer-overflow,float-divide-by-zero,null,alignment,nonnull-attribute,nullability )
+      LDFLAGS+=( -fsanitize=address,undefined )
     fi
     ;;
   opt*)
     XFLAGS+=( -DNDEBUG )
-    XFLAGS_WASM+=( -Oz )
-    XFLAGS_HOST+=( -O3 )
+    XFLAGS_NATIVE+=( -O3 )
     if $DEBUGGABLE; then
-      XFLAGS_HOST+=( -g -fno-omit-frame-pointer -fno-optimize-sibling-calls )
+      XFLAGS_NATIVE+=( -g -fno-omit-frame-pointer -fno-optimize-sibling-calls )
     else
-      XFLAGS_HOST+=( -fomit-frame-pointer )
+      XFLAGS_NATIVE+=( -fomit-frame-pointer )
     fi
-    case $HOST_ARCH in
+    case $TARGET_ARCH in
       # minimum Haswell-gen x86 CPUs <https://clang.llvm.org/docs/UsersManual.html#x86>
-      x86_64) XFLAGS_HOST+=( -march=x86-64-v3 ) ;;
+      x86_64) XFLAGS_NATIVE+=( -march=x86-64-v3 ) ;;
     esac
-    # LDFLAGS_WASM+=( -z stack-size=$[128 * 1024] ) # larger stack, smaller heap
-    # LDFLAGS_WASM+=( --compress-relocations --strip-debug )
-    # LDFLAGS_HOST+=( -dead_strip )
+    # LDFLAGS+=( -dead_strip )
     [ "$BUILD_MODE" = opt ] && XFLAGS+=( -D${PP_PREFIX}SAFE )
     ;;
 esac
 
 # LTO
-if $ENABLE_LTO; then
+# note: when CC=compis, LTO is automatic, so only enable this when CC is clang
+if $ENABLE_LTO && ! $CC_IS_COMPIS; then
   XFLAGS+=( -flto=thin )
-  LDFLAGS_HOST+=( -flto=thin -Wl,--lto-O3 )
-  LDFLAGS_WASM+=( -flto=thin --lto-O3 --no-lto-legacy-pass-manager )
+  LDFLAGS+=( -flto=thin -Wl,--lto-O3 )
   LTO_CACHE_FLAG=
-  case "$HOST_SYS" in
+  case "$TARGET_SYS" in
     linux) LTO_CACHE_FLAG=-Wl,--thinlto-cache-dir="'$OUT_DIR/lto-cache'" ;;
     macos) LTO_CACHE_FLAG=-Wl,-cache_path_lto,"'$OUT_DIR/lto-cache'" ;;
   esac
-  LDFLAGS_HOST+=( $LTO_CACHE_FLAG )
-  LDFLAGS_WASM+=( $LTO_CACHE_FLAG )
+  LDFLAGS+=( $LTO_CACHE_FLAG )
 fi
 
 # llvm
@@ -529,36 +564,34 @@ fi
 CFLAGS_LLVM+=()
 CXXFLAGS_LLVM+=( $("$LLVM_CONFIG" --cxxflags) )
 if $ENABLE_LTO; then
-  LDFLAGS_HOST+=( -L"$LLVMBOX_DESTDIR"/lib-lto )
-  for f in "$LLVMBOX_DESTDIR"/lib-lto/lib{clang,lld,LLVM}*.a; do
+  LDFLAGS+=( -L"$LLVMBOX_TARGET_DESTDIR"/lib-lto )
+  for f in "$LLVMBOX_TARGET_DESTDIR"/lib-lto/lib{clang,lld,LLVM}*.a; do
     f="$(basename "$f" .a)"
-    LDFLAGS_HOST+=( -l${f:3} )
+    LDFLAGS+=( -l${f:3} )
   done
 else
-  LDFLAGS_HOST+=( -L"$LLVMBOX_DESTDIR"/lib -lall_llvm_clang_lld )
+  LDFLAGS+=( -L"$LLVMBOX_TARGET_DESTDIR"/lib -lall_llvm_clang_lld )
 fi
-LDFLAGS_HOST+=( $("$LLVM_CONFIG" --system-libs) )
+LDFLAGS+=( $("$LLVM_CONFIG" --system-libs) )
 
 #————————————————————————————————————————————————————————————————————————————————————————
 # find source files
 #
 # name.{c,cc}       always included
-# name.ARCH.{c,cc}  specific to ARCH (e.g. wasm, x86_64, aarch64, etc)
+# name.ARCH.{c,cc}  specific to ARCH (e.g. x86_64, aarch64, etc)
 # name.test.{c,cc}  only included when testing is enabled
 
 COMMON_SOURCES=()
-HOST_SOURCES=()
-WASM_SOURCES=()
+NATIVE_SOURCES=()
 TEST_SOURCES=()
 
 pushd "$PROJECT" >/dev/null
 SRC_DIR_REL="${SRC_DIR##$PROJECT/}"
 for f in $(find "$SRC_DIR_REL" -name '*.c' -or -name '*.cc'); do
   case "$f" in
-    */test.c|*.test.c|*.test.cc)    TEST_SOURCES+=( "$f" ) ;;
-    *.$HOST_ARCH.c|*.$HOST_ARCH.cc) HOST_SOURCES+=( "$f" ) ;;
-    *.wasm.c|*.wasm.cc)             WASM_SOURCES+=( "$f" ) ;;
-    *)                              COMMON_SOURCES+=( "$f" ) ;;
+    */test.c|*.test.c|*.test.cc)        TEST_SOURCES+=( "$f" ) ;;
+    *.$TARGET_ARCH.c|*.$TARGET_ARCH.cc) NATIVE_SOURCES+=( "$f" ) ;;
+    *)                                  COMMON_SOURCES+=( "$f" ) ;;
   esac
 done
 popd >/dev/null
@@ -569,8 +602,8 @@ popd >/dev/null
 echo "-I$SRC_DIR" > .clang_complete
 for flag in \
   "${XFLAGS[@]:-}" \
-  "${XFLAGS_HOST[@]:-}" \
-  "${CFLAGS_HOST[@]:-}" \
+  "${XFLAGS_NATIVE[@]:-}" \
+  "${CFLAGS_NATIVE[@]:-}" \
   "${CFLAGS_LLVM[@]:-}" \
 ;do
   [ -n "$flag" ] && echo "$flag" >> .clang_complete
@@ -580,25 +613,19 @@ done
 # print config when -v is set
 
 $VERBOSE && cat << END
-XFLAGS            ${XFLAGS[@]:-}
-  XFLAGS_HOST     ${XFLAGS_HOST[@]:-}
-  XFLAGS_WASM     ${XFLAGS_WASM[@]:-}
-  CFLAGS          ${CFLAGS[@]:-}
-    CFLAGS_HOST   ${CFLAGS_HOST[@]:-}
-    CFLAGS_WASM   ${CFLAGS_WASM[@]:-}
-    CFLAGS_LLVM   ${CFLAGS_LLVM[@]:-}
-  CXXFLAGS        ${CXXFLAGS[@]:-}
-    CXXFLAGS_HOST ${CXXFLAGS_HOST[@]:-}
-    CXXFLAGS_WASM ${CXXFLAGS_WASM[@]:-}
-    CXXFLAGS_LLVM ${CXXFLAGS_LLVM[@]:-}
+XFLAGS              ${XFLAGS[@]:-}
+  XFLAGS_NATIVE     ${XFLAGS_NATIVE[@]:-}
+  CFLAGS            ${CFLAGS[@]:-}
+    CFLAGS_NATIVE   ${CFLAGS_NATIVE[@]:-}
+    CFLAGS_LLVM     ${CFLAGS_LLVM[@]:-}
+  CXXFLAGS          ${CXXFLAGS[@]:-}
+    CXXFLAGS_NATIVE ${CXXFLAGS_NATIVE[@]:-}
+    CXXFLAGS_LLVM   ${CXXFLAGS_LLVM[@]:-}
 
-LDFLAGS        ${LDFLAGS[@]:-}
-  LDFLAGS_HOST ${LDFLAGS_HOST[@]:-}
-  LDFLAGS_WASM ${LDFLAGS_WASM[@]:-}
+LDFLAGS ${LDFLAGS[@]:-}
 
 TEST_SOURCES   ${TEST_SOURCES[@]:-}
-HOST_SOURCES   ${HOST_SOURCES[@]:-}
-WASM_SOURCES   ${WASM_SOURCES[@]:-}
+NATIVE_SOURCES ${NATIVE_SOURCES[@]:-}
 COMMON_SOURCES ${COMMON_SOURCES[@]:-}
 END
 
@@ -615,50 +642,31 @@ builddir = $OUT_DIR
 objdir = \$builddir/obj
 
 xflags = ${XFLAGS[@]:-}
-xflags_host = \$xflags ${XFLAGS_HOST[@]:-}
-xflags_wasm = \$xflags ${XFLAGS_WASM[@]:-}
+xflags_native = \$xflags ${XFLAGS_NATIVE[@]:-}
 
 cflags = ${CFLAGS[@]:-}
-cflags_host = \$xflags_host ${CFLAGS_HOST[@]:-}
-cflags_wasm = \$xflags_wasm ${CFLAGS_WASM[@]:-}
+cflags_native = \$xflags_native ${CFLAGS_NATIVE[@]:-}
 cflags_llvm = ${CFLAGS_LLVM[@]:-}
 
 cxxflags = ${CXXFLAGS[@]:-}
-cxxflags_host = \$xflags_host ${CXXFLAGS_HOST[@]:-}
-cxxflags_wasm = \$xflags_wasm ${CXXFLAGS_WASM[@]:-}
+cxxflags_native = \$xflags_native ${CXXFLAGS_NATIVE[@]:-}
 cxxflags_llvm = ${CXXFLAGS_LLVM[@]:-}
 
-ldflags_host = ${LDFLAGS_HOST[@]:-}
-ldflags_wasm = ${LDFLAGS_WASM[@]:-}
+ldflags = ${LDFLAGS[@]:-}
 
 
 rule link
-  command = $CXX \$ldflags_host \$FLAGS -o \$out \$in
-  description = link \$out
-
-rule link_wasm
-  command = wasm-ld \$ldflags_wasm \$FLAGS \$in -o \$out
+  command = $CXX \$ldflags \$FLAGS -o \$out \$in
   description = link \$out
 
 
 rule cc
-  command = $CC -MMD -MF \$out.d \$cflags \$cflags_host \$FLAGS -c \$in -o \$out
+  command = $CC -MMD -MF \$out.d \$cflags \$cflags_native \$FLAGS -c \$in -o \$out
   depfile = \$out.d
   description = compile \$in
 
 rule cxx
-  command = $CXX -MMD -MF \$out.d \$cxxflags \$cxxflags_host \$FLAGS -c \$in -o \$out
-  depfile = \$out.d
-  description = compile \$in
-
-
-rule cc_wasm
-  command = $CC -MMD -MF \$out.d \$cflags \$cflags_wasm \$FLAGS -c \$in -o \$out
-  depfile = \$out.d
-  description = compile \$in
-
-rule cxx_wasm
-  command = $CXX -MMD -MF \$out.d \$cxxflags \$cxxflags_wasm \$FLAGS -c \$in -o \$out
+  command = $CXX -MMD -MF \$out.d \$cxxflags \$cxxflags_native \$FLAGS -c \$in -o \$out
   depfile = \$out.d
   description = compile \$in
 
@@ -672,7 +680,7 @@ rule parse_gen
   generator = true
 
 rule cxx_pch_gen
-  command = $CXX \$cxxflags \$cxxflags_host \$FLAGS -x c++-header \$in -o \$out
+  command = $CXX \$cxxflags \$cxxflags_native \$FLAGS -x c++-header \$in -o \$out
   #clang -cc1 -emit-pch -x c++-header \$in -o \$out
   description = compile-pch \$in
   generator = true
@@ -696,10 +704,6 @@ _gen_obj_build_rules() { # <target> <srcfile> ...
   local objfile
   local cc_rule=cc
   local cxx_rule=cxx
-  if [ "$target" = wasm ]; then
-    cc_rule=cc_wasm
-    cxx_rule=cxx_wasm
-  fi
   for srcfile in "$@"; do
     [ -n "$srcfile" ] || continue
     objfile=$(_objfile "$target-$srcfile")
@@ -729,30 +733,20 @@ _gen_obj_build_rules() { # <target> <srcfile> ...
   done
 }
 
-HOST_SOURCES+=( "${COMMON_SOURCES[@]:-}" )
-WASM_SOURCES+=( "${COMMON_SOURCES[@]:-}" )
+NATIVE_SOURCES+=( "${COMMON_SOURCES[@]:-}" )
 
 if $TESTING_ENABLED; then
-  HOST_SOURCES+=( "${TEST_SOURCES[@]:-}" )
-  WASM_SOURCES+=( "${TEST_SOURCES[@]:-}" )
+  NATIVE_SOURCES+=( "${TEST_SOURCES[@]:-}" )
 fi
 
-OBJECTS=( $(_gen_obj_build_rules "host" "${HOST_SOURCES[@]:-}") )
+OBJECTS=( $(_gen_obj_build_rules "native" "${NATIVE_SOURCES[@]:-}") )
 if [ ${#OBJECTS[@]} ]; then
   echo >> $NF
   echo "build \$builddir/$MAIN_EXE: link ${OBJECTS[@]}" >> $NF
   echo >> $NF
 fi
 
-OBJECTS=( $(_gen_obj_build_rules "wasm" "${WASM_SOURCES[@]:-}") )
-if [ ${#OBJECTS[@]} ]; then
-  echo >> $NF
-  echo "build \$builddir/$MAIN_EXE.wasm: link_wasm ${OBJECTS[@]}" >> $NF
-  echo >> $NF
-fi
-
 echo "build $MAIN_EXE: phony \$builddir/$MAIN_EXE" >> $NF
-echo "build $MAIN_EXE.wasm: phony \$builddir/$MAIN_EXE.wasm" >> $NF
 echo "default $MAIN_EXE" >> $NF
 
 # —————————————————————————————————————————————————————————————————————————————————
@@ -780,24 +774,19 @@ cat << END > config-xflags.tmp
 XFLAGS ${XFLAGS[@]:-}
 END
 cat << END > config.tmp
-TARGET $HOST_ARCH-$HOST_SYS
+TARGET $TARGET
 LLVM $LLVMBOX_RELEASE
 XFLAGS $(sed -E -e 's/-DCO_VERSION[_A-Za-z0-9]*=[^ ]+ ?//g' <<< "${XFLAGS[@]:-}")
-XFLAGS_HOST ${XFLAGS_HOST[@]:-}
-XFLAGS_WASM ${XFLAGS_WASM[@]:-}
+XFLAGS_NATIVE ${XFLAGS_NATIVE[@]:-}
 CFLAGS ${CFLAGS[@]:-}
-CFLAGS_HOST ${CFLAGS_HOST[@]:-}
-CFLAGS_WASM ${CFLAGS_WASM[@]:-}
+CFLAGS_NATIVE ${CFLAGS_NATIVE[@]:-}
 CFLAGS_LLVM ${CFLAGS_LLVM[@]:-}
 CXXFLAGS ${CXXFLAGS[@]:-}
-CXXFLAGS_HOST ${CXXFLAGS_HOST[@]:-}
-CXXFLAGS_WASM ${CXXFLAGS_WASM[@]:-}
+CXXFLAGS_NATIVE ${CXXFLAGS_NATIVE[@]:-}
 CXXFLAGS_LLVM ${CXXFLAGS_LLVM[@]:-}
 END
 cat << END > lconfig.tmp
 LDFLAGS ${LDFLAGS[@]:-}
-LDFLAGS_HOST ${LDFLAGS_HOST[@]:-}
-LDFLAGS_WASM ${LDFLAGS_WASM[@]:-}
 END
 if ! diff -q config config.tmp >/dev/null 2>&1; then
   if [ -e config ]; then
@@ -811,18 +800,24 @@ if ! diff -q config config.tmp >/dev/null 2>&1; then
 else
   if ! diff -q config-xflags config-xflags.tmp >/dev/null 2>&1; then
     # Note: this usually happens when CO_VERSION changes
-    [ -e config-xflags ] && echo "xflags changed; wiping PCHs"
-    # if [ -e config-xflags ]; then
-    #   echo "———————————————————————————————————————————————————"
-    #   echo "xflags changed; wiping PCHs:"
-    #   diff -wu -U 0 -L cached config-xflags -L current config-xflags.tmp || true
-    #   echo "———————————————————————————————————————————————————"
-    # fi
+    # [ -e config-xflags ] && echo "xflags changed; wiping PCHs"
+    if [ -e config-xflags ]; then
+      echo "———————————————————————————————————————————————————"
+      echo "xflags changed; wiping PCHs:"
+      diff -wu -U 0 -L cached config-xflags -L current config-xflags.tmp || true
+      echo "———————————————————————————————————————————————————"
+    fi
     find "$OUT_DIR" -type f -name '*.pch' -delete
     mv config-xflags.tmp config-xflags
   fi
   if ! diff -q lconfig lconfig.tmp >/dev/null 2>&1; then
-    [ -e lconfig ] && echo "linker configuration changed"
+    # [ -e lconfig ] && echo "linker configuration changed"
+    if [ -e lconfig ]; then
+      echo "———————————————————————————————————————————————————"
+      echo "linker configuration changed:"
+      diff -wu -U 0 -L cached lconfig -L current lconfig.tmp || true
+      echo "———————————————————————————————————————————————————"
+    fi
     mv lconfig.tmp lconfig
     rm -f "$OUT_DIR/$MAIN_EXE"
   fi

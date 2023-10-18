@@ -376,8 +376,8 @@ static void fmt(FMT_PARAMS, const node_t* nullable n) {
   case EXPR_PREFIXOP: {
     const unaryop_t* op = (unaryop_t*)n;
     bool group = parenthesize(op->expr);
-    const char* opstr = op_fmt(op->op);
     #ifdef DEBUG
+      const char* opstr = op_fmt(op->op);
       if (*opstr) {
         PRINT(opstr);
       } else {

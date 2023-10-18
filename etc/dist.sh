@@ -3,46 +3,50 @@ set -euo pipefail
 source "$(dirname "$0")/lib.sh"
 _pushd "$PROJECT"
 
-ARCH=$(uname -m) ; ARCH=${ARCH/arm64/aarch64}
-SYS=$(uname -s) ; case "$SYS" in
-  Darwin) SYS=macos ;;
-  *)      SYS=$(awk '{print tolower($0)}' <<< "$SYS") ;;
-esac
-
-CO_VERSION=$(cat "$PROJECT/version.txt")
-BUILDDIR=out/dist
-DESTDIR=out/dist/compis-$CO_VERSION-$ARCH-$SYS
-ARCHIVE=out/compis-$CO_VERSION-$ARCH-$SYS.tar.xz
 FORCE=false
 TEST=true
-CODESIGN=true
+NO_CODESIGN=false
 CLEAN=true
 CREATE_TAR=true
+TARGET=  # note: build.sh validates the target string for us
+HOST_ARCH=$(uname -m) ; HOST_ARCH=${HOST_ARCH/arm64/aarch64}
+HOST_SYS=$(uname -s) ; case "$HOST_SYS" in
+  Darwin) HOST_SYS=macos ;;
+  *)      HOST_SYS=$(awk '{print tolower($0)}' <<< "$HOST_SYS") ;;
+esac
 
 while [[ $# -gt 0 ]]; do case "$1" in
   --force)       FORCE=true; shift ;;
   --no-test)     TEST=false; shift ;;
-  --no-codesign) CODESIGN=false; shift ;;
+  --no-codesign) NO_CODESIGN=true; shift ;;
   --no-clean)    CLEAN=false; shift ;;
   --no-tar)      CREATE_TAR=false; shift ;;
   -h|-help|--help) cat << _END
-Usage: $0 [options]
+Usage: $0 [options] <target>
 Options:
   --force        Create distribution even if some preconditions are not met
   --no-test      Skip tests
-  --no-codesign  Don't codesign (macos only)
+  --no-codesign  Don't codesign (macos only; ignored for other targets)
   --no-clean     Don't build from scratch (only use this for debugging!)
   --no-tar       Don't create tar archive of the result
   -h, --help     Show help on stdout and exit
+<target> is one of:
+  aarch64-linux
+  aarch64-macos
+  x86_64-linux
+  x86_64-macos
 _END
     exit ;;
   -*) _err "Unknown option: $1" ;;
-  *) break ;;
+  *) [ -z "$TARGET" ] || _err "extranous argument: $1"; TARGET=$1; shift ;;
 esac; done
 
-if $CODESIGN && [ "$SYS" != macos ]; then
-  CODESIGN=false
-fi
+[ -n "$TARGET" ] || _err "missing <target>"
+
+CO_VERSION=$(cat "$PROJECT/version.txt")
+BUILDDIR=out/dist
+DESTDIR=out/dist/compis-$CO_VERSION-$TARGET
+ARCHIVE=out/compis-$CO_VERSION-$TARGET.tar.xz
 
 if ! $FORCE && [ -d .git ] && [ -n "$(git status -s | grep -v '?')" ]; then
   echo "uncommitted git changes:" >&2
@@ -50,15 +54,19 @@ if ! $FORCE && [ -d .git ] && [ -n "$(git status -s | grep -v '?')" ]; then
   exit 1
 fi
 
-if $CODESIGN && [ -z "${CODESIGN_ID:-}" ]; then
-  if command -v security >/dev/null; then
-    #echo "CODESIGN_ID: looking up with 'security find-identity -p codesigning'"
-    CODESIGN_ID=$(security find-identity -p codesigning |
-                  grep 'Developer ID Application:' | head -n1 | awk '{print $2}')
-  fi
+CODESIGN=false
+if [[ "$TARGET" == *-macos ]] && ! $NO_CODESIGN; then
+  CODESIGN=true
   if [ -z "${CODESIGN_ID:-}" ]; then
-    echo "warning: macos code signing disabled (no signing identity found)" >&2
-    CODESIGN=false
+    if command -v security >/dev/null; then
+      #echo "CODESIGN_ID: looking up with 'security find-identity -p codesigning'"
+      CODESIGN_ID=$(security find-identity -p codesigning |
+                    grep 'Developer ID Application:' | head -n1 | awk '{print $2}')
+    fi
+    if [ -z "${CODESIGN_ID:-}" ]; then
+      echo "warning: macos code signing disabled (no signing identity found)" >&2
+      CODESIGN=false
+    fi
   fi
 fi
 
@@ -74,7 +82,7 @@ if $CLEAN; then
 else
   echo "building incrementally in $BUILDDIR"
 fi
-./build.sh -DCO_DISTRIBUTION=1 -opt -out=$BUILDDIR
+./build.sh -target=$TARGET -DCO_DISTRIBUTION=1 -opt -out=$BUILDDIR
 
 # create & copy files to DESTDIR
 echo "creating $DESTDIR"
