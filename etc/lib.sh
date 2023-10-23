@@ -5,7 +5,14 @@ PROJECT=$(dirname $(dirname $(realpath "$LIBSH_FILE")))
 DEPS_DIR="$PROJECT/deps"
 OUT_DIR="$PROJECT/out"
 DOWNLOAD_DIR="$DEPS_DIR/download"
-LLVMBOX="$DEPS_DIR/llvmbox"
+
+HOST_ARCH=$(uname -m); HOST_ARCH=${HOST_ARCH/arm64/aarch64}
+HOST_SYS=$(uname -s) # e.g. linux, macos
+case "$HOST_SYS" in
+  Darwin) HOST_SYS=macos ;;
+  *)      HOST_SYS=$(awk '{print tolower($0)}' <<< "$HOST_SYS") ;;
+esac
+LLVMBOX=$DEPS_DIR/llvmbox-$HOST_ARCH-$HOST_SYS
 
 _err()  { echo "$0:" "$@" >&2; exit 1; }
 _warn() { echo "$0: warning:" "$@" >&2; }
@@ -209,7 +216,7 @@ _need_regenerate_sysinc_dir() {
 }
 
 _regenerate_sysinc_dir() {
-  printf "Generating lib/sysinc from lib/sysinc-src ..."
+  printf "Generating lib/sysinc from lib/sysinc-src (bash $(_relpath "$PROJECT")/etc/gen-sysinc.sh) ..."
   local LOGFILE="$OUT_DIR/gen-sysinc.log"
   mkdir -p "$OUT_DIR"
   if ! $BASH "$PROJECT/etc/gen-sysinc.sh" > "$LOGFILE" 2>&1; then
