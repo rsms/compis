@@ -226,7 +226,7 @@ for LLVMBOX_INSTALLATION in "${LLVMBOX_INSTALLATIONS[@]}"; do
   # "use" part of llvmbox
   if [ "$(cat "$LLVMBOX_DESTDIR/version" 2>/dev/null)" != "$LLVMBOX_RELEASE" ]; then
     IFS=' ' read -r sha256 file <<< "$LLVMBOX_SOURCE"
-    _download "$LLVMBOX_URL_BASE/$file" "$DOWNLOAD_DIR/$file" "$sha256"
+    _download "$LLVMBOX_URL_BASE/$file" "$sha256" "$DOWNLOAD_DIR/$file"
     _extract_tar "$DOWNLOAD_DIR/$file" "$LLVMBOX_DESTDIR"
     echo "$LLVMBOX_RELEASE" > "$LLVMBOX_DESTDIR/version"
   else
@@ -235,7 +235,7 @@ for LLVMBOX_INSTALLATION in "${LLVMBOX_INSTALLATIONS[@]}"; do
   # "dev" part of llvmbox
   if [ ! -f "$LLVMBOX_DESTDIR/lib/libLLVMCore.a" ]; then
     IFS=' ' read -r sha256 file <<< "$LLVMBOX_DEV_SOURCE"
-    _download "$LLVMBOX_URL_BASE/$file" "$DOWNLOAD_DIR/$file" "$sha256"
+    _download "$LLVMBOX_URL_BASE/$file" "$sha256" "$DOWNLOAD_DIR/$file"
     echo "extract $(basename "$DOWNLOAD_DIR/$file") -> $(_relpath "$LLVMBOX_DESTDIR")"
     XZ_OPT='-T0' tar -C "$LLVMBOX_DESTDIR" --strip-components 1 -xf "$DOWNLOAD_DIR/$file"
   else

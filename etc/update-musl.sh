@@ -12,8 +12,8 @@ SOURCE_DESTDIR="$PROJECT/lib/musl"
 [ ! -f "$MUSL_SRCDIR/Makefile" ] &&
   _download \
     https://musl.libc.org/releases/musl-$MUSL_VERSION.tar.gz \
-    "$DOWNLOAD_DIR/musl-$MUSL_VERSION.tar.gz" \
-    "$MUSL_SHA256" &&
+    "$MUSL_SHA256" \
+    "$DOWNLOAD_DIR/musl-$MUSL_VERSION.tar.gz" &&
   _extract_tar \
     "$DOWNLOAD_DIR/musl-$MUSL_VERSION.tar.gz" \
     "$MUSL_SRCDIR"

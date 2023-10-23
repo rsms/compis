@@ -31,6 +31,10 @@ _popd() {
   [ "$PWD" = "$wd" -o "$PWD" = "$PWD0" ] || echo "cd $(_relpath "$PWD")"
 }
 
+_array_join() { # <gluechar> <element> ...
+  local IFS="$1"; shift; echo "$*"
+}
+
 _copy() { # <arg to cp> ...
   printf "copy"
   local past=
@@ -92,8 +96,10 @@ _sha_verify() { # <file> [<sha256> | <sha512>]
   fi
 }
 
-_download_nocache() { # <url> <outfile> [<sha256> | <sha512>]
-  local url=$1 ; local outfile=$2 ; local checksum=${3:-}
+_download_nocache() { # <url> [<sha256>|<sha512> [<outfile>]]
+  local url=$1
+  local checksum=${2:-}
+  local outfile="${3:-$DOWNLOAD_DIR/$(basename "$url")}"
   rm -f "$outfile"
   mkdir -p "$(dirname "$outfile")"
   echo "$(_relpath "$outfile"): fetch $url"
@@ -103,13 +109,15 @@ _download_nocache() { # <url> <outfile> [<sha256> | <sha512>]
   [ -z "$checksum" ] || _sha_verify "$outfile" "$checksum"
 }
 
-_download() { # <url> <outfile> [<sha256> | <sha512>]
-  local url=$1 ; local outfile=$2 ; local checksum=${3:-}
+_download() { # <url> [<sha256>|<sha512> [<outfile>]]
+  local url=$1
+  local checksum=${2:-}
+  local outfile="${3:-$DOWNLOAD_DIR/$(basename "$url")}"
   if [ -f "$outfile" ]; then
     [ -z "$checksum" ] && return 0
     _sha_verify "$outfile" "$checksum" && return 0
   fi
-  _download_nocache "$url" "$outfile" "$checksum"
+  _download_nocache "$url" "$checksum" "$outfile"
 }
 
 _extract_tar() { # <file> <outdir>
@@ -150,12 +158,12 @@ _create_tar_xz_from_dir() { # <srcdir> <dstfile>
   fi
 }
 
-_download_and_extract_tar() { # <url> <outdir> [<sha256> | <sha512> [<tarfile>]]
+_download_and_extract_tar() { # <url> <outdir> [<sha256>|<sha512> [<tarfile>]]
   local url=$1
   local outdir=$2
   local checksum=${3:-}
   local tarfile="${4:-$DOWNLOAD_DIR/$(basename "$url")}"
-  _download "$url" "$tarfile" "$checksum"
+  _download "$url" "$checksum" "$tarfile"
   _extract_tar "$tarfile" "$outdir"
 }
 

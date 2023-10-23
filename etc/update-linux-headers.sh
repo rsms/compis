@@ -27,8 +27,8 @@ fi
 [ ! -f "$LINUX_SRCDIR/Makefile" ] &&
   _download \
     https://mirrors.kernel.org/pub/linux/kernel/v${LINUX_VERSION_MAJOR}.x/linux-$LINUX_VERSION.tar.xz \
-    "$DOWNLOAD_DIR/linux-$LINUX_VERSION.tar.xz" \
-    "$LINUX_SHA256" &&
+    "$LINUX_SHA256" \
+    "$DOWNLOAD_DIR/linux-$LINUX_VERSION.tar.xz" &&
   _extract_tar \
     "$DOWNLOAD_DIR/linux-$LINUX_VERSION.tar.xz" \
     "$LINUX_SRCDIR"
