@@ -70,6 +70,7 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
   config.nolto = true; // disable LTO for implicit -O0 (enabled for -O1+)
 
   const target_t* target = NULL;
+  static target_t custom_target;
 
   bool link = true;
   bool link_libc = true;
@@ -89,6 +90,8 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
   bool ispastflags = false;
   bool print_only = false;
   bool has_link_flags = false;
+
+  char* target_arg = NULL;
 
   // process input command-line args
   // https://clang.llvm.org/docs/ClangCommandLineReference.html
@@ -218,16 +221,11 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
       // flags that affect both compilation and linking
       else if (string_startswith(arg, "--target=") || streq(arg, "-target")) {
         if (arg[1] == '-') { // --target=...
-          arg += strlen("--target=");
+          target_arg = arg + strlen("--target=");
         } else {
           if (i + 1 == user_argc)
             break;
-          arg = user_argv[i+1];
-        }
-        if (!( target = target_find(arg) )) {
-          log("Invalid target \"%s\"", arg);
-          log("See `%s targets` for a list of supported targets", relpath(coexefile));
-          return 1;
+          target_arg = user_argv[i+1];
         }
       } else if (streq(arg, "--sysroot")) {
         // a bug (or shortcoming?) in clang causes clang's driver to populate system
@@ -291,9 +289,26 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
         enable_modules);
   }
 
-  // if no target is set, use the host
-  if (!target)
+  // if no target is set ...
+  if (target_arg) {
+    // --target=... is set. Assume it's in compis format, e.g. arch-sys[.sysver]
+    if (!( target = target_find(target_arg) )) {
+      // try to parse as LLVM target, e.g. arch-env-os...
+      u32 flags = TARGET_LLVM_TRIPLE_IGN_UNKN_SYS;
+      err_t err = target_from_llvm_triple(&custom_target, target_arg, flags);
+      if (!err) {
+        target = &custom_target;
+      } else {
+        log("%s target \"%s\"",
+          err == ErrNotSupported ? "Unsupported" : "Invalid", target_arg);
+        log("See `%s targets` for a list of supported targets", relpath(coexefile));
+        return 1;
+      }
+    }
+  } else {
+    // target the host by default
     target = target_default();
+  }
 
   // update link_LIB vars depending on target
   link_librt  = link_librt  && target_has_syslib(target, SYSLIB_RT);
@@ -355,6 +370,7 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
     strlist_addf(&args, "-B%s", coroot);
     strlist_addf(&args, "--target=%s", c.target.triple);
     strlist_addf(&args, "-resource-dir=%s/clangres/", coroot);
+    strlist_addf(&args, "-isystem%s/clangres/include", coroot); // e.g. stdint.h
   } else {
     // add fundamental "target" compilation flags
     if (iscompiling && !custom_sysroot) {
@@ -470,6 +486,9 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
           "-Wl,--export-dynamic" );
         strlist_addf(&args, "%s/lib/crt1.o", c.sysroot);
         break;
+      case SYS_win32:
+        vlog("warning: win32 support is experimental");
+        break;
       case SYS_none:
         strlist_add(&args,
           "-ffreestanding",
@@ -521,7 +540,7 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
 
   // print effective clang invocation in -vv and -### mode
   if (coverbose > 1) {
-    printf("compis cc exec: %s%s", argv[0], args.len > 0 ? " \\" : "");
+    printf("compis cc exec: %s%s\n", argv[0], args.len > 0 ? " \\" : "");
     for (u32 i = 1; i < args.len; i++)
       printf("  %s%s\n", argv[i], i+1 < args.len ? " \\" : "");
   }

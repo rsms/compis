@@ -29,7 +29,10 @@ typedef enum CoLLVMArch {
   CoLLVMArch_bpfel,          // eBPF or extended BPF or 64-bit BPF (little endian)
   CoLLVMArch_bpfeb,          // eBPF or extended BPF or 64-bit BPF (big endian)
   CoLLVMArch_csky,           // CSKY: csky
+  CoLLVMArch_dxil,           // DXIL 32-bit DirectX bytecode
   CoLLVMArch_hexagon,        // Hexagon: hexagon
+  CoLLVMArch_loongarch32,    // LoongArch (32-bit): loongarch32
+  CoLLVMArch_loongarch64,    // LoongArch (64-bit): loongarch64
   CoLLVMArch_m68k,           // M68k: Motorola 680x0 family
   CoLLVMArch_mips,           // MIPS: mips, mipsallegrex, mipsr6
   CoLLVMArch_mipsel,         // MIPSEL: mipsel, mipsallegrexe, mipsr6el
@@ -124,9 +127,11 @@ typedef enum CoLLVMOS {
   CoLLVMOS_NVCL,       // NVIDIA OpenCL
   CoLLVMOS_AMDHSA,     // AMD HSA Runtime
   CoLLVMOS_PS4,
+  CoLLVMOS_PS5,
   CoLLVMOS_ELFIAMCU,
   CoLLVMOS_TvOS,       // Apple tvOS
   CoLLVMOS_WatchOS,    // Apple watchOS
+  CoLLVMOS_DriverKit,  // Apple DriverKit
   CoLLVMOS_Mesa3D,
   CoLLVMOS_Contiki,
   CoLLVMOS_AMDPAL,     // AMD PAL Runtime
@@ -134,6 +139,7 @@ typedef enum CoLLVMOS {
   CoLLVMOS_Hurd,       // GNU/Hurd
   CoLLVMOS_WASI,       // Experimental WebAssembly OS
   CoLLVMOS_Emscripten,
+  CoLLVMOS_ShaderModel, // DirectX ShaderModel
   CoLLVMOS_LAST = CoLLVMOS_Emscripten
 } CoLLVMOS;
 
@@ -160,15 +166,32 @@ typedef enum CoLLVMEnvironment {
   CoLLVMEnvironment_CoreCLR,
   CoLLVMEnvironment_Simulator, // Simulator variants of other systems, e.g., Apple's iOS
   CoLLVMEnvironment_MacABI, // Mac Catalyst variant of Apple's iOS deployment target.
+  CoLLVMEnvironment_Pixel,
+  CoLLVMEnvironment_Vertex,
+  CoLLVMEnvironment_Geometry,
+  CoLLVMEnvironment_Hull,
+  CoLLVMEnvironment_Domain,
+  CoLLVMEnvironment_Compute,
+  CoLLVMEnvironment_Library,
+  CoLLVMEnvironment_RayGeneration,
+  CoLLVMEnvironment_Intersection,
+  CoLLVMEnvironment_AnyHit,
+  CoLLVMEnvironment_ClosestHit,
+  CoLLVMEnvironment_Miss,
+  CoLLVMEnvironment_Callable,
+  CoLLVMEnvironment_Mesh,
+  CoLLVMEnvironment_Amplification,
   CoLLVMEnvironment_LAST = CoLLVMEnvironment_MacABI
 } CoLLVMEnvironment;
 
 typedef enum CoLLVMObjectFormat {
   CoLLVMObjectFormat_unknown,
   CoLLVMObjectFormat_COFF,
+  CoLLVMObjectFormat_DXContainer,
   CoLLVMObjectFormat_ELF,
   CoLLVMObjectFormat_GOFF,
   CoLLVMObjectFormat_MachO,
+  CoLLVMObjectFormat_SPIRV,
   CoLLVMObjectFormat_Wasm,
   CoLLVMObjectFormat_XCOFF,
 } CoLLVMObjectFormat;
@@ -176,7 +199,7 @@ typedef enum CoLLVMObjectFormat {
 // -- end constants copied from include/llvm/ADT/Triple.h --
 
 typedef enum CoLLVMArchiveKind {
-  // from include/llvm/Object/Archive.h
+  // from Archive::Kind in include/llvm/Object/Archive.h
   CoLLVMArchive_GNU,
   CoLLVMArchive_GNU64,
   CoLLVMArchive_BSD,
@@ -195,12 +218,12 @@ typedef struct {
 } CoLLVMModule;
 
 typedef struct {
-  CoLLVMArch         arch_type;
-  CoLLVMVendor       vendor_type;
-  CoLLVMOS           os_type;
-  CoLLVMEnvironment  env_type;
-  CoLLVMObjectFormat obj_format;
-  u32                ptr_size; // in bytes, e.g. 8 for i64
+  CoLLVMArch         arch_type;   // e.g. CoLLVMArch_x86_64
+  CoLLVMVendor       vendor_type; // e.g. CoLLVMVendor_Apple
+  CoLLVMOS           os_type;     // e.g. CoLLVMOS_Darwin
+  CoLLVMEnvironment  env_type;    // e.g. CoLLVMEnvironment_Musl
+  CoLLVMObjectFormat obj_format;  // e.g. CoLLVMObjectFormat_ELF
+  u32                ptr_size;    // in bytes, e.g. 8 for i64
   bool               is_little_endian;
 } CoLLVMTargetInfo;
 

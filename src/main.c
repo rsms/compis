@@ -117,8 +117,8 @@ static linkerfn_t nullable ld_impl(const target_t* t) {
       return LLDLinkMachO;
     case SYS_linux:
       return LLDLinkELF;
-    // case SYS_windows:
-    //   return LLDLinkCOFF;
+    case SYS_win32:
+      return LLDLinkCOFF;
     case SYS_wasi:
       return LLDLinkWasm;
     case SYS_none:

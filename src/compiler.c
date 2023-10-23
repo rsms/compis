@@ -252,7 +252,7 @@ static err_t configure_cflags(compiler_t* c, const compiler_config_t* config) {
   // ————— start of common cflags —————
   if (c->buildmode == BUILDMODE_OPT)
     strlist_add(&c->cflags, "-D_FORTIFY_SOURCE=2");
-  if (c->target.sys == SYS_none) {
+  if (!target_has_syslib(&c->target, SYSLIB_C)) {
     // invariant: c->opt_nostdlib=true (when c->target.sys == SYS_none)
     strlist_add(&c->cflags,
       "-nostdinc",
@@ -265,9 +265,17 @@ static err_t configure_cflags(compiler_t* c, const compiler_config_t* config) {
   u32 cflags_common_end = c->cflags.len;
 
   // ————— start of cflags_sysinc —————
-  // macos assumes constants in TargetConditionals.h are predefined
-  if (c->target.sys == SYS_macos && !c->opt_nolibc)
-    strlist_add(&c->cflags, "-include", "TargetConditionals.h");
+
+  // DISABLED, for now.
+  // Including this for all source files causes problems with feature detection
+  // code like that found in zlib's zutil.h.
+  // Maybe it can be conditionally included for objc compilation?
+  // Maybe we should include ConditionalMacros.h instead(it in turn includes
+  // TargetConditionals.h)
+  //
+  // // macos assumes constants in TargetConditionals.h are predefined.
+  // if (c->target.sys == SYS_macos && !c->opt_nolibc)
+  //   strlist_add(&c->cflags, "-include", "TargetConditionals.h");
 
   // end of cflags_sysinc
   u32 cflags_sysinc_end = c->cflags.len;

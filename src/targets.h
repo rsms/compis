@@ -29,6 +29,7 @@ ARCH(x86_64)
 SYS(none)
 SYS(macos)
 SYS(linux)
+SYS(win32)
 SYS(wasi)
 
 // TARGET(arch, sys, sysver, intsize, ptrsize, llvm_triple)

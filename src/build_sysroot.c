@@ -80,6 +80,7 @@ const char* syslib_filename(const target_t* target, syslib_t lib) {
         case SYS_macos: return "libSystem.tbd";
         case SYS_linux: return "libc.a";
         case SYS_wasi:  return "libc.a";
+        case SYS_win32: goto bad;
         case SYS_none:  goto bad;
       }
       break;
@@ -103,10 +104,22 @@ static str_t lib_install_path(const compiler_t* c, syslib_t lib) {
 static const void* _find_srclist(
   const target_t* t, const void* listp, usize stride, usize listc)
 {
+  char targetbuf[64];
+  target_fmt(t, targetbuf, sizeof(targetbuf));
+  // log("_find_srclist %s", targetbuf);
   for (usize i = 0; i < listc; i++) {
-    const targetdesc_t* t2 = listp + i*stride;
-    if (t->arch == t2->arch && t->sys == t2->sys && strcmp(t->sysver, t2->sysver) == 0)
-      return t2;
+    const targetdesc_t* td = listp + i*stride;
+    // log("  try arch=%s sys=%s sysver=%s",
+    //   arch_name(td->arch), sys_name(td->sys), td->sysver);
+    if (t->arch == td->arch && t->sys == td->sys && strcmp(t->sysver, td->sysver) == 0)
+      return td;
+  }
+  // not found
+  if (t->sys != SYS_none) {
+    // fall back to conservative implementation for the arch only
+    target_t t2 = *t;
+    t2.sys = SYS_none;
+    return _find_srclist(&t2, listp, stride, listc);
   }
   assert(listc > 0);
   safefail("no impl");
@@ -329,6 +342,9 @@ static err_t build_libc(const compiler_t* c) {
       return build_libc_darwin(c);
     case SYS_linux:
       return build_libc_musl(c);
+    case SYS_win32:
+      // TODO: win32 libc
+      break;
     case SYS_wasi:
       return build_libc_wasi(c);
     case SYS_none:
@@ -795,7 +811,7 @@ static err_t build_libcxx(const compiler_t* c) {
 
 
 static err_t copy_sysinc_headers(const compiler_t* c) {
-  if (c->target.sys == SYS_none)
+  if (c->target.sys == SYS_none || c->target.sys == SYS_win32) // TODO: win32
     return 0;
   bgtask_t* task = bgtask_open(c->ma, "sysinc", 0, 0);
   err_t err = copy_target_layer_dirs(c, task, "sysinc", "include");

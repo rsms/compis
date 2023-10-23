@@ -122,6 +122,13 @@ inline static bool target_is_arm(const target_t* t) {
 
 void target_llvm_version(const target_t* t, char buf[16]);
 
+// target_from_llvm_triple sets target to match llvm_triple
+// by having LLVM parse llvm_triple.
+// TARGET_LLVM_TRIPLE_IGN_UNKN_SYS: if set and the system/os of the triple
+// is not supported, then sys is set to SYS_none instead of returning an error.
+#define TARGET_LLVM_TRIPLE_IGN_UNKN_SYS (1u<<0)
+err_t target_from_llvm_triple(target_t* target, const char* llvm_triple, u32 flags);
+
 
 ASSUME_NONNULL_END
 #ifdef __cplusplus

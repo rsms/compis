@@ -2,6 +2,7 @@
 #include "colib.h"
 #include "compiler.h"
 #include "path.h"
+#include "llvm/llvm.h"
 #include <string.h>
 
 
@@ -313,7 +314,7 @@ const char* target_linker_name(const target_t* t) {
     case SYS_linux: return "ld.lld";
     case SYS_macos: return "ld64.lld";
     case SYS_wasi:  return "wasm-ld";
-    // case SYS_win32: return "lld-link";
+    case SYS_win32: return "lld-link";
     case SYS_none:
       if (t->arch == ARCH_wasm32 || t->arch == ARCH_wasm64)
         return "wasm-ld";
@@ -326,13 +327,21 @@ const char* target_linker_name(const target_t* t) {
 
 bool target_has_syslib(const target_t* t, syslib_t syslib) {
   switch ((enum syslib)syslib) {
-    case SYSLIB_RT:
-      return t->sys != SYS_none || target_is_wasm(t);
-    case SYSLIB_C:
-    case SYSLIB_CXX:
-    case SYSLIB_CXXABI:
-    case SYSLIB_UNWIND:
-      return t->sys != SYS_none;
+
+  case SYSLIB_RT:
+    if (target_is_wasm(t)) {
+      // available for both wasmX-none and wasm-wasi
+      return t->sys == SYS_none || t->sys == SYS_wasi;
+    }
+    return t->sys != SYS_none && t->sys != SYS_win32; // TODO win32
+
+  case SYSLIB_C:
+    return t->sys != SYS_none && t->sys != SYS_win32; // TODO win32
+
+  case SYSLIB_CXX:
+  case SYSLIB_CXXABI:
+  case SYSLIB_UNWIND:
+    return t->sys != SYS_none;
   }
   safefail("%s %d", __FUNCTION__, syslib);
   return false;
@@ -352,4 +361,49 @@ void target_llvm_version(const target_t* t, char buf[16]) {
     memcpy(buf, t->sysver, i);
     snprintf(&buf[i], 16-i, ".0.0");
   }
+}
+
+
+err_t target_from_llvm_triple(target_t* target, const char* llvm_triple, u32 flags) {
+  memset(target, 0, sizeof(*target));
+
+  CoLLVMTargetInfo tinfo = {0};
+  llvm_triple_info(llvm_triple, &tinfo);
+
+  if (tinfo.arch_type == CoLLVMArch_unknown)
+    return ErrInvalid;
+
+  target->intsize = tinfo.ptr_size;
+  target->ptrsize = tinfo.ptr_size;
+  target->bigendian = !tinfo.is_little_endian;
+  target->triple = strdup(llvm_triple); // FIXME
+  target->sysver = ""; // FIXME
+
+  switch (tinfo.arch_type) {
+    case CoLLVMArch_arm:     target->arch = ARCH_arm; break;
+    case CoLLVMArch_aarch64: target->arch = ARCH_aarch64; break;
+    case CoLLVMArch_x86:     target->arch = ARCH_i386; break;
+    case CoLLVMArch_x86_64:  target->arch = ARCH_x86_64; break;
+    case CoLLVMArch_riscv64: target->arch = ARCH_riscv64; break;
+    case CoLLVMArch_wasm32:  target->arch = ARCH_wasm32; break;
+    case CoLLVMArch_wasm64:  target->arch = ARCH_wasm64; break;
+    default: return ErrNotSupported;
+  }
+
+  switch (tinfo.os_type) {
+    case CoLLVMOS_unknown: target->sys = SYS_none; break;
+    case CoLLVMOS_Darwin:
+    case CoLLVMOS_MacOSX:  target->sys = SYS_macos; break;
+    case CoLLVMOS_Linux:   target->sys = SYS_linux; break;
+    case CoLLVMOS_Win32:   target->sys = SYS_win32; break;
+    case CoLLVMOS_WASI:    target->sys = SYS_wasi; break;
+    default:
+      if (flags & TARGET_LLVM_TRIPLE_IGN_UNKN_SYS) {
+        target->sys = SYS_none;
+      } else {
+        return ErrNotSupported;
+      }
+  }
+
+  return 0;
 }

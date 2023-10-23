@@ -70,6 +70,7 @@ CoLLVMArchiveKind llvm_sys_archive_kind(sys_t sys) {
     // note: llvm/lib/Object/ArchiveWriter.cpp switches to DARWIN64/GNU64 if needed
     case SYS_macos: return CoLLVMArchive_DARWIN;
     case SYS_linux: return CoLLVMArchive_GNU;
+    case SYS_win32: return CoLLVMArchive_COFF;
     // case SYS_openbsd: case SYS_freebsd: return CoLLVMArchive_BSD;
     case SYS_wasi: return CoLLVMArchive_GNU;
     case SYS_none:
