@@ -538,8 +538,14 @@ _target_sources() {
 }
 
 # compile helper program
-"$PROJECT"/deps/llvmbox/bin/clang -std=c11 \
-  "$PROJECT"/etc/bitset.c -o "$PROJECT"/etc/bitset
+HOST_ARCH=$(uname -m); HOST_ARCH=${HOST_ARCH/arm64/aarch64}
+HOST_SYS=$(uname -s) # e.g. linux, macos
+case "$HOST_SYS" in
+  Darwin) HOST_SYS=macos ;;
+  *)      HOST_SYS=$(awk '{print tolower($0)}' <<< "$HOST_SYS") ;;
+esac
+LLVMBOX="$PROJECT"/deps/llvmbox-$HOST_ARCH-$HOST_SYS
+"$LLVMBOX"/bin/clang -std=c11 "$PROJECT"/etc/bitset.c -o "$PROJECT"/etc/bitset
 
 # generate mapping for each target to corresponding sources
 (
