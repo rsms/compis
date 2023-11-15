@@ -410,7 +410,7 @@ static void gen_reftype(cgen_t* g, const reftype_t* t) {
         ((arraytype_t*)t->elem)->len != 0)
     {
       // note: we can't use "const" here for plain types since that would cause
-      // issues with temorary locals, for example implicit block returns as in
+      // issues with temporary locals, for example implicit block returns as in
       // "let y = { ...; x }" which uses a temporary variable to store x in for
       // the block "{ ...; x }".
       // However for pointer values like arrays we _must_ use const.
@@ -420,10 +420,18 @@ static void gen_reftype(cgen_t* g, const reftype_t* t) {
   } else {
     // e.g. "&Foo"    => "const Foo*"
     //      "mut&Foo" => "Foo*"
+    //      "&[u8 5]" => "const u8*" (not "const u8**")
     if (t->kind == TYPE_REF)
       PRINT("const ");
     gen_type(g, t->elem);
-    CHAR('*');
+    if (t->elem->kind == TYPE_ARRAY && ((arraytype_t*)t->elem)->len > 0) {
+      // Nothing to be done; ref to fixed-size array is just a pointer.
+      //   e.g. "&[u8 5]" => "const u8*" (not "const u8**")
+      // Note that refs to dynamically sized arrays are represented as a struct
+      // and thus needs "*".
+    } else {
+      CHAR('*');
+    }
   }
 }
 
@@ -737,7 +745,7 @@ static void gen_expr_rvalue1(
 
       case TYPE_SLICE:
       case TYPE_MUTSLICE:
-        // &[T] <= &[T N]
+        // &[T] <= &[T N] -- left type is slice, right type is something else
         assertf(type_isref(rt) && ((reftype_t*)rt)->elem->kind == TYPE_ARRAY,
           "unexpected slice initializer %s", nodekind_name(rt->kind) );
         const arraytype_t* at = (arraytype_t*)((reftype_t*)rt)->elem;

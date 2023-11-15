@@ -1243,7 +1243,6 @@ static void implicit_rvalue_deref(typecheck_t* a, const type_t* ltype, expr_t** 
       break;
     *rvalp = mkderef(a, rval, rval->loc);
     rval = *rvalp;
-    // dlog("rval %s [%s]", fmtnode(0, rval), fmtnode(1, rval->type));
     if (assertnotnull(rval->type)->kind == TYPE_OPTIONAL) {
       // e.g. fun(x ?*int) { if x { x++ } }
       //                            ~~~
@@ -1260,10 +1259,19 @@ static void implicit_rvalue_deref(typecheck_t* a, const type_t* ltype, expr_t** 
       //   fun example(a ?&int, b &int) { a = b }
       ltype = ((opttype_t*)ltype)->elem;
     }
-    if (ltype->kind == TYPE_REF || ltype->kind == TYPE_MUTREF)
+    if (ltype->kind == TYPE_REF || ltype->kind == TYPE_MUTREF ||
+        ltype->kind == TYPE_SLICE || ltype->kind == TYPE_MUTSLICE)
+    {
+      // e.g.
+      //   let x &[u8 5] = "hello"  // immutable array
+      //   let y &[u8] = x          // immutable slice of array
       break;
+    }
+    //dlog("mkderef (ref) >> ltype: %s  rtype: %s",
+    //   fmtnode(0, ltype), fmtnode(1, rval->type));
     *rvalp = mkderef(a, rval, rval->loc);
     rval = *rvalp;
+    //dlog("mkderef (ref) << rtype: %s", fmtnode(1, rval->type));
     if (assertnotnull(rval->type)->kind == TYPE_OPTIONAL) {
       // e.g. fun(x mut&?int) { if x { x++ } }
       //                               ~~~
