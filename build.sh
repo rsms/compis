@@ -142,8 +142,7 @@ fi
 # OUT_DIR
 
 if [ -z "$OUT_DIR" ]; then
-  OUT_DIR="$OUT_DIR_BASE/$BUILD_MODE"
-  test $TARGET && OUT_DIR="$OUT_DIR-$TARGET"
+  OUT_DIR="$OUT_DIR_BASE/$BUILD_MODE-$TARGET"
   mkdir -p "$OUT_DIR"
 else
   mkdir -p "$OUT_DIR"
@@ -243,6 +242,12 @@ for LLVMBOX_INSTALLATION in "${LLVMBOX_INSTALLATIONS[@]}"; do
   fi
 done
 
+# prefer "ninja" from system, fall back to llvmbox version
+# (must do this before we add llvmbox to PATH)
+NINJA=${NINJA:-$(command -v ninja 2>/dev/null || true)}
+[ -n "$NINJA" ] || NINJA=$LLVMBOX_HOST_DESTDIR/bin/ninja
+export NINJA  # for watch mode
+
 # select compiler to use for compiling compis
 # if we are cross compiling, use compis itself
 if $USE_SELF || [ "$TARGET_ARCH-$TARGET_SYS" != "$HOST_ARCH-$HOST_SYS" ]; then
@@ -276,11 +281,6 @@ else
   export CXX="$LLVMBOX_HOST_DESTDIR/bin/clang++"
   export PATH="$LLVMBOX_HOST_DESTDIR/bin:$PATH"
 fi
-
-# prefer "ninja" from system, fall back to llvmbox version
-NINJA=${NINJA:-$(command -v ninja 2>/dev/null || true)}
-[ -n "$NINJA" ] || NINJA=$LLVMBOX_HOST_DESTDIR/bin/ninja
-export NINJA  # for watch mode
 
 # —————————————————————————————————————————————————————————————————————————————————
 # update llvm-derived code, if needed
