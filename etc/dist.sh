@@ -8,12 +8,8 @@ TEST=true
 NO_CODESIGN=false
 CLEAN=true
 CREATE_TAR=true
-TARGET=  # note: build.sh validates the target string for us
-HOST_ARCH=$(uname -m) ; HOST_ARCH=${HOST_ARCH/arm64/aarch64}
-HOST_SYS=$(uname -s) ; case "$HOST_SYS" in
-  Darwin) HOST_SYS=macos ;;
-  *)      HOST_SYS=$(awk '{print tolower($0)}' <<< "$HOST_SYS") ;;
-esac
+TARGET=
+# note: build.sh validates the target string for us
 
 while [[ $# -gt 0 ]]; do case "$1" in
   --force)       FORCE=true; shift ;;
@@ -118,10 +114,15 @@ echo "deduplicating identical files using hardlinks"
 "$fdupes" --recurse --linkhard --noempty $DESTDIR >/dev/null
 
 if $TEST; then
-  echo "running test/test-build-sysroot-race.sh"
-  COEXE=$DESTDIR/compis ./test/test-build-sysroot-race.sh
-  echo "running test/test.sh"
-  ./test/test.sh --coexe=$DESTDIR/compis
+  if [ "$TARGET" != "$HOST_ARCH-$HOST_SYS" ]; then
+    echo "warning: disabling tests since target is different from host" >&2
+    TEST=false
+  else
+    echo "running test/test-build-sysroot-race.sh"
+    COEXE=$DESTDIR/compis ./test/test-build-sysroot-race.sh
+    echo "running test/test.sh"
+    ./test/test.sh --coexe=$DESTDIR/compis
+  fi
 fi
 
 if $CODESIGN; then
