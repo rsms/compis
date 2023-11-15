@@ -1,5 +1,5 @@
 // This is the runtime interface.
-// It is included in all packages which use std/runtime.
+// These symbols are available in all packages which use std/runtime.
 
 __co_PKG _Noreturn void __co_panic(__co_str);
 __co_PKG _Noreturn void __co_panic_out_of_bounds(void);

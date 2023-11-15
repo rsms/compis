@@ -1,8 +1,13 @@
 #include "runtime.h"
-#include <stdio.h>
+#if !__STDC_HOSTED__
+  #error Not yet implemented for freestanding
+#else
+  #include <stdio.h>
+  #include <stdlib.h> // malloc et al
+#endif
 
 _Noreturn void __co_panic(__co_str msg) {
-  fwrite("panic: ", __builtin_strlen("panic: "), 1, stderr);
+  fwrite("panic: ", strlen("panic: "), 1, stderr);
   fwrite(msg.ptr, msg.len, 1, stderr);
   putc('\n', stderr);
   fflush(stderr);
@@ -21,14 +26,15 @@ _Noreturn void __co_panic_null(void) {
 
 
 void* __co_mem_dup(const void* src, __co_uint size) {
-  void* ptr = __builtin_memcpy(__builtin_malloc(size), src, size);
+  void* ptr = malloc(size);
+  memcpy(ptr, src, size);
   // __builtin_printf("__co_mem_dup(%p, %lu) => %p\n", src, size, ptr);
   return ptr;
 }
 
 void __co_mem_free(void* ptr, __co_uint size) {
   // __builtin_printf("__co_mem_free(%p, %lu)\n", ptr, size);
-  __builtin_free(ptr);
+  free(ptr);
 }
 
 
