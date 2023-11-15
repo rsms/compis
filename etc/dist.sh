@@ -40,7 +40,7 @@ esac; done
 [ -n "$TARGET" ] || _err "missing <target>"
 
 CO_VERSION=$(cat "$PROJECT/version.txt")
-BUILDDIR=out/dist
+BUILDDIR=out/dist/build-$TARGET
 DESTDIR=out/dist/compis-$CO_VERSION-$TARGET
 ARCHIVE=out/compis-$CO_VERSION-$TARGET.tar.xz
 
