@@ -66,10 +66,10 @@ if [ -n "$COEXE" ]; then
 else
   BUILD_ARGS=
   if $DEBUG; then
-    COEXE="$OUT_DIR/debug/co"
+    COEXE="$OUT_DIR/debug-$HOST_ARCH-$HOST_SYS/co"
     BUILD_ARGS=-debug
   else
-    COEXE="$OUT_DIR/opt/co"
+    COEXE="$OUT_DIR/opt-$HOST_ARCH-$HOST_SYS/co"
     BUILD_ARGS=-no-lto
   fi
   # build co if needed
