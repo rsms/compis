@@ -1,13 +1,4 @@
-pub "c" fun panic(str) void
+import "std/runtime" { print }
 
-fun main() {
-  panic("hej")
-}
-
-// type Foo {
-//   lol int
-// }
-
-// fun Foo.lol() {}
-
-// fun int.lol() {}
+pub fun main()
+  print("hello world")
