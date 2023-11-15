@@ -142,11 +142,8 @@ static void coroot_init(memalloc_t ma) {
     coroot = path_abs(envvar).p;
   } else {
     coroot = path_dir(coexefile).p;
-    #if DEBUG
-      if (str_endswith(coroot, "/out/debug"))
-        coroot = path_join(coroot, "../../lib").p;
-    #elif !defined(CO_DISTRIBUTION)
-      if (str_endswith(coroot, "/out/opt") || str_endswith(coroot, "/out/debug"))
+    #if !defined(CO_DISTRIBUTION)
+      if (strstr(coroot, "/out/opt-") || strstr(coroot, "/out/debug-"))
         coroot = path_join(coroot, "../../lib").p;
     #endif
   }
