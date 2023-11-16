@@ -18,6 +18,7 @@ while [[ $# -gt 0 ]]; do case "$1" in
   --no-clean)    CLEAN=false; shift ;;
   --no-tar)      CREATE_TAR=false; shift ;;
   -h|-help|--help) cat << _END
+Create distribution at out/compis-VERSION-TARGET
 Usage: $0 [options] <target>
 Options:
   --force        Create distribution even if some preconditions are not met
@@ -40,8 +41,8 @@ esac; done
 [ -n "$TARGET" ] || _err "missing <target>"
 
 CO_VERSION=$(cat "$PROJECT/version.txt")
-BUILDDIR=out/dist/build-$TARGET
-DESTDIR=out/dist/compis-$CO_VERSION-$TARGET
+BUILDDIR=out/dist-$TARGET
+DESTDIR=out/compis-$CO_VERSION-$TARGET
 ARCHIVE=out/compis-$CO_VERSION-$TARGET.tar.xz
 
 if ! $FORCE && [ -d .git ] && [ -n "$(git status -s | grep -v '?')" ]; then

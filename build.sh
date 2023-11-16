@@ -79,7 +79,7 @@ Misc options:
   -wf=<file> Watch <file> for changes (can be provided multiple times)
   -run=<cmd> Run <cmd> after successful build
   -v         Verbose log messages and disables pretty ninja output
-  -use-self  Build compis with compis (requires functioning compis in out/dist)
+  -use-self  Build compis with compis (requires functioning out/compis-.../compis)
   -help      Show help on stdout and exit
 _END
     exit ;;
@@ -251,7 +251,7 @@ export NINJA  # for watch mode
 # select compiler to use for compiling compis
 # if we are cross compiling, use compis itself
 if $USE_SELF || [ "$TARGET_ARCH-$TARGET_SYS" != "$HOST_ARCH-$HOST_SYS" ]; then
-  CO_HOST_DESTDIR=$PROJECT/out/dist/compis-$CO_VERSION-$HOST_ARCH-$HOST_SYS
+  CO_HOST_DESTDIR=$PROJECT/out/compis-$CO_VERSION-$HOST_ARCH-$HOST_SYS
   if [ ! -x "$CO_HOST_DESTDIR/compis" ]; then
     echo "building compis for host, to be used as stage-1 compiler"
     sleep 1
