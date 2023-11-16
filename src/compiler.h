@@ -283,6 +283,10 @@ inline static u32 compiler_errcount(const compiler_t* c) {
   return AtomicLoadAcq(&c->errcount);
 }
 
+// compiler_get_runtime_pkg resolves the std/runtime package.
+// Internally cached
+err_t compiler_get_runtime_pkg(compiler_t* c, pkg_t** rt_pkg);
+
 // spawn_tool spawns a compiler subprocess
 // argv must be NULL terminated; argv[0] must be the name of a compis command, eg "cc"
 err_t spawn_tool(

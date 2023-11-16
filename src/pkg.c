@@ -710,3 +710,25 @@ err_t pkg_def_add(pkg_t* pkg, memalloc_t ma, sym_t name, node_t** np_inout) {
   return err;
 }
 
+
+err_t pkg_def_addm(pkg_t* pkg, memalloc_t ma, sym_t* namev, node_t** nodev, u32 count) {
+  err_t err = 0;
+  rwmutex_lock(&pkg->defs_mu);
+  if UNLIKELY(!map_reserve(&pkg->defs, ma, count)) {
+    err = ErrNoMem;
+    goto end;
+  }
+  for (u32 i = 0; i < count; i++) {
+    void** vp = map_assign_ptr(&pkg->defs, ma, namev[i]);
+    if UNLIKELY(!vp) {
+      err = ErrNoMem;
+      break;
+    } else if (*vp == NULL) {
+      *vp = assertnotnull(nodev[i]);
+    }
+  }
+end:
+  rwmutex_unlock(&pkg->defs_mu);
+  return err;
+}
+

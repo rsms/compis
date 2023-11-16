@@ -148,7 +148,7 @@ static void coroot_init(memalloc_t ma) {
     #endif
   }
   safecheck(coroot != NULL);
-  char* probe = path_join_alloca(coroot, "co/coprelude.h");
+  char* probe = path_join_alloca(coroot, "std/builtin/coprelude.h");
   if (!fs_isfile(probe))
     warnx("warning: invalid COROOT '%s' (compiling may not work)", coroot);
 }

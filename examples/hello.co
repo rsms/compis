@@ -1,4 +1,2 @@
-import "std/runtime" { print }
-
 pub fun main()
   print("hello world")

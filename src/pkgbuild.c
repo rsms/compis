@@ -599,8 +599,11 @@ static err_t build_dependency(compiler_t* c, memalloc_t api_ma, pkgcell_t pkgc) 
 
 
 static bool load_dependency1(
-  compiler_t* c, memalloc_t api_ma, pkgcell_t pkgc,
-  const sha256_t* old_api_sha256v, err_t* errp)
+  compiler_t* c,
+  memalloc_t api_ma,
+  pkgcell_t pkgc,
+  const sha256_t* old_api_sha256v,
+  err_t* errp)
 {
   pkg_t* pkg = pkgc.pkg;
 
@@ -768,14 +771,16 @@ open_metafile:
   if (err) {
     if (did_build)
       goto end;
+    dlog("attempting rebuild (invalid metafile \"%s\")", relpath(metafile.p));
     // try building; maybe the metafile is b0rked
     pkg->mtime = 0;
     err = 0;
   }
 
   // unless we just built the package, check source files and load sub-dependencies
-  if (!did_build && pkg->mtime > 0 &&
-      !load_dependency1(c, api_ma, pkgc, imports_api_sha256v, &err))
+  if (!did_build &&
+      ( pkg->mtime == 0 ||
+        !load_dependency1(c, api_ma, pkgc, imports_api_sha256v, &err) ) )
   {
     if (err)
       goto end;
@@ -878,44 +883,6 @@ UNUSED static void trace_dependencies(const pkg_t* pkg, int indent) {
 }
 
 
-static err_t get_runtime_pkg(pkgbuild_t* pb, pkg_t** rt_pkg) {
-  // we cache the std/runtime package at compiler_t.stdruntime_pkg
-  rwmutex_rlock(&pb->c->pkgindex_mu);
-  *rt_pkg = pb->c->stdruntime_pkg;
-  rwmutex_runlock(&pb->c->pkgindex_mu);
-  if (*rt_pkg) // found in cache
-    return 0;
-
-  err_t err;
-  slice_t rt_pkgpath = slice_cstr("std/runtime");
-  str_t rt_pkgdir = str_makelen(rt_pkgpath.chars, rt_pkgpath.len);
-  usize rt_rootlen;
-
-  // Resolve package
-  // This will fail if it's not found on disk
-  if (( err = import_resolve_fspath(&rt_pkgdir, &rt_rootlen) ))
-    goto end;
-
-  // check sanity of import_resolve_fspath
-  assertf(
-    strcmp(rt_pkgpath.chars, rt_pkgdir.p + rt_rootlen + 1) == 0,
-    "import_resolve_fspath returned rootlen=%zu, dir='%s'",
-    rt_rootlen, rt_pkgdir.p);
-
-  // intern package in pkgindex
-  err = pkgindex_intern(
-    pb->c, str_slice(rt_pkgdir), rt_pkgpath, /*api_sha256*/NULL, rt_pkg);
-
-end:
-  str_free(rt_pkgdir);
-  rwmutex_lock(&pb->c->pkgindex_mu);
-  // note: no race because of pkgindex_intern
-  pb->c->stdruntime_pkg = *rt_pkg;
-  rwmutex_unlock(&pb->c->pkgindex_mu);
-  return err;
-}
-
-
 err_t pkgbuild_import(pkgbuild_t* pb) {
   pkg_t* pkg = pb->pkgc.pkg;
   err_t err;
@@ -925,12 +892,18 @@ err_t pkgbuild_import(pkgbuild_t* pb) {
   // add "std/runtime" dependency (for top-level packages only)
   if ((pb->flags & PKGBUILD_DEP) == 0 && pb->c->opt_nostdruntime == false) {
     pkg_t* rt_pkg;
-    if (( err = get_runtime_pkg(pb, &rt_pkg) ))
+    if (( err = compiler_get_runtime_pkg(pb->c, &rt_pkg) )) {
+      if (err == ErrNotFound)
+        report_diag(pb->c, (origin_t){0}, DIAG_ERR, "package std/runtime not found");
       return err;
+    }
+    // add to imports
     // note: "rt_pkg!=pkg" guards std/runtime from importing itself
-    if (rt_pkg != pkg && !ptrarray_push(&pkg->imports, pb->c->ma, rt_pkg)) {
-      err = ErrNoMem;
-      return err;
+    if (rt_pkg != pkg) {
+      if (!ptrarray_push(&pkg->imports, pb->c->ma, rt_pkg)) {
+        err = ErrNoMem;
+        return err;
+      }
     }
   }
 

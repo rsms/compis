@@ -1342,28 +1342,6 @@ static const u8* decode_field(DEC_PARAMS, void* fp, ast_field_t f) {
   return p;
 }
 
-#ifdef XXXXX
-typedef struct astdecoder_ {
-  u32         version;
-  u32         symcount;    // length of symtab
-  u32         nodecount;   // length of nodetab
-  u32         rootcount;   // number of root nodes at the tail of nodetab
-  u32         srccount;    // length of srctab
-  u32         importcount; //
-  sym_t*      symtab;      // ID => sym_t
-  node_t**    nodetab;     // ID => node_t*
-  u32*        srctab;      // ID => srcfileid (document local ID => global ID)
-  memalloc_t  ma;
-  memalloc_t  ast_ma;
-  locmap_t*   locmap;
-  const char* srcname;
-  const u8*   pstart;
-  const u8*   pend;
-  const u8*   pcurr;
-  err_t       err;
-} astdecoder_t;
-#endif
-
 
 static const u8* decode_header(DEC_PARAMS) {
   // check that header is reasonably long
@@ -1441,11 +1419,19 @@ static const u8* decode_pkg(DEC_PARAMS, pkg_t* pkg) {
     pkg->root.len > 0 && coverbose &&
     (pkg->root.len != linelen || memcmp(pkg->root.p, linep, linelen) != 0) )
   {
-    elog("[astdecoder] warning: %s: unexpected pkg root \"%.*s\" (expected \"%s\")",
+    // elog(
+    //   "[astdecoder] warning: %s: unexpected pkg root \"%.*s\""
+    //   " (expected \"%s\"; using expected path)",
+    //   relpath(d->srcname), (int)linelen, linep, pkg->root.p);
+    dlog("%s: unexpected pkg root \"%.*s\" (expected \"%s\")",
       relpath(d->srcname), (int)linelen, linep, pkg->root.p);
+    // this is a "soft" error, so not using DEC_ERROR
+    d->err = ErrInvalid;
+    return pend;
+  } else {
+    pkg->root.len = 0;
+    ok &= str_appendlen(&pkg->root, linep, linelen);
   }
-  pkg->root.len = 0;
-  ok &= str_appendlen(&pkg->root, linep, linelen);
 
   // pkg.path
   p = decode_bytes_untilchar(DEC_ARGS, &linep, &linelen, '\n');
@@ -1679,6 +1665,17 @@ static const u8* decode_node(DEC_PARAMS, u32 node_id) {
   // dlog("nodetab[%u] = (kind %s, flags 0x%04x, loc 0x%llx)",
   //   node_id, nodekind_name(n->kind), n->flags, n->loc);
 
+  // intern strtype
+  assert(d->c->strtype.kind == TYPE_ALIAS);
+  if (
+    n->kind == TYPE_ALIAS &&
+    ((aliastype_t*)n)->name == sym_str &&
+    ((aliastype_t*)n)->mangledname &&
+    strcmp(d->c->strtype.mangledname, ((aliastype_t*)n)->mangledname) == 0)
+  {
+    d->nodetab[node_id] = (node_t*)&d->c->strtype;
+  }
+
   return p;
 }
 
@@ -1784,7 +1781,14 @@ err_t astdecoder_decode_header(astdecoder_t* d, pkg_t* pkg, u32* importcount) {
   }
 
   p = decode_pkg(DEC_ARGS, pkg);
+  if (d->err) {
+    dlog("decode_pkg: %s", err_str(d->err));
+    goto end;
+  }
+
   p = decode_srcfiles(DEC_ARGS, pkg);
+  if (d->err)
+    dlog("decode_srcfiles: %s", err_str(d->err));
 
 end:
   d->pcurr = p;

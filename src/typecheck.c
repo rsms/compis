@@ -3019,6 +3019,7 @@ static void strlit(typecheck_t* a, strlit_t* n) {
     return;
   }
 
+  // &[u8 len]
   arraytype_t* at = mknode(a, arraytype_t, TYPE_ARRAY);
   at->flags = NF_CHECKED;
   at->elem = type_u8;
@@ -4594,6 +4595,26 @@ static void define_at_unit_level(typecheck_t* a, node_t* n) {
 }
 
 
+static err_t autoimport_runtime(typecheck_t* a) {
+  if (a->compiler->opt_nostdruntime)
+    return 0;
+
+  // get pre-loaded std/runtime package
+  rwmutex_rlock(&a->compiler->pkgindex_mu);
+  pkg_t* rt_pkg = a->compiler->stdruntime_pkg;
+  rwmutex_runlock(&a->compiler->pkgindex_mu);
+  assertf(rt_pkg, "std/runtime not loaded even though compiler.opt_nostdruntime=false");
+
+  // avoid importing std/runtime in itself
+  if (a->pkg == rt_pkg)
+    return 0;
+
+  // add runtime's API to our package-level scope
+  const nsexpr_t* ns = rt_pkg->api_ns;
+  return pkg_def_addm(a->pkg, a->ma, ns->member_names, ns->members.v, ns->members.len);
+}
+
+
 err_t typecheck(
   compiler_t* c, memalloc_t ast_ma, pkg_t* pkg, unit_t** unitv, u32 unitc)
 {
@@ -4622,6 +4643,10 @@ err_t typecheck(
     goto end3;
   }
   buf_init(&a.tmpbuf, a.ma);
+
+  // expose runtime functions
+  if (( a.err = autoimport_runtime(&a) ))
+    goto end4;
 
   enter_scope(&a); // package
 
@@ -4652,6 +4677,7 @@ err_t typecheck(
 
   leave_scope(&a); // package
 
+end4:
   scope_dispose(&a.scope, a.ma);
   scope_dispose(&a.narrowscope, a.ma);
   ptrarray_dispose(&a.nspath, a.ma);

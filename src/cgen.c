@@ -448,7 +448,7 @@ static void gen_aliastype(cgen_t* g, const aliastype_t* t) {
 
 static void gen_aliastype_def(cgen_t* g, const aliastype_t* t) {
   if (t == &g->compiler->strtype)
-    return;
+    return; // "str" is predefined in prelude
   startline(g, t->loc);
   PRINT("typedef "), gen_type(g, t->elem);
   PRINTF(" %s;", assertnotnull(t->mangledname));
@@ -2545,6 +2545,18 @@ static void gen_expr(cgen_t* g, const expr_t* n) {
 }
 
 
+static const char* include_filename(cgen_t* g, str_t filename) {
+  usize builddir_len = strlen(g->compiler->builddir);
+  if (filename.len > builddir_len &&
+      filename.p[builddir_len] == PATH_SEP &&
+      memcmp(filename.p, g->compiler->builddir, builddir_len) == 0)
+  {
+    return filename.p + builddir_len + 1;
+  }
+  return filename.p;
+}
+
+
 static void gen_imports(cgen_t* g, const unit_t* unit) {
   if (g->pkg->imports.len == 0)
     return;
@@ -2584,7 +2596,7 @@ static void gen_imports(cgen_t* g, const unit_t* unit) {
       g->err = ErrNoMem;
       goto end;
     }
-    PRINTF("#include \"%s\"\n", headerfile.p);
+    PRINTF("#include <%s>\n", include_filename(g, headerfile));
   }
 
   // include API headers for each imported package
@@ -2595,7 +2607,7 @@ static void gen_imports(cgen_t* g, const unit_t* unit) {
       goto end;
     }
     PRINTF("// import \"%s\"\n", depv[i]->path.p);
-    PRINTF("#include \"%s\"\n", headerfile.p);
+    PRINTF("#include <%s>\n", include_filename(g, headerfile));
   }
 
 end:

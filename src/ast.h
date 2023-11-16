@@ -166,8 +166,8 @@ typedef struct {
 // pkg_t represents a package
 typedef struct pkg_ {
   str_t           path;     // import path, e.g. "main" or "std/runtime" (canonical)
-  str_t           dir;      // absolute path to source directory
   str_t           root;     // root + path = dir
+  str_t           dir;      // absolute path to source directory
   bool            isadhoc;  // single-file package
   ptrarray_t      srcfiles; // source files, uniquely sorted by name
   map_t           defs;     // package-level definitions
@@ -617,6 +617,7 @@ bool pkg_exefile(const pkg_t* pkg, const compiler_t* c, str_t* dst);
 node_t* nullable pkg_def_get(pkg_t* pkg, sym_t name);
 err_t pkg_def_set(pkg_t* pkg, memalloc_t ma, sym_t name, node_t* n);
 err_t pkg_def_add(pkg_t* pkg, memalloc_t ma, sym_t name, node_t** np_inout);
+err_t pkg_def_addm(pkg_t* pkg, memalloc_t ma, sym_t* namev, node_t** nodev, u32 count);
 str_t pkg_unit_srcdir(const pkg_t* pkg, const unit_t* unit);
 // pkg_imports_add adds dep to importer_pkg->imports (uniquely)
 bool pkg_imports_add(pkg_t* importer_pkg, pkg_t* dep, memalloc_t ma);

@@ -269,10 +269,6 @@ err_t import_resolve_fspath(str_t* fspath, usize* rootlen_out) {
     // note: coroot is guaranteed to be absolute and path_clean'ed (coroot_init)
     usize fspathlen = MIN(fspath->len, (usize)I32_MAX); // for vlog
     usize corootlen = strlen(coroot);
-    isize i = string_lastindexof(coroot, corootlen, PATH_SEP);
-    assert(i > -1);
-    if (i != 0)
-      corootlen = (usize)i;
     if UNLIKELY(!str_prependlen(fspath, coroot, corootlen + 1/*include NUL*/)) {
       // restore altered fspath
       memmove(fspath->p, fspath->p + (corootlen + 1), fspath->len - (corootlen + 1));
@@ -539,7 +535,6 @@ err_t import_pkgs(compiler_t* c, pkg_t* importer_pkg, unit_t* unitv[], u32 unitc
     pkg_t* pkg;
     err_t err1 = import_resolve_pkg(
       c, importer_pkg, str_slice(ip->path), &ip->fspath, &pkg);
-
     if UNLIKELY(err1) {
       if (err == 0) err = err1;
       if (err1 != ErrNotFound)

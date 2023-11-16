@@ -294,7 +294,8 @@ static err_t configure_cflags(compiler_t* c, const compiler_config_t* config) {
       break;
   }
   // strlist_add(&c->cflags, "-fPIC");
-  strlist_addf(&c->cflags, "-isystem%s/co", coroot);
+  strlist_addf(&c->cflags, "-isystem%s/std/builtin", coroot); // i.e. coprelude.h
+  strlist_addf(&c->cflags, "-isystem%s", c->builddir); // i.e. pkg/foo/pub.h
 
   // end of cflags
 
@@ -421,6 +422,51 @@ err_t compiler_configure(compiler_t* c, const compiler_config_t* config) {
   err = configure_builddir(c, config); if (err) return dlog("x"), err;
   err = configure_cflags(c, config);   if (err) return dlog("x"), err;
   err = configure_builtins(c);         if (err) return dlog("x"), err;
+  return err;
+}
+
+
+//——————————————————————————————————————————————————————————————————————————————————————
+// special packages
+
+
+err_t compiler_get_runtime_pkg(compiler_t* c, pkg_t** rt_pkg) {
+  // we cache the std/runtime package at compiler_t.stdruntime_pkg
+  rwmutex_rlock(&c->pkgindex_mu);
+  *rt_pkg = c->stdruntime_pkg;
+  rwmutex_runlock(&c->pkgindex_mu);
+  if (*rt_pkg) // found in cache
+    return 0;
+
+  err_t err;
+  slice_t rt_pkgpath = slice_cstr("std/runtime");
+  str_t rt_pkgdir = str_makelen(rt_pkgpath.chars, rt_pkgpath.len);
+  usize rt_rootlen;
+
+  // Resolve package
+  // This will fail if it's not found on disk
+  if UNLIKELY(( err = import_resolve_fspath(&rt_pkgdir, &rt_rootlen) )) {
+    report_diag(c, (origin_t){0}, DIAG_ERR, "package std/runtime not found");
+    goto end;
+  }
+
+  // check sanity of import_resolve_fspath
+  assertf(
+    strcmp(rt_pkgpath.chars, rt_pkgdir.p + rt_rootlen + 1) == 0,
+    "import_resolve_fspath returned rootlen=%zu, dir='%s'",
+    rt_rootlen, rt_pkgdir.p);
+
+  // intern package in pkgindex
+  // note: only possible error is ErrNoMem
+  err = pkgindex_intern(
+    c, str_slice(rt_pkgdir), rt_pkgpath, /*api_sha256*/NULL, rt_pkg);
+
+end:
+  str_free(rt_pkgdir);
+  rwmutex_lock(&c->pkgindex_mu);
+  // note: no race because of pkgindex_intern
+  c->stdruntime_pkg = *rt_pkg;
+  rwmutex_unlock(&c->pkgindex_mu);
   return err;
 }
 
