@@ -1428,6 +1428,24 @@ static void vardef(typecheck_t* a, local_t* n) {
   assert(nodekind_isvar(n->kind));
   local(a, n);
   define(a, n->name, n);
+
+  // If the var is default initialized, the type must have a possible default value.
+  // For example, "var x *Foo" is invalid since pointers must be initialized,
+  // however "var x ?*Foo" _is_ valid since optional defaults to empty.
+  if (!n->init) switch (n->type->kind) {
+    case TYPE_FUN:
+    case TYPE_PTR:
+    case TYPE_REF:
+    case TYPE_MUTREF:
+    case TYPE_SLICE:
+    case TYPE_MUTSLICE: {
+      error(a, n, "missing initializer for %s of %s",
+        nodekind_fmt(n->kind), nodekind_fmt(n->type->kind));
+      if (n->type->loc)
+        help(a, n->type, "add \" = initializer\"");
+      break;
+    }
+  }
 }
 
 

@@ -5,49 +5,37 @@
 
 const char* nodekind_fmt(nodekind_t kind) {
   switch (kind) {
-    case EXPR_PARAM:
-      return "parameter";
-    case EXPR_LET:
-      return "binding";
-    case EXPR_VAR:
-      return "variable";
-    case EXPR_FUN:
-      return "function";
-    case EXPR_BLOCK:
-      return "block";
-    case EXPR_ID:
-      return "identifier";
-    case EXPR_PREFIXOP:
-    case EXPR_POSTFIXOP:
-    case EXPR_BINOP:
-      return "operation";
-    case EXPR_ASSIGN:
-      return "assignment";
-    case EXPR_DEREF:
-      return "dereference";
-    case EXPR_INTLIT:
-    case EXPR_FLOATLIT:
-    case EXPR_BOOLLIT:
-      return "constant";
-    case EXPR_MEMBER:
-      return "member";
-    case EXPR_SUBSCRIPT:
-      return "subscript";
-    case EXPR_FIELD:
-      return "field";
-    case TYPE_STRUCT:
-      return "struct type";
-    case TYPE_UNKNOWN:
-      return "unknown type";
-    case TYPE_UNRESOLVED:
-      return "named type";
-    case STMT_TYPEDEF:
-      return "type definition";
+    case STMT_TYPEDEF: return "type definition";
+
+    case EXPR_PARAM:                                          return "parameter";
+    case EXPR_LET:                                            return "binding";
+    case EXPR_VAR:                                            return "variable";
+    case EXPR_FUN:                                            return "function";
+    case EXPR_BLOCK:                                          return "block";
+    case EXPR_ID:                                             return "identifier";
+    case EXPR_PREFIXOP: case EXPR_POSTFIXOP: case EXPR_BINOP: return "operation";
+    case EXPR_ASSIGN:                                         return "assignment";
+    case EXPR_DEREF:                                          return "dereference";
+    case EXPR_INTLIT: case EXPR_FLOATLIT: case EXPR_BOOLLIT:  return "constant";
+    case EXPR_MEMBER:                                         return "member";
+    case EXPR_SUBSCRIPT:                                      return "subscript";
+    case EXPR_FIELD:                                          return "field";
+
+    case TYPE_UNKNOWN:                   return "unknown type";
+    case TYPE_ARRAY:                     return "array type";
+    case TYPE_FUN:                       return "function type";
+    case TYPE_PTR:                       return "pointer type";
+    case TYPE_REF: case TYPE_MUTREF:     return "reference type";
+    case TYPE_SLICE: case TYPE_MUTSLICE: return "slice type";
+    case TYPE_OPTIONAL:                  return "optional type";
+    case TYPE_STRUCT:                    return "struct type";
+    case TYPE_ALIAS:                     return "alias type";
+    case TYPE_TEMPLATE:                  return "template type";
+    case TYPE_UNRESOLVED:                return "named type";
+
     default:
-      if (nodekind_istype(kind))
-        return "type";
-      if (nodekind_isexpr(kind))
-        return "expression";
+      if (nodekind_istype(kind)) return "type";
+      if (nodekind_isexpr(kind)) return "expression";
       return nodekind_name(kind);
   }
 }
