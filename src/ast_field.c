@@ -178,7 +178,8 @@ static const ast_field_t k_fieldsof_arraylit_t[] = {
 
 #define USERTYPE_FIELDS /* usertype_t */ \
   TYPE_FIELDS, \
-  FIELD_ID(usertype_t, templateparams, NODEARRAY) \
+  FIELD_ID(usertype_t, templateparams, NODEARRAY), \
+  FIELD_ID(usertype_t, dropfun, NODEZ) \
 // end USERTYPE_FIELDS
 
 #define PTRTYPE_FIELDS /* ptrtype_t */ \

@@ -921,17 +921,9 @@ static void drop_end(cgen_t* g) {
 static void gen_drop(cgen_t* g, const drop_t* d);
 
 
-static void gen_drop_custom(cgen_t* g, const drop_t* d, const type_t* bt) {
-  const char* mangledname = "?";
-  switch (bt->kind) {
-    case TYPE_STRUCT:
-      mangledname = ((structtype_t*)bt)->mangledname;
-      break;
-    default:
-      assertf(0, "unexpected %s", nodekind_name(bt->kind));
-  }
-
-  PRINTF("Nf%s4drop(", mangledname);
+static void gen_drop_custom(cgen_t* g, const drop_t* d, const usertype_t* bt) {
+  assertnotnull(bt->dropfun);
+  PRINTF("%s(", bt->dropfun->mangledname);
   as_ptr(g, &g->outbuf, d->type, d->name);
   PRINT(");");
 }
@@ -1053,8 +1045,9 @@ static void gen_drop(cgen_t* g, const drop_t* d) {
   }
 
   if (bt->flags & NF_DROP) {
+    assert(nodekind_isusertype(bt->kind));
     startlinex(g);
-    gen_drop_custom(g, d, bt);
+    gen_drop_custom(g, d, (usertype_t*)bt);
   }
 
   if (bt->flags & NF_SUBOWNERS) {

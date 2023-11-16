@@ -268,8 +268,9 @@ typedef struct {
   // If flags&NF_TEMPLATE: list of templateparam_t*
   // If flags&NF_TEMPLATEI: list of parameter arguments (node_t*)
   // Note: NF_TEMPLATEI is set on instances of templatetype_t.
-  nodearray_t    templateparams;
-  char* nullable mangledname; // allocated in ast_ma
+  nodearray_t     templateparams;
+  char* nullable  mangledname; // allocated in ast_ma
+  fun_t* nullable dropfun;
 } usertype_t;
 
 typedef struct {

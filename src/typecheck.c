@@ -1728,15 +1728,15 @@ static void fun(typecheck_t* a, fun_t* n) {
     }
   }
 
-  // check signature of special "drop" function.
-  // basically a "poor person's drop trait."
+  // check signature of special "drop" function
   if (n->recvt && n->name == sym_drop) {
     bool ok = false;
     if (ft->result == type_void && ft->params.len == 1) {
       local_t* param0 = (local_t*)ft->params.v[0];
       ok = param0->type->kind == TYPE_MUTREF;
-      if (ok)
-        n->recvt->flags |= NF_DROP;
+      n->recvt->flags |= NF_DROP;
+      assert(node_isusertype((node_t*)n->recvt));
+      ((usertype_t*)n->recvt)->dropfun = n;
     }
     if (!ok)
       error(a, n, "invalid signature of \"drop\" function, expecting (mut this)void");

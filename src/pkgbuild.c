@@ -778,6 +778,7 @@ open_metafile:
   }
 
   // unless we just built the package, check source files and load sub-dependencies
+rebuild:
   if (!did_build &&
       ( pkg->mtime == 0 ||
         !load_dependency1(c, api_ma, pkgc, imports_api_sha256v, &err) ) )
@@ -802,9 +803,13 @@ open_metafile:
     goto open_metafile;
   }
 
-  // When we get here, pkg is loaded & up-to-date.
-  // We now need to load the package's API.
-  err = load_pkg_api(api_ma, pkg, astdec);
+  // Load the package's API
+  if (( err = load_pkg_api(api_ma, pkg, astdec) ) && !did_build) {
+    // try building; maybe the metafile is b0rked
+    pkg->mtime = 0;
+    err = 0;
+    goto rebuild;
+  }
 
 end:
 
