@@ -814,12 +814,6 @@ static u32 owners_indexof(ircons_t* c, irval_t* v, u32 depth) {
 // }
 
 
-static bool zeroinit_owner_needs_drop(ircons_t* c, type_t* t) {
-  // return true for any owning type which for its zeroinit needs drop()
-  return false;
-}
-
-
 static void backpropagate_drop_to_ast(ircons_t* c, irval_t* v, irval_t* dropv) {
   assertf(c->dropstack.len, "drop outside owners scope");
   droparray_t* drops = c->dropstack.v[c->dropstack.len - 1];
@@ -1313,16 +1307,24 @@ static irval_t* vardef(ircons_t* c, local_t* n) {
   v = pushval(c, c->b, OP_ZERO, n->loc, n->type);
   if (n->name != sym__)
     comment(c, v, n->name);
+
   // owning var without initializer is initially dead
+  // Alt: v = move_or_copy(c, v, n->loc, NULL, (expr_t*)n);
   if (type_isowner(v->type)) {
     // must owners_add explicitly since we don't pass replace_owner to move_or_copy
     owners_add(c, v);
-    if (!zeroinit_owner_needs_drop(c, v->type)) {
-      // mark as dead since the type's zeroinit doesn't need drop (no side effects)
-      deadset_add(c, &c->deadset, v->id);
-      // create_liveness_var(c, v);
-    }
+    // Note: this is currently disabled since all vars of type type_isowner needs drop.
+    // static bool zeroinit_owner_needs_drop(ircons_t* c, type_t* t) {
+    //   // return true for any owning type which for its zeroinit needs drop()
+    //   return false;
+    // }
+    // if (!zeroinit_owner_needs_drop(c, v->type)) {
+    //   // mark as dead since the type's zeroinit doesn't need drop (no side effects)
+    //   deadset_add(c, &c->deadset, v->id);
+    //   // create_liveness_var(c, v);
+    // }
   }
+
   return assign_local(c, n, v);
 }
 
