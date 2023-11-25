@@ -743,20 +743,18 @@ fun integer_limits()
 
 
 
-### Ideally types integer constants
+### Ideally typed integer constants
 
-Compis features "ideally typed" integer constants.
-The actual type is inferred on use and the literal is verified to be within range:
+Rather than literals being of a fixed type, Compis features "ideally typed" integer constants; the actual type is inferred from context and its value is verified to be within range:
 
 ```
 fun foo(v i32) void
 fun bar(v u16) void
 fun cat(v i8) void
 fun example()
-  let x = 200
-  foo(x) // materialized as i32(320)
-  bar(x) // materialized as u16(320)
-  //cat(x) // error: 200 overflows i8
+  foo(200) // materialized as i32(320)
+  bar(200) // materialized as u16(320)
+  //cat(200) // error: integer constant overflows i8
 ```
 
 
