@@ -482,7 +482,7 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
       }
       case SYS_wasi:
         strlist_add(&args,
-          "-Wl,--stack-first", // stack at start of linear memory to catch S.O.
+          "-Wl,--stack-first", // stack at start of linear memory to catch overflow
           "-Wl,--export-dynamic" );
         strlist_addf(&args, "%s/lib/crt1.o", c.sysroot);
         break;
@@ -497,7 +497,7 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
           strlist_add(&args,
             "-Wl,--export-all", "-Wl,--no-gc-sections",
             "-Wl,--import-memory",
-            "-Wl,--stack-first", // stack at start of linear memory to catch S.O.
+            "-Wl,--stack-first", // stack at start of linear memory to catch overflow
             "-Wl,-allow-undefined"
             // -Wl,-allow-undefined-file wasm.syms // TODO: generate this?
           );
