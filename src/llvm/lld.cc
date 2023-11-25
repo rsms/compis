@@ -111,8 +111,10 @@ struct LinkerArgs {
 
   err_t add_libfile_args();
 
+  err_t add_common_elf_and_wasm_args();
+
   err_t add_coff_args();
-  err_t add_elf_arg();
+  err_t add_elf_args();
   err_t add_macho_args();
   err_t add_wasm_args();
 
@@ -184,55 +186,6 @@ err_t LinkerArgs::add_coff_args() {
 }
 
 
-err_t LinkerArgs::add_elf_arg() {
-  // flavor=ld.lld
-
-  if (triple.getOS() != Triple::Linux)
-    return unsupported_sys();
-
-  addarg("--pie");
-  addargf("--sysroot=%s", options.sysroot);
-  addarg("-EL", "--build-id", "--eh-frame-hdr");
-
-  // https://github.com/llvm/llvm-project/blob/llvmorg-15.0.7/lld/ELF/Driver.cpp#L131
-  const char* target_emu = "";
-  switch (triple.getArch()) {
-    case Triple::ArchType::aarch64: target_emu = "aarch64linux"; break;
-    case Triple::ArchType::arm:     target_emu = "armelf"; break;
-    case Triple::ArchType::riscv32: target_emu = "elf32lriscv"; break;
-    case Triple::ArchType::riscv64: target_emu = "elf64lriscv"; break;
-    case Triple::ArchType::x86_64:  target_emu = "elf_x86_64"; break;
-    case Triple::ArchType::x86:     target_emu = "elf_i386"; break;
-    default:
-      dlog("lld: unexpected arch %s", triple_archname(triple));
-      return ErrNotSupported;
-  }
-  addarg("-m", target_emu);
-
-  if (options.strip_dead)
-    addarg("-s"); // Strip all symbols. Implies --strip-debug
-
-  if (options.outfile)
-    addarg("-o", options.outfile);
-
-  addarg("-static");
-
-  // note: order of libraries is important for symbol resolution.
-  // If we list std/runtime.a after -lc, then e.g. "strlen" in libc
-  // is used instead of "strlen" in std/runtime.
-  err_t err = add_libfile_args();
-  if (err)
-    return err;
-
-  addargf("-L%s/lib", options.sysroot);
-  addarg("-lc", "-lrt");
-
-  addargf("%s" PATH_SEP "lib" PATH_SEP "crt1.o", options.sysroot);
-
-  return 0;
-}
-
-
 err_t LinkerArgs::add_macho_args() {
   // flavor=ld64.lld
 
@@ -277,16 +230,87 @@ err_t LinkerArgs::add_macho_args() {
 }
 
 
-err_t LinkerArgs::add_wasm_args() {
-  // flavor=wasm-ld
-  dlog("TODO: %s", __FUNCTION__);
-  addarg("--no-pie");
+err_t LinkerArgs::add_common_elf_and_wasm_args() {
+  // https://github.com/llvm/llvm-project/blob/llvmorg-15.0.7/lld/ELF/Driver.cpp#L131
+  const char* target_emu = "";
+  switch (triple.getArch()) {
+    case Triple::ArchType::aarch64: target_emu = "aarch64linux"; break;
+    case Triple::ArchType::arm:     target_emu = "armelf"; break;
+    case Triple::ArchType::riscv32: target_emu = "elf32lriscv"; break;
+    case Triple::ArchType::riscv64: target_emu = "elf64lriscv"; break;
+    case Triple::ArchType::x86_64:  target_emu = "elf_x86_64"; break;
+    case Triple::ArchType::x86:     target_emu = "elf_i386"; break;
+    case Triple::ArchType::wasm32:  target_emu = "wasm32"; break;
+    case Triple::ArchType::wasm64:  target_emu = "wasm64"; break;
+    default:
+      dlog("lld: unexpected arch %s", triple_archname(triple));
+      return ErrNotSupported;
+  }
+  addarg("-m", target_emu);
 
+  if (options.strip_dead)
+    addarg("-s"); // Strip all symbols. Implies --strip-debug
+
+  if (options.outfile)
+    addarg("-o", options.outfile);
+
+  // note: order of libraries is important for symbol resolution.
+  // If we list std/runtime.a after -lc, then e.g. "strlen" in libc
+  // is used instead of "strlen" in std/runtime.
   err_t err = add_libfile_args();
   if (err)
     return err;
 
-  return ErrNotSupported;
+  addargf("-L%s/lib", options.sysroot);
+  addarg("-lc", "-lrt");
+
+  addargf("%s" PATH_SEP "lib" PATH_SEP "crt1.o", options.sysroot);
+
+  return err;
+}
+
+
+err_t LinkerArgs::add_elf_args() {
+  // flavor=ld.lld
+  if (triple.getOS() != Triple::Linux)
+    return unsupported_sys();
+
+  addarg("--pie");
+  addargf("--sysroot=%s", options.sysroot);
+  addarg("-EL", "--build-id", "--eh-frame-hdr");
+
+  err_t err = add_common_elf_and_wasm_args();
+  if (err)
+    return err;
+
+  addarg("-static");
+
+  return err;
+}
+
+
+err_t LinkerArgs::add_wasm_args() {
+  // flavor=wasm-ld
+  // Note: very similar code lives in cc.c
+
+  err_t err = add_common_elf_and_wasm_args();
+  if (err)
+    return err;
+
+  addarg("--stack-first"); // stack at start of linear memory to catch stack overflow
+  addarg("--export-dynamic"); // put symbols in the dynamic symbol table
+
+  bool is_opt_build = options.lto_level > 0; // FIXME
+  if (is_opt_build)
+    addarg("--merge-data-segments"); // enable merging data segments
+
+  // Note: might want to consider:
+  //   --import-memory or --initial-memory=
+  //     (Import memory from the environment) or (Initial size of the linear memory)
+  //   --shared-memory (Use shared linear memory)
+  //   --max-memory= (Maximum size of the linear memory)
+
+  return err;
 }
 
 
@@ -323,7 +347,7 @@ static err_t build_args(
     case Triple::COFF:
       return linker_args.add_coff_args();
     case Triple::ELF:
-      return linker_args.add_elf_arg();
+      return linker_args.add_elf_args();
     case Triple::MachO:
       return linker_args.add_macho_args();
     case Triple::Wasm:
