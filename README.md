@@ -720,7 +720,32 @@ Overflow of unsigned integers wrap.
 
 ## Integer literals
 
-Compis features "ideally typed" integer literals.
+```
+fun inferred_int_types()
+  let _ = 1_23_4      // int (32-bit target)  int (64-bit target)
+  let _ = -1          // int (32-bit target)  int (64-bit target)
+  let _ = 2147483647  // int (32-bit target)  int (64-bit target)
+  let _ = -2147483648 // int (32-bit target)  int (64-bit target)
+  let _ = 4294967295  // uint (32-bit target) int (64-bit target)
+  let _ = -2147483649 // i64 (32-bit target)  int (64-bit target)
+  let _ = 4294967296  // u64 (32-bit target)  uint (64-bit target)
+
+fun integer_limits()
+  let _ i8 = -0x80
+  let _ u8 = 255
+  let _ i16 = -32768
+  let _ u16 = 65535
+  let _ i32 = -2147483648
+  let _ u32 = 4_294_967_295
+  let _ i64 = -9223372036854775808
+  let _ u64 = 0xffff_ffff_ffff_ffff
+```
+
+
+
+### Ideally types integer constants
+
+Compis features "ideally typed" integer constants.
 The actual type is inferred on use and the literal is verified to be within range:
 
 ```
