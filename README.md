@@ -752,8 +752,8 @@ fun foo(v i32) void
 fun bar(v u16) void
 fun cat(v i8) void
 fun example()
-  foo(200) // materialized as i32(320)
-  bar(200) // materialized as u16(320)
+  foo(200) // materialized as i32
+  bar(200) // materialized as u16
   //cat(200) // error: integer constant overflows i8
 ```
 
