@@ -75,6 +75,7 @@ _( TINTLIT, "integer literal" )
 _( TFLOATLIT, "number literal" )
 _( TBYTELIT, "byte literal" )
 _( TSTRLIT, "string literal" )
+_( TCHARLIT, "character literal" )
 
 // keywords (must be sorted)
 KEYWORD( "else",   TELSE )

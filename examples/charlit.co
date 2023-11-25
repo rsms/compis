@@ -1,0 +1,15 @@
+fun example()
+  // Character literals must be valid Unicode codepoints.
+  // A character is just an integer with compile-time Unicode check,
+  // i.e. 'a' == 0x61.
+  let _ = 'a'      // 0x61
+  let _ = '\n'     // 0x0A
+  let _ = '©'      // 0xA9 (encoded as UTF-8 C2 A9)
+  let _ = '\u00A9' // 0xA9
+  //let _ = '\xA9' // error: invalid UTF-8 sequence
+  //let _ = ''     // error: empty character literal
+
+  // to specify arbitrary values, use regular integers
+  let _ = 0xA9
+  let _ = 0xFF
+  let _ = 0xFFFFFFFF

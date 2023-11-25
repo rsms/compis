@@ -123,6 +123,7 @@ typedef u16 nodeflag_t;
 #define NF_EXIT        ((nodeflag_t)1<< 9)  // block exits (i.e. "return" or "break")
 #define NF_CONST       ((nodeflag_t)1<< 9)  // [anything but block] is a constant
 #define NF_PKGNS       ((nodeflag_t)1<< 10) // [namespace] is a package API
+#define NF_CHAR        ((nodeflag_t)1<< 10) // [intlit] is a char, e.g. 'x'
 #define NF_TEMPLATE    ((nodeflag_t)1<< 11) // templatized with templateparam_t
 #define NF_TEMPLATEI   ((nodeflag_t)1<< 12) // instance of template
 #define NF_CYCLIC      ((nodeflag_t)1<< 13) // [usertype] references itself

@@ -2,6 +2,7 @@
 #include "colib.h"
 #include "compiler.h"
 #include "abuf.h"
+#include "unicode.h"
 
 
 static const struct { const char* s; u8 len; tok_t t; } keywordtab[] = {
@@ -140,6 +141,129 @@ static void prepare_litbuf(scanner_t* s, usize minlen) {
   buf_clear(&s->litbuf);
   if UNLIKELY(!buf_reserve(&s->litbuf, minlen))
     out_of_mem(s);
+}
+
+
+// hexdecode decodes a hexadecimal string, e.g. "0153beef" => 0x153beef
+static u64 hexdecode(const u8* p, usize len) {
+  assert(len <= 16);
+  u64 v = 0;
+  p += len - 1;
+  for (usize i = 0; i < len; i++) {
+    u8 c = *(p - i);
+    v |= (u64)(
+      (c - '0') -
+      ( (u8)('a' <= c && c <= 'f') * (('a' - 10) - '0') ) -
+      ( (u8)('A' <= c && c <= 'F') * (('A' - 10) - '0') )
+    ) << (i * 4);
+  }
+  return v;
+}
+
+
+// charlit     = "'" ( <any byte except "'" and control chars> | char_esc ) "'"
+// char_esc    = byte_esc | unicode_esc
+// byte_esc    = "\x" digit16 digit16
+// unicode_esc = ( "\u" digit16{4} | "\U" digit16{8} )
+// digit16     = 0-9 | A-F | a-f
+//
+// e.g.
+//   'a'       u8  0x61
+//   '\xff'    u8  0xff
+//   '\u0153'  u32 0x153
+//   '→'       u32 0x2192  (NOT the UTF-8 bytes 0xE2 0x86 0x92)
+static void charlit(scanner_t* s) {
+  s->tok = TCHARLIT;
+  s->insertsemi = true;
+
+  if (s->inp == s->inend)
+    goto err;
+
+  if (*s->inp != '\\') {
+    // literal, e.g. 'a' => 0x61
+    // Note: utf8_decode always advances s->inp by at least 1 byte.
+    if (*s->inp < RUNE_SELF) {
+      s->litint = *s->inp++;
+    } else {
+      s->litint = utf8_decode(&s->inp, s->inend);
+      if UNLIKELY(s->litint == RUNE_INVALID) {
+        loc_set_col(&s->loc, (u32)(uintptr)(s->inp - s->linestart) + 1);
+        return error(s, "invalid UTF-8 data at byte offset %zu",
+          (usize)(uintptr)((void*)s->inp - s->srcfile->data));
+      }
+    }
+  } else {
+    // escape sequence, e.g. '\n' => 0x0a
+    s->inp++; // consume "\"
+    if (s->inp == s->inend)
+      goto err;
+    usize ndigits;
+    switch (*s->inp++) {
+      case '"': case '\'': case '\\': s->litint = *(s->inp - 1); goto end;
+      case '0': s->litint = (u8)'\0'; goto end;
+      case 'a': s->litint = (u8)'\a'; goto end;
+      case 'b': s->litint = (u8)'\b'; goto end;
+      case 't': s->litint = (u8)'\t'; goto end;
+      case 'n': s->litint = (u8)'\n'; goto end;
+      case 'v': s->litint = (u8)'\v'; goto end;
+      case 'f': s->litint = (u8)'\f'; goto end;
+      case 'r': s->litint = (u8)'\r'; goto end;
+      case 'x': ndigits = 2; break; // \xXX
+      case 'u': ndigits = 4; break; // \uXXXX
+      case 'U': ndigits = 8; break; // \UXXXXXXXX
+      default:
+        loc_set_col(&s->loc, (u32)(uintptr)(s->inp - s->linestart));
+        return error(s, "invalid character-escape sequence");
+    }
+
+    // parse hexadecimal integer string, e.g. BEEF95
+    if UNLIKELY(s->inp+ndigits >= s->inend || s->inp[ndigits] != '\'') {
+      // TODO: catch common case of forgetting leading zeroes, e.g. '\u153'
+      goto err;
+    }
+    s->litint = hexdecode(s->inp, ndigits);
+    s->inp += ndigits;
+
+    // validate
+    if UNLIKELY((ndigits == 2 && s->litint >= RUNE_SELF) || !rune_isvalid(s->litint)) {
+      u32 srcwidth = (u32)(uintptr)(s->inp - s->tokstart);
+      if (s->inp < s->inend && *s->inp == '\'')
+        srcwidth++; // include terminating "'" in source location
+      loc_set_width(&s->loc, srcwidth);
+      if (ndigits == 2) {
+        // e.g. '\xff'
+        error(s, "invalid UTF-8 sequence");
+        origin_t origin = origin_make(&s->compiler->locmap, s->loc);
+        if (origin.line) {
+          report_diag(s->compiler, origin, DIAG_HELP,
+            "If you want a raw byte value, write it as: 0x%02llX", s->litint);
+          report_diag(s->compiler, origin, DIAG_HELP,
+            "If you want a Unicode codepoint, write it as: '\\u%04llX'", s->litint);
+        }
+      } else {
+        error(s, "invalid Unicode codepoint U+%04llX", s->litint);
+      }
+    }
+  }
+
+end:
+  // expect terminating "'"
+  if (*s->inp == '\'') {
+    s->inp++;
+    loc_set_width(&s->loc, (u32)(uintptr)(s->inp - s->tokstart));
+    return;
+  }
+
+err:
+  loc_set_col(&s->loc, (u32)(uintptr)(s->inp - s->linestart) + 1);
+  if (s->inp < s->inend && *s->inp != '\'') {
+    if (*(s->inp - 1) == '\'') { // e.g. ''
+      loc_set_col(&s->loc, (u32)(uintptr)(s->inp - s->linestart));
+      return error(s, "empty character literal");
+    }
+    return error(s, "invalid character literal; expected \"'\"");
+  }
+  error(s, "unterminated character literal");
 }
 
 
@@ -777,6 +901,7 @@ static void scan1(scanner_t* s) {
       ++s->inp, s->tok = TDIVASSIGN; break;
   } break;
   case '"': MUSTTAIL return string(s);
+  case '\'': MUSTTAIL return charlit(s);
   case '.': switch (nextc) {
     case '0' ... '9':
       s->inp--;

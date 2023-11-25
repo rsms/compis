@@ -3024,7 +3024,8 @@ again:
 
   if UNLIKELY(uintval > maxval) {
     const char* ts = fmtnode(0, type);
-    error(a, n, "integer constant overflows %s", ts);
+    const char* kindname = (n->flags&NF_CHAR) ? "character" : "integer";
+    error(a, n, "%s constant 0x%llx overflows %s", kindname, uintval, ts);
   }
 
   n->type = type;

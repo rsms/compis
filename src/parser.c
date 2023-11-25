@@ -1541,6 +1541,13 @@ static expr_t* expr_floatlit(parser_t* p, const parselet_t* pl, nodeflag_t fl) {
 }
 
 
+static expr_t* expr_charlit(parser_t* p, const parselet_t* pl, nodeflag_t fl) {
+  expr_t* n = intlit(p, fl, /*isneg*/false);
+  n->flags |= NF_CHAR;
+  return n;
+}
+
+
 static expr_t* expr_strlit(parser_t* p, const parselet_t* pl, nodeflag_t fl) {
   strlit_t* n = mkexpr(p, strlit_t, EXPR_STRLIT, fl);
 
@@ -2799,6 +2806,7 @@ static const parselet_t expr_parsetab[TOK_COUNT] = {
   // constants
   [TINTLIT]   = {expr_intlit},
   [TFLOATLIT] = {expr_floatlit},
+  [TCHARLIT]  = {expr_charlit},
   [TSTRLIT]   = {expr_strlit},
   [TTRUE]     = {expr_boollit},
   [TFALSE]    = {expr_boollit},
