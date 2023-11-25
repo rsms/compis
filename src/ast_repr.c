@@ -265,12 +265,12 @@ static void flags(RPARAMS, const node_t* n) {
   // don't include NF_UNKNOWN for TYPE_UNKNOWN (always and obviously true)
   flags &= ~(NF_UNKNOWN * (nodeflag_t)(n->kind == TYPE_UNKNOWN));
 
-  if (flags & ( NF_RVALUE | NF_NARROWED | NF_UNKNOWN
+  if (flags & ( NF_RVALUE | NF_NEG | NF_UNKNOWN
               | NF_TEMPLATE | NF_TEMPLATEI | NF_CYCLIC))
   {
     PRINT(" {");
     if (flags & NF_RVALUE)    CHAR('r');
-    if (flags & NF_NARROWED)  CHAR('n');
+    if (flags & NF_NEG)       CHAR('n');
     if (flags & NF_UNKNOWN)   CHAR('u');
     if (flags & NF_TEMPLATE)  CHAR('t');
     if (flags & NF_TEMPLATEI) CHAR('i');
@@ -510,8 +510,8 @@ static void repr(RPARAMS, const node_t* nullable n) {
   case EXPR_INTLIT: {
     u64 u = ((intlit_t*)n)->intval;
     CHAR(' ');
-    if (!type_isunsigned(((intlit_t*)n)->type) && (u & 0x1000000000000000)) {
-      u &= ~0x1000000000000000;
+    if (!type_isunsigned(((intlit_t*)n)->type) && (u & 0x8000000000000000)) {
+      u = -u;
       CHAR('-');
     }
     PRINT("0x");

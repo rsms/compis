@@ -95,7 +95,7 @@ static err_t configure_target(compiler_t* c, const compiler_config_t* config) {
     case 4:
       c->addrtype = type_u32;
       c->uinttype = type_u32;
-      c->inttype  = type_u32;
+      c->inttype  = type_i32;
       break;
     default:
       assert(c->target.ptrsize <= 8);

@@ -75,9 +75,9 @@ typedef struct {
 static_assert(sizeof(narrowinfo_t) == sizeof(void*), "");
 
 
-// g_noval is a constant used to represent a narrowed "definitely unavailable" value
-static intlit_t g_noval_ = { .kind=EXPR_INTLIT, .flags=NF_CHECKED };
-static expr_t* g_noval = (expr_t*)&g_noval_;
+// // g_noval is a constant used to represent a narrowed "definitely unavailable" value
+// static intlit_t g_noval_ = { .kind=EXPR_INTLIT, .flags=NF_CHECKED };
+// static expr_t* g_noval = (expr_t*)&g_noval_;
 
 
 static const char* fmtkind(const void* node) {
@@ -857,16 +857,17 @@ static void error_unassignable_type(
     // dlog("dst_narrowinfo: %s", narrowinfo_fmt(0, dst_narrowinfo));
   }
 
-  bool is_empty_optional = false;
-  dlog("src->kind %s", nodekind_name(src->kind));
-  switch (src->kind) {
-    case EXPR_FIELD:
-    case EXPR_PARAM:
-    case EXPR_LET:
-    case EXPR_VAR:
-      is_empty_optional = ((local_t*)src)->isnarrowed;
-      break;
-  }
+  // bool is_empty_optional = false;
+  // dlog("src->kind %s", nodekind_name(src->kind));
+  // switch (src->kind) {
+  //   case EXPR_FIELD:
+  //   case EXPR_PARAM:
+  //   case EXPR_LET:
+  //   case EXPR_VAR:
+  //     is_empty_optional = ((local_t*)src)->isnarrowed;
+  //     break;
+  // }
+  //----------
   // if (
   //   ( node_islocal((node_t*)src) && ((local_t*)src)->isnarrowed ) ||
   //   ( src->kind == EXPR_ID && ((idexpr_t*)src)->ref &&
@@ -2968,67 +2969,84 @@ static void intlit(typecheck_t* a, intlit_t* n) {
   if (n->type != type_unknown)
     return;
 
-  u64 isneg = 0; // TODO
-
   type_t* type = a->typectx;
   type_t* basetype = unwrap_alias(type);
 
+  u64 isneg = (n->flags & NF_NEG) ? 1 : 0;
   u64 maxval;
-  u64 uintval = n->intval;
-  if (isneg)
-    uintval &= ~0x1000000000000000; // clear negative bit
 
 again:
   switch (basetype->kind) {
-  case TYPE_I8:   maxval = 0x7fllu+isneg; break;
-  case TYPE_I16:  maxval = 0x7fffllu+isneg; break;
-  case TYPE_I32:  maxval = 0x7fffffffllu+isneg; break;
-  case TYPE_I64:  maxval = 0x7fffffffffffffffllu+isneg; break;
-  case TYPE_U8:   maxval = 0xffllu; break;
-  case TYPE_U16:  maxval = 0xffffllu; break;
-  case TYPE_U32:  maxval = 0xffffffffllu; break;
-  case TYPE_U64:  maxval = 0xffffffffffffffffllu; break;
+  case TYPE_I8:   maxval = 0x7fllu + isneg; break;
+  case TYPE_I16:  maxval = 0x7fffllu + isneg; break;
+  case TYPE_I32:  maxval = 0x7fffffffllu + isneg; break;
+  case TYPE_I64:  maxval = 0x7fffffffffffffffllu + isneg; break;
+  case TYPE_U8:   maxval = (0xffllu >> isneg) + isneg; break;
+  case TYPE_U16:  maxval = (0xffffllu >> isneg) + isneg; break;
+  case TYPE_U32:  maxval = (0xffffffffllu >> isneg) + isneg; break;
+  case TYPE_U64:  maxval = (0xffffffffffffffffllu >> isneg) + isneg; break;
   case TYPE_INT:  basetype = a->compiler->inttype; goto again;
   case TYPE_UINT: basetype = a->compiler->uinttype; goto again;
   default:
     // all other type contexts results in int, uint, i64 or u64 (depending on value)
     if (a->compiler->target.intsize == 8) {
-      if (isneg) {
-        type = type_int;
+      if (isneg || n->intval < 0x8000000000000000llu) {
         maxval = 0x8000000000000000llu;
-      } else if (n->intval < 0x8000000000000000llu) {
-        n->type = type_int;
-        return;
+        type = type_int;
+        basetype = a->compiler->inttype;
       } else {
-        type = type_u64;
         maxval = 0xffffffffffffffffllu;
+        type = type_uint;
+        basetype = a->compiler->uinttype;
       }
     } else {
       assertf(a->compiler->target.intsize >= 4 && a->compiler->target.intsize < 8,
         "intsize %u not yet supported", a->compiler->target.intsize);
       if (isneg) {
-        if (uintval <= 0x80000000llu)         { n->type = type_int; return; }
-        if (uintval <= 0x8000000000000000llu) { n->type = type_i64; return; }
-        // too large; trigger error report
         maxval = 0x8000000000000000llu;
-        type = type_i64;
+        if (n->intval <= 0x80000000llu) {
+          type = type_int;
+          basetype = a->compiler->inttype;
+        } else {
+          type = type_i64;
+          basetype = type_i64;
+        }
       } else {
-        if (n->intval <= 0x7fffffffllu)         { n->type = type_int; return; }
-        if (n->intval <= 0xffffffffllu)         { n->type = type_uint; return; }
-        if (n->intval <= 0x7fffffffffffffffllu) { n->type = type_i64; return; }
         maxval = 0xffffffffffffffffllu;
-        type = type_u64;
+        if (n->intval <= 0x7fffffffllu) {
+          type = type_int;
+          basetype = a->compiler->inttype;
+        } else if (n->intval <= 0xffffffffllu) {
+          type = type_uint;
+          basetype = a->compiler->uinttype;
+        } else {
+          type = type_u64;
+          basetype = type_u64;
+        }
       }
     }
   }
 
-  if UNLIKELY(uintval > maxval) {
-    const char* ts = fmtnode(0, type);
+  n->type = type;
+
+  if UNLIKELY(n->intval > maxval) {
+    const char* ts = fmtnode(0, basetype);
     const char* kindname = (n->flags&NF_CHAR) ? "character" : "integer";
-    error(a, n, "%s constant 0x%llx overflows %s", kindname, uintval, ts);
+    return error(a, n, "%s constant overflows %s", kindname, ts);
   }
 
-  n->type = type;
+  if (isneg) switch (basetype->kind) {
+    // signed: set negative bit
+    case TYPE_I8:
+    case TYPE_I16:
+    case TYPE_I32:
+    case TYPE_I64: n->intval = -n->intval; break;
+    // unsigned: wrap and mask
+    case TYPE_U8:  n->intval = -(u8)n->intval & 0xff; break;
+    case TYPE_U16: n->intval = -(u16)n->intval & 0xffff; break;
+    case TYPE_U32: n->intval = -(u32)n->intval & 0xffffffff; break;
+    case TYPE_U64: n->intval = -n->intval; break;
+  }
 }
 
 
@@ -4645,7 +4663,7 @@ err_t typecheck(
     .typectx = type_void,
   };
 
-  g_noval_.type = type_void;
+  // g_noval_.type = type_void;
 
   if (!map_init(&a.postanalyze, a.ma, 32))
     return ErrNoMem;

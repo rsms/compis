@@ -1688,21 +1688,42 @@ static void gen_binop(cgen_t* g, const binop_t* n) {
 
 
 static void gen_intconst(cgen_t* g, u64 value, const type_t* t) {
-  if (t->kind < TYPE_I32)
-    CHAR('('), gen_type(g, t), CHAR(')');
-
-  if (!type_isunsigned(t) && (value & 0x1000000000000000) ) {
-    value &= ~0x1000000000000000;
-    CHAR('-');
-  }
-  u32 base = value >= 1024 ? 16 : 10;
-  if (base == 16)
-    PRINT("0x");
-  buf_print_u64(&g->outbuf, value, base);
+  // prefix cast for integer types smaller than i32
 again:
   switch (t->kind) {
     case TYPE_INT:  t = g->compiler->inttype; goto again;
     case TYPE_UINT: t = g->compiler->uinttype; goto again;
+    case TYPE_U8:
+    case TYPE_U16:
+    case TYPE_I8:
+    case TYPE_I16:
+      CHAR('('), gen_type(g, t), CHAR(')');
+      break;
+  }
+
+  // special case for I64_MIN, to avoid:
+  //   warning: integer literal is too large to be represented in a signed integer type,
+  //   interpreting as unsigned [-Wimplicitly-unsigned-literal]
+  //     i64 x = -9223372036854775808ll;
+  //              ^
+  if (!type_isunsigned(t) && value == (u64)I64_MIN) {
+    PRINT("(-9223372036854775807ll - 1)");
+    return;
+  }
+
+  // if (type_isunsigned(t)) {
+  //   buf_printf(&g->outbuf, "%llu", value);
+  // } else {
+  //   buf_printf(&g->outbuf, "%lld", (i64)value);
+  // }
+  if (!type_isunsigned(t) && (value & 0x8000000000000000)) {
+    CHAR('-');
+    value = -value;
+  }
+  buf_print_u64(&g->outbuf, value, /*base*/10);
+
+  // suffix for types larger than or different than i32
+  switch (t->kind) {
     case TYPE_I64:  PRINT("ll"); break;
     case TYPE_U64:  PRINT("llu"); break;
     case TYPE_U32:  CHAR('u'); break;
@@ -1716,7 +1737,7 @@ static void gen_intlit(cgen_t* g, const intlit_t* n) {
 
 
 static void gen_floatlit(cgen_t* g, const floatlit_t* n) {
-  PRINTF("%f", n->f64val);
+  PRINTF("%.17g", n->f64val);
   if (n->type->kind == TYPE_F32)
     CHAR('f');
 }
@@ -1786,12 +1807,12 @@ static void gen_arraylit(cgen_t* g, const arraylit_t* n) {
 }
 
 
-static bool is_narrowed(const void* node) {
-  const node_t* n = node;
-  return ( n->flags & NF_NARROWED ) ||
-         ( n->kind == EXPR_ID && ((idexpr_t*)n)->ref &&
-           (((idexpr_t*)n)->ref->flags & NF_NARROWED) );
-}
+// static bool is_narrowed(const void* node) {
+//   const node_t* n = node;
+//   return ( n->flags & NF_NARROWED ) ||
+//          ( n->kind == EXPR_ID && ((idexpr_t*)n)->ref &&
+//            (((idexpr_t*)n)->ref->flags & NF_NARROWED) );
+// }
 
 
 static void gen_assign(cgen_t* g, const binop_t* n) {
@@ -1829,8 +1850,8 @@ static void gen_assign(cgen_t* g, const binop_t* n) {
         // doesn't matter if LHS is narrowed or not; optional type for pointers
         // is just a pointer (NULL is used for "empty").
         PRINT(" = "), gen_expr_rvalue(g, n->right, n->right->type);
-      } else if (is_narrowed(n->left)) {
-        PRINT(".v = "), gen_expr_rvalue(g, n->right, n->right->type);
+      // } else if (is_narrowed(n->left)) {
+      //   PRINT(".v = "), gen_expr_rvalue(g, n->right, n->right->type);
       } else {
         PRINT(" = "), gen_optinit(g, (opttype_t*)lt, n->right);
       }

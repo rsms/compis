@@ -1503,7 +1503,7 @@ static expr_t* expr_return(parser_t* p, const parselet_t* pl, nodeflag_t fl) {
 }
 
 
-static expr_t* intlit(parser_t* p, nodeflag_t fl, bool isneg) {
+static expr_t* intlit(parser_t* p, nodeflag_t fl) {
   intlit_t* n = mkexpr(p, intlit_t, EXPR_INTLIT, fl);
   n->intval = p->scanner.litint;
   loc_set_width(&n->loc, scanner_lit(&p->scanner).len);
@@ -1512,12 +1512,12 @@ static expr_t* intlit(parser_t* p, nodeflag_t fl, bool isneg) {
 }
 
 
-static expr_t* floatlit(parser_t* p, nodeflag_t fl, bool isneg) {
+static expr_t* floatlit(parser_t* p, nodeflag_t fl) {
   floatlit_t* n = mkexpr(p, floatlit_t, EXPR_FLOATLIT, fl);
   char* endptr = NULL;
 
   // note: scanner always starts float litbuf with '+'
-  if (isneg)
+  if (fl & NF_NEG)
     p->scanner.litbuf.chars[0] = '-';
 
   n->f64val = strtod(p->scanner.litbuf.chars, &endptr);
@@ -1532,17 +1532,17 @@ static expr_t* floatlit(parser_t* p, nodeflag_t fl, bool isneg) {
 
 
 static expr_t* expr_intlit(parser_t* p, const parselet_t* pl, nodeflag_t fl) {
-  return intlit(p, fl, /*isneg*/false);
+  return intlit(p, fl & ~NF_NEG);
 }
 
 
 static expr_t* expr_floatlit(parser_t* p, const parselet_t* pl, nodeflag_t fl) {
-  return floatlit(p, fl, /*isneg*/false);
+  return floatlit(p, fl & ~NF_NEG);
 }
 
 
 static expr_t* expr_charlit(parser_t* p, const parselet_t* pl, nodeflag_t fl) {
-  expr_t* n = intlit(p, fl, /*isneg*/false);
+  expr_t* n = intlit(p, fl & ~NF_NEG);
   n->flags |= NF_CHAR;
   return n;
 }
@@ -1604,16 +1604,22 @@ static expr_t* expr_arraylit(parser_t* p, const parselet_t* pl, nodeflag_t fl) {
 
 
 static expr_t* expr_prefix_op(parser_t* p, const parselet_t* pl, nodeflag_t fl) {
+  loc_t loc = currloc(p);
+  next(p);
+
+  // special case for negative number constants
+  // e.g. "-123" becomes (INTLIT -123) instead of (PREFIXOP SUB (INTLIT 123))
+  if (pl->op == OP_SUB) {
+    switch (currtok(p)) {
+      case TINTLIT: return intlit(p, fl | NF_RVALUE | NF_NEG);
+      case TFLOATLIT: return floatlit(p, fl | NF_RVALUE | NF_NEG);
+    }
+  }
+
   unaryop_t* n = mkexpr(p, unaryop_t, EXPR_PREFIXOP, fl);
   n->op = pl->op;
-  next(p);
-  fl |= NF_RVALUE;
-  switch (currtok(p)) {
-    // special case for negative number constants
-    case TINTLIT:   n->expr = intlit(p, /*isneg*/n->op == OP_SUB, fl); break;
-    case TFLOATLIT: n->expr = floatlit(p, /*isneg*/n->op == OP_SUB, fl); break;
-    default:        n->expr = expr(p, PREC_UNARY_PREFIX, fl);
-  }
+  n->loc = loc;
+  n->expr = expr(p, PREC_UNARY_PREFIX, fl | NF_RVALUE);
   n->type = n->expr->type;
   bubble_flags(n, n->expr);
   return (expr_t*)n;

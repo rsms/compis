@@ -271,6 +271,7 @@ static void floatnumber(scanner_t* s, int base) {
   s->tok = TFLOATLIT;
   s->insertsemi = true;
   bool allowsign = false;
+  bool allowdot = true;
   prepare_litbuf(s, 64);
   buf_push(&s->litbuf, '+');
   int ok = 1;
@@ -283,22 +284,26 @@ static void floatnumber(scanner_t* s, int base) {
     switch (*s->inp) {
     case 'E':
     case 'e':
+      // e.g. "2e+9"
       allowsign = true;
+      allowdot = false;
       break;
     case 'P':
     case 'p':
       if (base < 16)
-        goto end;
+        goto err;
       allowsign = true;
       break;
     case '+':
     case '-':
       if (!allowsign)
-        goto end;
+        goto err;
       break;
     case '_':
       continue;
     case '.':
+      if (!allowdot)
+        goto err;
       allowsign = false;
       break;
     default:
@@ -313,6 +318,10 @@ end:
   ok &= buf_nullterm(&s->litbuf);
   if UNLIKELY(!ok)
     return out_of_mem(s);
+  return;
+err:
+  loc_set_col(&s->loc, (u32)(uintptr)(s->inp - s->linestart) + 1);
+  error(s, "invalid syntax");
 }
 
 
@@ -346,6 +355,10 @@ static void number(scanner_t* s, int base) {
         goto end;
     }
     if UNLIKELY(c >= base) {
+      if (c == 'E' - ('A' - 10)) { // 'e' or 'E'
+        s->inp = start_inp; // rewind
+        return floatnumber(s, base);
+      }
       error(s, "invalid base-%d integer literal", base);
       return;
     }
