@@ -688,6 +688,104 @@ member      = "*" | id ("as" id)?
 ```
 
 
+## Primitive types
+
+Compis has the following primitive types:
+
+```
+TYPE   VALUES
+
+void   nothing (can only be used as function-result type)
+bool   false or true
+i8     -128 … 127
+i16    -32768 … 32767
+i32    -2147483648 … 2147483647
+i64    -9223372036854775808 … 9223372036854775807
+u8     0 … 255
+u16    0 … 65535
+u32    0 … 4294967295
+u64    0 … 18446744073709551615
+int    Target-specific address size (i.e. i8, i16, i32 or i64)
+uint   Target-specific address size (i.e. u8, u16, u32 or u64)
+f32    -16777216 … 16777216 (integer precision)
+f64    −9007199254740992 … 9007199254740992 (-2e53 … 2e53; integer precision)
+```
+
+Integers are represented as [two's complement](https://en.wikipedia.org/wiki/Two%27s_complement).
+Floating-point numbers are represented as [IEEE 754](https://en.wikipedia.org/wiki/IEEE_754).
+Overflow of signed integers causes a runtime panic.
+Overflow of unsigned integers wrap.
+
+
+
+## Integer literals
+
+Compis features "ideally typed" integer literals.
+The actual type is inferred on use and the literal is verified to be within range:
+
+```
+fun foo(v i32) void
+fun bar(v u16) void
+fun cat(v i8) void
+fun example()
+  let x = 200
+  foo(x) // materialized as i32(320)
+  bar(x) // materialized as u16(320)
+  //cat(x) // error: 200 overflows i8
+```
+
+
+
+## Character literals
+
+There's no special type for representing text runes in Compis.
+Instead you deal with either `u32` for Unicode codepoints,
+or `u8` for UTF-8 encoded sequences.
+
+However Compis has syntax for character literals.
+Character literals must be valid Unicode codepoints.
+
+```
+fun example()
+  let _ = 'a'      // 0x61
+  let _ = '\n'     // 0x0A
+  let _ = '©'      // 0xA9 (encoded as UTF-8 C2 A9)
+  let _ = '\u00A9' // 0xA9
+  //let _ = '\xA9' // error: invalid UTF-8 sequence
+  //let _ = ''     // error: empty character literal
+```
+
+If you feel the need to specify character values which are not Unicode codepoints,
+use regular integers:
+
+```
+fun example()
+  let _ = 0xA9
+  let _ = 0xFF
+  let _ = 0xFFFFFFFF
+```
+
+
+
+## Strings
+
+Strings represent UTF-8 text. The type `str` is an alias of `&[u8]` (slice of bytes.)
+String literals are high-fidelity types, embedding the size in the type (e.g. `&[u8 5]`).
+
+```
+fun foo(s str)
+fun bar(s &[u8])
+fun cat(s &[u8 5])
+fun mak(s &[u8 6])
+fun example()
+  let s = "hello" // &[u8 5]
+  foo(s)
+  bar(s)
+  cat(s)
+  mak(s) // error: passing value of type &[u8 5] to parameter of type &[u8 6]
+```
+
+
 
 # Building
 
