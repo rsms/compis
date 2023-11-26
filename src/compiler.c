@@ -53,6 +53,7 @@ static err_t set_secondary_pointer_types(compiler_t* c) {
   // "&[u8]" -- slice of u8 array
   memset(&c->u8stype, 0, sizeof(c->u8stype));
   c->u8stype.kind = TYPE_SLICE;
+  c->u8stype.is_builtin = true;
   c->u8stype.flags = NF_CHECKED | NF_VIS_PUB;
   c->u8stype.size = c->target.ptrsize;
   c->u8stype.align = c->target.ptrsize;
@@ -67,6 +68,7 @@ static err_t set_secondary_pointer_types(compiler_t* c) {
   // "type str &[u8]"
   memset(&c->strtype, 0, sizeof(c->strtype));
   c->strtype.kind = TYPE_ALIAS;
+  c->strtype.is_builtin = true;
   c->strtype.flags = NF_CHECKED | NF_VIS_PUB;
   c->strtype.size = c->target.ptrsize;
   c->strtype.align = c->target.ptrsize;
@@ -311,7 +313,60 @@ static err_t configure_cflags(compiler_t* c, const compiler_config_t* config) {
 }
 
 
+static void configure_builtin_functions(compiler_t* c) {
+  // "this" function parameter
+  static local_t _this_param = {0};
+  static local_t* this_param = &_this_param;
+  if (_this_param.kind == 0) {
+    _this_param = (local_t){
+      .kind = EXPR_PARAM,
+      .is_builtin = true,
+      .flags = NF_CHECKED,
+      .name = sym_this,
+      .isthis = true,
+      .type = type_unknown,
+    };
+  }
+
+  // fun(this)uint
+  typeid_t funtype_this_uint_typeid = c->funtype_this_uint._typeid;
+  c->funtype_this_uint = (funtype_t){
+    .kind = TYPE_FUN,
+    .is_builtin = true,
+    .flags = NF_VIS_PUB | NF_CHECKED,
+    .size = c->target.ptrsize,
+    .align = c->target.ptrsize,
+    .mangledname = (char*)(CO_ABI_GLOBAL_PREFIX "fun__uint_t"),
+    ._typeid = funtype_this_uint_typeid,
+    .result = type_uint,
+    .params = { .v = (node_t**)&this_param, .len = 1 },
+  };
+  typeid_intern((type_t*)&c->funtype_this_uint);
+
+  // fun T.len() uint
+  c->builtin_len = (fun_t){
+    .kind = EXPR_FUN,
+    .is_builtin = true,
+    .flags = NF_VIS_PUB | NF_CHECKED,
+    .nuse = 1,
+    .type = (type_t*)&c->funtype_this_uint,
+    .name = sym_len,
+    .mangledname = (char*)(CO_ABI_GLOBAL_PREFIX "builtin_len"),
+    .abi = ABI_C,
+    .recvt = type_unknown,
+  };
+
+  // fun T.cap() uint
+  c->builtin_cap = c->builtin_len;
+  c->builtin_cap.name = sym_cap;
+  c->builtin_cap.mangledname = (char*)(CO_ABI_GLOBAL_PREFIX "builtin_cap");
+  safecheck(c->builtin_cap.mangledname);
+}
+
+
 static err_t configure_builtins(compiler_t* c) {
+  configure_builtin_functions(c);
+
   if (c->builtins.cap > 0)
     map_dispose(&c->builtins, c->ma);
 

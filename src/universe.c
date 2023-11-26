@@ -20,6 +20,7 @@ void universe_init() {
     typeid_##NAME[1] = g_ast_kindtagtab[kind_]; \
     _type_##NAME = (type_t){ \
       .kind = (kind_), \
+      .is_builtin = true, \
       .flags = (NF_VIS_PUB | NF_CHECKED | ((kind_) == TYPE_UNKNOWN ? NF_UNKNOWN : 0)), \
       .size = (size_), \
       .align = (size_), \

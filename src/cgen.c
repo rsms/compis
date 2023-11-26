@@ -709,12 +709,26 @@ static const type_t* unwrap_aliastypes(const type_t* t) {
 }
 
 
-// unwrap_ptr_and_alias unwraps optional, ref, ptr and alias
+// unwrap_opt_ptr_and_alias unwraps optional, ref, ptr and alias
 // e.g. "?&MyT" => "&MyT" => "MyT" => "T"
-static type_t* unwrap_ptr_and_alias(type_t* t) {
+static type_t* unwrap_opt_ptr_and_alias(type_t* t) {
   assertnotnull(t);
   for (;;) switch (t->kind) {
     case TYPE_OPTIONAL: t = assertnotnull(((opttype_t*)t)->elem); break;
+    case TYPE_REF:
+    case TYPE_MUTREF:   t = assertnotnull(((reftype_t*)t)->elem); break;
+    case TYPE_PTR:      t = assertnotnull(((ptrtype_t*)t)->elem); break;
+    case TYPE_ALIAS:    t = assertnotnull(((aliastype_t*)t)->elem); break;
+    default:            return t;
+  }
+}
+
+
+// unwrap_ptr_and_alias unwraps ref, ptr and alias
+// e.g. "&MyT" => "MyT" => "T"
+static type_t* unwrap_ptr_and_alias(type_t* t) {
+  assertnotnull(t);
+  for (;;) switch (t->kind) {
     case TYPE_REF:
     case TYPE_MUTREF:   t = assertnotnull(((reftype_t*)t)->elem); break;
     case TYPE_PTR:      t = assertnotnull(((ptrtype_t*)t)->elem); break;
@@ -1621,9 +1635,23 @@ static void gen_call_fn_recv(
 
 
 static void gen_call_fun(cgen_t* g, const call_t* n) {
-  // okay, then it must be a function call
   assert(n->recv->type->kind == TYPE_FUN);
   const funtype_t* ft = (funtype_t*)n->recv->type;
+
+  // builtin?
+  if (n->recv->kind == EXPR_MEMBER) {
+    member_t* m = (member_t*)n->recv;
+    fun_t* fn = (fun_t*)m->target;
+    if (fn == &g->compiler->builtin_len || fn == &g->compiler->builtin_cap) {
+      const type_t* recvt = unwrap_ptr_and_alias(m->recv->type);
+      if (recvt->kind == TYPE_ARRAY && ((arraytype_t*)recvt)->len) {
+        gen_intconst(g, ((arraytype_t*)recvt)->len, g->compiler->uinttype);
+        return;
+      }
+      if (recvt->kind == TYPE_ARRAY || type_isslice(recvt))
+        panic("TODO: generate struct-field access");
+    }
+  }
 
   // owner sink? (i.e. return value is unused but must be dropped)
   bool owner_sink = (n->flags & NF_RVALUE) == 0 && type_isowner(n->type);
@@ -2111,11 +2139,23 @@ static void gen_member(cgen_t* g, const member_t* n) {
   //   struct Foo parent(Foo f) { return *f.x; }
   //
   if (n->type->kind == TYPE_REF) {
-    if (unwrap_ptr_and_alias(n->recv->type)->kind == TYPE_STRUCT &&
+    if (unwrap_opt_ptr_and_alias(n->recv->type)->kind == TYPE_STRUCT &&
         node_isusertype((node_t*)((reftype_t*)n->type)->elem) &&
         reftype_byvalue(g, (reftype_t*)n->type))
     {
       CHAR('*');
+    }
+  } else if (n->type->kind == TYPE_FUN) {
+    // constant expression "len" or "cap" builtin,
+    // e.g. for "myarray" of type "[u8 5]", "myarray.len" = 5.
+    if (n->target == (expr_t*)&g->compiler->builtin_len ||
+        n->target == (expr_t*)&g->compiler->builtin_cap)
+    {
+      const type_t* recvt = unwrap_ptr_and_alias(n->recv->type);
+      if (recvt->kind == TYPE_ARRAY && ((arraytype_t*)recvt)->len) {
+        gen_intconst(g, ((arraytype_t*)recvt)->len, g->compiler->uinttype);
+        return;
+      }
     }
   }
 
@@ -2152,7 +2192,7 @@ static void gen_subscript(cgen_t* g, const subscript_t* n) {
   char len_buf[16] = {0};
   const char* ptr_code = ".ptr";
 
-  type_t* recv_type = unwrap_ptr_and_alias(n->recv->type);
+  type_t* recv_type = unwrap_opt_ptr_and_alias(n->recv->type);
 
   switch (recv_type->kind) {
     case TYPE_SLICE:
@@ -2783,8 +2823,8 @@ static void gen_fwddecl(cgen_t* g, const fwddecl_t* d, bool is_impl) {
 
 // gen_def generates declaration or definition of n
 static void gen_def(cgen_t* g, const node_t* n, bool is_impl) {
-  // don't generate templates
-  if (n->flags & NF_TEMPLATE)
+  // don't generate builtins or templates
+  if (n->is_builtin || (n->flags & NF_TEMPLATE))
     return;
 
   // don't generate any code for partial template instances, e.g.

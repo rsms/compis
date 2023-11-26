@@ -15,13 +15,21 @@ static strset_t   symbols;
 static memalloc_t sym_ma;
 static rwmutex_t  sym_mu;
 
-sym_t sym__;    // "_"
-sym_t sym_this; // "this"
-sym_t sym_drop; // "drop"
-sym_t sym_main; // "main"
-sym_t sym_str;  // "str"
-sym_t sym_as;   // "as"
-sym_t sym_from; // "from"
+#define FOREACH_PREDEFINED_SYMBOL(_/*(name)*/) \
+  _(_) \
+  _(this) \
+  _(drop) \
+  _(main) \
+  _(str) \
+  _(as) \
+  _(from) \
+  _(len) \
+  _(cap) \
+// end FOREACH_PREDEFINED_SYMBOL
+
+#define _(NAME) sym_t sym_##NAME;
+FOREACH_PREDEFINED_SYMBOL(_)
+#undef _
 
 // primitive types
 #define _(kind, TYPE, enctag, NAME, size) \
@@ -119,13 +127,9 @@ void sym_init(memalloc_t ma) {
   UNUSED err_t err = strset_init(&symbols, ma, 4096/sizeof(slice_t)/2);
   safecheckf(err == 0, "strset_init: %s", err_str(err));
 
-  sym__ = def_static_sym("_");
-  sym_this = def_static_sym("this");
-  sym_drop = def_static_sym("drop");
-  sym_main = def_static_sym("main");
-  sym_str  = def_static_sym("str");
-  sym_as   = def_static_sym("as");
-  sym_from = def_static_sym("from");
+  #define _(NAME) sym_##NAME = def_static_sym(#NAME);
+  FOREACH_PREDEFINED_SYMBOL(_)
+  #undef _
 
   // static const char typeid_symtab[PRIMTYPE_COUNT][2] = {
   //   #define _(kind, TYPE, enctag, NAME, size)  {TYPEID_PREFIX(kind),0},

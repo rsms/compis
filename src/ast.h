@@ -194,7 +194,15 @@ typedef struct pkg_ {
 
 typedef struct node_ {
   nodekind_t kind;
-  u8         _unused;
+  // internal flags, not encoded in astencode (not included in .coast data)
+  bool       _unused1 : 1;
+  bool       _unused2 : 1;
+  bool       _unused3 : 1;
+  bool       _unused4 : 1;
+  bool       _unused5 : 1;
+  bool       _unused6 : 1;
+  bool       is_builtin : 1;
+  bool       used_at_compile_time : 1; // definitely used, even if nuse==0
   nodeflag_t flags;
   u32        nuse; // number of uses (expr_t and usertype_t)
   loc_t      loc;

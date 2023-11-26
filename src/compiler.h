@@ -54,7 +54,10 @@ typedef struct compiler_ {
   type_t*     uinttype; // "uint"
   slicetype_t u8stype;  // "&[u8]"
   aliastype_t strtype;  // "str"
+  funtype_t   funtype_this_uint; // "fun(this)uint"
   map_t       builtins;
+  fun_t       builtin_len;
+  fun_t       builtin_cap;
 
   // configurable options (see compiler_config_t)
   bool opt_nolto : 1;

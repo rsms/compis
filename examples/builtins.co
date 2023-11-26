@@ -1,0 +1,7 @@
+// fun foo(a [u8]) uint
+//   a.len()
+
+pub fun main()
+  let hello = "hello"
+  if hello.len() == 5
+    print("\"hello\".len = 5")

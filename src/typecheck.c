@@ -193,6 +193,19 @@ static void incuse_read(void* node) {
 }
 
 
+// decrement nuse and set used_at_compile_time=true
+static void nuse_count_1_as_compile_time(void* node) {
+  node_t* n = node;
+  while (!node_islocal(n) || ((local_t*)n)->name != sym__) {
+    assert(n->nuse > 0);
+    n->nuse--;
+    n->used_at_compile_time = true;
+    if (n->kind != EXPR_ID || (n = ((idexpr_t*)n)->ref) == NULL)
+      break;
+  }
+}
+
+
 static void incuse_write(void* node) {
   for (;;) switch (((node_t*)node)->kind) {
     case EXPR_FIELD:
@@ -662,7 +675,7 @@ static bool intern_usertype(typecheck_t* a, usertype_t** tp) {
 
   #if 0
   if (opt_trace_typecheck) {
-    buf_t tmpbuf = buf_make(c->ma);
+    buf_t tmpbuf = buf_make(a->ma);
     buf_appendrepr(&tmpbuf, typeid, typeid_len(typeid));
     trace("[%s] add %s#%p %s (typeid='%.*s')", __FUNCTION__,
       nodekind_name((*tp)->kind), *tp, fmtnode(0, *tp),
@@ -1124,7 +1137,7 @@ static bool report_unused(typecheck_t* a, const expr_t* n) {
 static void check_unused(typecheck_t* a, const node_t** nodev, u32 nodec) {
   for (u32 i = 0; i < nodec; i++) {
     const node_t* n = nodev[i];
-    if UNLIKELY(n->nuse == 0 && nodekind_isexpr(n->kind)) {
+    if UNLIKELY(n->nuse == 0 && !n->used_at_compile_time && nodekind_isexpr(n->kind)) {
       if (report_unused(a, (expr_t*)n))
         return; // stop after the first reported diagnostic
     }
@@ -3207,7 +3220,29 @@ static expr_t* nullable find_member(
     //   fun example(x &Foo)
     //     x.bar() // error: Foo.bar requires mutable receiver
   }
+
   return (expr_t*)fn;
+}
+
+
+static expr_t* nullable find_builtin_member(
+  typecheck_t* a, member_t* n, type_t* recvbt)
+{
+  // look for builtin
+  if (recvbt->kind == TYPE_ARRAY) {
+    if (n->name == sym_len || n->name == sym_cap) {
+      if (((arraytype_t*)recvbt)->len > 0) {
+        // constant expression means we won't read the receiver,
+        // but we still logically use it so mark it as "used at compile time."
+        nuse_count_1_as_compile_time(n->recv);
+      }
+      if (n->name == sym_len)
+        return (expr_t*)&a->compiler->builtin_len;
+      return (expr_t*)&a->compiler->builtin_cap;
+    }
+  }
+
+  return NULL;
 }
 
 
@@ -3233,18 +3268,28 @@ static void member1(typecheck_t* a, member_t** np, bool iscond) {
   expr_t* target = find_member(a, recvbt, recvt, n->name);
   typectx_pop(a);
 
-  if UNLIKELY(!target) {
-    n->type = type_unknown; // avoid cascading errors
-    if (recvt != type_unknown || !a->reported_error)
-      error(a, n, "%s has no field or method \"%s\"", fmtnode(0, recvt), n->name);
-    return;
+  if (target) {
+    incuse_read(target);
+  } else {
+    target = find_builtin_member(a, n, recvbt);
+    // note: do NOT incuse_read(target) for builtins
+    if UNLIKELY(!target) {
+      n->type = type_unknown; // avoid cascading errors
+      if (recvt != type_unknown || !a->reported_error)
+        error(a, n, "%s has no field or function \"%s\"", fmtnode(0, recvt), n->name);
+      return;
+    }
   }
 
-  incuse_read(target);
   n->target = target;
   n->type = target->type;
 
   check_optional_rvalue(a, (expr_t**)np, target, iscond);
+  n = *np;
+
+  // automatic function call for function member without "()", e.g. "x.len" => "x.len()"
+  if (target->type->kind == TYPE_FUN)
+    dlog("TODO: automatic function call for function member without \"()\"");
 }
 
 
