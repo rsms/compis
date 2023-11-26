@@ -424,9 +424,10 @@ typedef struct {
 
 typedef struct {
   expr_t;
-  expr_t*          recv;   // e.g. "x" in "x.y"
-  sym_t            name;   // e.g. "y" in "x.y"
-  expr_t* nullable target; // e.g. "y" in "x.y"
+  expr_t*          recv;    // e.g. "x" in "x.y"
+  sym_t            name;    // e.g. "y" in "x.y"
+  loc_t            nameloc; // source location of name
+  expr_t* nullable target;  // e.g. "y" in "x.y"
 } member_t;
 
 typedef struct {

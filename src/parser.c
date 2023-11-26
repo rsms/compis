@@ -1968,10 +1968,11 @@ static expr_t* expr_postfix_member(
   parser_t* p, const parselet_t* pl, expr_t* left, nodeflag_t fl)
 {
   member_t* n = mkexpr(p, member_t, EXPR_MEMBER, fl);
-  next(p);
+  next(p); // consume "."
   left->flags |= NF_RVALUE * (nodeflag_t)(left != p->dotctx);
   n->recv = left;
   n->name = p->scanner.sym;
+  n->nameloc = currloc(p);
   bubble_flags(n, n->recv);
   expect(p, TID, "");
   return (expr_t*)n;

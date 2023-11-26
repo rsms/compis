@@ -1,0 +1,22 @@
+// Example of implicit type function calls.
+// Any type function that either
+// - takes no arguments, or
+// - takes a single immutable "this" argument
+// can be called without trailing "()".
+// e.g. "x.f" is equivalent to "x.f()".
+
+type Foo
+  x int
+fun Foo.getX(this) int = .x
+fun Foo.incX(mut this) void = .x++
+fun Foo.setX(mut this, x int) void = .x = x
+fun Foo.getConstant() int = 123
+fun Foo.bar(x int) int = x
+
+fun example()
+  let foo Foo
+  foo.getX
+  foo.getConstant
+  // foo.incX // error: implicit call to mutating type function
+  // foo.setX // error: Foo has no field "setX"
+  // foo.bar  // error: Foo has no field "bar"

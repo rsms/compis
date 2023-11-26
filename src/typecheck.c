@@ -52,6 +52,7 @@ typedef struct {
   bool            reported_error; // true if an error diagnostic has been reported
   u32             pubnest;        // NF_VIS_PUB nesting level
   u32             templatenest;   // NF_TEMPLATE nesting level
+  nodearray_t     visitstack;
 
 
   // didyoumean tracks names that we might want to consider for help messages
@@ -927,6 +928,17 @@ static void typectx_pop(typecheck_t* a) {
   trace("typectx [%u] %s <- %s",
     a->typectxstack.len, fmtnode(1, t), fmtnode(0, a->typectx));
   a->typectx = t;
+}
+
+
+static void visitstack_push(typecheck_t* a, void* node) {
+  if UNLIKELY(!nodearray_push(&a->visitstack, a->ma, node))
+    out_of_mem(a);
+}
+
+inline static void visitstack_pop(typecheck_t* a) {
+  assert(a->visitstack.len > 0);
+  a->visitstack.len--;
 }
 
 
@@ -3246,8 +3258,66 @@ static expr_t* nullable find_builtin_member(
 }
 
 
+static bool automatically_call_member(typecheck_t* a, member_t** np) {
+  // (MEMBER x (target (FUN len [FUN ((PARAM this))[T]])))
+  // -> (CALL [T] (MEMBER x (target (FUN len [FUN ((PARAM this))[T]]))))
+  // e.g.
+  //   type Foo { x int }
+  //   fun Foo.w(this) int = .x // "w" is alias for "x"
+  //   fun example(foo Foo)
+  //     foo.x = 5
+  //     assert(foo.w == 5)
+  //
+  member_t* n = *np;
+  funtype_t* ft = (funtype_t*)n->target->type;
+  assert(ft->kind == TYPE_FUN);
+
+  // functions with more parameters than just "this" are not subject to auto-call
+  if (ft->params.len > 1)
+    return false;
+
+  // check "this" parameter
+  if (ft->params.len != 0) {
+    const local_t* param1 = (local_t*)ft->params.v[0];
+    // Functions with one non-"this" parameter are not subject to auto-call
+    // e.g. "fun Foo.bar(x int)"
+    if (!param1->isthis)
+      return false;
+    // To prevent abuse, do not allow mutable functions to be called this way
+    if UNLIKELY(param1->ismut) {
+      error(a, n, "implicit call to mutating type function %s.%s",
+        fmtnode(0, n->recv->type), n->name);
+      if (n->nameloc) {
+        origin_t origin = origin_make(locmap(a), loc_with_width(n->nameloc, 0));
+        origin.column += strlen(n->name);
+        help(a, origin, "insert '()' to explicitly call the function");
+      }
+    }
+  }
+
+  // TODO: To prevent misuse with hidden side effects, check function body
+  // and report an error if it does anything non-trivial, like I/O or coroutines.
+
+  call_t* call = mknode(a, call_t, EXPR_CALL);
+  call->flags = NF_CHECKED;
+  call->loc = n->recv->loc ? n->recv->loc : n->loc;
+  call->recv = (expr_t*)n;
+  call->type = ft->result;
+  *(expr_t**)np = (expr_t*)call;
+  return true;
+}
+
+
 static void member1(typecheck_t* a, member_t** np, bool iscond) {
   member_t* n = *np;
+
+  // test if the member n is the receiver of a call
+  bool is_call_recv = false;
+  if (a->visitstack.len > 1 && a->visitstack.v[a->visitstack.len-2]->kind == EXPR_CALL) {
+    const call_t* call = (call_t*)a->visitstack.v[a->visitstack.len-2];
+    is_call_recv = (void*)call->recv == (void*)n;
+  }
+
   incuse_read(n->recv);
   expr(a, n->recv);
 
@@ -3275,8 +3345,13 @@ static void member1(typecheck_t* a, member_t** np, bool iscond) {
     // note: do NOT incuse_read(target) for builtins
     if UNLIKELY(!target) {
       n->type = type_unknown; // avoid cascading errors
-      if (recvt != type_unknown || !a->reported_error)
-        error(a, n, "%s has no field or function \"%s\"", fmtnode(0, recvt), n->name);
+      if (recvt != type_unknown || !a->reported_error) {
+        if (is_call_recv) {
+          error(a, n, "%s has no field or function \"%s\"", fmtnode(0, recvt), n->name);
+        } else {
+          error(a, n, "%s has no field \"%s\"", fmtnode(0, recvt), n->name);
+        }
+      }
       return;
     }
   }
@@ -3287,9 +3362,32 @@ static void member1(typecheck_t* a, member_t** np, bool iscond) {
   check_optional_rvalue(a, (expr_t**)np, target, iscond);
   n = *np;
 
-  // automatic function call for function member without "()", e.g. "x.len" => "x.len()"
-  if (target->type->kind == TYPE_FUN)
-    dlog("TODO: automatic function call for function member without \"()\"");
+  if (is_call_recv || n->kind != EXPR_MEMBER || n->target->kind != EXPR_FUN)
+    return;
+  // else: value of member is a function but is not the receiver of a CALL
+
+  // Apply automatic function call for type functions, e.g. "x.len" => "x.len()"
+  if (((fun_t*)n->target)->recvt && automatically_call_member(a, np))
+    return;
+
+  // Then it's an error. E.g.
+  //   type Foo { x int }
+  //   fun Foo.bar(x int) int = x
+  //   fun example(foo Foo)
+  //     foo.bar // <--
+  //
+  // TODO: considering supporting accessing type functions via instances.
+  // Could be useful for reflection, e.g. "let ft = typeof(foo.bar)"
+  //
+  if (a->reported_error)
+    return;
+  error(a, n, "%s has no field \"%s\"", fmtnode(0, n->recv->type), n->name);
+  if (n->nameloc) {
+    origin_t origin = origin_make(locmap(a), loc_with_width(n->nameloc, 0));
+    origin.column += strlen(n->name);
+    help(a, origin, "insert '()' to call the type function %s.%s",
+      fmtnode(0, n->recv->type), n->name);
+  }
 }
 
 
@@ -4388,43 +4486,47 @@ static void exprp(typecheck_t* a, expr_t** np) {
 
   TRACE_NODE(a, "", np);
 
+  visitstack_push(a, n);
+
   // functions are checked with custom n->type check since it may have "this" arg
-  if (n->kind == EXPR_FUN)
-    return fun(a, (fun_t*)n);
+  if (n->kind == EXPR_FUN) {
+    fun(a, (fun_t*)n);
+    goto end;
+  }
 
   a->pubnest += (u32)!!(n->flags & NF_VIS_PUB);
   type(a, &n->type);
   a->pubnest -= (u32)!!(n->flags & NF_VIS_PUB);
 
   switch ((enum nodekind)n->kind) {
-  case EXPR_IF:        return ifexpr(a, (ifexpr_t*)n);
-  case EXPR_ID:        return idexpr(a, (idexpr_t**)np);
-  case EXPR_NS:        return nsexpr(a, (nsexpr_t*)n);
-  case EXPR_RETURN:    return retexpr(a, (retexpr_t*)n);
-  case EXPR_BINOP:     return binop(a, (binop_t**)np);
-  case EXPR_ASSIGN:    return assign(a, (binop_t*)n);
-  case EXPR_BLOCK:     return block(a, (block_t*)n);
-  case EXPR_CALL:      return call(a, (call_t**)np);
-  case EXPR_TYPECONS:  return typecons(a, (typecons_t**)np);
-  case EXPR_MEMBER:    return member(a, (member_t**)np);
-  case EXPR_SUBSCRIPT: return subscript(a, (subscript_t**)np);
-  case EXPR_DEREF:     return deref(a, (unaryop_t*)n);
-  case EXPR_INTLIT:    return intlit(a, (intlit_t*)n);
-  case EXPR_FLOATLIT:  return floatlit(a, (floatlit_t*)n);
-  case EXPR_STRLIT:    return strlit(a, (strlit_t*)n);
-  case EXPR_ARRAYLIT:  return arraylit(a, (arraylit_t*)n);
+  case EXPR_IF:        ifexpr(a, (ifexpr_t*)n); goto end;
+  case EXPR_ID:        idexpr(a, (idexpr_t**)np); goto end;
+  case EXPR_NS:        nsexpr(a, (nsexpr_t*)n); goto end;
+  case EXPR_RETURN:    retexpr(a, (retexpr_t*)n); goto end;
+  case EXPR_BINOP:     binop(a, (binop_t**)np); goto end;
+  case EXPR_ASSIGN:    assign(a, (binop_t*)n); goto end;
+  case EXPR_BLOCK:     block(a, (block_t*)n); goto end;
+  case EXPR_CALL:      call(a, (call_t**)np); goto end;
+  case EXPR_TYPECONS:  typecons(a, (typecons_t**)np); goto end;
+  case EXPR_MEMBER:    member(a, (member_t**)np); goto end;
+  case EXPR_SUBSCRIPT: subscript(a, (subscript_t**)np); goto end;
+  case EXPR_DEREF:     deref(a, (unaryop_t*)n); goto end;
+  case EXPR_INTLIT:    intlit(a, (intlit_t*)n); goto end;
+  case EXPR_FLOATLIT:  floatlit(a, (floatlit_t*)n); goto end;
+  case EXPR_STRLIT:    strlit(a, (strlit_t*)n); goto end;
+  case EXPR_ARRAYLIT:  arraylit(a, (arraylit_t*)n); goto end;
 
   case EXPR_PREFIXOP:
   case EXPR_POSTFIXOP:
-    return unaryop(a, (unaryop_t*)n);
+    unaryop(a, (unaryop_t*)n); goto end;
 
   case EXPR_FIELD:
   case EXPR_PARAM:
-    return local(a, (local_t*)n);
+    local(a, (local_t*)n); goto end;
 
   case EXPR_VAR:
   case EXPR_LET:
-    return vardef(a, (local_t*)n);
+    vardef(a, (local_t*)n); goto end;
 
   // TODO
   case EXPR_FOR:
@@ -4475,6 +4577,8 @@ static void exprp(typecheck_t* a, expr_t** np) {
   }
   assertf(0, "unexpected node %s", nodekind_name(n->kind));
   UNREACHABLE;
+end:
+  visitstack_pop(a);
 }
 
 
@@ -4764,6 +4868,7 @@ end4:
   scope_dispose(&a.narrowscope, a.ma);
   ptrarray_dispose(&a.nspath, a.ma);
   ptrarray_dispose(&a.typectxstack, a.ma);
+  nodearray_dispose(&a.visitstack, a.ma);
   array_dispose(didyoumean_t, (array_t*)&a.didyoumean, a.ma);
   buf_dispose(&a.tmpbuf);
   map_dispose(&a.usertypes, a.ma);
