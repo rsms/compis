@@ -125,6 +125,7 @@ typedef struct {
   const u8*  tokstart;    // start of current token
   const u8*  tokend;      // end of previous token
   loc_t      loc;         // recently parsed token's source location
+  loc_t      endloc;      // source location of end of previously parsed token
   tok_t      tok;         // recently parsed token (current token during scanning)
   bool       insertsemi;  // insert a semicolon before next newline
   u32        lineno;      // monotonic line number counter (!= tok.loc.line)

@@ -251,7 +251,8 @@ unwrap:
 bool check_typedep(compiler_t* c, node_t* n) {
   bool ok = false;
   nodearray_t defs = {0};
-  if (ast_toposort_visit_def(&defs, c->ma, 0, n)) {
+  u32 visitflags = 0;
+  if (ast_toposort_visit_def(&defs, c->ma, 0, n, visitflags)) {
     u32 vstk_base = defs.len;
     ok = true;
     for (u32 i = 0; i < defs.len && ok; i++) {
@@ -268,12 +269,13 @@ bool check_typedep(compiler_t* c, node_t* n) {
 err_t check_typedeps(compiler_t* c, unit_t** unitv, u32 unitc) {
   err_t err = 0;
   nodearray_t defs = {0};
+  u32 visitflags = 0;
 
   // collect all unique definitions in a topologically sorted array
   for (u32 i = 0; i < unitc; i++) {
     const nodearray_t children = unitv[i]->children;
     for (u32 i = 0; i < children.len; i++) {
-      if (!ast_toposort_visit_def(&defs, c->ma, 0, children.v[i])) {
+      if (!ast_toposort_visit_def(&defs, c->ma, 0, children.v[i], visitflags)) {
         err = ErrNoMem;
         goto end;
       }

@@ -24,6 +24,10 @@
 #endif
 
 
+typedef array_type(map_t) maparray_t;
+DEF_ARRAY_TYPE_API(map_t, maparray)
+
+
 typedef struct {
   sym_t          name;      // available name of decl
   sym_t nullable othername; // alternate name
@@ -46,7 +50,7 @@ typedef struct {
   ptrarray_t      nspath;
   map_t           usertypes;
   map_t           postanalyze;    // set of nodes to analyze at the very end (keys only)
-  map_t           tmpmap;
+  maparray_t      freemaps;
   map_t           templateimap;   // typeid_t => usertype_t*
   buf_t           tmpbuf;
   bool            reported_error; // true if an error diagnostic has been reported
@@ -246,11 +250,22 @@ static void incuse_write(void* node) {
 bool type_isowner(const type_t* t) {
   // TODO: consider computing this once during typecheck and then just setting
   // a nodeflag e.g. NF_OWNER, and rewriting type_isowner to just check for that flag.
-  t = type_isopt(t) ? ((opttype_t*)t)->elem : t;
+
+  // unwrap optional and alias
+  while (t->kind == TYPE_OPTIONAL || t->kind == TYPE_ALIAS)
+    t = assertnotnull(((ptrtype_t*)t)->elem);
+
   return (
+    // struct with owning fields has NF_SUBOWNERS
     (t->flags & (NF_DROP | NF_SUBOWNERS)) ||
+
+    // *T
     type_isptr(t) ||
-    ( t->kind == TYPE_ALIAS && type_isowner(((aliastype_t*)t)->elem) )
+
+    // [T] or [Owner N]
+    ( t->kind == TYPE_ARRAY &&
+      ( ((arraytype_t*)t)->len == 0 ||
+        type_isowner(((arraytype_t*)t)->elem) ) )
   );
 }
 
@@ -284,12 +299,9 @@ static const type_t* unwrap_alias_const(const type_t* t) {
 // e.g. "*T" => "T"
 type_t* type_unwrap_ptr(type_t* t) {
   assertnotnull(t);
-  for (;;) switch (t->kind) {
-    case TYPE_REF:
-    case TYPE_MUTREF:   t = assertnotnull(((reftype_t*)t)->elem); break;
-    case TYPE_PTR:      t = assertnotnull(((ptrtype_t*)t)->elem); break;
-    default:            return t;
-  }
+  while (t->kind == TYPE_REF || t->kind == TYPE_MUTREF || t->kind == TYPE_PTR)
+    t = assertnotnull(((ptrtype_t*)t)->elem);
+  return t;
 }
 
 
@@ -298,13 +310,15 @@ type_t* type_unwrap_ptr(type_t* t) {
 // e.g. "?*T" => "*T" => "T"
 type_t* type_unwrap_ptr_and_opt(type_t* t) {
   assertnotnull(t);
-  for (;;) switch (t->kind) {
-    case TYPE_OPTIONAL: t = assertnotnull(((opttype_t*)t)->elem); break;
-    case TYPE_REF:
-    case TYPE_MUTREF:   t = assertnotnull(((reftype_t*)t)->elem); break;
-    case TYPE_PTR:      t = assertnotnull(((ptrtype_t*)t)->elem); break;
-    default:            return t;
+  while (
+    t->kind == TYPE_REF ||
+    t->kind == TYPE_MUTREF ||
+    t->kind == TYPE_PTR ||
+    t->kind == TYPE_OPTIONAL)
+  {
+    t = assertnotnull(((ptrtype_t*)t)->elem);
   }
+  return t;
 }
 
 
@@ -312,13 +326,15 @@ type_t* type_unwrap_ptr_and_opt(type_t* t) {
 // e.g. "&MyT" => "MyT" => "T"
 static type_t* unwrap_ptr_and_alias(type_t* t) {
   assertnotnull(t);
-  for (;;) switch (t->kind) {
-    case TYPE_REF:
-    case TYPE_MUTREF:   t = assertnotnull(((reftype_t*)t)->elem); break;
-    case TYPE_PTR:      t = assertnotnull(((ptrtype_t*)t)->elem); break;
-    case TYPE_ALIAS:    t = assertnotnull(((aliastype_t*)t)->elem); break;
-    default:            return t;
+  while (
+    t->kind == TYPE_REF ||
+    t->kind == TYPE_MUTREF ||
+    t->kind == TYPE_PTR ||
+    t->kind == TYPE_ALIAS)
+  {
+    t = assertnotnull(((ptrtype_t*)t)->elem);
   }
+  return t;
 }
 
 
@@ -383,16 +399,16 @@ static bool _type_compat(
   x = type_compat_unwrap(c, x, /*may_deref*/!assignment);
   y = type_compat_unwrap(c, y, /*may_deref*/!assignment);
 
-  #if 0 && DEBUG
+  #if 1 && DEBUG
   {
     dlog("_type_compat (assignment=%d)", assignment);
     buf_t* buf = (buf_t*)&c->diagbuf;
     buf_clear(buf);
     node_fmt(buf, (node_t*)x, 0);
-    dlog("  x = %s", buf->chars);
+    dlog("  %s = %s", assignment ? "dst" : "x", buf->chars);
     buf_clear(buf);
     node_fmt(buf, (node_t*)y, 0);
-    dlog("  y = %s", buf->chars);
+    dlog("  %s = %s", assignment ? "src" : "y", buf->chars);
   }
   #endif
 
@@ -464,18 +480,14 @@ static bool _type_compat(
 
     case TYPE_SLICE:
     case TYPE_MUTSLICE: {
-      // &[T]    <= &[T]
-      // &[T]    <= mut&[T]
-      // mut&[T] <= mut&[T]
-      //
-      // &[T]    <= &[T N]
-      // &[T]    <= mut&[T N]
-      // mut&[T] <= mut&[T N]
       const slicetype_t* l = (slicetype_t*)x;
       bool l_ismut = l->kind == TYPE_MUTSLICE;
       switch (y->kind) {
         case TYPE_SLICE:
         case TYPE_MUTSLICE: {
+          // &[T]    <= &[T]
+          // &[T]    <= mut&[T]
+          // mut&[T] <= mut&[T]
           const slicetype_t* r = (slicetype_t*)y;
           bool r_ismut = r->kind == TYPE_MUTSLICE;
           return (
@@ -484,6 +496,9 @@ static bool _type_compat(
         }
         case TYPE_REF:
         case TYPE_MUTREF: {
+          // &[T]    <= &[T N]
+          // &[T]    <= mut&[T N]
+          // mut&[T] <= mut&[T N]
           bool r_ismut = y->kind == TYPE_MUTREF;
           const arraytype_t* r = (arraytype_t*)((reftype_t*)y)->elem;
           return (
@@ -545,7 +560,7 @@ inline static locmap_t* locmap(typecheck_t* a) {
 // const origin_t to_origin(typecheck_t*, T origin)
 // where T is one of: origin_t | loc_t | node_t* (default)
 #define to_origin(a, origin) ({ \
-  __typeof__(origin) __tmp1 = origin; \
+  __typeof__(origin) __tmp1 = (origin); \
   __typeof__(origin)* __tmp = &__tmp1; \
   const origin_t __origin = _Generic(__tmp, \
           origin_t*:  *(origin_t*)__tmp, \
@@ -759,8 +774,10 @@ bool expr_no_side_effects(const expr_t* n) { switch (n->kind) {
   case EXPR_VAR: {
     const local_t* local = (local_t*)n;
     return (
-      type_cons_no_side_effects(local->type) &&
-      ( !local->init || expr_no_side_effects(local->init) )
+      (n->flags & NF_CONST) || (
+        type_cons_no_side_effects(local->type) &&
+        ( !local->init || expr_no_side_effects(local->init) )
+      )
     );
   }
 
@@ -1079,7 +1096,7 @@ static void define(typecheck_t* a, sym_t name, void* n) {
       assertf(0, "duplicate definition \"%s\"", name);
     }
   #endif
-  return define_allow_replace(a, name, n);
+  define_allow_replace(a, name, n);
 }
 
 
@@ -1120,11 +1137,13 @@ static bool report_unused(typecheck_t* a, const expr_t* n) {
       local_t* var = (local_t*)n;
       if (var->name == sym__ || name_is_reserved(var->name) || !noerror(a))
         return false;
+      loc_t loc = var->nameloc ? var->nameloc : var->loc;
       if (var->written) {
-        warning(a, var->nameloc, "unused %s %s is written to but never read",
+        warning(a, loc, "unused %s %s is written to but never read",
           fmtkind(n), var->name);
       } else {
-        warning(a, var->nameloc, "unused %s %s", fmtkind(n), var->name);
+        warning(a, loc, "unused %s %s", fmtkind(n), var->name);
+        //if (loc) help(a, loc, "rename to '_' to silence warning");
       }
       return true;
     }
@@ -1377,6 +1396,41 @@ static void block(typecheck_t* a, block_t* n) {
 }
 
 
+static bool type_can_be_zeroinit(const type_t* n);
+
+static bool struct_can_be_zeroinit(const structtype_t* t) {
+  for (u32 i = 0; i < t->fields.len; i++) {
+    if (!type_can_be_zeroinit(((local_t*)t->fields.v[i])->type))
+      return false;
+  }
+  return true;
+}
+
+static bool type_can_be_zeroinit(const type_t* t) {
+  for (;;) {
+    switch (t->kind) {
+      case TYPE_ALIAS: // unwrap
+      case TYPE_ARRAY: // arrays & slices can be zeroinit if its element type can be
+      case TYPE_SLICE:
+      case TYPE_MUTSLICE:
+        t = ((ptrtype_t*)t)->elem;
+        break;
+
+      case TYPE_PTR:
+      case TYPE_REF:
+      case TYPE_MUTREF:
+        return false;
+
+      case TYPE_STRUCT:
+        return struct_can_be_zeroinit((structtype_t*)t);
+
+      default:
+        return true;
+    }
+  }
+}
+
+
 static void this_type(typecheck_t* a, local_t* local) {
   type_t* recvt = local->type;
   // pass certain types by value instead of pointer when access is read-only
@@ -1397,42 +1451,116 @@ static void this_type(typecheck_t* a, local_t* local) {
 }
 
 
+static void local_const_type(typecheck_t* a, local_t* n, bool is_inferred) {
+  // "const" can only hold constant, immutable values
+  type_t* t = unwrap_alias(n->type);
+  switch (t->kind) {
+    // primitive types, immutable refs and slices are all constants
+    case TYPE_VOID ... TYPE_UNKNOWN:
+    case TYPE_REF:
+    case TYPE_SLICE:
+      return;
+
+    // mutable types and optional types are incompatible with const
+    case TYPE_PTR:
+    case TYPE_MUTREF:
+    case TYPE_MUTSLICE:
+    case TYPE_OPTIONAL:
+      // e.g. "const k = f(); fun f() ?int = 1"
+      goto err;
+
+    // composite types are immutable
+    case TYPE_STRUCT:
+    case TYPE_ARRAY: {
+      if (!is_inferred)
+        goto err;
+      // infer "const x = [1,2,3]" as type "&[int 3]" (not "[int 3]")
+      reftype_t* reftype = mkreftype(a, n->type, /*ismut*/false);
+      n->type = (type_t*)reftype;
+      intern_usertype(a, (usertype_t**)&n->type);
+      // TODO: wrap n->init in (unaryop OP_REF)?
+      return;
+    }
+    default:
+      assertf(0, "unexpected AST node %s", nodekind_name(t->kind));
+  }
+
+err: {}
+  origin_t origin = (
+    is_inferred ? to_origin(a, n->init) :
+    n->typeloc ?  to_origin(a, n->typeloc) :
+                  to_origin(a, n) );
+  error(a, origin, "mutable type %s used as constant", fmtnode(0, n->type));
+  if (!is_inferred && n->type->kind != TYPE_MUTREF && n->type->kind != TYPE_MUTSLICE)
+    help(a, origin, "use a reference type instead: &%s", fmtnode(0, n->type));
+}
+
+
+static void local_init(typecheck_t* a, local_t* n) {
+  typectx_push(a, n->type);
+  exprp(a, &n->init);
+  typectx_pop(a);
+
+  if (n->type == type_unknown || n->type->kind == TYPE_UNRESOLVED) {
+    // infer type from init
+    n->type = n->init->type;
+    if (n->flags & NF_CONST) {
+      // "const" can only hold constant, immutable values
+      incuse_read(n->init);
+      return local_const_type(a, n, /*is_inferred*/true);
+    }
+    // else: "let" or "var" can hold any value
+  }
+
+  // explicit type, e.g. "let x TYPE = ..."
+
+  type_t* rtype = n->init->type;
+  if (n->isnarrowed && n->type != type_void) {
+    // handle type narrowed local, e.g.
+    //   fun example(a ?int)
+    //     if let x = a  <—— "let x" is of type "int" but a is "?int"
+    //       x           <—— refs to "let x" are "int"
+    //
+    assert(rtype->kind == TYPE_OPTIONAL);
+    rtype = ((opttype_t*)rtype)->elem;
+  }
+
+  if UNLIKELY(!type_isassignable(a->compiler, n->type, rtype))
+    return error_unassignable_type(a, n, n->init);
+
+  incuse_read(n->init);
+  implicit_rvalue_deref(a, n->type, &n->init);
+}
+
+
 static void local(typecheck_t* a, local_t* n) {
   assertf(n->nuse == 0 || n->name != sym__, "'_' local that is somehow used");
 
-  type(a, &n->type);
+  if (n->type != type_unknown) {
+    type(a, &n->type);
+    if (n->flags & NF_CONST)
+      local_const_type(a, n, /*is_inferred*/false);
+  } // else: type inferred from init
 
   if (n->init) {
-    typectx_push(a, n->type);
-    exprp(a, &n->init);
-    typectx_pop(a);
-
-    if (n->type == type_unknown || n->type->kind == TYPE_UNRESOLVED) {
-      n->type = n->init->type;
+    local_init(a, n);
+  } else if UNLIKELY(nodekind_isvar(n->kind) && !type_can_be_zeroinit(n->type)) {
+    origin_t origin = n->typeloc ? to_origin(a, n->typeloc) : to_origin(a, n);
+    if (n->type->kind == TYPE_STRUCT) {
+      error(a, origin, "type %s must be explicitly initialized", fmtnode(0, n->type));
+      if (origin.line)
+        help(a, origin, "replace with '= %s(…)'", fmtnode(0, n->type));
     } else {
-      type_t* rtype = n->init->type;
-      if (n->isnarrowed && n->type != type_void) {
-        // handle type narrowed local, e.g.
-        //   fun example(a ?int)
-        //     if let x = a  <—— "let x" is of type "int" but a is "?int"
-        //       x           <—— refs to "let x" are "int"
-        //
-        assert(rtype->kind == TYPE_OPTIONAL);
-        rtype = ((opttype_t*)rtype)->elem;
-      }
-      if UNLIKELY(!type_isassignable(a->compiler, n->type, rtype)) {
-        error_unassignable_type(a, n, n->init);
-      } else {
-        implicit_rvalue_deref(a, n->type, &n->init);
-      }
+      origin.column += origin.width;
+      origin.width = 0;
+      error(a, origin, "missing required initial value of type %s", fmtnode(0, n->type));
+      if (origin.line)
+        help(a, origin, "insert ' = …'");
     }
   }
 
   if (n->isthis)
     this_type(a, n);
-
-  // // field, param and var are mutable (but "let" isn't; see vardef)
-  // n->flags |= NF_MUT;
 
   if UNLIKELY(
     (n->type == type_void || n->type == type_unknown) && !n->isnarrowed && noerror(a))
@@ -1455,21 +1583,26 @@ static void vardef(typecheck_t* a, local_t* n) {
   local(a, n);
   define(a, n->name, n);
 
-  // If the var is default initialized, the type must have a possible default value.
-  // For example, "var x *Foo" is invalid since pointers must be initialized,
-  // however "var x ?*Foo" _is_ valid since optional defaults to empty.
-  if (!n->init) switch (n->type->kind) {
-    case TYPE_FUN:
-    case TYPE_PTR:
-    case TYPE_REF:
-    case TYPE_MUTREF:
-    case TYPE_SLICE:
-    case TYPE_MUTSLICE: {
-      error(a, n, "missing initializer for %s of %s",
-        nodekind_fmt(n->kind), nodekind_fmt(n->type->kind));
-      if (n->type->loc)
-        help(a, n->type, "add \" = initializer\"");
-      break;
+  // set nsparent for global (top level) variable definition
+  if (a->visitstack.len == 1)
+    n->nsparent = a->nspath.v[a->nspath.len - 1];
+
+  if (n->init && a->visitstack.len == 1) {
+    // global const has comptime initializer
+    assert(n->flags & NF_CONST); // only "const" is valid at top level
+    switch (n->init->kind) {
+      case EXPR_BOOLLIT:
+      case EXPR_INTLIT:
+      case EXPR_FLOATLIT:
+      case EXPR_STRLIT:
+      case EXPR_ARRAYLIT:
+        break;
+      default: {
+        ctimeflag_t ctflag = 0;
+        node_t* constval = comptime_eval(a->compiler, n->init, ctflag);
+        assert(node_isexpr(constval));
+        n->init = (expr_t*)constval;
+      }
     }
   }
 }
@@ -1819,6 +1952,9 @@ static void fun(typecheck_t* a, fun_t* n) {
     } else if (ft->result == type_unknown) {
       ft->result = n->body->type;
     }
+
+    // check for unused parameters
+    check_unused(a, (const node_t**)ft->params.v, ft->params.len);
 
     // is this the "main" function?
     if (ast_is_main_fun(n))
@@ -2401,14 +2537,14 @@ static u32 if_condition(typecheck_t* a, narrowedarray_t* narrowed, expr_t** cond
     if CHECK_ONCE(n)
       local(a, n);
     if (n->type->kind == TYPE_OPTIONAL) {
-      if UNLIKELY(n->init->type->kind != TYPE_OPTIONAL) {
+      if UNLIKELY(n->init->type->kind != TYPE_OPTIONAL && !a->reported_error) {
         error(a, n->init,
           "cannot use %s as boolean in condition", fmtnode(0, n->init->type));
         goto end;
       }
       n->isnarrowed = true;
       n->type = ((opttype_t*)n->type)->elem;
-    } else if UNLIKELY(n->type != type_bool) {
+    } else if UNLIKELY(n->type != type_bool && !a->reported_error) {
       error(a, n, "cannot use %s as boolean in condition", fmtnode(0, n->type));
     }
     define(a, n->name, n);
@@ -2422,7 +2558,8 @@ static u32 if_condition(typecheck_t* a, narrowedarray_t* narrowed, expr_t** cond
   }
 
 error_notbool:
-  error(a, x, "cannot use %s as boolean in condition", fmtnode(0, x->type));
+  if (!a->reported_error)
+    error(a, x, "cannot use %s as boolean in condition", fmtnode(0, x->type));
   narrowflags = 0;
 
 end:
@@ -3546,17 +3683,42 @@ static void convert_call_to_typecons(typecheck_t* a, call_t** np, type_t* t) {
 }
 
 
-static void check_call_type_struct(typecheck_t* a, call_t* call, structtype_t* t){
+static bool tmpmap_alloc(typecheck_t* a, map_t* dst, u32 mincap) {
+  if (a->freemaps.len) {
+    *dst = a->freemaps.v[a->freemaps.len - 1];
+    a->freemaps.len--;
+    if (dst->cap < mincap)
+      map_reserve(dst, a->ma, mincap);
+  } else if UNLIKELY(!map_init(dst, a->ma, mincap)) {
+    out_of_mem(a);
+    return false;
+  }
+  return true;
+}
+
+
+static void tmpmap_free(typecheck_t* a, map_t* m) {
+  map_t* free_slot = maparray_alloc(&a->freemaps, a->ma, 1);
+  if UNLIKELY(!free_slot) {
+    map_dispose(m, a->ma);
+  } else {
+    map_clear(m);
+    *free_slot = *m;
+    m->cap = 0;
+  }
+}
+
+
+static void call_type_struct(typecheck_t* a, call_t* call, structtype_t* t){
   assert(call->args.len <= t->fields.len); // checked by validate_typecall_args
 
   u32 i = 0;
   nodearray_t args = call->args;
 
   // build field map
-  map_t fieldmap = a->tmpmap;
-  map_clear(&fieldmap);
-  if UNLIKELY(!map_reserve(&fieldmap, a->ma, t->fields.len))
-    return out_of_mem(a);
+  map_t fieldmap;
+  if UNLIKELY(!tmpmap_alloc(a, &fieldmap, t->fields.len))
+    return;
   for (u32 i = 0; i < t->fields.len; i++) {
     const local_t* f = (local_t*)t->fields.v[i];
     void** vp = map_assign_ptr(&fieldmap, a->ma, f->name);
@@ -3607,12 +3769,12 @@ static void check_call_type_struct(typecheck_t* a, call_t* call, structtype_t* t
       assertnotnull(namedarg->init); // checked by parser
       exprp(a, &namedarg->init);
       namedarg->type = namedarg->init->type;
+      incuse_read(namedarg->init);
     } else {
       assert(arg->kind == EXPR_ID); // for future dumb me
       idexpr(a, (idexpr_t**)&arg);
+      incuse_read(arg);
     }
-
-    incuse_read(arg);
 
     typectx_pop(a);
 
@@ -3624,7 +3786,32 @@ static void check_call_type_struct(typecheck_t* a, call_t* call, structtype_t* t
     }
   }
 
-  a->tmpmap = fieldmap; // in case map grew
+  // check for required fields
+  if (call->args.len < t->fields.len) {
+    for (u32 i = 0; i < t->fields.len; i++) {
+      const local_t* f = (local_t*)t->fields.v[i];
+      void** vp = map_lookup_ptr(&fieldmap, f->name);
+      assertf(vp != NULL, "%s", f->name);
+      assertf(*vp != NULL, "%s", f->name);
+      if (((node_t*)*vp)->kind != EXPR_FIELD)
+        continue; // already specified
+      if UNLIKELY(!type_can_be_zeroinit(((local_t*)t->fields.v[i])->type)) {
+        bool is_first_error = !a->reported_error;
+        error(a, call, "field \"%s %s\" of %s must be explicitly initialized",
+          f->name, fmtnode(0, f->type), fmtnode(1, t));
+        if (call->argsendloc && is_first_error) {
+          loc_t loc = loc_with_width(call->argsendloc, 0);
+          if (args.len > 0) {
+            help(a, loc, "insert ', %s = value'", f->name);
+          } else {
+            help(a, loc, "insert '%s = value'", f->name);
+          }
+        }
+      }
+    }
+  }
+
+  tmpmap_free(a, &fieldmap);
 }
 
 
@@ -3735,7 +3922,7 @@ static void call_type(typecheck_t* a, call_t** np, type_t* t) {
     u32 maxargs = ((structtype_t*)t)->fields.len;
     if UNLIKELY(!check_call_type_arity(a, call, origt, 0, maxargs))
       break;
-    check_call_type_struct(a, call, (structtype_t*)t);
+    call_type_struct(a, call, (structtype_t*)t);
     break;
   }
 
@@ -4396,7 +4583,9 @@ static void _type(typecheck_t* a, type_t** tp) {
     case TYPE_MUTREF:
     case TYPE_SLICE:
     case TYPE_MUTSLICE:
-      type(a, &((ptrtype_t*)(*tp))->elem); goto end;
+      type(a, &((ptrtype_t*)(*tp))->elem);
+      intern_usertype(a, (usertype_t**)tp);
+      goto end;
 
     case TYPE_OPTIONAL:    opttype(a, (opttype_t**)tp); goto end;
     case TYPE_STRUCT:      structtype(a, (structtype_t**)tp); goto end;
@@ -4453,7 +4642,9 @@ end:
 static void stmt(typecheck_t* a, stmt_t** np) {
   if UNLIKELY(a->reported_error)
     return;
+
   stmt_t* n = *np;
+
   if (n->kind == STMT_TYPEDEF) {
     if (n->flags & NF_CHECKED)
       return;
@@ -4461,12 +4652,16 @@ static void stmt(typecheck_t* a, stmt_t** np) {
     TRACE_NODE(a, "", &n);
     return typedef_(a, (typedef_t*)n);
   }
+
   assertf(node_isexpr((node_t*)n), "unexpected node %s", nodekind_name(n->kind));
+
   exprp(a, (expr_t**)np);
+
   if (n != *np) {
     trace("statement transformed %s#%p -> %s#%p",
       nodekind_name(n->kind),n, nodekind_name((*np)->kind),(*np));
   }
+
   if (!node_islocal((node_t*)*np) && ((*np)->flags & NF_RVALUE) == 0)
     incuse_read(*np);
 }
@@ -4774,9 +4969,14 @@ static void define_at_unit_level(typecheck_t* a, node_t* n) {
     case EXPR_FUN: {
       fun_t* fn = (fun_t*)n;
       assertnotnull(fn->name);
-      define(a, fn->name, n);
-      break;
+      return define(a, fn->name, n);
     }
+    case STMT_TYPEDEF:
+    case EXPR_LET:
+      break;
+    default:
+      assertf(0, "unexpected top-level AST node: %s", nodekind_name(n->kind));
+      break;
   }
 }
 
@@ -4816,23 +5016,19 @@ err_t typecheck(
 
   if (!map_init(&a.postanalyze, a.ma, 32))
     return ErrNoMem;
-  if (!map_init(&a.tmpmap, a.ma, 32)) {
+  if (!map_init(&a.templateimap, a.ma, 32)) {
     a.err = ErrNoMem;
     goto end1;
   }
-  if (!map_init(&a.templateimap, a.ma, 32)) {
-    a.err = ErrNoMem;
-    goto end2;
-  }
   if (!map_init(&a.usertypes, a.ma, 32)) {
     a.err = ErrNoMem;
-    goto end3;
+    goto end2;
   }
   buf_init(&a.tmpbuf, a.ma);
 
   // expose runtime functions
   if (( a.err = autoimport_runtime(&a) ))
-    goto end4;
+    goto end3;
 
   enter_scope(&a); // package
 
@@ -4861,9 +5057,24 @@ err_t typecheck(
   // TODO: should this run after each unit?
   postanalyze(&a);
 
+  // check for unused constants
+  for (u32 unit_i = 0; unit_i < unitc; unit_i++) {
+    unit_t* unit = unitv[unit_i];
+    for (u32 i = 0; i < unit->children.len; i++) {
+      const node_t* n = unit->children.v[i];
+      if UNLIKELY(
+        n->kind == EXPR_LET &&
+        n->nuse == 0 && !n->used_at_compile_time &&
+        (n->flags & NF_VIS_MASK) != NF_VIS_PUB)
+      {
+        report_unused(&a, (expr_t*)n);
+      }
+    }
+  }
+
   leave_scope(&a); // package
 
-end4:
+end3:
   scope_dispose(&a.scope, a.ma);
   scope_dispose(&a.narrowscope, a.ma);
   ptrarray_dispose(&a.nspath, a.ma);
@@ -4872,10 +5083,11 @@ end4:
   array_dispose(didyoumean_t, (array_t*)&a.didyoumean, a.ma);
   buf_dispose(&a.tmpbuf);
   map_dispose(&a.usertypes, a.ma);
-end3:
-  map_dispose(&a.templateimap, a.ma);
+  for (u32 i = 0; i < a.freemaps.len; i++)
+    if (a.freemaps.v[i].cap) map_dispose(&a.freemaps.v[i], a.ma);
+  maparray_dispose(&a.freemaps, a.ma);
 end2:
-  map_dispose(&a.tmpmap, a.ma);
+  map_dispose(&a.templateimap, a.ma);
 end1:
   map_dispose(&a.postanalyze, a.ma);
 

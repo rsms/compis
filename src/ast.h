@@ -317,7 +317,7 @@ typedef struct { // *T
 typedef struct { // type A B
   ptrtype_t;
   sym_t            name;
-  node_t* nullable nsparent;    // TODO: generalize to just "parent"
+  node_t* nullable nsparent;
 } aliastype_t;
 
 typedef struct { // ?T
@@ -440,14 +440,17 @@ typedef struct {
 
 typedef struct { // PARAM, VAR, LET
   expr_t;
-  sym_t   nullable name;       // may be NULL for PARAM
-  loc_t            nameloc;    // source location of name
-  expr_t* nullable init;       // may be NULL for VAR and PARAM
-  bool             written;    // true if ever written to (used with nuse)
-  bool             isthis;     // [PARAM only] it's the special "this" parameter
-  bool             ismut;      // [PARAM only] true if "this" parameter is "mut"
-  bool             isnarrowed; // used as narrowing condition, e.g. "if let x = maybex"
-  u64              offset;     // [FIELD only] memory offset in bytes
+  sym_t   nullable name;        // may be NULL for PARAM
+  loc_t            nameloc;     // source location of name
+  loc_t            typeloc;     // source location of type (may be 0)
+  char*            mangledname; // only used by globals
+  expr_t* nullable init;        // may be NULL for VAR and PARAM
+  bool             written;     // true if ever written to (used with nuse)
+  bool             isthis;      // [PARAM only] it's the special "this" parameter
+  bool             ismut;       // [PARAM only] true if "this" parameter is "mut"
+  bool             isnarrowed;  // used as narrowing condition, e.g. "if let x = maybex"
+  u64              offset;      // [FIELD only] memory offset in bytes
+  node_t* nullable nsparent;
 } local_t;
 
 typedef u8 abi_t;
@@ -466,8 +469,8 @@ typedef struct fun_ { // fun is a declaration (stmt) or an expression depending 
   loc_t             paramsloc;    // location of "(" ...
   loc_t             paramsendloc; // location of ")"
   loc_t             resultloc;    // location of result
-  abi_t             abi;      // TODO: move to nodeflag_t
-  node_t* nullable  nsparent; // TODO: generalize to just "parent"
+  abi_t             abi;          // TODO: move to nodeflag_t
+  node_t* nullable  nsparent;     // TODO: generalize to just "parent"
 } fun_t;
 
 
@@ -684,7 +687,9 @@ node_t* nullable ast_transform_children(
 // pointing to a dependency (inserted before the first dependant.)
 // If visibility>0, only nodes with one of the provided visibility flags are included.
 bool ast_toposort_visit_def(
-  nodearray_t* defs, memalloc_t ma, nodeflag_t visibility, node_t* n);
+  nodearray_t* defs, memalloc_t ma, nodeflag_t visibility, node_t* n, u32 flags);
+// flags for ast_toposort_visit_def
+#define AST_TOPOSORT_TOPLEVEL (1u<<0) // n is top level
 
 
 // funtype_params_origin returns the origin of parameters, e.g.

@@ -5,8 +5,9 @@
 #include <sys/stat.h>
 
 // ANON_PREFIX is used for generated names
-#define ANON_PREFIX  CO_ABI_GLOBAL_PREFIX "v"
-#define ANON_FMT     ANON_PREFIX "%x"
+#define ANON_PREFIX       CO_ABI_GLOBAL_PREFIX "v"
+#define ANON_PARAM_PREFIX ANON_PREFIX "_p"
+#define ANON_FMT          ANON_PREFIX "%x"
 
 // attributes, defined by coprelude.h
 #define ATTR_PKG      CO_ABI_GLOBAL_PREFIX "PKG"
@@ -93,10 +94,10 @@ inline static locmap_t* locmap(cgen_t* g) {
 
 
 static void seterr(cgen_t* g, err_t err) {
-  #if DEBUG
-    dlog("cgen seterr \"%s\"", err_str(err));
-    fprint_stacktrace(stderr, /*frame_offset*/1);
-  #endif
+  // #if DEBUG
+  //   dlog("cgen seterr \"%s\"", err_str(err));
+  //   fprint_stacktrace(stderr, /*frame_offset*/1);
+  // #endif
   if (!g->err)
     g->err = err;
 }
@@ -119,7 +120,7 @@ static void _error(cgen_t* g, origin_t origin, const char* fmt, ...) {
 #if DEBUG
   #define debugdie(g, node_or_type, fmt, args...) ( \
     error((g), (node_or_type), fmt, ##args), \
-    panic("code generator got unexpected AST") \
+    panic(fmt, ##args) \
   )
 #else
   #define debugdie(...) ((void)0)
@@ -223,8 +224,33 @@ static char* mangle(cgen_t* g, const node_t* n) {
       return s;
   }
   seterr(g, ErrNoMem);
-  static char last_resort[1] = {0};
+  static char last_resort[1] = {};
   return last_resort;
+}
+
+
+#define ANON_ID_SIZE(key) (sizeof(ANON_PREFIX key) + sizeof(uintptr)*8 + 1)
+#define TMP_ID_SIZE  ANON_ID_SIZE("tmp")
+
+#define FMT_ID(buf, bufcap, key, ptr) ( \
+  assert((bufcap) >= ANON_ID_SIZE(key)), \
+  snprintf((buf), (bufcap), ANON_PREFIX key "%zx", (uintptr)(ptr)) )
+
+// DEPRECATED (use localtmpid)
+static usize fmt_tmp_id(char* buf, usize bufcap, const void* n) {
+  return FMT_ID(buf, bufcap, "tmp", n);
+}
+
+
+#define LOCALTMPID_SIZE  (strlen(ANON_PREFIX)+11+1)
+
+static usize localtmpid(cgen_t* g, char buf[LOCALTMPID_SIZE]) {
+  assert(buf[LOCALTMPID_SIZE-1] || true); // trigger msan
+  usize n = strlen(ANON_PREFIX);
+  memcpy(buf, ANON_PREFIX, n);
+  n += (usize)fmt_u64_base62(buf+n, 11, g->idgen_local++);
+  buf[n] = 0;
+  return n;
 }
 
 
@@ -536,7 +562,7 @@ static void gen_optzero(cgen_t* g, const opttype_t* ot) {
   if (opttype_byptr(g, ot->elem)) {
     PRINT("NULL");
   } else {
-    CHAR('('), gen_opttype(g, ot), PRINT("){0}");
+    CHAR('('), gen_opttype(g, ot), PRINT("){}");
   }
 }
 
@@ -738,10 +764,43 @@ static type_t* unwrap_ptr_and_alias(type_t* t) {
 }
 
 
+static void gen_sliceinit(cgen_t* g, const slicetype_t* lt, const expr_t* init) {
+  // &[T] <= &[T N]
+  // struct slice { uint len; T* ptr; }
+  // generates: (struct _coSLICETYPE){ lenexpr, ptrexpr }
+
+  const type_t* rt = unwrap_aliastypes(init->type);
+
+  // generate type
+  CHAR('('), gen_type(g, (type_t*)lt), PRINT("){");
+
+  // generate size expression
+  switch (rt->kind) {
+    case TYPE_REF:
+    case TYPE_MUTREF: {
+      // exepecting right side to be a reference to a fixed-size array, e.g. "&[T N]"
+      const arraytype_t* at = (arraytype_t*)((reftype_t*)rt)->elem;
+      assertf(at->kind == TYPE_ARRAY, "bad slice init %s", nodekind_name(rt->kind));
+      assertf(at->len > 0, "dynamically-sized array; expected fixed size");
+      gen_intconst(g, at->len, g->compiler->uinttype);
+      break;
+    }
+    default:
+      assertf(0, "unexpected slice initializer %s", nodekind_name(rt->kind) );
+  }
+  CHAR(',');
+
+  // generate value expression
+  gen_expr(g, init);
+
+  CHAR('}');
+}
+
+
 static void gen_expr_rvalue1(
   cgen_t* g, const expr_t* n, const type_t* lt, bool parenwrap)
 {
-  trace("%s %s#%p %s (LHS, RHS = [%s], [%s])",
+  trace("%s %s#%p %s (LHS = [%s], RHS = [%s])",
     __FUNCTION__, nodekind_name(n->kind), n,
     fmtnode(0, n), fmtnode(1, lt), fmtnode(2, n->type));
 
@@ -754,21 +813,16 @@ static void gen_expr_rvalue1(
     rt = unwrap_aliastypes(rt);
     if (lt->kind != rt->kind) switch (lt->kind) {
       case TYPE_OPTIONAL:
-        // ?T <= T
-        return gen_optinit(g, (opttype_t*)lt, n);
+        // ?T
+        gen_optinit(g, (opttype_t*)lt, n);
+        if (parenwrap)
+          CHAR(')');
+        return;
 
       case TYPE_SLICE:
       case TYPE_MUTSLICE:
-        // &[T] <= &[T N] -- left type is slice, right type is something else
-        assertf(type_isref(rt) && ((reftype_t*)rt)->elem->kind == TYPE_ARRAY,
-          "unexpected slice initializer %s", nodekind_name(rt->kind) );
-        const arraytype_t* at = (arraytype_t*)((reftype_t*)rt)->elem;
-        // struct slice { uint len; T* ptr; }
-        CHAR('('), gen_type(g, (type_t*)lt), PRINT("){");
-        gen_intconst(g, at->len, g->compiler->uinttype);
-        CHAR(',');
-        gen_expr(g, n);
-        CHAR('}');
+        // &[T]
+        gen_sliceinit(g, (slicetype_t*)lt, n);
         if (parenwrap)
           CHAR(')');
         return;
@@ -797,32 +851,6 @@ static void gen_expr_rvalue1(
 static void gen_expr_rvalue(cgen_t* g, const expr_t* n, const type_t* lt) {
   bool parenwrap = has_ambiguous_prec(n);
   gen_expr_rvalue1(g, n, lt, parenwrap);
-}
-
-
-#define ANON_ID_SIZE(key) (sizeof(ANON_PREFIX key) + sizeof(uintptr)*8 + 1)
-#define TMP_ID_SIZE  ANON_ID_SIZE("tmp")
-
-#define FMT_ID(buf, bufcap, key, ptr) ( \
-  assert((bufcap) >= ANON_ID_SIZE(key)), \
-  snprintf((buf), (bufcap), ANON_PREFIX key "%zx", (uintptr)(ptr)) )
-
-// DEPRECATED (use localtmpid)
-static usize fmt_tmp_id(char* buf, usize bufcap, const void* n) {
-  return FMT_ID(buf, bufcap, "tmp", n);
-}
-
-
-#define LOCALTMPID_SIZE  (strlen(ANON_PREFIX)+11+1)
-
-
-static usize localtmpid(cgen_t* g, char buf[LOCALTMPID_SIZE]) {
-  assert(buf[LOCALTMPID_SIZE-1] || true); // trigger msan
-  usize n = strlen(ANON_PREFIX);
-  memcpy(buf, ANON_PREFIX, n);
-  n += (usize)fmt_u64_base62(buf+n, 11, g->idgen_local++);
-  buf[n] = 0;
-  return n;
 }
 
 
@@ -1291,7 +1319,7 @@ static void gen_block(cgen_t* g, const block_t* n) {
     } // for
     g->indent--;
     if (start_lineno != g->lineno) {
-      startline(g, (loc_t){0});
+      startline(g, (loc_t)0);
     } else {
       CHAR(' ');
     }
@@ -1314,15 +1342,6 @@ static void gen_block(cgen_t* g, const block_t* n) {
     PRINT("})");
   } else {
     CHAR('}');
-  }
-}
-
-
-static void gen_id(cgen_t* g, sym_t nullable name) {
-  if (name && name != sym__) {
-    PRINT(name);
-  } else {
-    PRINTF(ANON_FMT, g->idgen_local++);
   }
 }
 
@@ -1366,9 +1385,11 @@ static void gen_fun_proto(cgen_t* g, const fun_t* fun) {
       gen_type(g, param->type);
       if (noalias(param->type))
         PRINT(ATTR_NOALIAS);
+      CHAR(' ');
       if (param->name && param->name != sym__) {
-        CHAR(' ');
         PRINT(param->name);
+      } else {
+        PRINTF(ANON_PARAM_PREFIX "%u " ATTR_UNUSED, i);
       }
     }
     g->scopenest--;
@@ -1435,10 +1456,10 @@ static void gen_structinit(cgen_t* g, const structtype_t* t, nodearray_t args) {
   }
 
   if (i == args.len && !t->hasinit) {
-    if (i == 0 && t->fields.len > 0) {
-      const local_t* f = (local_t*)t->fields.v[0];
-      gen_zeroinit(g, f->type);
-    }
+    // if (i == 0 && t->fields.len > 0) {
+    //   const local_t* f = (local_t*)t->fields.v[0];
+    //   gen_zeroinit(g, f->type);
+    // }
     CHAR('}');
     return;
   }
@@ -1487,16 +1508,17 @@ static void gen_structinit(cgen_t* g, const structtype_t* t, nodearray_t args) {
 static void gen_zeroinit_array(cgen_t* g, const arraytype_t* t) {
   if (t->len == 0) {
     // runtime dynamic array "{ cap, len uint; T* ptr }"
-    PRINT("{0}");
+    PRINT("{}");
     return;
   }
-  // (u32[5]){0u}
-  CHAR('(');
-  gen_type(g, t->elem);
-  PRINTF("[%llu])", t->len);
-  CHAR('{');
-  gen_zeroinit(g, t->elem);
-  CHAR('}');
+
+  // e.g. (u32[5]){}
+  CHAR('('), gen_type(g, t->elem);
+  PRINTF("[%llu]){}", t->len);
+
+  // e.g. (u32[5]){0u}
+  // CHAR('('), gen_type(g, t->elem);
+  // PRINTF("[%llu])", t->len), CHAR('{'), gen_zeroinit(g, t->elem), CHAR('}');
 }
 
 
@@ -1541,11 +1563,11 @@ again:
     PRINT("0.0");
     break;
   case TYPE_OPTIONAL:
-    PRINT("{0}");
+    PRINT(opttype_byptr(g, ((opttype_t*)t)->elem) ? "NULL" : "{}");
     break;
   case TYPE_SLICE:
   case TYPE_MUTSLICE:
-    PRINT("{0}");
+    PRINT("{}");
     break;
   case TYPE_ARRAY:
     return gen_zeroinit_array(g, (arraytype_t*)t);
@@ -1553,7 +1575,7 @@ again:
     PRINT("NULL");
     break;
   case TYPE_STRUCT:
-    gen_structinit(g, (structtype_t*)t, (nodearray_t){0});
+    gen_structinit(g, (structtype_t*)t, (nodearray_t){});
     break;
   default:
     debugdie(g, t, "unexpected type %s", nodekind_name(t->kind));
@@ -1687,11 +1709,19 @@ static void gen_call_fun(cgen_t* g, const call_t* n) {
 }
 
 
-static void gen_call(cgen_t* g, const call_t* n) {
-  // type call?
+static const type_t* nullable is_type_call(const call_t* n) {
   const idexpr_t* idrecv = (idexpr_t*)n->recv;
   if (idrecv->kind == EXPR_ID && nodekind_istype(idrecv->ref->kind))
-    return gen_call_type(g, n, (type_t*)idrecv->ref);
+    return (type_t*)idrecv->ref;
+  return NULL;
+}
+
+
+static void gen_call(cgen_t* g, const call_t* n) {
+  // type call?
+  const type_t* type_recv = is_type_call(n);
+  if (type_recv)
+    return gen_call_type(g, n, type_recv);
   if (nodekind_istype(n->recv->kind))
     return gen_call_type(g, n, (type_t*)n->recv);
 
@@ -1796,34 +1826,52 @@ static void gen_strlit(cgen_t* g, const strlit_t* n) {
 }
 
 
+static void gen_arraylit_values(cgen_t* g, const nodearray_t* values) {
+  CHAR('{');
+  for (u32 i = 0; i < values->len; i++) {
+    if (i) CHAR(',');
+    gen_expr(g, (expr_t*)values->v[i]);
+  }
+  CHAR('}');
+}
+
+
 static void gen_arraylit1(cgen_t* g, const arraylit_t* n, u64 len) {
+  // "(T[len]){val1, val2, val3}"
   const arraytype_t* at = (arraytype_t*)n->type;
   CHAR('(');
   // PRINT("const "); // TODO: track constctx
   gen_type(g, at->elem);
-  PRINTF("[%llu]){", len);
-  for (u32 i = 0; i < n->values.len; i++) {
-    if (i) CHAR(',');
-    gen_expr(g, (expr_t*)n->values.v[i]);
-  }
-  PRINT("}");
+  PRINTF("[%llu])", len);
+  gen_arraylit_values(g, &n->values);
+
+  // PRINTF("[%llu]){", len);
+  // for (u32 i = 0; i < n->values.len; i++) {
+  //   if (i) CHAR(',');
+  //   gen_expr(g, (expr_t*)n->values.v[i]);
+  // }
+  // PRINT("}");
 }
 
 
-static void gen_dyn_arraylit(cgen_t* g, const arraylit_t* n) {
-  // see gen_darray_typedef
+static void gen_dyn_arraylit1(cgen_t* g, const arraylit_t* n) {
+  // see also: gen_arraytype_def
   const arraytype_t* at = (arraytype_t*)n->type;
 
   // note: potential overflow of size already checked by typecheck
   //u8 elemalign = at->elem->align;
-  u64 elemsize = at->elem->size;
   u64 len = n->values.len;
 
-  CHAR('('), gen_type(g, (type_t*)at), CHAR(')');
   PRINTF("{%llu,%llu,", len, len);
   PRINT(RT_mem_dup "(&");
   gen_arraylit1(g, n, n->values.len);
-  PRINTF(",%llu)}", len * elemsize);
+  PRINTF(",%llu)}", len * at->elem->size);
+}
+
+
+static void gen_dyn_arraylit(cgen_t* g, const arraylit_t* n) {
+  CHAR('('), gen_type(g, n->type), CHAR(')');
+  gen_dyn_arraylit1(g, n);
 }
 
 
@@ -1896,13 +1944,12 @@ static void gen_assign(cgen_t* g, const binop_t* n) {
 static void gen_vartype(cgen_t* g, const local_t* n, const type_t* t) {
   gen_type(g, t);
 
-  // "const" qualifier for &T that's a pointer
+  // "const" qualifier for &T that's a pointer, e.g. "T* const"
   if (n->kind == EXPR_LET &&
-    ( type_isprim(n->type) ||
-      n->type->kind == TYPE_OPTIONAL ||
-      ( type_isref(n->type) && !reftype_byvalue(g, (reftype_t*)n->type) )
-    )
-  ){
+      ( type_isprim(n->type) ||
+        n->type->kind == TYPE_OPTIONAL ||
+        ( type_isref(n->type) && !reftype_byvalue(g, (reftype_t*)n->type) ) ) )
+  {
     PRINT(" const");
   }
 }
@@ -1913,7 +1960,7 @@ static void gen_varinit(cgen_t* g, const local_t* n) {
     if (n->type->kind == TYPE_OPTIONAL && n->init->type->kind != TYPE_OPTIONAL) {
       gen_optinit(g, NULL, n->init);
     } else {
-      gen_expr_rvalue(g, n->init, n->type);
+      gen_expr_rvalue1(g, n->init, n->type, /*parenwrap*/false);
     }
   } else {
     gen_zeroinit(g, n->type);
@@ -1921,7 +1968,7 @@ static void gen_varinit(cgen_t* g, const local_t* n) {
 }
 
 
-static void gen_vardef1(cgen_t* g, const local_t* n, const char* name) {
+static void gen_vardef1(cgen_t* g, const local_t* n, const char* name, bool is_global) {
   // elide unused variable without side effects.
   // Note: This isn't very useful in practice as clang will optimize away
   // unused code anyway (when optimizing), but it's a nice thing to do.
@@ -1930,7 +1977,7 @@ static void gen_vardef1(cgen_t* g, const local_t* n, const char* name) {
     !n->written &&
     (n->flags & NF_RVALUE) == 0 &&
     g->compiler->buildmode != BUILDMODE_DEBUG &&
-    expr_no_side_effects((expr_t*)n) )
+    ((n->flags & NF_CONST) || expr_no_side_effects((expr_t*)n)) )
   {
     PRINT("/* elided unused ");
     PRINT(nodekind_fmt(n->kind));
@@ -1955,19 +2002,115 @@ static void gen_vardef1(cgen_t* g, const local_t* n, const char* name) {
     PRINT("({");
   }
 
-  // type
-  gen_vartype(g, n, n->type), CHAR(' '), gen_id(g, name);
+  // name
+  char tmp[LOCALTMPID_SIZE];
+  if (!name[0] || (name[0] == '_' && !name[1])) {
+    localtmpid(g, tmp);
+    name = tmp;
+  }
 
-  // attributes
-  if (n->nuse == 0)
-    CHAR(' '), PRINT(ATTR_UNUSED);
-  // if (type_isptr(n->type)) {
-  //   PRINTF(" __attribute__((__consumable__(%s)))",
-  //     owner_islive(n) ? "unconsumed" : "consumed");
-  // }
+  // visibility
+  switch (n->flags & NF_VIS_MASK) {
+    case NF_VIS_UNIT: if (n->flags & NF_CONST) PRINT("static "); break;
+    case NF_VIS_PKG:  if (is_global) PRINT(ATTR_PKG " "); break;
+    case NF_VIS_PUB:  if (is_global) PRINT(ATTR_PUB " "); break;
+  }
 
-  // value
-  PRINT(" = "), gen_varinit(g, n);
+  // storage modifiers
+  if (n->flags & NF_CONST)
+    PRINT("const ");
+
+  // special case for struct and array var definitions,
+  // e.g. "T name[len] = {...}" instead of "T* name = &(T){...}"
+  // e.g. "T name = {...}" instead of "T name = (T){...}"
+  const arraytype_t* arraytype = NULL;
+  const structtype_t* structtype = NULL;
+  switch (n->type->kind) {
+  case TYPE_STRUCT:
+    if (!n->init || (n->init->kind == EXPR_CALL && is_type_call((call_t*)n->init)))
+      structtype = (structtype_t*)n->type;
+    break;
+  case TYPE_ARRAY:
+    if (!n->init || n->init->kind == EXPR_ARRAYLIT)
+      arraytype = (arraytype_t*)n->type;
+    break;
+  case TYPE_REF:
+    if (
+      (!n->init || n->init->kind == EXPR_ARRAYLIT) &&
+      ((reftype_t*)n->type)->elem->kind == TYPE_ARRAY &&
+      ((arraytype_t*)((reftype_t*)n->type)->elem)->len > 0 )
+    {
+      arraytype = (arraytype_t*)((reftype_t*)n->type)->elem;
+    }
+    break;
+  case TYPE_OPTIONAL:
+    dlog("TODO vardef1 TYPE_OPTIONAL");
+    break;
+  }
+
+  if (arraytype) {
+    // "T name[len] = {...}"
+    // mini test:
+    //   const _ = [1,2,3]                         // is subject to this branch
+    //   fun f0() { var _ = [1,2,3] }              // is subject to this branch
+    //   fun f1() { let _ [int 100] = [1,2,3] }    // is subject to this branch
+    //   fun f2(k [int 3]) { let _ [int 3] = k }   // not subject to this branch
+    //   fun f3(k &[int 3]) { let _ &[int 3] = k } // not subject to this branch
+    if (arraytype->len > 0) {
+      gen_type(g, arraytype->elem), CHAR(' '), PRINT(name);
+      CHAR('['), PRINTF("%llu", arraytype->len), CHAR(']');
+      if (n->nuse == 0)
+        CHAR(' '), PRINT(ATTR_UNUSED);
+      if (n->init) {
+        assert(n->init->kind == EXPR_ARRAYLIT);
+        const arraylit_t* alit = (arraylit_t*)n->init;
+        PRINT(" = "), gen_arraylit_values(g, &alit->values);
+      } else {
+        PRINT(" = {}");
+      }
+    } else {
+      gen_arraytype(g, arraytype), CHAR(' '), PRINT(name);
+      if (n->nuse == 0)
+        CHAR(' '), PRINT(ATTR_UNUSED);
+      if (n->init) {
+        PRINT(" = "), gen_dyn_arraylit1(g, (arraylit_t*)n->init);
+      } else {
+        PRINT(" = {}");
+      }
+    }
+    // note: In >=C99, omitted array and struct fields are implicitly initialized
+    // the same as for objects that have static storage duration.
+    // On static storage duration in C99 6.7.8 Initialization Semantics:
+    // > If an object that has automatic storage duration is not initialized explicitly,
+    // > its value is indeterminate.
+    // > If an object that has static storage duration is not initialized explicitly,
+    // > then:
+    // > - if it has pointer type, it is initialized to a null pointer.
+    // > - if it has arithmetic type, it is initialized to (positive or unsigned) zero.
+    // > - if it is an aggregate, every member is initialized (recursively)
+    // >   according to these rules.
+    // > - if it is a union, the first named member is initialized (recursively)
+    // >   according to these rules.
+    // i.e.
+    // - in "T x[2]", value of x[0]==undefined, x[1]==undefined.
+    // - in "T x[2] = {}", value of x[0]==0, x[1]==0.
+    // - in "T x[2] = {1}", value of x[0]==1, x[1]==0.
+  } else if (structtype) {
+    // "T name = {...}"
+    nodearray_t args = {};
+    if (n->init)
+      args = ((call_t*)n->init)->args;
+    gen_vartype(g, n, n->type), CHAR(' '), PRINT(name);
+    if (n->nuse == 0)
+      CHAR(' '), PRINT(ATTR_UNUSED);
+    PRINT(" = "), gen_structinit(g, structtype, args);
+  } else {
+    // "T name = init"
+    gen_vartype(g, n, n->type), CHAR(' '), PRINT(name);
+    if (n->nuse == 0)
+      CHAR(' '), PRINT(ATTR_UNUSED);
+    PRINT(" = "), gen_varinit(g, n);
+  }
 
   if (n->flags & NF_RVALUE)
     PRINT("; "), PRINT(name), PRINT(";})");
@@ -1975,7 +2118,20 @@ static void gen_vardef1(cgen_t* g, const local_t* n, const char* name) {
 
 
 static void gen_vardef(cgen_t* g, const local_t* n) {
-  gen_vardef1(g, n, n->name);
+  const char* name = n->name;
+  if ((n->flags & NF_VIS_MASK) == NF_VIS_PUB) // public global variable
+    name = assertnotnull(n->mangledname);
+  gen_vardef1(g, n, name, /*is_global*/false);
+}
+
+
+static void gen_vardef_global(cgen_t* g, const local_t* n) {
+  const char* name = n->name;
+  if ((n->flags & NF_VIS_MASK) == NF_VIS_PUB)
+    name = assertnotnull(n->mangledname);
+  startline(g, n->loc);
+  gen_vardef1(g, n, name, /*is_global*/true);
+  CHAR(';');
 }
 
 
@@ -2100,12 +2256,22 @@ static void gen_postfixop(cgen_t* g, const unaryop_t* n) {
 
 
 static void gen_idexpr(cgen_t* g, const idexpr_t* n) {
-  gen_id(g, n->name);
+  const char* name = n->name;
+  // in case the reference is to a public global, use its mangledname
+  if (assertnotnull(n->ref)->kind == EXPR_LET) {
+    const local_t* var = (local_t*)n->ref;
+    if ((var->flags & NF_VIS_MASK) == NF_VIS_PUB)
+      name = var->mangledname;
+  }
+  assertf(!(!name[0] || (name[0] == '_' && !name[1])), "unexpected '_' name");
+  PRINT(name);
 }
 
 
 static void gen_param(cgen_t* g, const local_t* n) {
-  gen_id(g, n->name);
+  // note: unnamed parameters don't have their name printed
+  assertf(!(!n->name[0] || (n->name[0] == '_' && !n->name[1])), "unexpected '_' name");
+  PRINT(n->name);
 }
 
 
@@ -2189,7 +2355,7 @@ static void gen_subscript(cgen_t* g, const subscript_t* n) {
   //   ({ u64 v1 = index; __co_checkbounds(3,v1);  a[v1]; })
   //
   bool checkbounds = false;
-  char len_buf[16] = {0};
+  char len_buf[16] = {};
   const char* ptr_code = ".ptr";
 
   type_t* recv_type = unwrap_opt_ptr_and_alias(n->recv->type);
@@ -2343,7 +2509,7 @@ static ifkind_t gen_ifexpr_varcond(cgen_t* g, const ifexpr_t* n) {
   if (ot->kind != TYPE_OPTIONAL || opttype_byptr(g, ot->elem)) {
     PRINT("{ ");
     g->indent++;
-    gen_vardef1(g, var, var->name);
+    gen_vardef1(g, var, var->name, /*is_global*/false);
     if (is_rvalue) {
       PRINTF("; %s ?", var->name);
     } else {
@@ -2639,7 +2805,7 @@ static void gen_imports(cgen_t* g, const unit_t* unit) {
     im = im->next_import;
   }
 
-  str_t headerfile = {0};
+  str_t headerfile = {};
 
   // include API headers for std/runtime
   if (include_stdruntime) {
@@ -2716,6 +2882,24 @@ static err_t finalize(cgen_t* g, usize headstart) {
       }
     }
   }
+
+  static buf_t* debug_repr_src_lines(const char* src, usize srclen) {
+    #define LINE_PREFIX "│ "
+    buf_t* buf = tmpbuf_get(0);
+    buf_reserve(buf, srclen + sizeof(LINE_PREFIX)*16); // guess ~16 lines
+    while (srclen > 0) {
+      usize chunklen = (usize)string_indexof(src, srclen, '\n');
+      chunklen = (chunklen == USIZE_MAX) ? srclen : chunklen + 1;
+      buf_print(buf, LINE_PREFIX);
+      buf_append(buf, src, chunklen);
+      src += chunklen;
+      srclen -= chunklen;
+    }
+    if (buf->len > 0 && buf->chars[buf->len-1] != '\n')
+      buf_push(buf, '\n');
+    return buf;
+    #undef LINE_PREFIX
+  }
 #else
   #define dlog_defs(...) ((void)0)
 #endif
@@ -2735,6 +2919,10 @@ static void assign_mangledname(cgen_t* g, node_t* n) {
   switch (n->kind) {
     case EXPR_FUN:
       p = &((fun_t*)n)->mangledname;
+      break;
+
+    case EXPR_LET:
+      p = &((local_t*)n)->mangledname;
       break;
 
     // usertype_t
@@ -2861,6 +3049,10 @@ static void gen_def(cgen_t* g, const node_t* n, bool is_impl) {
     break;
   }
 
+  case EXPR_LET:
+    gen_vardef_global(g, (local_t*)n);
+    break;
+
   case EXPR_FUN:
     if (is_impl) {
       gen_fun_def(g, (fun_t*)n);
@@ -2911,9 +3103,10 @@ static void gen_def(cgen_t* g, const node_t* n, bool is_impl) {
   // trace
   #ifdef DEBUG
   if (opt_trace_cgen && g->outbuf.len - trace_bufstart) {
-    trace("gen_def >> %zu\n  %.*s",
-      g->outbuf.len - trace_bufstart,
-      (int)(g->outbuf.len - trace_bufstart), &g->outbuf.chars[trace_bufstart]);
+    usize srclen = g->outbuf.len - trace_bufstart;
+    trace("gen_def >> %zu B", srclen);
+    buf_t* buf = debug_repr_src_lines(&g->outbuf.chars[trace_bufstart], srclen);
+    fwrite(buf->chars, buf->len, 1, stderr);
   }
   #endif
 }
@@ -2937,13 +3130,13 @@ static void gen_unit(cgen_t* g, unit_t* unit, cgen_pkgapi_t* pkgapi) {
     return;
 
   u32 defs_start = pkgapi->defs.len;
-  nodearray_t defs = {0};
+  nodearray_t defs = {};
 
   // add unit-local declarations & definitions to topologically-sorted array "defs"
   nodeflag_t visibility = 0;
   for (u32 i = 0; i < children.len; i++) {
     node_t* n = children.v[i];
-    if (!ast_toposort_visit_def(&defs, g->ma, visibility, n))
+    if (!ast_toposort_visit_def(&defs, g->ma, visibility, n, AST_TOPOSORT_TOPLEVEL))
       goto end; // OOM
   }
 
@@ -3092,13 +3285,14 @@ static void add_pkg_defs(
   cgen_t* g, unit_t** unitv, u32 unitc, nodearray_t* defs, nodeflag_t visibility)
 {
   // topologically sort type & function definitions
+  u32 visitflags = AST_TOPOSORT_TOPLEVEL;
   for (u32 i = 0; i < unitc; i++) {
     nodearray_t children = unitv[i]->children;
     for (u32 i = 0; i < children.len; i++) {
       node_t* n = children.v[i];
       if ((n->flags & visibility) == 0)
         continue;
-      if (!ast_toposort_visit_def(defs, g->ma, NF_VIS_PKG | NF_VIS_PUB, n)) {
+      if (!ast_toposort_visit_def(defs, g->ma, NF_VIS_PKG | NF_VIS_PUB, n, visitflags)) {
         nodearray_dispose(defs, g->ma);
         return;
       }

@@ -1187,6 +1187,11 @@ eof:
 
 void scanner_next(scanner_t* s) {
   s->tokend = s->inp;
+
+  s->endloc = s->loc;
+  loc_set_width(&s->endloc, 0);
+  loc_set_col(&s->endloc, (u32)(uintptr)(s->tokend - s->linestart) + 1);
+
   scan0(s);
 
   #ifdef DEBUG

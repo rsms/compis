@@ -514,8 +514,7 @@ static void repr(RPARAMS, const node_t* nullable n) {
       u = -u;
       CHAR('-');
     }
-    PRINT("0x");
-    buf_print_u64(&r->outbuf, u, 16);
+    buf_print_u64(&r->outbuf, u, 10);
     break;
   }
 

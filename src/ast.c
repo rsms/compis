@@ -357,14 +357,21 @@ err_t ast_transform(
 
 
 bool ast_toposort_visit_def(
-  nodearray_t* defs, memalloc_t ma, nodeflag_t visibility, node_t* n)
+  nodearray_t* defs, memalloc_t ma, nodeflag_t visibility, node_t* n, u32 visitflags)
 {
   switch (n->kind) {
-
     case EXPR_FUN:
+      // do not visit function which does not pass visibility filter
       if (visibility && (n->flags & visibility) == 0)
         return true;
-      FALLTHROUGH;
+      goto visit_self;
+
+    case EXPR_LET:
+      // only visit top-level variable declarations
+      if (visitflags & AST_TOPOSORT_TOPLEVEL)
+        goto visit_self;
+      goto visit_children;
+
     case TYPE_ARRAY:
     case TYPE_FUN:
     case TYPE_PTR:
@@ -377,45 +384,53 @@ bool ast_toposort_visit_def(
     case TYPE_STRUCT:
     case TYPE_NS:
     case TYPE_TEMPLATE:
-      //dlog("[%s] %s#%p", __FUNCTION__, nodekind_name(n->kind), n);
-      // If MARK1 is set, n is currently being visited (recursive)
-      if UNLIKELY(n->flags & NF_MARK1) {
-        // insert a "forward declaration" node for the recursive definition
-        fwddecl_t* fwddecl = mem_alloct(ma, fwddecl_t);
-        if (!fwddecl)
-          return false;
-        fwddecl->kind = NODE_FWDDECL;
-        fwddecl->decl = n;
-        if (!nodearray_push(defs, ma, (node_t*)fwddecl))
-          return false;
-        return true;
-      }
-      // stop now if n has been visited already
-      for (u32 i = defs->len; i > 0; ) {
-        if (defs->v[--i] == n)
-          return true;
-      }
-      // mark n as "currently being visited"
-      n->flags |= NF_MARK1;
-      break;
+      goto visit_self;
 
     case TYPE_PLACEHOLDER: {
       // treat placeholdertype_t specially to avoid adding it to defs.
       // note: don't store to n to avoid tripping msan when init is null.
       node_t* init = assertnotnull(((placeholdertype_t*)n)->templateparam)->init;
       if (init)
-        MUSTTAIL return ast_toposort_visit_def(defs, ma, visibility, init);
+        MUSTTAIL return ast_toposort_visit_def(defs, ma, visibility, init, visitflags);
       return true;
     }
 
+    case STMT_TYPEDEF:
+      goto visit_children;
+
     default:
-      break;
+      assertf(!(visitflags & AST_TOPOSORT_TOPLEVEL),
+        "unexpected top-level AST node %s", nodekind_name(n->kind));
+      goto visit_children;
   }
 
-  // visit children
+visit_self:
+  //dlog("[%s] %s#%p", __FUNCTION__, nodekind_name(n->kind), n);
+  // If MARK1 is set, n is currently being visited (recursive)
+  if UNLIKELY(n->flags & NF_MARK1) {
+    // insert a "forward declaration" node for the recursive definition
+    fwddecl_t* fwddecl = mem_alloct(ma, fwddecl_t);
+    if (!fwddecl)
+      return false;
+    fwddecl->kind = NODE_FWDDECL;
+    fwddecl->decl = n;
+    if (!nodearray_push(defs, ma, (node_t*)fwddecl))
+      return false;
+    return true;
+  }
+  // stop now if n has been visited already
+  for (u32 i = defs->len; i > 0; ) {
+    if (defs->v[--i] == n)
+      return true;
+  }
+  // mark n as "currently being visited"
+  n->flags |= NF_MARK1;
+
+visit_children:
+  visitflags &= ~AST_TOPOSORT_TOPLEVEL;
   ast_childit_t it = ast_childit(n);
   for (node_t** cnp; (cnp = ast_childit_next(&it));) {
-    if (!ast_toposort_visit_def(defs, ma, visibility, *cnp))
+    if (!ast_toposort_visit_def(defs, ma, visibility, *cnp, visitflags))
       return false;
   }
 

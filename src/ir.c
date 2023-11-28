@@ -371,6 +371,12 @@ static irval_t* insertval(
 )
 
 
+#define make_TODO_val(c, type, fmt, args...) ( \
+  dlog("TODO_val " fmt, ##args), \
+  comment((c), mkval((c), OP_NOOP, (loc_t){0}, (type)), "TODO") \
+)
+
+
 static void pusharg(irval_t* dst, irval_t* arg) {
   arg->nuse++;
   if UNLIKELY(dst->argc >= countof(dst->argv)) {
@@ -1292,6 +1298,13 @@ static irval_t* var_define(ircons_t* c, local_t* var, irval_t* init) {
     }
   }
   return assign_local(c, var, v);
+}
+
+
+static void global_vardef(ircons_t* c, local_t* n) {
+  // TODO: generate global constant
+  irval_t* v = make_TODO_val(c, n->type, "global constant");
+  var_write(c, n->name, v);
 }
 
 
@@ -2305,6 +2318,9 @@ static irunit_t* unit(ircons_t* c, unit_t* n) {
           break;
         case EXPR_FUN:
           fun(c, (fun_t*)cn, NULL);
+          break;
+        case EXPR_LET:
+          global_vardef(c, (local_t*)cn);
           break;
         default:
           assertf(0, "unexpected node %s", nodekind_name(cn->kind));

@@ -306,17 +306,17 @@ struct no_origin { int x; };
 #define CURR_ORIGIN ((struct no_origin){0})
 
 
-// const origin_t to_origin(parser_t* p, T origin)
+// const origin_t to_origin(typecheck_t*, T origin)
 // where T is one of: origin_t | loc_t | node_t* (default)
-#define to_origin(p, origin) ({ \
+#define to_origin(a, origin) ({ \
   __typeof__(origin) __tmp1 = (origin); \
   __typeof__(origin)* __tmp = &__tmp1; \
   const origin_t __origin = _Generic(__tmp, \
           origin_t*:  *(origin_t*)__tmp, \
     const origin_t*:  *(origin_t*)__tmp, \
-          loc_t*:     origin_make(locmap(p), *(loc_t*)__tmp), \
-    const loc_t*:     origin_make(locmap(p), *(loc_t*)__tmp), \
-    default: (*__tmp ? ast_origin(locmap(p), *(node_t**)__tmp) : curr_origin(p)) \
+          loc_t*:     origin_make(locmap(a), *(loc_t*)__tmp), \
+    const loc_t*:     origin_make(locmap(a), *(loc_t*)__tmp), \
+          default:    ast_origin(locmap(a), *(node_t**)__tmp) \
   ); \
   __origin; \
 })
@@ -424,6 +424,15 @@ static bool expect2(parser_t* p, tok_t tok, const char* errmsg) {
     return true;
   }
   return expect2_fail(p, tok, errmsg);
+}
+
+
+static bool extend_loc_to_endloc(parser_t* p, loc_t* loc) {
+  if (loc_line(p->scanner.endloc) == loc_line(*loc)) {
+    loc_set_width(loc, loc_col(p->scanner.endloc) - loc_col(*loc));
+    return true;
+  }
+  return false;
 }
 
 
@@ -1292,17 +1301,23 @@ static expr_t* expr_id(parser_t* p, const parselet_t* pl, nodeflag_t fl) {
 }
 
 
-static expr_t* expr_var(parser_t* p, const parselet_t* pl, nodeflag_t fl) {
-  local_t* n = mkexpr(p, local_t, currtok(p) == TLET ? EXPR_LET : EXPR_VAR, fl);
+static expr_t* parse_vardef(parser_t* p, nodeflag_t fl) {
+  nodekind_t kind;
+  nodeflag_t fl1 = fl;
+  switch (currtok(p)) {
+    case TLET:   kind = EXPR_LET; break;
+    case TCONST: kind = EXPR_LET; fl1 |= NF_CONST; break; // TODO: add EXPR_CONST
+    default:     kind = EXPR_VAR;
+  }
+  local_t* n = mkexpr(p, local_t, kind, fl1);
   next(p);
   if (currtok(p) != TID) {
     unexpected(p, "expecting identifier");
     return mkbad(p);
-  } else {
-    n->name = p->scanner.sym;
-    n->nameloc = currloc(p);
-    next(p);
   }
+  n->name = p->scanner.sym;
+  n->nameloc = currloc(p);
+  next(p);
   bool ok = true;
   if (currtok(p) == TASSIGN) {
     next(p);
@@ -1310,7 +1325,10 @@ static expr_t* expr_var(parser_t* p, const parselet_t* pl, nodeflag_t fl) {
     n->type = n->init->type;
     bubble_flags(n, n->init);
   } else {
+    n->typeloc = currloc(p);
     n->type = type(p, PREC_LOWEST);
+    if (!extend_loc_to_endloc(p, &n->typeloc) && n->type->kind != TYPE_STRUCT)
+      n->typeloc = n->type->loc;
     bubble_flags(n, n->type);
     if (currtok(p) == TASSIGN) {
       next(p);
@@ -1330,13 +1348,31 @@ static expr_t* expr_var(parser_t* p, const parselet_t* pl, nodeflag_t fl) {
     //   error(p, "missing value for let binding, expecting '='");
     //   ok = false;
     // } else
-    if UNLIKELY(n->type->kind == TYPE_REF) {
-      error(p, "missing initial value for reference variable, expecting '='");
-      ok = false;
+    if UNLIKELY(type_isref(n->type)) {
+      origin_t origin = n->typeloc ? to_origin(p, n->typeloc) : to_origin(p, n);
+      origin.column += origin.width;
+      origin.width = 0;
+      error_at(p, origin, "missing initial value of reference type, expecting '='");
     }
   }
 
   return (expr_t*)n;
+}
+
+static expr_t* expr_var(parser_t* p, const parselet_t* pl, nodeflag_t fl) {
+  return parse_vardef(p, fl);
+}
+
+static stmt_t* stmt_const(parser_t* p) {
+  return (stmt_t*)parse_vardef(p, 0);
+}
+
+static stmt_t* stmt_let_or_var(parser_t* p) {
+  error(p, "unexpected top-level %s", tok_repr(currtok(p)));
+  help(p, "use 'const' for global data");
+  stmt_t* n = mkbad(p);
+  fastforward_semi(p);
+  return n;
 }
 
 
@@ -1746,11 +1782,17 @@ static expr_t* expr_ref1(parser_t* p, nodeflag_t fl, bool ismut) {
   bubble_flags(n, n->expr);
 
   if UNLIKELY(n->expr->type->kind == TYPE_REF) {
-    const char* ts = fmtnode(0, n->expr->type);
-    error_at(p, n, "referencing reference type %s", ts);
+    if (n->expr->type != type_unknown) {
+      error_at(p, n, "referencing reference type %s", fmtnode(0, n->expr->type));
+    } else {
+      error_at(p, n, "referencing reference type");
+    }
   } else if UNLIKELY(!expr_isstorage(n->expr)) {
-    const char* ts = fmtnode(0, n->expr->type);
-    error_at(p, n, "referencing ephemeral value of type %s", ts);
+    if (n->expr->type != type_unknown) {
+      error_at(p, n, "referencing ephemeral value of type %s", fmtnode(0, n->expr->type));
+    } else {
+      error_at(p, n, "referencing ephemeral value");
+    }
   } else if UNLIKELY(ismut && !expr_ismut(n->expr)) {
     const char* s = fmtnode(0, n->expr);
     nodekind_t k = n->expr->kind;
@@ -1796,7 +1838,7 @@ static expr_t* expr_group(parser_t* p, const parselet_t* pl, nodeflag_t fl) {
 }
 
 
-// named_param_or_id = id ":" expr | id
+// named_param_or_id = id "=" expr | id
 static expr_t* named_param_or_id(parser_t* p, nodeflag_t fl) {
   assert(currtok(p) == TID);
 
@@ -1805,7 +1847,7 @@ static expr_t* named_param_or_id(parser_t* p, nodeflag_t fl) {
   n->name = p->scanner.sym;
   next(p);
 
-  if (currtok(p) != TCOLON) {
+  if (currtok(p) != TASSIGN) {
     resolve_id(p, n);
     return expr_infix(p, PREC_COMMA, (expr_t*)n, fl);
   }
@@ -1823,7 +1865,7 @@ static expr_t* named_param_or_id(parser_t* p, nodeflag_t fl) {
 
 
 // args = ( arg (("," | ";") arg) ("," | ";")? )?
-// arg  = expr | id ":" expr
+// arg  = expr | id "=" expr
 static void args(parser_t* p, call_t* n, type_t* recvtype, nodeflag_t fl) {
   local_t param0 = { {{EXPR_PARAM}}, .type = recvtype };
   local_t** paramv = (local_t*[]){ &param0 };
@@ -2029,6 +2071,7 @@ static bool funtype_params(parser_t* p, funtype_t* ft, type_t* nullable recvt) {
       // name, eg "x"; could be parameter name or type. Assume name for now.
       param->name = p->scanner.sym;
       param->loc = currloc(p);
+      param->nameloc = param->loc;
       next(p);
 
       // check for "this" as first argument
@@ -2051,7 +2094,9 @@ static bool funtype_params(parser_t* p, funtype_t* ft, type_t* nullable recvt) {
             goto oom;
           break;
         default: // type follows name, eg "int" in "x int"
+          param->typeloc = currloc(p);
           param->type = type(p, PREC_LOWEST);
+          extend_loc_to_endloc(p, &param->typeloc);
           bubble_flags(param, param->type);
           isnametype = true;
           // cascade type to predecessors
@@ -2068,7 +2113,9 @@ static bool funtype_params(parser_t* p, funtype_t* ft, type_t* nullable recvt) {
       param->name = sym__;
       if (!param->name)
         goto oom;
+      param->typeloc = currloc(p);
       param->type = type(p, PREC_LOWEST);
+      extend_loc_to_endloc(p, &param->typeloc);
       bubble_flags(param, param->type);
     }
 
@@ -2853,7 +2900,10 @@ static const type_parselet_t type_parsetab[TOK_COUNT] = {
 // statement
 static const stmt_parselet_t stmt_parsetab[TOK_COUNT] = {
   // {prefix, infix, prec}
-  [TPUB]  = {stmt_pub, NULL, 0},
-  [TFUN]  = {stmt_fun, NULL, 0},
-  [TTYPE] = {stmt_typedef, NULL, 0},
+  [TPUB]   = {stmt_pub, NULL, 0},
+  [TFUN]   = {stmt_fun, NULL, 0},
+  [TTYPE]  = {stmt_typedef, NULL, 0},
+  [TCONST] = {stmt_const, NULL, 0},
+  [TLET]   = {stmt_let_or_var, NULL, 0},
+  [TVAR]   = {stmt_let_or_var, NULL, 0},
 };

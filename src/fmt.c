@@ -471,7 +471,7 @@ static void fmt(FMT_PARAMS, const node_t* nullable n) {
   case TYPE_SLICE:
   case TYPE_MUTSLICE: {
     slicetype_t* t = (slicetype_t*)n;
-    PRINT("&[");
+    PRINT(n->kind == TYPE_MUTSLICE ? "mut&[" : "&[");
     fmt(FMT_ARGS, (node_t*)t->elem);
     CHAR(']');
     break;

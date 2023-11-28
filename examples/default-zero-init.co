@@ -1,11 +1,39 @@
-type Thing {
-  x int = 3     // defaults to 3
-  y int         // defaults to 0
-  maybe_z ?int  // defaults to empty
-}
+// default zero initialization
 
-fun main() int {
-  var a Thing
-  var b int   // defaults to 0
-  a.y * b     // returns 0
-}
+// All primitives can be zero initialized
+fun primitive() { let _ int }
+
+// References must be explicitly initialized
+// fun ref1() { let _ &int } // error
+// fun ref2() { let _ mut&int } // error
+
+// Pointers must be explicitly initialized
+// fun ptr1() { let _ *int } // error
+
+// Optional can be zero initialized
+fun opt1() { let _ ?int }
+fun opt2() { let _ ?*int }
+fun opt3() { let _ ?&[int] }
+
+// Slices can be zero initialized if its element type can be
+fun slice1() { let _ &[int] }
+fun slice2() { let _ mut&[int] }
+// fun slice3() { let _ mut&[&int] } // error
+
+// Arrays can be zero initialized if its element type can be
+fun array1() { let _ [int 3] }
+fun array2() { let _ [int] }
+// fun array3() { let _ [&int] } // error
+// fun array4() { let _ [&int 3] } // error
+
+// Structs can be zero initialized if all its fields can be
+type Plain { x int; slice &[int] }
+type HasRef { x &int }
+type ContainsHasRef { x int; y HasRef }
+fun struct1() { let _ Plain }
+// fun struct2() { let _ HasRef } // error
+// fun struct3() { let _ = HasRef() } // error
+fun struct4(v &int) { let _ = HasRef(x=v) } // fixed
+// fun struct5() { let _ ContainsHasRef } // error
+// fun struct6() { let _ = ContainsHasRef(y=HasRef()) } // error
+fun struct7(v &int) { let _ = ContainsHasRef(y=HasRef(x=v)) } // fixed

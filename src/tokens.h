@@ -78,6 +78,7 @@ _( TSTRLIT, "string literal" )
 _( TCHARLIT, "character literal" )
 
 // keywords (must be sorted)
+KEYWORD( "const",  TCONST )
 KEYWORD( "else",   TELSE )
 KEYWORD( "false",  TFALSE )
 KEYWORD( "for",    TFOR )
