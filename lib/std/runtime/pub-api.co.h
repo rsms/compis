@@ -7,6 +7,7 @@ __co_PKG _Noreturn void __co_panic_null(void);
 
 __co_PKG void* __co_mem_dup(const void* src, __co_uint size);
 __co_PKG void __co_mem_free(void* ptr, __co_uint size);
+__co_PKG bool __co_builtin_reserve(void* arrayptr, __co_uint elemsize, __co_uint cap);
 
 inline static void __co_checkbounds(__co_uint len, __co_uint index) {
   if (__builtin_expect(len <= index, false))

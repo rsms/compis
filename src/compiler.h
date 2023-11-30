@@ -54,10 +54,12 @@ typedef struct compiler_ {
   type_t*     uinttype; // "uint"
   slicetype_t u8stype;  // "&[u8]"
   aliastype_t strtype;  // "str"
-  funtype_t   funtype_this_uint; // "fun(this)uint"
-  map_t       builtins;
+  funtype_t   funtype1; // "fun(this)uint"
+  funtype_t   funtype2; // "fun(mut this, uint) bool"
+  map_t       builtins; // primitive types, like bool and int
   fun_t       builtin_len;
   fun_t       builtin_cap;
+  fun_t       builtin_reserve;
 
   // configurable options (see compiler_config_t)
   bool opt_nolto : 1;

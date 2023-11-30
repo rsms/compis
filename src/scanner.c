@@ -872,7 +872,7 @@ static void scan1(scanner_t* s) {
       case '=': s->tok = TSHLASSIGN; s->inp += 2; break;
       default:  s->tok = TSHL; s->inp++;
     } break;
-    case '=': s->tok = OP_LTEQ; s->inp++; break;
+    case '=': s->tok = TLTEQ; s->inp++; break;
     default:  s->tok = TLT;
   } break;
   case '>': switch (nextc) {
@@ -880,7 +880,7 @@ static void scan1(scanner_t* s) {
       case '=': s->tok = TSHRASSIGN; s->inp += 2; break;
       default:  s->tok = TSHR; s->inp++; s->insertsemi = true;
     } break;
-    case '=': s->tok = OP_GTEQ; s->inp++; break;
+    case '=': s->tok = TGTEQ; s->inp++; break;
     default: s->tok = TGT; s->insertsemi = true;
   } break;
   case '&': switch (nextc) {

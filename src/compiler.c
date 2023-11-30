@@ -296,7 +296,7 @@ static err_t configure_cflags(compiler_t* c, const compiler_config_t* config) {
       break;
   }
   // strlist_add(&c->cflags, "-fPIC");
-  strlist_addf(&c->cflags, "-isystem%s/std/builtin", coroot); // i.e. coprelude.h
+  strlist_addf(&c->cflags, "-include%s/std/coprelude.h", coroot);
   strlist_addf(&c->cflags, "-isystem%s", c->builddir); // i.e. pkg/foo/pub.h
 
   // end of cflags
@@ -314,11 +314,14 @@ static err_t configure_cflags(compiler_t* c, const compiler_config_t* config) {
 
 
 static void configure_builtin_functions(compiler_t* c) {
-  // "this" function parameter
-  static local_t _this_param = {0};
-  static local_t* this_param = &_this_param;
-  if (_this_param.kind == 0) {
-    _this_param = (local_t){
+  static local_t this_param = {}; // this
+  static local_t this_param_mut = {}; // mut this
+  static local_t uint_param = {}; // _ uint
+  static node_t* params1[1] = {}; // (this)
+  static node_t* params2[2] = {}; // (mut this, _ uint)
+
+  if (this_param.kind == 0) {
+    this_param = (local_t){
       .kind = EXPR_PARAM,
       .is_builtin = true,
       .flags = NF_CHECKED,
@@ -326,30 +329,46 @@ static void configure_builtin_functions(compiler_t* c) {
       .isthis = true,
       .type = type_unknown,
     };
+    this_param_mut = (local_t){
+      .kind = EXPR_PARAM,
+      .is_builtin = true,
+      .flags = NF_CHECKED,
+      .name = sym_this,
+      .isthis = true,
+      .ismut = true,
+      .type = type_unknown,
+    };
+    uint_param = (local_t){
+      .kind = EXPR_PARAM,
+      .is_builtin = true,
+      .flags = NF_CHECKED,
+      .name = sym__,
+      .type = type_uint,
+    };
+    params1[0] = (node_t*)&this_param;
+    params2[0] = (node_t*)&this_param_mut;
+    params2[1] = (node_t*)&uint_param;
   }
 
-  // fun(this)uint
-  typeid_t funtype_this_uint_typeid = c->funtype_this_uint._typeid;
-  c->funtype_this_uint = (funtype_t){
+  // [type] fun(this)uint
+  c->funtype1 = (funtype_t){
     .kind = TYPE_FUN,
     .is_builtin = true,
     .flags = NF_VIS_PUB | NF_CHECKED,
     .size = c->target.ptrsize,
     .align = c->target.ptrsize,
-    .mangledname = (char*)(CO_ABI_GLOBAL_PREFIX "fun__uint_t"),
-    ._typeid = funtype_this_uint_typeid,
+    .mangledname = (char*)(CO_ABI_GLOBAL_PREFIX "builtin_fun1_t"),
+    ._typeid = c->funtype1._typeid, // keep existing
     .result = type_uint,
-    .params = { .v = (node_t**)&this_param, .len = 1 },
+    .params = { .v = params1, .len = countof(params1) },
   };
-  typeid_intern((type_t*)&c->funtype_this_uint);
+  typeid_intern((type_t*)&c->funtype1);
 
   // fun T.len() uint
+  // Generated code is simply a constant or field access
   c->builtin_len = (fun_t){
-    .kind = EXPR_FUN,
-    .is_builtin = true,
-    .flags = NF_VIS_PUB | NF_CHECKED,
-    .nuse = 1,
-    .type = (type_t*)&c->funtype_this_uint,
+    .kind = EXPR_FUN, .is_builtin = true, .flags = NF_VIS_PUB | NF_CHECKED, .nuse = 1,
+    .type = (type_t*)&c->funtype1,
     .name = sym_len,
     .mangledname = (char*)(CO_ABI_GLOBAL_PREFIX "builtin_len"),
     .abi = ABI_C,
@@ -357,10 +376,41 @@ static void configure_builtin_functions(compiler_t* c) {
   };
 
   // fun T.cap() uint
+  // Generated code is simply a constant or field access
   c->builtin_cap = c->builtin_len;
   c->builtin_cap.name = sym_cap;
   c->builtin_cap.mangledname = (char*)(CO_ABI_GLOBAL_PREFIX "builtin_cap");
   safecheck(c->builtin_cap.mangledname);
+
+
+  // [type] fun(mut this, uint cap) bool
+  c->funtype2 = (funtype_t){
+    .kind = TYPE_FUN,
+    .is_builtin = true,
+    .flags = NF_VIS_PUB | NF_CHECKED,
+    .size = c->target.ptrsize,
+    .align = c->target.ptrsize,
+    .mangledname = (char*)(CO_ABI_GLOBAL_PREFIX "builtin_fun2_t"),
+    ._typeid = c->funtype2._typeid, // keep existing
+    .result = type_bool,
+    .params = { .v = params2, .len = countof(params2) },
+  };
+  typeid_intern((type_t*)&c->funtype2);
+
+  // fun T.reserve(uint cap) bool
+  // Generated code is a function call. Implementation in std/runtime.
+  c->builtin_reserve = (fun_t){
+    .kind = EXPR_FUN, .is_builtin = true, .flags = NF_VIS_PUB | NF_CHECKED, .nuse = 1,
+    .type = (type_t*)&c->funtype2,
+    .name = sym_len,
+    .mangledname = (char*)(CO_ABI_GLOBAL_PREFIX "builtin_reserve"),
+    .abi = ABI_C,
+    .recvt = type_unknown,
+  };
+
+  // Note: when adding or changing builtins, you should also update these functions:
+  // - find_builtin_member in typecheck.c
+  // - gen_call_builtin in cgen.c
 }
 
 

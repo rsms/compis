@@ -1581,12 +1581,12 @@ static void local(typecheck_t* a, local_t* n) {
     error(a, n, "cannot define %s of type void", fmtkind(n));
   }
 
-  if (n->name == sym__ && type_isowner(n->type)) {
+  if (n->name == sym__ && type_isowner(n->type) && a->visitstack.len > 1/*!global*/) {
     // owners require var names for ownership tracking
     // FIXME: this is a pretty janky hack which is rooted in the fact that
     //        IR-based ownership analysis tracks variable _names_.
-    char buf[strlen("__co_varFFFFFFFFFFFFFFFF")+1];
-    n->name = sym_snprintf(buf, sizeof(buf), "__co_var%lx", (unsigned long)n);
+    char buf[strlen("__co_ownerFFFFFFFFFFFFFFFF")+1];
+    n->name = sym_snprintf(buf, sizeof(buf), "__co_owner%lx", (unsigned long)n);
   }
 }
 
@@ -3404,9 +3404,10 @@ static expr_t* nullable find_member(
 static expr_t* nullable find_builtin_member(
   typecheck_t* a, member_t* n, type_t* recvbt)
 {
-  // look for builtin
-  if (recvbt->kind == TYPE_ARRAY) {
-    if (n->name == sym_len || n->name == sym_cap) {
+  if (n->name == sym_len || n->name == sym_cap) {
+    // len(this)uint and cap(this)uint is defined for all sequence types
+    switch (recvbt->kind) {
+    case TYPE_ARRAY:
       if (((arraytype_t*)recvbt)->len > 0) {
         // constant expression means we won't read the receiver,
         // but we still logically use it so mark it as "used at compile time."
@@ -3416,8 +3417,11 @@ static expr_t* nullable find_builtin_member(
         return (expr_t*)&a->compiler->builtin_len;
       return (expr_t*)&a->compiler->builtin_cap;
     }
+  } else if (n->name == sym_reserve) {
+    // reserve(mut this, uint)bool is defined for dynamic arrays
+    if (recvbt->kind == TYPE_ARRAY && ((arraytype_t*)recvbt)->len == 0)
+      return (expr_t*)&a->compiler->builtin_reserve;
   }
-
   return NULL;
 }
 

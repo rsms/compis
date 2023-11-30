@@ -714,6 +714,8 @@ static bool has_ambiguous_prec(const expr_t* n) {
   case EXPR_BOOLLIT:
   case EXPR_INTLIT:
   case EXPR_FLOATLIT:
+  case EXPR_STRLIT:
+  case EXPR_ARRAYLIT:
   case EXPR_ID:
   case EXPR_PARAM:
   case EXPR_MEMBER:
@@ -723,6 +725,7 @@ static bool has_ambiguous_prec(const expr_t* n) {
   case EXPR_POSTFIXOP:
   case EXPR_SUBSCRIPT:
     return false;
+  // TODO: EXPR_CALL to struct type
   default:
     return true;
   }
@@ -1657,24 +1660,44 @@ static void gen_call_fn_recv(
 }
 
 
+static void gen_call_builtin(cgen_t* g, const call_t* n) {
+  member_t* m = (member_t*)n->recv;
+  fun_t* target = (fun_t*)m->target;
+  const type_t* recvt = unwrap_ptr_and_alias(m->recv->type);
+
+  if (target == &g->compiler->builtin_len || target == &g->compiler->builtin_cap) {
+    if (recvt->kind == TYPE_ARRAY && ((arraytype_t*)recvt)->len) {
+      // len or cap of fixed size array becomes just a constant
+      gen_intconst(g, ((arraytype_t*)recvt)->len, g->compiler->uinttype);
+      return;
+    }
+    if (recvt->kind == TYPE_ARRAY || type_isslice(recvt)) {
+      CHAR('('), gen_expr(g, m->recv), PRINT(")."), PRINT(m->name);
+      return;
+    }
+  } else if (target == &g->compiler->builtin_reserve) {
+    if (recvt->kind == TYPE_ARRAY) {
+      const arraytype_t* at = (arraytype_t*)recvt;
+      assert(at->len == 0); // only available for dynamic arrays
+      assert(n->args.len == 1);
+      PRINT(target->mangledname);
+      PRINT("(&"), gen_expr(g, m->recv), PRINT(", ");
+      buf_print_u64(&g->outbuf, at->elem->size, /*base*/10), PRINT(", ");
+      gen_expr_rvalue(g, (expr_t*)n->args.v[0], type_uint), CHAR(')');
+      return;
+    }
+  }
+  panic("TODO: generate builtin \"%s\" for %s", m->name, nodekind_name(recvt->kind));
+}
+
+
 static void gen_call_fun(cgen_t* g, const call_t* n) {
   assert(n->recv->type->kind == TYPE_FUN);
   const funtype_t* ft = (funtype_t*)n->recv->type;
 
   // builtin?
-  if (n->recv->kind == EXPR_MEMBER) {
-    member_t* m = (member_t*)n->recv;
-    fun_t* fn = (fun_t*)m->target;
-    if (fn == &g->compiler->builtin_len || fn == &g->compiler->builtin_cap) {
-      const type_t* recvt = unwrap_ptr_and_alias(m->recv->type);
-      if (recvt->kind == TYPE_ARRAY && ((arraytype_t*)recvt)->len) {
-        gen_intconst(g, ((arraytype_t*)recvt)->len, g->compiler->uinttype);
-        return;
-      }
-      if (recvt->kind == TYPE_ARRAY || type_isslice(recvt))
-        panic("TODO: generate struct-field access");
-    }
-  }
+  if (n->recv->kind == EXPR_MEMBER && ((member_t*)n->recv)->target->is_builtin)
+    return gen_call_builtin(g, n);
 
   // owner sink? (i.e. return value is unused but must be dropped)
   bool owner_sink = (n->flags & NF_RVALUE) == 0 && type_isowner(n->type);
@@ -2121,7 +2144,6 @@ static void gen_vardef1(
   // elide unused variable without side effects.
   // Note: This isn't very useful in practice as clang will optimize away
   // unused code anyway (when optimizing), but it's a nice thing to do.
-  dlog("genvardef %s", name);
   if (
     n->nuse == 0 && !n->written && is_impl &&
     (n->flags & NF_RVALUE) == 0 &&
@@ -3314,8 +3336,6 @@ err_t cgen_unit_impl(cgen_t* g, unit_t* u, cgen_pkgapi_t* pkgapi) {
     if (!map_update_replace_ptr(&g->typedefmap, g->ma, &pkgapi->pkg_typedefs))
       return ErrNoMem;
   }
-
-  PRINT("#include <coprelude.h>\n");
 
   gen_imports(g, u);
 

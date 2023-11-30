@@ -1,3 +1,4 @@
+#define DEBUG_RUNTIME // XXX
 #include "runtime.h"
 #if !__STDC_HOSTED__
   #error Not yet implemented for freestanding
@@ -28,13 +29,37 @@ _Noreturn void __co_panic_null(void) {
 void* __co_mem_dup(const void* src, __co_uint size) {
   void* ptr = malloc(size);
   memcpy(ptr, src, size);
-  // __builtin_printf("__co_mem_dup(%p, %lu) => %p\n", src, size, ptr);
+  dlog("%p (%lu B) -> %p (%lu B)", src, size, ptr, size);
   return ptr;
 }
 
 void __co_mem_free(void* ptr, __co_uint size) {
-  // __builtin_printf("__co_mem_free(%p, %lu)\n", ptr, size);
+  dlog("%p (%lu B)", ptr, size);
   free(ptr);
+}
+
+
+bool __co_builtin_reserve(void* arrayptr, __co_uint elemsize, __co_uint cap) {
+  // Defined for dynamic arrays.
+  // Requests that arrayptr->cap >= cap.
+  //
+  // interpret as [u8], type is irrelevant; we use elemsize
+  struct _coAh* a = arrayptr;
+  if (a->cap < cap) {
+    __co_uint nbyte;
+    if (check_mul_overflow(cap, elemsize, &nbyte))
+      return false;
+    nbyte = ALIGN2(nbyte, sizeof(void*));
+    void* p = realloc(a->ptr, nbyte);
+    if (!p) {
+      dlog("realloc %p (%lu B) -> FAILED (%lu B)", a->ptr, a->cap * elemsize, nbyte);
+      return false;
+    }
+    dlog("realloc %p (%lu B) -> %p (%lu B)", a->ptr, a->cap * elemsize, p, nbyte);
+    a->ptr = p;
+    a->cap = nbyte / elemsize;
+  }
+  return true;
 }
 
 

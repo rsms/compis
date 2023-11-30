@@ -4,15 +4,16 @@ ASSUME_NONNULL_BEGIN
 
 typedef const char* sym_t;
 
-extern sym_t sym__;    // "_"
-extern sym_t sym_this; // "this"
-extern sym_t sym_drop; // "drop"
-extern sym_t sym_main; // "main"
-extern sym_t sym_str;  // "str"
-extern sym_t sym_as;   // "as"
-extern sym_t sym_from; // "from"
-extern sym_t sym_len;  // "len"
-extern sym_t sym_cap;  // "cap"
+extern sym_t sym__;       // "_"
+extern sym_t sym_this;    // "this"
+extern sym_t sym_drop;    // "drop"
+extern sym_t sym_main;    // "main"
+extern sym_t sym_str;     // "str"
+extern sym_t sym_as;      // "as"
+extern sym_t sym_from;    // "from"
+extern sym_t sym_len;     // "len"
+extern sym_t sym_cap;     // "cap"
+extern sym_t sym_reserve; // "reserve"
 
 extern sym_t sym_void;    // extern sym_t sym_void_typeid;
 extern sym_t sym_bool;    // extern sym_t sym_bool_typeid;
