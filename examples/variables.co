@@ -9,12 +9,18 @@ const g3 = twice(12) ; fun twice(x int) = x*2 // comptime
 const c2 = "hello" // &[u8 5]
 const c3 = [1,2,3] // &[int 3]
 // const c4 = Point() // &Point // TODO comptime
+pub const g3 f32 = 1234 // only constants can be "pub"
 
 // constants can't be of mutable type
 // const _ [int 3] // error
 // const _ [int]   // error
 // const _ Point     // error
 // const _ mut&int // error
+
+// global variables
+var g1 f32 = 16777216
+let g2 = 1234
+// pub let g2 = 1234 // error: var and let cannot be public
 
 // fun f()
 //   var a = [1,2,3]

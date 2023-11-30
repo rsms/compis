@@ -368,6 +368,9 @@ DEF_ARRAY_TYPE_API(drop_t, droparray)
 
 typedef struct { expr_t; u64 intval; } intlit_t;
 typedef struct { expr_t; double f64val; } floatlit_t;
+// must be able to convert intlit to floatlit
+static_assert(sizeof(intlit_t) == sizeof(floatlit_t), "");
+
 typedef struct { expr_t; u8* bytes; u64 len; } strlit_t;
 typedef struct { expr_t; loc_t endloc; nodearray_t values; } arraylit_t;
 typedef struct { expr_t; sym_t name; node_t* nullable ref; } idexpr_t;
@@ -438,6 +441,12 @@ typedef struct {
   loc_t   endloc;    // location of terminating ']'
 } subscript_t;
 
+typedef u8 abi_t;
+enum abi { // TODO: move to nodeflag_t
+  ABI_CO = 0,
+  ABI_C  = 1,
+};
+
 typedef struct { // PARAM, VAR, LET
   expr_t;
   sym_t   nullable name;        // may be NULL for PARAM
@@ -450,14 +459,9 @@ typedef struct { // PARAM, VAR, LET
   bool             ismut;       // [PARAM only] true if "this" parameter is "mut"
   bool             isnarrowed;  // used as narrowing condition, e.g. "if let x = maybex"
   u64              offset;      // [FIELD only] memory offset in bytes
+  abi_t            abi;         // TODO: move to nodeflag_t
   node_t* nullable nsparent;
 } local_t;
-
-typedef u8 abi_t;
-enum abi {
-  ABI_CO = 0,
-  ABI_C  = 1,
-};
 
 typedef struct fun_ { // fun is a declaration (stmt) or an expression depending on use
   expr_t;

@@ -52,6 +52,7 @@ static u8 tagtab[NODEKIND_COUNT] = {
   // all other kinds use characters <='Z': 0-9 A-Z
   [NODE_UNIT]        = 'M',
   [EXPR_LET]         = 'N', // two-stage tag: Ng
+  [EXPR_VAR]         = 'N', // two-stage tag: Ng
   [EXPR_FUN]         = 'N', // two-stage tag: Nf
   [TYPE_STRUCT]      = 'N', // two-stage tag: Ns
   [TYPE_PTR]         = 'P',
@@ -88,7 +89,7 @@ __attribute__((constructor)) static void check_tags() {
       continue;
 
     // fun and struct have same tag (uses two-stage tags: Nf, Ns)
-    if (nodekind == EXPR_FUN || nodekind == TYPE_STRUCT)
+    if (tag == tagtab[TYPE_STRUCT])
       continue;
 
     // check for conflict
@@ -162,7 +163,8 @@ static void start_path(encoder_t* e, const node_t* n) {
   buf_push(&e->buf, tag);
 
   if (tag < 'a') switch (n->kind) {
-    case EXPR_LET:    buf_push(&e->buf, 'g'); break;
+    case EXPR_LET:
+    case EXPR_VAR:    buf_push(&e->buf, 'g'); break;
     case EXPR_FUN:    buf_push(&e->buf, 'f'); break;
     case TYPE_STRUCT: buf_push(&e->buf, 's'); break;
   }
@@ -241,6 +243,7 @@ static void end_path(encoder_t* e, const node_t* n) {
     append_pkgname(e);
     break;
 
+  case EXPR_VAR:
   case EXPR_LET:
     assertnotnull(((local_t*)n)->name);
     append_zname(e, ((local_t*)n)->name);
@@ -529,6 +532,7 @@ bool compiler_mangle(
     start_path(&e, ns);
     nsstack_push(&e, ns);
     switch (ns->kind) {
+      case EXPR_VAR:
       case EXPR_LET:    ns = assertnotnull(((local_t*)ns)->nsparent); break;
       case EXPR_FUN:    ns = assertnotnull(((fun_t*)ns)->nsparent); break;
       case TYPE_STRUCT: ns = assertnotnull(((structtype_t*)ns)->nsparent); break;

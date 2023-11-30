@@ -367,6 +367,7 @@ bool ast_toposort_visit_def(
       goto visit_self;
 
     case EXPR_LET:
+    case EXPR_VAR:
       // only visit top-level variable declarations
       if (visitflags & AST_TOPOSORT_TOPLEVEL)
         goto visit_self;

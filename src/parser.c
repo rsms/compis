@@ -1362,16 +1362,8 @@ static expr_t* expr_var(parser_t* p, const parselet_t* pl, nodeflag_t fl) {
   return parse_vardef(p, fl);
 }
 
-static stmt_t* stmt_const(parser_t* p) {
+static stmt_t* stmt_var(parser_t* p) {
   return (stmt_t*)parse_vardef(p, 0);
-}
-
-static stmt_t* stmt_let_or_var(parser_t* p) {
-  error(p, "unexpected top-level %s", tok_repr(currtok(p)));
-  help(p, "use 'const' for global data");
-  stmt_t* n = mkbad(p);
-  fastforward_semi(p);
-  return n;
 }
 
 
@@ -2458,13 +2450,15 @@ static stmt_t* stmt_pub(parser_t* p) {
   node_set_visibility((node_t*)n, NF_VIS_PUB);
 
   switch (n->kind) {
-    case EXPR_FUN: {
-      fun_t* fn = (fun_t*)n;
-      fn->abi = abi;
-      // if (fn->type && !(fn->type->flags & NF_VIS_PUB))
-      //   node_set_visibility((node_t*)fn->type, NF_VIS_PUB);
+    case EXPR_FUN:
+      ((fun_t*)n)->abi = abi;
       break;
-    }
+    // case EXPR_VAR: // disallow public variables
+    case EXPR_LET:
+      if (!(n->flags & NF_CONST))
+        goto err;
+      ((local_t*)n)->abi = abi;
+      break;
     case STMT_TYPEDEF:
       if (!(((typedef_t*)n)->type->flags & NF_VIS_PUB))
         node_set_visibility((node_t*)((typedef_t*)n)->type, NF_VIS_PUB);
@@ -2472,10 +2466,12 @@ static stmt_t* stmt_pub(parser_t* p) {
     case NODE_BAD:
       break;
     default:
-      error_at(p, pub_loc, "unexpected pub qualifier on %s", nodekind_fmt(n->kind));
+      goto err;
   }
 
   return n;
+err:
+  error_at(p, pub_loc, "unexpected pub qualifier on %s", nodekind_fmt(n->kind));
 }
 
 
@@ -2888,14 +2884,14 @@ static const parselet_t expr_parsetab[TOK_COUNT] = {
 // type
 static const type_parselet_t type_parsetab[TOK_COUNT] = {
   // {prefix, infix, prec}
-  [TID]       = {type_id, NULL, 0},       // T
-  [TLBRACK]   = {type_array, NULL, 0},    // [T N], [T]
-  [TLBRACE]   = {type_struct, NULL, 0},   // {...}
-  [TFUN]      = {type_fun, NULL, 0},      // fun(T)T
-  [TSTAR]     = {type_ptr, NULL, 0},      // *T
-  [TAND]      = {type_ref, NULL, 0},      // &T
-  [TMUT]      = {type_mut, NULL, 0},      // mut&T
-  [TQUESTION] = {type_optional, NULL, 0}, // ?T
+  [TID]       = {type_id},       // T
+  [TLBRACK]   = {type_array},    // [T N], [T]
+  [TLBRACE]   = {type_struct},   // {...}
+  [TFUN]      = {type_fun},      // fun(T)T
+  [TSTAR]     = {type_ptr},      // *T
+  [TAND]      = {type_ref},      // &T
+  [TMUT]      = {type_mut},      // mut&T
+  [TQUESTION] = {type_optional}, // ?T
 
   [TLT] = {NULL, type_template_expansion_infix, PREC_MEMBER}, // x<y...>
 };
@@ -2904,10 +2900,10 @@ static const type_parselet_t type_parsetab[TOK_COUNT] = {
 // statement
 static const stmt_parselet_t stmt_parsetab[TOK_COUNT] = {
   // {prefix, infix, prec}
-  [TPUB]   = {stmt_pub, NULL, 0},
-  [TFUN]   = {stmt_fun, NULL, 0},
-  [TTYPE]  = {stmt_typedef, NULL, 0},
-  [TCONST] = {stmt_const, NULL, 0},
-  [TLET]   = {stmt_let_or_var, NULL, 0},
-  [TVAR]   = {stmt_let_or_var, NULL, 0},
+  [TPUB]   = {stmt_pub},
+  [TFUN]   = {stmt_fun},
+  [TTYPE]  = {stmt_typedef},
+  [TCONST] = {stmt_var},
+  [TLET]   = {stmt_var},
+  [TVAR]   = {stmt_var},
 };

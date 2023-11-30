@@ -1600,9 +1600,8 @@ static void vardef(typecheck_t* a, local_t* n) {
   if (a->visitstack.len == 1)
     n->nsparent = a->nspath.v[a->nspath.len - 1];
 
-  if (n->init && a->visitstack.len == 1) {
+  if (n->init && a->visitstack.len == 1 && (n->flags & NF_CONST)) {
     // global const has comptime initializer
-    assert(n->flags & NF_CONST); // only "const" is valid at top level
     switch (n->init->kind) {
       case EXPR_BOOLLIT:
       case EXPR_INTLIT:
@@ -3160,6 +3159,8 @@ again:
   case TYPE_U16:  maxval = (0xffffllu >> isneg) + isneg; break;
   case TYPE_U32:  maxval = (0xffffffffllu >> isneg) + isneg; break;
   case TYPE_U64:  maxval = (0xffffffffffffffffllu >> isneg) + isneg; break;
+  case TYPE_F32:  maxval = 16777216; break; // max int precision
+  case TYPE_F64:  maxval = 9007199254740992; break; // max int precision
   case TYPE_INT:  basetype = a->compiler->inttype; goto again;
   case TYPE_UINT: basetype = a->compiler->uinttype; goto again;
   default:
@@ -3206,8 +3207,12 @@ again:
 
   if UNLIKELY(n->intval > maxval) {
     const char* ts = fmtnode(0, basetype);
-    const char* kindname = (n->flags&NF_CHAR) ? "character" : "integer";
-    return error(a, n, "%s constant overflows %s", kindname, ts);
+    if (basetype->kind == TYPE_F32 || basetype->kind == TYPE_F64) {
+      warning(a, n, "floating-point constant larger than precision of %s", ts);
+    } else {
+      const char* kindname = (n->flags&NF_CHAR) ? "character" : "integer";
+      return error(a, n, "%s constant overflows %s", kindname, ts);
+    }
   }
 
   if (isneg) switch (basetype->kind) {
@@ -3221,6 +3226,11 @@ again:
     case TYPE_U16: n->intval = -(u16)n->intval & 0xffff; break;
     case TYPE_U32: n->intval = -(u32)n->intval & 0xffffffff; break;
     case TYPE_U64: n->intval = -n->intval; break;
+  } else if (basetype->kind == TYPE_F32 || basetype->kind == TYPE_F64) {
+    // convert intlit to floatlit
+    double f64val = (double)n->intval;
+    ((floatlit_t*)n)->f64val = f64val;
+    n->kind = EXPR_FLOATLIT;
   }
 }
 
@@ -4990,6 +5000,7 @@ static void define_at_unit_level(typecheck_t* a, node_t* n) {
     }
     case STMT_TYPEDEF:
     case EXPR_LET:
+    case EXPR_VAR:
       break;
     default:
       assertf(0, "unexpected top-level AST node: %s", nodekind_name(n->kind));
@@ -5080,7 +5091,7 @@ err_t typecheck(
     for (u32 i = 0; i < unit->children.len; i++) {
       const node_t* n = unit->children.v[i];
       if UNLIKELY(
-        n->kind == EXPR_LET &&
+        nodekind_isvar(n->kind) &&
         n->nuse == 0 && !n->used_at_compile_time &&
         (n->flags & NF_VIS_MASK) != NF_VIS_PUB)
       {

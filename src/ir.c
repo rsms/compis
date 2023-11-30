@@ -1302,8 +1302,9 @@ static irval_t* var_define(ircons_t* c, local_t* var, irval_t* init) {
 
 
 static void global_vardef(ircons_t* c, local_t* n) {
-  // TODO: generate global constant
-  irval_t* v = make_TODO_val(c, n->type, "global constant");
+  // TODO: global
+  irval_t* v = make_TODO_val(c, n->type,
+    "global %s", (n->flags & NF_CONST) ? "constant" : "variable");
   var_write(c, n->name, v);
 }
 
@@ -2320,6 +2321,7 @@ static irunit_t* unit(ircons_t* c, unit_t* n) {
           fun(c, (fun_t*)cn, NULL);
           break;
         case EXPR_LET:
+        case EXPR_VAR:
           global_vardef(c, (local_t*)cn);
           break;
         default:

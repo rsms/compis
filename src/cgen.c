@@ -3,6 +3,7 @@
 #include "compiler.h"
 #include "path.h"
 #include <sys/stat.h>
+#include <string.h> // memchr
 
 // ANON_PREFIX is used for generated names
 #define ANON_PREFIX       CO_ABI_GLOBAL_PREFIX "v"
@@ -1795,9 +1796,17 @@ static void gen_intlit(cgen_t* g, const intlit_t* n) {
 
 
 static void gen_floatlit(cgen_t* g, const floatlit_t* n) {
+  usize bufstart = g->outbuf.len;
   PRINTF("%.17g", n->f64val);
-  if (n->type->kind == TYPE_F32)
+  if (n->type->kind == TYPE_F32) {
+    // must have a period or we'll get an error, e.g.:
+    //   error: invalid digit 'f' in decimal constant
+    //   static f32 x = 123f;
+    //                     ^
+    if (!memchr(&g->outbuf.chars[bufstart], '.', g->outbuf.len - bufstart))
+      CHAR('.');
     CHAR('f');
+  }
 }
 
 
@@ -1986,7 +1995,7 @@ static void gen_varinit(cgen_t* g, const local_t* n) {
 
 
 static void gen_vardef_array(
-  cgen_t* g, const local_t* n, const char* name, const arraytype_t* t)
+  cgen_t* g, const local_t* n, const char* name, const arraytype_t* t, bool is_impl)
 {
   // "T name[len] = {...}"
   // mini test:
@@ -1999,6 +2008,8 @@ static void gen_vardef_array(
   if (t->len > 0) {
     gen_type(g, t->elem), CHAR(' '), PRINT(name);
     CHAR('['), PRINTF("%llu", t->len), CHAR(']');
+    if (!is_impl)
+      return;
     if (n->nuse == 0) PRINT(" " ATTR_UNUSED);
     if (n->init) {
       if (n->init->kind == EXPR_ARRAYLIT) {
@@ -2014,6 +2025,8 @@ static void gen_vardef_array(
     }
   } else {
     gen_arraytype(g, t), CHAR(' '), PRINT(name);
+    if (!is_impl)
+      return;
     if (n->nuse == 0) PRINT(" " ATTR_UNUSED);
     if (n->init) {
       PRINT(" = "), gen_dyn_arraylit1(g, (arraylit_t*)n->init);
@@ -2042,10 +2055,12 @@ static void gen_vardef_array(
 
 
 static void gen_vardef_struct(
-  cgen_t* g, const local_t* n, const char* name, const structtype_t* t)
+  cgen_t* g, const local_t* n, const char* name, const structtype_t* t, bool is_impl)
 {
   if (n->flags & NF_CONST) PRINT("const ");
   gen_type(g, n->type), CHAR(' '), PRINT(name);
+  if (!is_impl)
+    return;
   if (n->nuse == 0) PRINT(" " ATTR_UNUSED);
   nodearray_t args = {};
   if (n->init)
@@ -2054,7 +2069,9 @@ static void gen_vardef_struct(
 }
 
 
-static void gen_vardef_strlit_array(cgen_t* g, const local_t* n, const char* name) {
+static void gen_vardef_strlit_array(
+  cgen_t* g, const local_t* n, const char* name, bool is_impl)
+{
   // &[u8 N]
   const strlit_t* strlit = (strlit_t*)n->init;
   assert(strlit->kind == EXPR_STRLIT);
@@ -2076,29 +2093,37 @@ static void gen_vardef_strlit_array(cgen_t* g, const local_t* n, const char* nam
   if (!(n->flags & NF_CONST)) PRINT("static "); // else "static" has already been printed
   PRINT("const u8 "), PRINT(name);
   CHAR('['), buf_print_u64(&g->outbuf, strlit->len, 10), CHAR(']');
+  if (!is_impl)
+    return;
   if (n->nuse == 0) PRINT(" " ATTR_UNUSED);
   PRINT(" = "), gen_strlit_values(g, strlit);
   // }
 }
 
 
-static void gen_vardef_strlit_slice(cgen_t* g, const local_t* n, const char* name) {
+static void gen_vardef_strlit_slice(
+  cgen_t* g, const local_t* n, const char* name, bool is_impl)
+{
   // str (alias of &[u8])
   if (n->kind == EXPR_LET) PRINT("const ");
   gen_type(g, n->type), CHAR(' '), PRINT(name);
+  if (!is_impl)
+    return;
   if (n->nuse == 0) PRINT(" " ATTR_UNUSED);
   assert(n->init->kind == EXPR_STRLIT);
   PRINT(" = "), gen_strlit_values_as_sliceinit(g, (strlit_t*)n->init);
 }
 
 
-static void gen_vardef1(cgen_t* g, const local_t* n, const char* name, bool is_global) {
+static void gen_vardef1(
+  cgen_t* g, const local_t* n, const char* name, bool is_global, bool is_impl)
+{
   // elide unused variable without side effects.
   // Note: This isn't very useful in practice as clang will optimize away
   // unused code anyway (when optimizing), but it's a nice thing to do.
+  dlog("genvardef %s", name);
   if (
-    n->nuse == 0 &&
-    !n->written &&
+    n->nuse == 0 && !n->written && is_impl &&
     (n->flags & NF_RVALUE) == 0 &&
     g->compiler->buildmode != BUILDMODE_DEBUG &&
     ((n->flags & NF_CONST) || expr_no_side_effects((expr_t*)n)) )
@@ -2117,6 +2142,7 @@ static void gen_vardef1(cgen_t* g, const local_t* n, const char* name, bool is_g
   }
 
   if (n->flags & NF_RVALUE) {
+    assert(is_impl);
     if (n->nuse == 1) {
       assertf(!n->written, "local is used as rvalue but also written to");
       // local is used as a value, not referenced elsewhere and never written to
@@ -2135,7 +2161,7 @@ static void gen_vardef1(cgen_t* g, const local_t* n, const char* name, bool is_g
 
   // visibility
   switch (n->flags & NF_VIS_MASK) {
-    case NF_VIS_UNIT: if (n->flags & NF_CONST) PRINT("static "); break;
+    case NF_VIS_UNIT: if (is_global || (n->flags & NF_CONST)) PRINT("static "); break;
     case NF_VIS_PKG:  if (is_global) PRINT(ATTR_PKG " "); break;
     case NF_VIS_PUB:  if (is_global) PRINT(ATTR_PUB " "); break;
   }
@@ -2146,13 +2172,13 @@ static void gen_vardef1(cgen_t* g, const local_t* n, const char* name, bool is_g
   switch (t->kind) {
   case TYPE_STRUCT:
     if (!n->init || (n->init->kind == EXPR_CALL && is_type_call((call_t*)n->init))) {
-      gen_vardef_struct(g, n, name, (structtype_t*)t);
+      gen_vardef_struct(g, n, name, (structtype_t*)t, is_impl);
       goto end;
     }
     break;
   case TYPE_ARRAY:
     if (!n->init || n->init->kind == EXPR_ARRAYLIT) {
-      gen_vardef_array(g, n, name, (arraytype_t*)t);
+      gen_vardef_array(g, n, name, (arraytype_t*)t, is_impl);
       goto end;
     }
     is_ptr = ((arraytype_t*)t)->len > 0;
@@ -2168,7 +2194,7 @@ static void gen_vardef1(cgen_t* g, const local_t* n, const char* name, bool is_g
     // fixed-size string literal, e.g.
     //   let _ = "hello" // &[u8 5]
     if (n->init && n->init->kind == EXPR_STRLIT && n->kind != EXPR_VAR) {
-      gen_vardef_strlit_array(g, n, name);
+      gen_vardef_strlit_array(g, n, name, is_impl);
       goto end;
     } else if (
       // fixed-size array type with array literal initializer,
@@ -2181,14 +2207,14 @@ static void gen_vardef1(cgen_t* g, const local_t* n, const char* name, bool is_g
         assert( ((reftype_t*)t)->elem->kind == TYPE_ARRAY );
         assert( ((arraytype_t*)((reftype_t*)t)->elem)->len > 0 );
       }
-      gen_vardef_array(g, n, name, (arraytype_t*)((reftype_t*)t)->elem);
+      gen_vardef_array(g, n, name, (arraytype_t*)((reftype_t*)t)->elem, is_impl);
       goto end;
     }
     is_ptr = true;
     break;
   case TYPE_SLICE:
     if (n->init && n->init->kind == EXPR_STRLIT) {
-      gen_vardef_strlit_slice(g, n, name);
+      gen_vardef_strlit_slice(g, n, name, is_impl);
       goto end;
     }
     break;
@@ -2213,8 +2239,11 @@ static void gen_vardef1(cgen_t* g, const local_t* n, const char* name, bool is_g
     PRINT("const ");
 
   PRINT(name);
-  if (n->nuse == 0) PRINT(" " ATTR_UNUSED);
-  PRINT(" = "), gen_varinit(g, n);
+
+  if (is_impl) {
+    if (n->nuse == 0) PRINT(" " ATTR_UNUSED);
+    PRINT(" = "), gen_varinit(g, n);
+  }
 
 end:
   if (n->flags & NF_RVALUE)
@@ -2226,16 +2255,16 @@ static void gen_vardef(cgen_t* g, const local_t* n) {
   const char* name = n->name;
   if ((n->flags & NF_VIS_MASK) == NF_VIS_PUB) // public global variable
     name = assertnotnull(n->mangledname);
-  gen_vardef1(g, n, name, /*is_global*/false);
+  gen_vardef1(g, n, name, /*is_global*/false, /*is_impl*/true);
 }
 
 
-static void gen_vardef_global(cgen_t* g, const local_t* n) {
+static void gen_vardef_global(cgen_t* g, const local_t* n, bool is_impl) {
   const char* name = n->name;
   if ((n->flags & NF_VIS_MASK) == NF_VIS_PUB)
     name = assertnotnull(n->mangledname);
   startline(g, n->loc);
-  gen_vardef1(g, n, name, /*is_global*/true);
+  gen_vardef1(g, n, name, /*is_global*/true, is_impl);
   CHAR(';');
 }
 
@@ -2363,7 +2392,7 @@ static void gen_postfixop(cgen_t* g, const unaryop_t* n) {
 static void gen_idexpr(cgen_t* g, const idexpr_t* n) {
   const char* name = n->name;
   // in case the reference is to a public global, use its mangledname
-  if (assertnotnull(n->ref)->kind == EXPR_LET) {
+  if (node_isvar(assertnotnull(n->ref))) {
     const local_t* var = (local_t*)n->ref;
     if ((var->flags & NF_VIS_MASK) == NF_VIS_PUB)
       name = var->mangledname;
@@ -2614,7 +2643,7 @@ static ifkind_t gen_ifexpr_varcond(cgen_t* g, const ifexpr_t* n) {
   if (ot->kind != TYPE_OPTIONAL || opttype_byptr(g, ot->elem)) {
     PRINT("{ ");
     g->indent++;
-    gen_vardef1(g, var, var->name, /*is_global*/false);
+    gen_vardef1(g, var, var->name, /*is_global*/false, /*is_impl*/true);
     if (is_rvalue) {
       PRINTF("; %s ?", var->name);
     } else {
@@ -3027,6 +3056,7 @@ static void assign_mangledname(cgen_t* g, node_t* n) {
       break;
 
     case EXPR_LET:
+    case EXPR_VAR:
       p = &((local_t*)n)->mangledname;
       break;
 
@@ -3154,8 +3184,9 @@ static void gen_def(cgen_t* g, const node_t* n, bool is_impl) {
     break;
   }
 
+  case EXPR_VAR:
   case EXPR_LET:
-    gen_vardef_global(g, (local_t*)n);
+    gen_vardef_global(g, (local_t*)n, is_impl);
     break;
 
   case EXPR_FUN:
@@ -3258,7 +3289,7 @@ static void gen_unit(cgen_t* g, unit_t* unit, cgen_pkgapi_t* pkgapi) {
     node_t* n = defs.v[i];
     if (nodearray_indexof(&pkgapi->defs, n) == -1) {
       assign_mangledname(g, n);
-    } else if (n->kind != EXPR_FUN) {
+    } else if (n->kind != EXPR_FUN && !nodekind_isvar(n->kind)) {
       // erase node with already-generted code
       defs.v[i] = NULL;
     }
