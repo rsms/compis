@@ -399,7 +399,7 @@ static bool _type_compat(
   x = type_compat_unwrap(c, x, /*may_deref*/!assignment);
   y = type_compat_unwrap(c, y, /*may_deref*/!assignment);
 
-  #if 1 && DEBUG
+  #if 0 && DEBUG
   {
     dlog("_type_compat (assignment=%d)", assignment);
     buf_t* buf = (buf_t*)&c->diagbuf;
@@ -604,6 +604,10 @@ static node_t* _mknode(typecheck_t* a, usize size, nodekind_t kind) {
     return out_of_mem(a), last_resort_node;
   return n;
 }
+
+
+#define freenode(a, node) \
+  mem_freex((a)->ast_ma, MEM((node), sizeof(*(node))))
 
 
 static void transfer_1_nuse_to_wrapper(void* wrapper_node, void* wrapee_node) {
@@ -869,6 +873,9 @@ static void error_incompatible_types(
 static void error_unassignable_type(
   typecheck_t* a, const void* dst_expr, const expr_t* src)
 {
+  if (a->reported_error)
+    return;
+
   const expr_t* dst = dst_expr;
   const expr_t* origin = dst;
 
@@ -1139,7 +1146,7 @@ static bool report_unused(typecheck_t* a, const expr_t* n) {
         return false;
       loc_t loc = var->nameloc ? var->nameloc : var->loc;
       if (var->written) {
-        warning(a, loc, "unused %s %s is written to but never read",
+        warning(a, loc, "%s %s is written to but never read",
           fmtkind(n), var->name);
       } else {
         warning(a, loc, "unused %s %s", fmtkind(n), var->name);
@@ -1497,9 +1504,15 @@ err: {}
 
 
 static void local_init(typecheck_t* a, local_t* n) {
-  typectx_push(a, n->type);
-  exprp(a, &n->init);
-  typectx_pop(a);
+  // special case for 'var x = "abc"' where we want type to be 'str', not '&[u8 3]'
+  if (n->type == type_unknown && n->kind == EXPR_VAR && n->init->kind == EXPR_STRLIT) {
+    n->type = (type_t*)&a->compiler->strtype;
+    n->init->type = n->type;
+  } else {
+    typectx_push(a, n->type);
+    exprp(a, &n->init);
+    typectx_pop(a);
+  }
 
   if (n->type == type_unknown || n->type->kind == TYPE_UNRESOLVED) {
     // infer type from init
@@ -3213,6 +3226,8 @@ again:
 
 
 static void strlit(typecheck_t* a, strlit_t* n) {
+  // note: there's specialized code in local_init to deal with type for 'var _ = "..."'
+
   if (a->typectx == (type_t*)&a->compiler->strtype) {
     n->type = a->typectx;
     return;
@@ -3224,6 +3239,8 @@ static void strlit(typecheck_t* a, strlit_t* n) {
   at->elem = type_u8;
   at->len = n->len;
   arraytype_calc_size(a, at);
+  if (!intern_usertype(a, (usertype_t**)&at))
+    freenode(a, at);
 
   reftype_t* t = mknode(a, reftype_t, TYPE_REF);
   t->elem = (type_t*)at;

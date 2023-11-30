@@ -266,6 +266,8 @@ err_t LinkerArgs::add_common_elf_and_wasm_args() {
 
   addargf("%s" PATH_SEP "lib" PATH_SEP "crt1.o", options.sysroot);
 
+  addarg("--gc-sections"); // remove unused sections
+
   return err;
 }
 

@@ -1322,7 +1322,6 @@ static expr_t* parse_vardef(parser_t* p, nodeflag_t fl) {
   if (currtok(p) == TASSIGN) {
     next(p);
     n->init = expr(p, PREC_ASSIGN, fl | NF_RVALUE);
-    n->type = n->init->type;
     bubble_flags(n, n->init);
   } else {
     n->typeloc = currloc(p);
@@ -1849,6 +1848,11 @@ static expr_t* named_param_or_id(parser_t* p, nodeflag_t fl) {
 
   if (currtok(p) != TASSIGN) {
     resolve_id(p, n);
+    if UNLIKELY(currtok(p) == TCOLON) {
+      error(p, "unexpected ':', did you mean '='?");
+      next(p);
+      return expr(p, PREC_COMMA, fl);
+    }
     return expr_infix(p, PREC_COMMA, (expr_t*)n, fl);
   }
 

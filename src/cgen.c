@@ -498,10 +498,10 @@ static bool opttype_byptr(const cgen_t* g, const type_t* elemt) {
 }
 
 
-static bool is_opttype_byvalue(const cgen_t* g, const void* node) {
-  const opttype_t* t = assertnotnull(node);
-  return t->kind == TYPE_OPTIONAL && !opttype_byptr(g, t->elem);
-}
+// static bool is_opttype_byvalue(const cgen_t* g, const void* node) {
+//   const opttype_t* t = assertnotnull(node);
+//   return t->kind == TYPE_OPTIONAL && !opttype_byptr(g, t->elem);
+// }
 
 
 static void gen_opttype_name(cgen_t* g, const opttype_t* t) {
@@ -728,7 +728,7 @@ static bool has_ambiguous_prec(const expr_t* n) {
 }
 
 
-static const type_t* unwrap_aliastypes(const type_t* t) {
+static const type_t* unwrap_alias(const type_t* t) {
   while (t->kind == TYPE_ALIAS)
     t = assertnotnull(((aliastype_t*)t)->elem);
   return t;
@@ -767,9 +767,9 @@ static type_t* unwrap_ptr_and_alias(type_t* t) {
 static void gen_sliceinit(cgen_t* g, const slicetype_t* lt, const expr_t* init) {
   // &[T] <= &[T N]
   // struct slice { uint len; T* ptr; }
-  // generates: (struct _coSLICETYPE){ lenexpr, ptrexpr }
+  // generates: (struct SLICETYPE){ lenexpr, ptrexpr }
 
-  const type_t* rt = unwrap_aliastypes(init->type);
+  const type_t* rt = unwrap_alias(init->type);
 
   // generate type
   CHAR('('), gen_type(g, (type_t*)lt), PRINT("){");
@@ -778,7 +778,7 @@ static void gen_sliceinit(cgen_t* g, const slicetype_t* lt, const expr_t* init) 
   switch (rt->kind) {
     case TYPE_REF:
     case TYPE_MUTREF: {
-      // exepecting right side to be a reference to a fixed-size array, e.g. "&[T N]"
+      // expecting right side to be a reference to a fixed-size array, e.g. "&[T N]"
       const arraytype_t* at = (arraytype_t*)((reftype_t*)rt)->elem;
       assertf(at->kind == TYPE_ARRAY, "bad slice init %s", nodekind_name(rt->kind));
       assertf(at->len > 0, "dynamically-sized array; expected fixed size");
@@ -809,8 +809,8 @@ static void gen_expr_rvalue1(
     CHAR('(');
 
   if (lt->kind != rt->kind) {
-    lt = unwrap_aliastypes(lt);
-    rt = unwrap_aliastypes(rt);
+    lt = unwrap_alias(lt);
+    rt = unwrap_alias(rt);
     if (lt->kind != rt->kind) switch (lt->kind) {
       case TYPE_OPTIONAL:
         // ?T
@@ -1523,7 +1523,7 @@ static void gen_zeroinit_array(cgen_t* g, const arraytype_t* t) {
 
 
 static void gen_zeroinit(cgen_t* g, const type_t* t) {
-  t = unwrap_aliastypes(t);
+  t = unwrap_alias(t);
 again:
   switch (t->kind) {
   case TYPE_VOID:
@@ -1585,7 +1585,7 @@ again:
 
 
 static void gen_primtype_cast(cgen_t* g, const type_t* t, const expr_t* nullable val) {
-  const type_t* basetype = unwrap_aliastypes(t);
+  const type_t* basetype = unwrap_alias(t);
 
   // skip redundant "(T)v" when v is T
   if (val && (val->type == t || val->type == basetype))
@@ -1731,7 +1731,7 @@ static void gen_call(cgen_t* g, const call_t* n) {
 
 
 static void gen_typecons(cgen_t* g, const typecons_t* n) {
-  assert(type_isprim(unwrap_aliastypes(n->type)));
+  assert(type_isprim(unwrap_alias(n->type)));
   return gen_primtype_cast(g, n->type, n->expr);
 }
 
@@ -1806,22 +1806,39 @@ static void gen_boollit(cgen_t* g, const intlit_t* n) {
 }
 
 
+static void gen_strlit_values(cgen_t* g, const strlit_t* n) {
+  PRINTF("{\"");
+  buf_appendrepr(&g->outbuf, n->bytes, n->len);
+  PRINT("\"}");
+}
+
+
+static void gen_strlit_values_as_sliceinit(cgen_t* g, const strlit_t* n) {
+  PRINTF("{%llu,(const u8[%llu]){\"", n->len, n->len);
+  buf_appendrepr(&g->outbuf, n->bytes, n->len);
+  PRINT("\"}}");
+}
+
+
 static void gen_strlit(cgen_t* g, const strlit_t* n) {
+  // type of strlit is either str or &[u8 N],
+  // generated as (const u8[N]){"..."} without NUL terminator.
   const type_t* t = n->type;
-  if (type_isref(t) && ((reftype_t*)t)->elem->kind == TYPE_ARRAY) {
-    PRINTF("(const u8[%llu]){\"", n->len);
-    buf_appendrepr(&g->outbuf, n->bytes, n->len);
-    PRINT("\"}");
+  if (t == (type_t*)&g->compiler->strtype) {
+    // str (alias for &[u8])
+    // struct slice { uint len; T* ptr; }
+    // generates: (struct SLICETYPE){ lenexpr, ptrexpr }
+    assert(t->kind == TYPE_ALIAS);
+    CHAR('(');
+    gen_aliastype(g, &g->compiler->strtype);
+    CHAR(')');
+    gen_strlit_values_as_sliceinit(g, n);
   } else {
-    // string, alias for &[u8]
-    // t = unwrap_aliastypes(t);
-    // const slicetype_t* st = (slicetype_t*)t;
-    assert(type_isslice(unwrap_aliastypes(t)));
-    PRINT("(");
-    gen_type(g, t);
-    PRINTF("){%llu,(const u8[%llu]){\"", n->len, n->len);
-    buf_appendrepr(&g->outbuf, n->bytes, n->len);
-    PRINT("\"}}");
+    // &[u8 5]
+    assert(type_isref(t));
+    assert(((reftype_t*)t)->elem->kind == TYPE_ARRAY);
+    PRINTF("(const u8[%llu])", n->len);
+    gen_strlit_values(g, n);
   }
 }
 
@@ -1918,9 +1935,9 @@ static void gen_assign(cgen_t* g, const binop_t* n) {
   //   }
   //
   if (n->op == OP_ASSIGN) {
-    const type_t* lt = unwrap_aliastypes(n->type);
+    const type_t* lt = unwrap_alias(n->type);
     if (lt->kind == TYPE_OPTIONAL &&
-        lt->kind != unwrap_aliastypes(n->right->type)->kind)
+        lt->kind != unwrap_alias(n->right->type)->kind)
     {
       if (opttype_byptr(g, n->right->type)) {
         // doesn't matter if LHS is narrowed or not; optional type for pointers
@@ -1965,6 +1982,113 @@ static void gen_varinit(cgen_t* g, const local_t* n) {
   } else {
     gen_zeroinit(g, n->type);
   }
+}
+
+
+static void gen_vardef_array(
+  cgen_t* g, const local_t* n, const char* name, const arraytype_t* t)
+{
+  // "T name[len] = {...}"
+  // mini test:
+  //   const _ = [1,2,3]                         // is subject to this branch
+  //   fun f0() { var _ = [1,2,3] }              // is subject to this branch
+  //   fun f1() { let _ [int 100] = [1,2,3] }    // is subject to this branch
+  //   fun f2(k [int 3]) { let _ [int 3] = k }   // not subject to this branch
+  //   fun f3(k &[int 3]) { let _ &[int 3] = k } // not subject to this branch
+  if (n->flags & NF_CONST) PRINT("const ");
+  if (t->len > 0) {
+    gen_type(g, t->elem), CHAR(' '), PRINT(name);
+    CHAR('['), PRINTF("%llu", t->len), CHAR(']');
+    if (n->nuse == 0) PRINT(" " ATTR_UNUSED);
+    if (n->init) {
+      if (n->init->kind == EXPR_ARRAYLIT) {
+        const arraylit_t* alit = (arraylit_t*)n->init;
+        PRINT(" = "), gen_arraylit_values(g, &alit->values);
+      } else {
+        assert(n->init->kind == EXPR_STRLIT);
+        const strlit_t* strlit = (strlit_t*)n->init;
+        PRINT(" = "), gen_strlit_values(g, strlit);
+      }
+    } else {
+      PRINT(" = {}");
+    }
+  } else {
+    gen_arraytype(g, t), CHAR(' '), PRINT(name);
+    if (n->nuse == 0) PRINT(" " ATTR_UNUSED);
+    if (n->init) {
+      PRINT(" = "), gen_dyn_arraylit1(g, (arraylit_t*)n->init);
+    } else {
+      PRINT(" = {}");
+    }
+  }
+  // note: In >=C99, omitted array and struct fields are implicitly initialized
+  // the same as for objects that have static storage duration.
+  // On static storage duration in C99 6.7.8 Initialization Semantics:
+  // > If an object that has automatic storage duration is not initialized explicitly,
+  // > its value is indeterminate.
+  // > If an object that has static storage duration is not initialized explicitly,
+  // > then:
+  // > - if it has pointer type, it is initialized to a null pointer.
+  // > - if it has arithmetic type, it is initialized to (positive or unsigned) zero.
+  // > - if it is an aggregate, every member is initialized (recursively)
+  // >   according to these rules.
+  // > - if it is a union, the first named member is initialized (recursively)
+  // >   according to these rules.
+  // i.e.
+  // - in "T x[2]", value of x[0]==undefined, x[1]==undefined.
+  // - in "T x[2] = {}", value of x[0]==0, x[1]==0.
+  // - in "T x[2] = {1}", value of x[0]==1, x[1]==0.
+}
+
+
+static void gen_vardef_struct(
+  cgen_t* g, const local_t* n, const char* name, const structtype_t* t)
+{
+  if (n->flags & NF_CONST) PRINT("const ");
+  gen_type(g, n->type), CHAR(' '), PRINT(name);
+  if (n->nuse == 0) PRINT(" " ATTR_UNUSED);
+  nodearray_t args = {};
+  if (n->init)
+    args = ((call_t*)n->init)->args;
+  PRINT(" = "), gen_structinit(g, t, args);
+}
+
+
+static void gen_vardef_strlit_array(cgen_t* g, const local_t* n, const char* name) {
+  // &[u8 N]
+  const strlit_t* strlit = (strlit_t*)n->init;
+  assert(strlit->kind == EXPR_STRLIT);
+  // if (n->kind == EXPR_VAR) {
+  //   char tmp[LOCALTMPID_SIZE];
+  //   localtmpid(g, tmp);
+  //   // This ...
+  //   //   static const u8 tmp[5]={"hello"}; const u8* name = tmp
+  //   // ... yields less machine code than ...
+  //   //   const u8* name = (const u8[5]{"hello"})
+  //   // ... in unoptimized builds
+  //   PRINT("static const u8 "), PRINT(tmp);
+  //   CHAR('['), buf_print_u64(&g->outbuf, strlit->len, 10), CHAR(']');
+  //   PRINT(" = "), gen_strlit_values(g, strlit);
+  //   PRINT("; const u8* "), PRINT(name);
+  //   if (n->nuse == 0) PRINT(" " ATTR_UNUSED);
+  //   PRINT(" = "), PRINT(tmp);
+  // } else {
+  if (!(n->flags & NF_CONST)) PRINT("static "); // else "static" has already been printed
+  PRINT("const u8 "), PRINT(name);
+  CHAR('['), buf_print_u64(&g->outbuf, strlit->len, 10), CHAR(']');
+  if (n->nuse == 0) PRINT(" " ATTR_UNUSED);
+  PRINT(" = "), gen_strlit_values(g, strlit);
+  // }
+}
+
+
+static void gen_vardef_strlit_slice(cgen_t* g, const local_t* n, const char* name) {
+  // str (alias of &[u8])
+  if (n->kind == EXPR_LET) PRINT("const ");
+  gen_type(g, n->type), CHAR(' '), PRINT(name);
+  if (n->nuse == 0) PRINT(" " ATTR_UNUSED);
+  assert(n->init->kind == EXPR_STRLIT);
+  PRINT(" = "), gen_strlit_values_as_sliceinit(g, (strlit_t*)n->init);
 }
 
 
@@ -2016,102 +2140,83 @@ static void gen_vardef1(cgen_t* g, const local_t* n, const char* name, bool is_g
     case NF_VIS_PUB:  if (is_global) PRINT(ATTR_PUB " "); break;
   }
 
-  // storage modifiers
-  if (n->flags & NF_CONST)
-    PRINT("const ");
-
-  // special case for struct and array var definitions,
-  // e.g. "T name[len] = {...}" instead of "T* name = &(T){...}"
-  // e.g. "T name = {...}" instead of "T name = (T){...}"
-  const arraytype_t* arraytype = NULL;
-  const structtype_t* structtype = NULL;
-  switch (n->type->kind) {
+  // special cases for certain types
+  bool is_ptr = false; // true if C type is a pointer, e.g. T*
+  const type_t* t = unwrap_alias(n->type);
+  switch (t->kind) {
   case TYPE_STRUCT:
-    if (!n->init || (n->init->kind == EXPR_CALL && is_type_call((call_t*)n->init)))
-      structtype = (structtype_t*)n->type;
+    if (!n->init || (n->init->kind == EXPR_CALL && is_type_call((call_t*)n->init))) {
+      gen_vardef_struct(g, n, name, (structtype_t*)t);
+      goto end;
+    }
     break;
   case TYPE_ARRAY:
-    if (!n->init || n->init->kind == EXPR_ARRAYLIT)
-      arraytype = (arraytype_t*)n->type;
+    if (!n->init || n->init->kind == EXPR_ARRAYLIT) {
+      gen_vardef_array(g, n, name, (arraytype_t*)t);
+      goto end;
+    }
+    is_ptr = ((arraytype_t*)t)->len > 0;
+    break;
+  case TYPE_PTR:
+    is_ptr = true;
+    break;
+  case TYPE_MUTREF:
+    dlog("TODO TYPE_MUTREF");
+    is_ptr = true;
     break;
   case TYPE_REF:
-    if (
+    // fixed-size string literal, e.g.
+    //   let _ = "hello" // &[u8 5]
+    if (n->init && n->init->kind == EXPR_STRLIT && n->kind != EXPR_VAR) {
+      gen_vardef_strlit_array(g, n, name);
+      goto end;
+    } else if (
+      // fixed-size array type with array literal initializer,
+      // e.g. const _ &[int 3] = [1,2,3]
       (!n->init || n->init->kind == EXPR_ARRAYLIT) &&
-      ((reftype_t*)n->type)->elem->kind == TYPE_ARRAY &&
-      ((arraytype_t*)((reftype_t*)n->type)->elem)->len > 0 )
+      ((reftype_t*)t)->elem->kind == TYPE_ARRAY && // always true (typecheck'ed)
+      ((arraytype_t*)((reftype_t*)t)->elem)->len > 0 )
     {
-      arraytype = (arraytype_t*)((reftype_t*)n->type)->elem;
+      if (n->init->kind == EXPR_STRLIT) {
+        assert( ((reftype_t*)t)->elem->kind == TYPE_ARRAY );
+        assert( ((arraytype_t*)((reftype_t*)t)->elem)->len > 0 );
+      }
+      gen_vardef_array(g, n, name, (arraytype_t*)((reftype_t*)t)->elem);
+      goto end;
+    }
+    is_ptr = true;
+    break;
+  case TYPE_SLICE:
+    if (n->init && n->init->kind == EXPR_STRLIT) {
+      gen_vardef_strlit_slice(g, n, name);
+      goto end;
     }
     break;
   case TYPE_OPTIONAL:
-    dlog("TODO vardef1 TYPE_OPTIONAL");
+    is_ptr = opttype_byptr(g, ((opttype_t*)t)->elem);
     break;
   }
 
-  if (arraytype) {
-    // "T name[len] = {...}"
-    // mini test:
-    //   const _ = [1,2,3]                         // is subject to this branch
-    //   fun f0() { var _ = [1,2,3] }              // is subject to this branch
-    //   fun f1() { let _ [int 100] = [1,2,3] }    // is subject to this branch
-    //   fun f2(k [int 3]) { let _ [int 3] = k }   // not subject to this branch
-    //   fun f3(k &[int 3]) { let _ &[int 3] = k } // not subject to this branch
-    if (arraytype->len > 0) {
-      gen_type(g, arraytype->elem), CHAR(' '), PRINT(name);
-      CHAR('['), PRINTF("%llu", arraytype->len), CHAR(']');
-      if (n->nuse == 0)
-        CHAR(' '), PRINT(ATTR_UNUSED);
-      if (n->init) {
-        assert(n->init->kind == EXPR_ARRAYLIT);
-        const arraylit_t* alit = (arraylit_t*)n->init;
-        PRINT(" = "), gen_arraylit_values(g, &alit->values);
-      } else {
-        PRINT(" = {}");
-      }
-    } else {
-      gen_arraytype(g, arraytype), CHAR(' '), PRINT(name);
-      if (n->nuse == 0)
-        CHAR(' '), PRINT(ATTR_UNUSED);
-      if (n->init) {
-        PRINT(" = "), gen_dyn_arraylit1(g, (arraylit_t*)n->init);
-      } else {
-        PRINT(" = {}");
-      }
-    }
-    // note: In >=C99, omitted array and struct fields are implicitly initialized
-    // the same as for objects that have static storage duration.
-    // On static storage duration in C99 6.7.8 Initialization Semantics:
-    // > If an object that has automatic storage duration is not initialized explicitly,
-    // > its value is indeterminate.
-    // > If an object that has static storage duration is not initialized explicitly,
-    // > then:
-    // > - if it has pointer type, it is initialized to a null pointer.
-    // > - if it has arithmetic type, it is initialized to (positive or unsigned) zero.
-    // > - if it is an aggregate, every member is initialized (recursively)
-    // >   according to these rules.
-    // > - if it is a union, the first named member is initialized (recursively)
-    // >   according to these rules.
-    // i.e.
-    // - in "T x[2]", value of x[0]==undefined, x[1]==undefined.
-    // - in "T x[2] = {}", value of x[0]==0, x[1]==0.
-    // - in "T x[2] = {1}", value of x[0]==1, x[1]==0.
-  } else if (structtype) {
-    // "T name = {...}"
-    nodearray_t args = {};
-    if (n->init)
-      args = ((call_t*)n->init)->args;
-    gen_vartype(g, n, n->type), CHAR(' '), PRINT(name);
-    if (n->nuse == 0)
-      CHAR(' '), PRINT(ATTR_UNUSED);
-    PRINT(" = "), gen_structinit(g, structtype, args);
-  } else {
-    // "T name = init"
-    gen_vartype(g, n, n->type), CHAR(' '), PRINT(name);
-    if (n->nuse == 0)
-      CHAR(' '), PRINT(ATTR_UNUSED);
-    PRINT(" = "), gen_varinit(g, n);
-  }
+  // generic implementation of vardef code
 
+  if ((n->flags & NF_CONST) || (n->kind == EXPR_LET && !is_ptr))
+    PRINT("const ");
+
+  gen_type(g, n->type), CHAR(' ');
+
+  // for pointer types, mark binding as having const storage of the pointer address.
+  // e.g. "T* const name" -- T is not const, but the address T* is. Example:
+  //   fun f(x &Point)
+  //     let a = x //>> const struct Point* const a = x;
+  //     var b = x //>> const struct Point* b = x;
+  if (n->kind == EXPR_LET && is_ptr)
+    PRINT("const ");
+
+  PRINT(name);
+  if (n->nuse == 0) PRINT(" " ATTR_UNUSED);
+  PRINT(" = "), gen_varinit(g, n);
+
+end:
   if (n->flags & NF_RVALUE)
     PRINT("; "), PRINT(name), PRINT(";})");
 }
@@ -2534,7 +2639,7 @@ static ifkind_t gen_ifexpr_varcond(cgen_t* g, const ifexpr_t* n) {
     }
     g->indent++; // scope will be "closed" by the caller
     gen_vartype(g, var, var->type), CHAR(' '), PRINT(var->name);
-    if (var->nuse == 0) CHAR(' '), PRINT(ATTR_UNUSED);
+    if (var->nuse == 0) PRINT(" " ATTR_UNUSED);
     PRINT(" = "), gen_expr_rvalue1(g, var->init, var->init->type, /*parenwrap*/false);
     gen_opttype_deref(g, ot), PRINT("; ");
     return IFKIND_INNER;
@@ -2556,7 +2661,7 @@ static ifkind_t gen_ifexpr_varcond(cgen_t* g, const ifexpr_t* n) {
     PRINT("; if ("), gen_optcheck_named(g, ot, tmp), PRINT(") { ");
   }
   gen_vartype(g, var, var->type), CHAR(' '), PRINT(var->name);
-  if (var->nuse == 0) CHAR(' '), PRINT(ATTR_UNUSED);
+  if (var->nuse == 0) PRINT(" " ATTR_UNUSED);
   PRINT(" = "), PRINT(tmp), gen_opttype_deref(g, ot), PRINT("; ");
 
   return IFKIND_DOUBLE;

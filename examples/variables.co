@@ -1,0 +1,41 @@
+type Point { x, y int }
+
+// global constants
+// - are comptime initialized
+// - has immutable storage
+const g1 = 123
+const g2 = 12*2
+const g3 = twice(12) ; fun twice(x int) = x*2 // comptime
+const c2 = "hello" // &[u8 5]
+const c3 = [1,2,3] // &[int 3]
+// const c4 = Point() // &Point // TODO comptime
+
+// constants can't be of mutable type
+// const _ [int 3] // error
+// const _ [int]   // error
+// const _ Point     // error
+// const _ mut&int // error
+
+// fun f()
+//   var a = [1,2,3]
+//   let b = [4,5,6]
+//   a = b
+
+fun f(refarg &Point)
+  var v1 = "hello" // str (str is an alias of &[u8])
+  let c1 = "bye"   // &[u8 3]
+  v1 = c1          // downgrade type &[u8 3] -> str aka &[u8]
+  let _ str = "abc" // str
+  let _ = 123
+  var _ = 123
+  let _ = refarg
+  var _ = refarg
+  let _ [int 3]
+  let _ ?int = 1
+  var v3 ?int
+  v3 = 2
+  var v4 ?&Point
+  v4 = refarg
+  let _ = [1,2,3]
+  var v5 = [1,2,3]
+  //v5 = [4,5,6] // BUG in cgen! FIXME: assign array
