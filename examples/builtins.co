@@ -1,7 +1,13 @@
-// fun foo(a [u8]) uint
-//   a.len()
-
 pub fun main()
-  let hello = "hello"
-  if hello.len() == 5
-    print("\"hello\".len = 5")
+  var a [int]
+  //let ar = &a // BUG in cgen
+  if !a.reserve(5) // request that cap >= 5
+    print("a.reserve(5) failed")
+  // a.append(1)
+  if a.len == 0 print("a.len == 0")
+  if a.cap >= 5 print("a.cap >= 5")
+
+// pub fun main()
+//   let hello = "hello"
+//   if hello.len == 5
+//     print("\"hello\".len = 5")
