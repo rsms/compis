@@ -374,9 +374,9 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
   } else {
     // add fundamental "target" compilation flags
     if (iscompiling && !custom_sysroot) {
-      strlist_add_array(&args, c.cflags_common.strings, c.cflags_common.len);
+      strlist_add_slice(&args, c.cflags_common);
     } else {
-      strlist_add_array(&args, c.flags_common.strings, c.flags_common.len);
+      strlist_add_slice(&args, c.flags_common);
     }
 
     // add include flags for system headers and libc
@@ -391,7 +391,7 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
         strlist_addf(&args, "-isystem%s/libunwind/include", coroot);
       }
       if (!custom_sysroot) {
-        strlist_add_array(&args, c.cflags_sysinc.strings, c.cflags_sysinc.len);
+        strlist_add_slice(&args, c.cflags_sysinc);
         strlist_addf(&args, "-isystem%s/clangres/include", coroot);
       }
     }

@@ -35,6 +35,10 @@ void strlist_addv(strlist_t* a, const char* fmt, va_list);
 void strlist_add_list(strlist_t* a, const strlist_t* b);
 void strlist_add_array(strlist_t* a, const char*const* src, usize len);
 void strlist_add_raw(strlist_t* a, const char* src, usize len, u32 count);
+inline static void strlist_add_slice(strlist_t* a, slice_t strptrs) {
+  strlist_add_array(a, strptrs.strings, strptrs.len);
+}
+
 
 inline static strlist_t strlist_save(strlist_t* a) { return *a; }
 void strlist_restore(strlist_t* a, const strlist_t snapshot);

@@ -32,7 +32,9 @@ typedef struct compiler_ {
   char*       buildroot;     // where all generated files go, e.g. "build"
   char*       builddir;      // "{buildroot}/{mode}-{triple}"
   char*       sysroot;       // "{builddir}/sysroot"
-  strlist_t   cflags;        // cflags used for compis objects (includes cflags_common)
+  strlist_t   cflags_all;    // cflags storage (other cflags are slices of this)
+  slice_t     cflags_c;      // cflags used for .c compis objects
+  slice_t     cflags_co;     // cflags used for .co.c (not .c) compis objects
   slice_t     flags_common;  // flags used for all objects; .s, .c etc.
   slice_t     cflags_common; // cflags used for all objects (includes xflags_common)
   slice_t     cflags_sysinc; // cflags with -isystemPATH for current target
@@ -249,9 +251,11 @@ void compiler_init(compiler_t*, memalloc_t, diaghandler_t);
 void compiler_dispose(compiler_t*);
 err_t compiler_configure(compiler_t*, const compiler_config_t*);
 err_t compile_c_to_obj_async(
-  compiler_t* c, subprocs_t* sp, const char* wdir, const char* cfile, const char* ofile);
+  compiler_t* c, subprocs_t* sp, const char* wdir,
+  const char* cfile, const char* ofile, filetype_t srctype);
 err_t compile_c_to_asm_async(
-  compiler_t* c, subprocs_t* sp, const char* wdir, const char* cfile, const char* ofile);
+  compiler_t* c, subprocs_t* sp, const char* wdir,
+  const char* cfile, const char* ofile, filetype_t srctype);
 bool compiler_fully_qualified_name(
   const compiler_t*, const pkg_t*, buf_t* dst, const node_t*);
 bool compiler_mangle(const compiler_t*, const pkg_t*, buf_t* dst, const node_t*);

@@ -30,7 +30,7 @@ void compiler_init(compiler_t* c, memalloc_t ma, diaghandler_t dh) {
 void compiler_dispose(compiler_t* c) {
   buf_dispose(&c->diagbuf);
   locmap_dispose(&c->locmap, c->ma);
-  strlist_dispose(&c->cflags);
+  strlist_dispose(&c->cflags_all);
   mem_freecstr(c->ma, c->buildroot);
   mem_freecstr(c->ma, c->builddir);
   mem_freecstr(c->ma, c->sysroot);
@@ -180,15 +180,16 @@ static err_t configure_sysroot(compiler_t* c, const compiler_config_t* config) {
 
 
 static err_t configure_cflags(compiler_t* c, const compiler_config_t* config) {
-  strlist_dispose(&c->cflags);
+  strlist_dispose(&c->cflags_all);
+  c->cflags_all = strlist_make(c->ma);
+  strlist_t* cflags_all = &c->cflags_all;
 
   // flags used for all C and assembly compilation
-  c->cflags = strlist_make(c->ma);
-  strlist_addf(&c->cflags, "-B%s", coroot);
-  strlist_addf(&c->cflags, "--target=%s", c->target.triple);
-  strlist_addf(&c->cflags, "--sysroot=%s/", c->sysroot);
-  strlist_addf(&c->cflags, "-resource-dir=%s/clangres/", coroot);
-  strlist_add(&c->cflags, "-nostdlib");
+  strlist_addf(cflags_all, "-B%s", coroot);
+  strlist_addf(cflags_all, "--target=%s", c->target.triple);
+  strlist_addf(cflags_all, "--sysroot=%s/", c->sysroot);
+  strlist_addf(cflags_all, "-resource-dir=%s/clangres/", coroot);
+  strlist_add(cflags_all, "-nostdlib");
 
   if (c->target.sys == SYS_macos) {
     // set -mmacosx-version-min=version rather than embedding the target version
@@ -201,13 +202,13 @@ static err_t configure_cflags(compiler_t* c, const compiler_config_t* config) {
       target_llvm_version(&c->target, sysverbuf);
       sysver = sysverbuf;
     }
-    strlist_addf(&c->cflags, "-mmacosx-version-min=%s", sysver);
+    strlist_addf(cflags_all, "-mmacosx-version-min=%s", sysver);
     // disable "nullability completeness" warnings by default
-    strlist_add(&c->cflags, "-Wno-nullability-completeness");
+    strlist_add(cflags_all, "-Wno-nullability-completeness");
   }
 
   if (c->lto)
-    strlist_add(&c->cflags, "-flto=thin");
+    strlist_add(cflags_all, "-flto=thin");
 
   // RISC-V has a bunch of optional features
   // https://gcc.gnu.org/onlinedocs/gcc/RISC-V-Options.html
@@ -236,35 +237,35 @@ static err_t configure_cflags(compiler_t* c, const compiler_config_t* config) {
     // zve64d  Vector Extensions for Embedded Processors with maximal 64 EEW,
     //         F and D extension. (requires zve64f)
     // ... AND A LOT MORE ...
-    strlist_add(&c->cflags,
+    strlist_add(cflags_all,
       "-march=rv64iafd",
       "-mabi=lp64d", // ilp32d for riscv32
       "-mno-relax",
       "-mno-save-restore");
   } else if (target_is_arm(&c->target)) {
-    strlist_add(&c->cflags,
+    strlist_add(cflags_all,
       "-march=armv6",
       "-mfloat-abi=hard",
       "-mfpu=vfp");
   }
 
   // end of common flags
-  u32 flags_common_end = c->cflags.len;
+  u32 flags_common_end = c->cflags_all.len;
 
   // ————— start of common cflags —————
   if (c->buildmode == BUILDMODE_OPT)
-    strlist_add(&c->cflags, "-D_FORTIFY_SOURCE=2");
+    strlist_add(cflags_all, "-D_FORTIFY_SOURCE=2");
   if (!target_has_syslib(&c->target, SYSLIB_C)) {
     // invariant: c->opt_nostdlib=true (when c->target.sys == SYS_none)
-    strlist_add(&c->cflags,
+    strlist_add(cflags_all,
       "-nostdinc",
       "-ffreestanding");
     // note: must add <resdir>/include explicitly when -nostdinc is set
-    strlist_addf(&c->cflags, "-isystem%s/clangres/include", coroot);
+    strlist_addf(cflags_all, "-isystem%s/clangres/include", coroot);
   }
 
   // end of common cflags
-  u32 cflags_common_end = c->cflags.len;
+  u32 cflags_common_end = c->cflags_all.len;
 
   // ————— start of cflags_sysinc —————
 
@@ -277,39 +278,59 @@ static err_t configure_cflags(compiler_t* c, const compiler_config_t* config) {
   //
   // // macos assumes constants in TargetConditionals.h are predefined.
   // if (c->target.sys == SYS_macos && !c->opt_nolibc)
-  //   strlist_add(&c->cflags, "-include", "TargetConditionals.h");
+  //   strlist_add(cflags_all, "-include", "TargetConditionals.h");
 
   // end of cflags_sysinc
-  u32 cflags_sysinc_end = c->cflags.len;
+  u32 cflags_sysinc_end = c->cflags_all.len;
 
-  // ————— start of cflags (for compis builds) —————
-  strlist_add(&c->cflags,
+  // ————— start of cflags_c (for compis .c ) —————
+  strlist_add(cflags_all,
     "-std=c17",
     "-g",
     "-feliminate-unused-debug-types");
   switch ((enum buildmode)c->buildmode) {
     case BUILDMODE_DEBUG:
-      strlist_add(&c->cflags, "-O0");
+      strlist_add(cflags_all, "-O0");
       break;
     case BUILDMODE_OPT:
-      strlist_add(&c->cflags, "-O2", "-fomit-frame-pointer");
+      strlist_add(cflags_all, "-O2", "-fomit-frame-pointer");
       break;
   }
-  // strlist_add(&c->cflags, "-fPIC");
-  strlist_addf(&c->cflags, "-include%s/std/coprelude.h", coroot);
-  strlist_addf(&c->cflags, "-isystem%s", c->builddir); // i.e. pkg/foo/pub.h
+  #if !defined(CO_DISTRIBUTION)
+    // coprelude.h is included in c->builddir but during development it
+    // is useful to be able to modify coprelude.h directly.
+    strlist_addf(cflags_all, "-isystem%s/compis", coroot);
+  #endif
+  strlist_addf(cflags_all, "-isystem%s", c->builddir); // i.e. pkg/foo/pub.h
 
+  u32 cflags_c_end = c->cflags_all.len;
   // end of cflags
 
-  const char*const* argv = (const char*const*)strlist_array(&c->cflags);
+  // ————— start of cflags_co (for compis .co.c) —————
+
+  // include coprelude.h in all .co.c files
+  #if defined(CO_DISTRIBUTION)
+    strlist_addf(cflags_all, "-include%s/include/coprelude.h", c->sysroot);
+  #else
+    strlist_addf(cflags_all, "-include%s/compis/coprelude.h", coroot);
+  #endif
+  u32 cflags_co_end = c->cflags_all.len;
+  // end of cflags_compis
+
+  // make slices
+  const char*const* argv = (const char*const*)strlist_array(cflags_all);
+  if (!c->cflags_all.ok)
+    return ErrNoMem;
   c->flags_common = (slice_t){ .strings = argv, .len = (usize)flags_common_end };
   c->cflags_common = (slice_t){ .strings = argv, .len = (usize)cflags_common_end };
   c->cflags_sysinc = (slice_t){
     .strings = &argv[cflags_common_end],
     .len = (usize)(cflags_sysinc_end - cflags_common_end),
   };
+  c->cflags_c = (slice_t){ .strings = argv, .len = (usize)cflags_c_end };
+  c->cflags_co = (slice_t){ .strings = argv, .len = (usize)cflags_co_end };
 
-  return c->cflags.ok ? 0 : ErrNoMem;
+  return 0;
 }
 
 
@@ -718,9 +739,23 @@ err_t compiler_run_tool_sync(
 //————————————————————————————————————————————————————————————————————————————
 // compiler_compile
 
-static err_t cc_to_asm_main(compiler_t* c, const char* cfile, const char* asmfile) {
+
+static void add_cflags_for_srctype(compiler_t* c, strlist_t* args, filetype_t srctype) {
+  switch ((enum filetype)srctype) {
+    case FILE_C:     strlist_add_slice(args, c->cflags_c); break;
+    case FILE_CO:    strlist_add_slice(args, c->cflags_co); break;
+    case FILE_OTHER:
+    case FILE_O:
+      panic("unexpected srctype %u", srctype);
+  }
+}
+
+
+static err_t cc_to_asm_main(
+  compiler_t* c, const char* cfile, const char* asmfile, filetype_t srctype)
+{
   strlist_t args = strlist_make(c->ma, "clang");
-  strlist_add_list(&args, &c->cflags);
+  add_cflags_for_srctype(c, &args, srctype);
   strlist_add(&args,
     "-w", // don't produce warnings (already reported by cc_to_obj_main)
     "-fno-lto", // make sure LTO is disabled or we will write LLVM IR
@@ -744,11 +779,13 @@ static err_t cc_to_asm_main(compiler_t* c, const char* cfile, const char* asmfil
 }
 
 
-static err_t cc_to_obj_main(compiler_t* c, const char* cfile, const char* ofile) {
+static err_t cc_to_obj_main(
+  compiler_t* c, const char* cfile, const char* ofile, filetype_t srctype)
+{
   // note: clang crashes if we run it more than once in the same process
 
   strlist_t args = strlist_make(c->ma, "clang");
-  strlist_add_list(&args, &c->cflags);
+  add_cflags_for_srctype(c, &args, srctype);
   strlist_add(&args,
     // enable all warnings in debug builds, disable them in release builds
     #if DEBUG
@@ -786,17 +823,27 @@ static err_t cc_to_obj_main(compiler_t* c, const char* cfile, const char* ofile)
 
 
 err_t compile_c_to_obj_async(
-  compiler_t* c, subprocs_t* sp, const char* wdir, const char* cfile, const char* ofile)
+  compiler_t* c,
+  subprocs_t* sp,
+  const char* wdir,
+  const char* cfile,
+  const char* ofile,
+  filetype_t srctype)
 {
   subproc_t* p = subprocs_alloc(sp);
   if (!p)
     return ErrNoMem;
-  return subproc_fork(p, cc_to_obj_main, wdir, c, cfile, ofile);
+  return subproc_fork(p, cc_to_obj_main, wdir, c, cfile, ofile, srctype);
 }
 
 
 err_t compile_c_to_asm_async(
-  compiler_t* c, subprocs_t* sp, const char* wdir, const char* cfile, const char* ofile)
+  compiler_t* c,
+  subprocs_t* sp,
+  const char* wdir,
+  const char* cfile,
+  const char* ofile,
+  filetype_t srctype)
 {
   subproc_t* p = subprocs_alloc(sp);
   if (!p)
@@ -808,5 +855,5 @@ err_t compile_c_to_asm_async(
   if (!buf_nullterm(&asmfile))
     return ErrNoMem;
 
-  return subproc_fork(p, cc_to_asm_main, wdir, c, cfile, asmfile.chars);
+  return subproc_fork(p, cc_to_asm_main, wdir, c, cfile, asmfile.chars, srctype);
 }

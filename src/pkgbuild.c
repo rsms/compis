@@ -192,7 +192,11 @@ static const char* cfile_of_unit(pkgbuild_t* pb, const unit_t* unit) {
 // compile_c_source compiles a C source file in a background thread.
 // Caller should await the provided promise.
 static err_t compile_c_source(
-  pkgbuild_t* pb, promise_t* promise, const char* cfile, const char* ofile)
+  pkgbuild_t* pb,
+  promise_t* promise,
+  const char* cfile,
+  const char* ofile,
+  filetype_t srctype)
 {
   compiler_t* c = pb->c;
 
@@ -207,11 +211,11 @@ static err_t compile_c_source(
     return ErrNoMem;
 
   // compile C -> object
-  err_t err = compile_c_to_obj_async(c, subprocs, wdir, cfile, ofile);
+  err_t err = compile_c_to_obj_async(c, subprocs, wdir, cfile, ofile, srctype);
 
   // compile C -> asm
   if (!err && c->opt_genasm)
-    err = compile_c_to_asm_async(c, subprocs, wdir, cfile, ofile);
+    err = compile_c_to_asm_async(c, subprocs, wdir, cfile, ofile, srctype);
 
   if UNLIKELY(err)
     subprocs_cancel(subprocs);
@@ -284,7 +288,7 @@ err_t pkgbuild_begin_early_compilation(pkgbuild_t* pb) {
     const char* cfile = srcfile->name.p;
     const char* ofile = ofile_of_srcfile_id(pb, i);
     pkgbuild_begintask(pb, "compile %s", relpath(cfile));
-    err = compile_c_source(pb, &pb->promisev[i], cfile, ofile);
+    err = compile_c_source(pb, &pb->promisev[i], cfile, ofile, srcfile->type);
     if (err)
       dlog("compile_c_source: %s", err_str(err));
   }
@@ -1298,7 +1302,7 @@ err_t pkgbuild_begin_late_compilation(pkgbuild_t* pb) {
     const char* ofile = ofile_of_srcfile_id(pb, i);
     pkgbuild_begintask(pb, "compile %s",
       pb->c->opt_verbose ? relpath(cfile) : srcfile->name.p);
-    err = compile_c_source(pb, &pb->promisev[i], cfile, ofile);
+    err = compile_c_source(pb, &pb->promisev[i], cfile, ofile, srcfile->type);
     if (err)
       dlog("compile_c_source: %s", err_str(err));
   }

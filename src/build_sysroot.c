@@ -410,7 +410,7 @@ static err_t build_librt(const compiler_t* c) {
 
   strlist_addf(&build.as, "-I%s", build.srcdir);
   strlist_addf(&build.cc, "-I%s", build.srcdir);
-  strlist_add_array(&build.cc, c->cflags_sysinc.strings, c->cflags_sysinc.len);
+  strlist_add_slice(&build.cc, c->cflags_sysinc);
 
   // for riscv/int_mul_impl.inc, included by riscv{32,64}/muldi3.S
   if (target_is_riscv(&c->target))
@@ -536,8 +536,8 @@ static err_t build_libunwind(const compiler_t* c) {
   );
   // strlist_addf(&build.cxx, "-I%s/lib/libcxx/include", coroot);
 
-  strlist_add_array(&build.cc, c->cflags_sysinc.strings, c->cflags_sysinc.len);
-  strlist_add_array(&build.cxx, c->cflags_sysinc.strings, c->cflags_sysinc.len);
+  strlist_add_slice(&build.cc, c->cflags_sysinc);
+  strlist_add_slice(&build.cxx, c->cflags_sysinc);
 
   // add sources
   // ma: temporary memory allocator for storing source filenames
@@ -692,8 +692,8 @@ static err_t build_libcxxabi(const compiler_t* c) {
   strlist_addf(&build.cxx, "-I%s/libcxx/include", coroot);
   strlist_addf(&build.cxx, "-I%s/libcxx/src", coroot); // include/atomic_support.h
 
-  strlist_add_array(&build.cc, c->cflags_sysinc.strings, c->cflags_sysinc.len);
-  strlist_add_array(&build.cxx, c->cflags_sysinc.strings, c->cflags_sysinc.len);
+  strlist_add_slice(&build.cc, c->cflags_sysinc);
+  strlist_add_slice(&build.cxx, c->cflags_sysinc);
 
   // add sources
   // ma: temporary memory allocator for storing source filenames
@@ -781,8 +781,8 @@ static err_t build_libcxx(const compiler_t* c) {
   strlist_addf(&build.cxx, "-I%s/libcxxabi/include", coroot);
   strlist_addf(&build.cxx, "-I%s/libcxx/src", coroot);
 
-  strlist_add_array(&build.cc, c->cflags_sysinc.strings, c->cflags_sysinc.len);
-  strlist_add_array(&build.cxx, c->cflags_sysinc.strings, c->cflags_sysinc.len);
+  strlist_add_slice(&build.cc, c->cflags_sysinc);
+  strlist_add_slice(&build.cxx, c->cflags_sysinc);
 
   // add sources
   // ma: temporary memory allocator for storing source filenames
@@ -815,6 +815,13 @@ static err_t copy_sysinc_headers(const compiler_t* c) {
     return 0;
   bgtask_t* task = bgtask_open(c->ma, "sysinc", 0, 0);
   err_t err = copy_target_layer_dirs(c, task, "sysinc", "include");
+  if (!err) {
+    str_t srcpath = path_join(coroot, "compis", "coprelude.h");
+    str_t dstpath = path_join(c->sysroot, "include", "coprelude.h");
+    err = fs_copyfile(srcpath.p, dstpath.p, 0);
+    str_free(dstpath);
+    str_free(srcpath);
+  }
   bgtask_end(task, "");
   bgtask_close(task);
   return err;

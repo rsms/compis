@@ -2472,6 +2472,7 @@ static stmt_t* stmt_pub(parser_t* p) {
   return n;
 err:
   error_at(p, pub_loc, "unexpected pub qualifier on %s", nodekind_fmt(n->kind));
+  return n;
 }
 
 

@@ -21,9 +21,9 @@ void cbuild_init(
   b->cc = strlist_make(c->ma, "cc");
   b->cxx = strlist_make(c->ma, "c++");
   b->as = strlist_make(c->ma, "cc");
-  strlist_add_array(&b->cc, c->cflags_common.strings, c->cflags_common.len);
-  strlist_add_array(&b->cxx, c->cflags_common.strings, c->cflags_common.len);
-  strlist_add_array(&b->as, c->flags_common.strings, c->flags_common.len);
+  strlist_add_slice(&b->cc, c->cflags_common);
+  strlist_add_slice(&b->cxx, c->cflags_common);
+  strlist_add_slice(&b->as, c->flags_common);
 
   // "{builddir}/{tmp}/{name}"
   usize namelen = strlen(name);
