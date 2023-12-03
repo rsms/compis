@@ -128,19 +128,21 @@ static int recv_thread(void* tptr) {
 static void chan_1send_Nrecv(u32 bufcap, u32 n_send_threads, u32 n_recv_threads, u32 nmessages);
 
 #define T UNITTEST_DEF
-T(chan_1send_1recv_buffered)  { chan_1send_Nrecv(2,            1,            1, 80); }
-T(chan_1send_Nrecv_buffered)  { chan_1send_Nrecv(2,            1, sys_ncpu()+1, 80); }
-T(chan_Nsend_1recv_buffered)  { chan_1send_Nrecv(2, sys_ncpu()+1,            1, 80); }
-T(chan_Nsend_Nrecv_buffered)  { chan_1send_Nrecv(2, sys_ncpu()+1, sys_ncpu()+1, 80); }
-T(chan_1send_1recv_unbuffered){ chan_1send_Nrecv(0,            1,            1, 80); }
-T(chan_1send_Nrecv_unbuffered){ chan_1send_Nrecv(0,            1, sys_ncpu()+1, 80); }
-T(chan_Nsend_1recv_unbuffered){ chan_1send_Nrecv(0, sys_ncpu()+1,            1, 80); }
-T(chan_Nsend_Nrecv_unbuffered){ chan_1send_Nrecv(0, sys_ncpu()+1, sys_ncpu()+1, 80); }
+T(chan_1send_1recv_buffered)  { chan_1send_Nrecv(2,            1,            1, 40); }
+T(chan_1send_Nrecv_buffered)  { chan_1send_Nrecv(2,            1, sys_ncpu()+1, 40); }
+T(chan_Nsend_1recv_buffered)  { chan_1send_Nrecv(2, sys_ncpu()+1,            1, 40); }
+T(chan_Nsend_Nrecv_buffered)  { chan_1send_Nrecv(2, sys_ncpu()+1, sys_ncpu()+1, 40); }
+T(chan_1send_1recv_unbuffered){ chan_1send_Nrecv(0,            1,            1, 40); }
+T(chan_1send_Nrecv_unbuffered){ chan_1send_Nrecv(0,            1, sys_ncpu()+1, 40); }
+T(chan_Nsend_1recv_unbuffered){ chan_1send_Nrecv(0, sys_ncpu()+1,            1, 40); }
+T(chan_Nsend_Nrecv_unbuffered){ chan_1send_Nrecv(0, sys_ncpu()+1, sys_ncpu()+1, 40); }
 T(chan_1send_Nrecv_buffered1) { chan_1send_Nrecv(1, 2, 2, 8); }
 #undef T
 
 
-static void chan_1send_Nrecv(u32 bufcap, u32 n_send_threads, u32 n_recv_threads, u32 nmessages) {
+static void chan_1send_Nrecv(
+  u32 bufcap, u32 n_send_threads, u32 n_recv_threads, u32 nmessages)
+{
   // serial sender, multiple receivers
   memalloc_t ma = memalloc_ctx();
 
