@@ -24,8 +24,7 @@ static const char* opt_out = "";
 static const char* opt_targetstr = "";
 static const target_t* opt_target = NULL;
 static bool opt_debug = false;
-static bool opt_verbose = false;
-static bool opt_vverbose = false;
+static int opt_verbose = false;
 static const char* opt_maxproc = "";
 static bool opt_printast = false;
 static bool opt_printir = false;
@@ -68,7 +67,6 @@ static const char* opt_builddir = "build";
   L( &opt_nolink,       "no-link",            "Only compile, don't link")\
   L( &opt_nomain,       "no-main",            "Don't auto-generate C ABI \"main\" for main.main")\
   L( &opt_nostdruntime, "no-stdruntime",      "Don't automatically import std/runtime")\
-  L( &opt_vverbose,     "vv",                 "Extra verbose mode") \
   L( &opt_version,      "version",            "Print Compis version on stdout and exit")\
   /* debug-only options */\
   DEBUG_L( &opt_trace_all,       "trace",           "Trace everything")\
@@ -162,11 +160,7 @@ int main_build(int argc, char* argv[]) {
   if (optind < 0)
     return 1;
 
-  if (opt_vverbose && coverbose < 2) {
-    coverbose = 2;
-  } else if (opt_verbose && coverbose < 1) {
-    coverbose = 1;
-  }
+  coverbose = MAX(coverbose, (u8)opt_verbose);
 
   #if DEBUG
     // --co-trace turns on all trace flags

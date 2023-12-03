@@ -22,10 +22,18 @@ static bool cli_valload_str(void* valptr, const char* value) {
   return true;
 }
 
-
 static bool cli_valload_bool(void* valptr, const char* value) {
   *(bool*)valptr = true;
   return true;
+}
+
+
+static void cli_set_bool(bool* valptr) {
+  *valptr = true;
+}
+
+static void cli_set_intbool(int* valptr) {
+  (*valptr)++;
 }
 
 
@@ -109,18 +117,22 @@ static int parse_cli_options(int argc, char** argv, void(*helpfn)(const char* pr
   while ((c = getopt_long(argc, argv, optspec, longopt_spec, &i)) != -1) {
     help |= c == 'h';
     switch (c) {
-      #define _VL(p) _Generic((p), \
+      #define _UPDATEPTR(p) _Generic((p), \
         bool*:        cli_valload_bool, \
         const char**: cli_valload_str \
       )
-      #define _S( p, c, ...)  case c: *p = true; break;
-      #define _SV(p, c, ...)  case c: _VL(p)((void*)p, optarg); break;
+      #define _SETBOOL(p) _Generic((p), \
+        bool*: cli_set_bool, \
+        int*:  cli_set_intbool \
+      )
+      #define _S( p, c, ...)  case c: _SETBOOL(p)((void*)p); break;
+      #define _SV(p, c, ...)  case c: _UPDATEPTR(p)((void*)p, optarg); break;
       #define _IGN(...)
       FOREACH_CLI_OPTION(_S, _SV, _IGN, _IGN, _IGN, _IGN)
       #undef _S
       #undef _SV
       #undef _IGN
-      #undef _VL
+      #undef _UPDATEPTR
 
       case '?':
         // getopt_long already printed an error message

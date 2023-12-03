@@ -1221,7 +1221,7 @@ extern const char* cocachedir;
 // Can be overridden with env var COPATH
 extern const char*const* copath;
 
-// coverbose: set to 1 if -v was passed on the command line, 2 for -vv
+// coverbose: set to 1 if -v was passed on the command line, 2 for -vv, 3 for -vvv etc.
 extern u8 coverbose;
 
 // comaxproc: max thread concurrency (defaults to sys_ncpu, can be set with -j)
