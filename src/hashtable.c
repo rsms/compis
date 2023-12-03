@@ -587,7 +587,7 @@ static bool testent_eq(const void* a, const void* b) {
   return strcmp( ((testent_t*)a)->s, ((testent_t*)b)->s ) == 0;
 }
 
-__attribute__((constructor)) static void test_hashtable() {
+UNITTEST_DEF(hashtable) {
   testent_t samples[] = {
     { "anne", 0x1 },
     { "bob",  0x2 },
@@ -686,8 +686,6 @@ __attribute__((constructor)) static void test_hashtable() {
   }
 
   hashtable_dispose(&ht, entsize);
-
-  log("%s PASSED", __FUNCTION__);
 }
 
 

@@ -267,7 +267,7 @@ if $USE_SELF || [ "$TARGET_ARCH-$TARGET_SYS" != "$HOST_ARCH-$HOST_SYS" ]; then
   export CXX="$CO_HOST_DESTDIR/c++"
   export PATH="$CO_HOST_DESTDIR:$PATH"
   # warm up compis
-  if [ $BUILD_MODE = debug ]; then
+  if $DEBUG; then
     echo | $CC  -O0 -c -x c -o /dev/null -
     echo | $CXX -O0 -c -x c++ -o /dev/null -
   else
@@ -500,6 +500,7 @@ esac
 case "$BUILD_MODE" in
   debug)
     XFLAGS+=( -g -O0 -DDEBUG -ferror-limit=6 )
+    XFLAGS+=( -DCO_ENABLE_TESTS )
     XFLAGS_NATIVE+=(
       -fno-omit-frame-pointer \
       -fno-optimize-sibling-calls \

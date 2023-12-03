@@ -1201,6 +1201,46 @@ typedef int(*co_qsort_cmp)(const void* x, const void* y, void* nullable ctx);
 void co_qsort(void* base, usize nmemb, usize size, co_qsort_cmp cmp, void* nullable ctx);
 
 //—————————————————————————————————————————————————————————————————————————————————————
+// unit tests
+#ifdef CO_ENABLE_TESTS
+  typedef struct unittest_t unittest_t;
+  typedef void(*unittest_fn_t)(unittest_t*);
+  struct unittest_t {
+    const char*   name;
+    const char*   file;
+    int           line;
+    unittest_fn_t fn;
+    bool          failed; // set this to true to signal failure
+  };
+
+  u32 unittest_runall(); // returns number of FAILED tests
+  void unittest_add(unittest_t*);
+
+  #define UNITTEST_DEF(NAME)                                                \
+    static void test_##NAME(unittest_t*);                                \
+    __attribute__((constructor,used)) static void test_##NAME##_init() {  \
+      static unittest_t t = { #NAME, __FILE__, __LINE__, &test_##NAME }; \
+      unittest_add(&t);                                                  \
+    }                                                                   \
+    static void test_##NAME(unittest_t* unittest)
+
+#else // if !defined(CO_ENABLE_TESTS)
+  #if __has_attribute(unused) && __has_attribute(pure)
+    #define UNITTEST_ATTRS __attribute__((unused,pure))
+  #elif __has_attribute(unused)
+    #define UNITTEST_ATTRS __attribute__((unused))
+  #elif __has_attribute(pure)
+    #define UNITTEST_ATTRS __attribute__((pure))
+  #else
+    #define UNITTEST_ATTRS
+  #endif
+  #define DEF_TEST(NAME)                                    \
+    _Pragma("GCC diagnostic ignored \"-Wunused-variable\"") \
+    UNITTEST_ATTRS static void test_##NAME(CoTesting* unittest)
+  inline static u32 unittest_runall() { return 0; }
+#endif // defined(CO_ENABLE_TESTS)
+
+//—————————————————————————————————————————————————————————————————————————————————————
 // constants defined in main.c
 
 // coprogname: program name, as invoked, e.g. "compis", "cc", "ld" etc

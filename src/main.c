@@ -251,6 +251,17 @@ int main(int argc, char* argv[]) {
   err_t err = llvm_init();
   if (err) errx(1, "llvm_init: %s", err_str(err));
 
+  // run unit tests
+  #ifdef CO_ENABLE_TESTS
+  if (!IS("cc", "clang") &&
+      !IS("c++", "clang++") &&
+      !IS("ld"))
+  {
+    if (unittest_runall())
+      return 1;
+  }
+  #endif
+
   // command dispatch
   if IS("build")                return main_build(argc, argv);
   if IS("cc", "clang")          return cc_main(argc, argv, /*iscxx*/false);

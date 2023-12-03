@@ -428,7 +428,7 @@ ATTR_FORMAT(printf, 1, 2) UNUSED static void _tlog(const char* fmt, ...) {
 }
 
 
-__attribute__((constructor)) static void test_memalloc_bump2() {
+UNITTEST_DEF(memalloc_bump2) {
   u32 flags = 0;
   usize slabsize = 1; // make slabs as small as possible
   memalloc_t ma = memalloc_bump2(slabsize, flags);
@@ -490,7 +490,6 @@ __attribute__((constructor)) static void test_memalloc_bump2() {
 
   sys_vm_free(page);
   memalloc_bump2_dispose(ma);
-  log("%s: PASSED", __FUNCTION__);
 }
 
 
@@ -530,7 +529,7 @@ static int test_thread(test_thread_t* t) {
 }
 
 
-__attribute__((constructor)) static void test_memalloc_bump2_mt() {
+UNITTEST_DEF(memalloc_bump2_mt) {
   u32 threadc = sys_ncpu();
   if (threadc == 1) {
     log("%s: SKIP (only 1 CPU)", __FUNCTION__);
@@ -621,8 +620,6 @@ __attribute__((constructor)) static void test_memalloc_bump2_mt() {
   sema_dispose(&sem_ready);
   memalloc_bump2_dispose(ma);
   mem_freetv(memalloc_default(), threadv, threadc);
-
-  log("%s: PASSED", __FUNCTION__);
 }
 
 

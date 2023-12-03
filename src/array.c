@@ -338,7 +338,7 @@ bool u32array_sortedset_add(u32array_t* a, memalloc_t ma, u32 v) {
 
 
 #ifdef CO_ENABLE_TESTS
-__attribute__((constructor)) static void test_array_sortedset() {
+UNITTEST_DEF(array_sortedset) {
   uintptr insert_data[] = {
     0x600003098340,
     0x6000030982c0,
@@ -367,7 +367,5 @@ __attribute__((constructor)) static void test_array_sortedset() {
   //   safecheck(i == (usize)ptrarray_sortedset_indexof(&a, a.v[i]));
 
   ptrarray_dispose(&a, ma);
-
-  log("%s PASSED", __FUNCTION__);
 }
 #endif // CO_ENABLE_TESTS

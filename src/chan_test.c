@@ -1,8 +1,10 @@
 #include "colib.h"
+
+#ifdef CO_ENABLE_TESTS
+
 #include "chan.h"
 #include "thread.h"
 
-#if defined(CO_ENABLE_TESTS) && defined(CO_DEVBUILD)
 ASSUME_NONNULL_BEGIN
 
 // silence dlog
@@ -28,9 +30,6 @@ ASSUME_NONNULL_BEGIN
 
 #define asserteq(a,b) assert((a) == (b))
 
-#define DEF_TEST(NAME) \
-  __attribute__((constructor,used)) static void NAME##_test_()
-
 
 typedef u32 Msg;
 
@@ -47,7 +46,7 @@ static u64 init_test_messages(Msg* messages, u32 nmessages) {
 }
 
 
-DEF_TEST(chan_test) {
+UNITTEST_DEF(chan_0_test) {
   memalloc_t ma = memalloc_ctx();
   Msg messages[10]; // must be an even number
   u64 send_messages_sum = init_test_messages(messages, countof(messages));
@@ -128,7 +127,7 @@ static int recv_thread(void* tptr) {
 
 static void chan_1send_Nrecv(u32 bufcap, u32 n_send_threads, u32 n_recv_threads, u32 nmessages);
 
-#define T DEF_TEST
+#define T UNITTEST_DEF
 T(chan_1send_1recv_buffered)  { chan_1send_Nrecv(2,            1,            1, 80); }
 T(chan_1send_Nrecv_buffered)  { chan_1send_Nrecv(2,            1, sys_ncpu()+1, 80); }
 T(chan_Nsend_1recv_buffered)  { chan_1send_Nrecv(2, sys_ncpu()+1,            1, 80); }
@@ -241,10 +240,5 @@ static void chan_1send_Nrecv(u32 bufcap, u32 n_send_threads, u32 n_recv_threads,
 }
 
 
-__attribute__((constructor,used)) static void chan_fin_test_() {
-  log("chan_t tests PASSED");
-}
-
-
 ASSUME_NONNULL_END
-#endif // enable test
+#endif // defined(CO_ENABLE_TESTS)

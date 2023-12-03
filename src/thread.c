@@ -255,7 +255,7 @@ void _spinmutex_wait(spinmutex_t* m) {
 
 //——————————————————————————————————————————————————————————————————————————————————————
 // little embedded test program
-#if 0
+#ifdef CO_ENABLE_TESTS
 
 #include "hash.h"
 
@@ -264,15 +264,15 @@ typedef struct {
   thrd_t   t;
 } test_thread_t;
 
-static int test_thread(test_thread_t* t) {
+static int test_thread_main(test_thread_t* t) {
   mutex_lock(t->mu);
-  dlog("test_thread %p", t->t);
+  //dlog("%s %p", __FUNCTION__, t->t);
   microsleep(fastrand() % 1000);
   mutex_unlock(t->mu);
   return 0;
 }
 
-__attribute__((constructor)) static void test() {
+UNITTEST_DEF(thread) {
   test_thread_t threads[8];
 
   mutex_t mu;
@@ -281,7 +281,7 @@ __attribute__((constructor)) static void test() {
   for (usize i = 0; i < countof(threads); i++) {
     test_thread_t* t = &threads[i];
     t->mu = &mu;
-    int err = thrd_create(&t->t, (thrd_start_t)test_thread, t);
+    int err = thrd_create(&t->t, (thrd_start_t)test_thread_main, t);
     assert(err == 0);
   }
 
