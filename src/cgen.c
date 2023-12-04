@@ -1605,6 +1605,76 @@ static void gen_primtype_cast(cgen_t* g, const type_t* t, const expr_t* nullable
 }
 
 
+static bool is_member_pointer_access(const cgen_t* g, const type_t* t) {
+  // Result is used for two purposes:
+  // 1. Struct field access via "->" (if true) or "." (if false).
+  // 2. If forming a mutable argument does not need "&" (if true),
+  //    e.g. argument for "mut this".
+  for (;;) {
+    switch (t->kind) {
+    case TYPE_ALIAS:
+      t = assertnotnull(((aliastype_t*)t)->elem);
+      break;
+    case TYPE_PTR:
+      return true;
+    case TYPE_REF:
+    case TYPE_MUTREF:
+      return !reftype_byvalue(g, (reftype_t*)t);
+    default:
+      return false;
+    }
+  }
+}
+
+
+static void gen_member_op(cgen_t* g, const type_t* recvt) {
+  if (is_member_pointer_access(g, recvt)) {
+    PRINT("->");
+  } else {
+    CHAR('.');
+  }
+}
+
+
+static void gen_member(cgen_t* g, const member_t* n) {
+  // Usertype ref fields on struct that qualify for reftype_byvalue are stored
+  // as pointers, not as value.
+  // When this is the case, we must dereference the pointer and "return" a copy
+  // of value it points to, since that's what outside code will expect.
+  // e.g. given
+  //   type Foo { parent &Foo }
+  //   fun parent(f Foo) &Foo { f.parent }
+  // the following code is generated:
+  //   struct Foo {const struct Foo* parent;};
+  //   struct Foo parent(Foo f) { return *f.x; }
+  //
+  if (n->type->kind == TYPE_REF) {
+    if (unwrap_opt_ptr_and_alias(n->recv->type)->kind == TYPE_STRUCT &&
+        node_isusertype((node_t*)((reftype_t*)n->type)->elem) &&
+        reftype_byvalue(g, (reftype_t*)n->type))
+    {
+      CHAR('*');
+    }
+  } else if (n->type->kind == TYPE_FUN) {
+    // constant expression "len" or "cap" builtin,
+    // e.g. for "myarray" of type "[u8 5]", "myarray.len" = 5.
+    if (n->target == (expr_t*)&g->compiler->builtin_len ||
+        n->target == (expr_t*)&g->compiler->builtin_cap)
+    {
+      const type_t* recvt = unwrap_ptr_and_alias(n->recv->type);
+      if (recvt->kind == TYPE_ARRAY && ((arraytype_t*)recvt)->len) {
+        gen_intconst(g, ((arraytype_t*)recvt)->len, g->compiler->uinttype);
+        return;
+      }
+    }
+  }
+
+  gen_expr_rvalue(g, n->recv, n->recv->type);
+  gen_member_op(g, n->recv->type);
+  PRINT(n->name);
+}
+
+
 static void gen_call_type(cgen_t* g, const call_t* n, const type_t* t) {
   if (type_isprim(t)) {
     assert(n->args.len < 2);
@@ -1625,7 +1695,7 @@ static void gen_call_type(cgen_t* g, const call_t* n, const type_t* t) {
 
 
 static void gen_call_fn_recv(
-  cgen_t* g, const call_t* n, expr_t** selfp, bool* isselfrefp)
+  cgen_t* g, const call_t* n, expr_t** thisargp, bool* is_this_refp)
 {
   switch (n->recv->kind) {
 
@@ -1637,8 +1707,8 @@ static void gen_call_fn_recv(
     funtype_t* ft = (funtype_t*)fn->type;
     if (ft->params.len > 0 && ((const local_t*)ft->params.v[0])->isthis) {
       const local_t* thisparam = (local_t*)ft->params.v[0];
-      *isselfrefp = type_isref(thisparam->type);
-      *selfp = m->recv;
+      *is_this_refp = type_isref(thisparam->type);
+      *thisargp = m->recv;
     }
     assert(fn->name != sym__);
     gen_fun(g, fn);
@@ -1665,28 +1735,36 @@ static void gen_call_builtin(cgen_t* g, const call_t* n) {
   fun_t* target = (fun_t*)m->target;
   const type_t* recvt = unwrap_ptr_and_alias(m->recv->type);
 
+  // .len or .cap
   if (target == &g->compiler->builtin_len || target == &g->compiler->builtin_cap) {
     if (recvt->kind == TYPE_ARRAY && ((arraytype_t*)recvt)->len) {
       // len or cap of fixed size array becomes just a constant
       gen_intconst(g, ((arraytype_t*)recvt)->len, g->compiler->uinttype);
-      return;
+    } else {
+      // field access
+      gen_expr_rvalue(g, m->recv, m->recv->type);
+      gen_member_op(g, m->recv->type);
+      PRINT(m->name);
     }
-    if (recvt->kind == TYPE_ARRAY || type_isslice(recvt)) {
-      CHAR('('), gen_expr(g, m->recv), PRINT(")."), PRINT(m->name);
-      return;
-    }
-  } else if (target == &g->compiler->builtin_reserve) {
+    return;
+  }
+
+  // .reserve
+  if (target == &g->compiler->builtin_reserve) {
     if (recvt->kind == TYPE_ARRAY) {
       const arraytype_t* at = (arraytype_t*)recvt;
       assert(at->len == 0); // only available for dynamic arrays
       assert(n->args.len == 1);
-      PRINT(target->mangledname);
-      PRINT("(&"), gen_expr(g, m->recv), PRINT(", ");
+      PRINT(target->mangledname), CHAR('(');
+      if (!is_member_pointer_access(g, m->recv->type))
+        CHAR('&');
+      gen_expr(g, m->recv), PRINT(", ");
       buf_print_u64(&g->outbuf, at->elem->size, /*base*/10), PRINT(", ");
       gen_expr_rvalue(g, (expr_t*)n->args.v[0], type_uint), CHAR(')');
       return;
     }
   }
+
   panic("TODO: generate builtin \"%s\" for %s", m->name, nodekind_name(recvt->kind));
 }
 
@@ -1705,16 +1783,16 @@ static void gen_call_fun(cgen_t* g, const call_t* n) {
     drop_begin(g, (expr_t*)n);
 
   // recv
-  expr_t* self = NULL;
-  bool isselfref = false;
-  gen_call_fn_recv(g, n, &self, &isselfref);
+  expr_t* thisarg = NULL;
+  bool is_this_refp = false; // true if type of "this" is a reference (if mutable)
+  gen_call_fn_recv(g, n, &thisarg, &is_this_refp);
 
   // args
   CHAR('(');
-  if (self) {
-    if (isselfref && !type_isref(self->type))
+  if (thisarg) {
+    if (is_this_refp && !is_member_pointer_access(g, thisarg->type))
       CHAR('&');
-    gen_expr(g, self);
+    gen_expr(g, thisarg);
     if (n->args.len > 0)
       PRINT(", ");
   }
@@ -1742,15 +1820,15 @@ static const type_t* nullable is_type_call(const call_t* n) {
 
 
 static void gen_call(cgen_t* g, const call_t* n) {
-  // type call?
   const type_t* type_recv = is_type_call(n);
   if (type_recv)
-    return gen_call_type(g, n, type_recv);
+    goto call_type;
   if (nodekind_istype(n->recv->kind))
-    return gen_call_type(g, n, (type_t*)n->recv);
+    type_recv = (type_t*)n->recv;
 
-  // okay, then it must be a function call
   return gen_call_fun(g, n);
+call_type:
+  return gen_call_type(g, n, type_recv);
 }
 
 
@@ -2434,56 +2512,6 @@ static void gen_param(cgen_t* g, const local_t* n) {
 static void gen_nsexpr(cgen_t* g, const nsexpr_t* n) {
   // Note: maybe don't do anything since a namespace is not materialized (it's abstract)
   panic("TODO namespace");
-}
-
-
-static void gen_member_op(cgen_t* g, const type_t* recvt) {
-  if (recvt->kind == TYPE_PTR ||
-    (type_isref(recvt) && !reftype_byvalue(g, (reftype_t*)recvt)))
-  {
-    PRINT("->");
-  } else {
-    CHAR('.');
-  }
-}
-
-
-static void gen_member(cgen_t* g, const member_t* n) {
-  // Usertype ref fields on struct that qualify for reftype_byvalue are stored
-  // as pointers, not as value.
-  // When this is the case, we must dereference the pointer and "return" a copy
-  // of value it points to, since that's what outside code will expect.
-  // e.g. given
-  //   type Foo { parent &Foo }
-  //   fun parent(f Foo) &Foo { f.parent }
-  // the following code is generated:
-  //   struct Foo {const struct Foo* parent;};
-  //   struct Foo parent(Foo f) { return *f.x; }
-  //
-  if (n->type->kind == TYPE_REF) {
-    if (unwrap_opt_ptr_and_alias(n->recv->type)->kind == TYPE_STRUCT &&
-        node_isusertype((node_t*)((reftype_t*)n->type)->elem) &&
-        reftype_byvalue(g, (reftype_t*)n->type))
-    {
-      CHAR('*');
-    }
-  } else if (n->type->kind == TYPE_FUN) {
-    // constant expression "len" or "cap" builtin,
-    // e.g. for "myarray" of type "[u8 5]", "myarray.len" = 5.
-    if (n->target == (expr_t*)&g->compiler->builtin_len ||
-        n->target == (expr_t*)&g->compiler->builtin_cap)
-    {
-      const type_t* recvt = unwrap_ptr_and_alias(n->recv->type);
-      if (recvt->kind == TYPE_ARRAY && ((arraytype_t*)recvt)->len) {
-        gen_intconst(g, ((arraytype_t*)recvt)->len, g->compiler->uinttype);
-        return;
-      }
-    }
-  }
-
-  gen_expr_rvalue(g, n->recv, n->recv->type);
-  gen_member_op(g, n->recv->type);
-  PRINT(n->name);
 }
 
 

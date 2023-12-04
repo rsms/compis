@@ -1,11 +1,40 @@
+// type Foo { x, y int }
+
+// fun Foo.append(mut this, value int) bool
+//   if .x == .y
+//     return false
+//   return true
+
+// fun a(foo Foo)
+//   foo.append(1)
+
+// fun b(foo *Foo)
+//   foo.append(1)
+
+// fun c(foo mut&Foo)
+//   foo.x
+//   foo.append(1)
+
+
+type IntArray [int]
+
+fun IntArray.append(mut this, value int) bool
+  if .cap == .len
+    .reserve(.cap + 1)
+  // this[.len] = value
+  .len++
+  return true
+
 pub fun main()
-  var a [int]
+  var a IntArray
   //let ar = &a // BUG in cgen
   if !a.reserve(5) // request that cap >= 5
     print("a.reserve(5) failed")
   // a.append(1)
   if a.len == 0 print("a.len == 0")
   if a.cap >= 5 print("a.cap >= 5")
+
+
 
 // pub fun main()
 //   let hello = "hello"
