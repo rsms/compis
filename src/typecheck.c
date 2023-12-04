@@ -2717,7 +2717,7 @@ static bool check_assign_to_id(typecheck_t* a, idexpr_t* id) {
 }
 
 
-static bool check_assign(typecheck_t* a, expr_t* target) {
+static bool check_assign(typecheck_t* a, expr_t* target, expr_t* origin) {
   switch (target->kind) {
     case EXPR_ID:
       return check_assign_to_id(a, (idexpr_t*)target);
@@ -2728,15 +2728,19 @@ static bool check_assign(typecheck_t* a, expr_t* target) {
       type_t* t = ((unaryop_t*)target)->expr->type;
       if (t->kind == TYPE_REF) {
         const char* s = fmtnode(0, t);
-        error(a, target, "cannot assign via immutable reference of type %s", s);
+        error(a, origin, "cannot assign via immutable reference of type %s", s);
         return false;
       }
       if (t->kind == TYPE_MUTREF || t->kind == TYPE_PTR)
         return true;
       break;
     }
+    case EXPR_CALL:
+      dlog("TODO assignment to call, which is likely a builtin like 'len'");
+      break;
   }
-  error(a, target, "cannot assign to %s", fmtkind(target));
+  error(a, origin, "cannot assign to %s (%s)",
+    fmtkind(target), nodekind_name(target->kind));
   return false;
 }
 
@@ -2788,7 +2792,7 @@ static void assign(typecheck_t* a, binop_t* n) {
   if UNLIKELY(!type_isassignable(a->compiler, n->left->type, n->right->type))
     error_unassignable_type(a, n, n->right);
 
-  check_assign(a, n->left);
+  check_assign(a, n->left, n->left);
 }
 
 
@@ -3083,7 +3087,7 @@ static void unaryop(typecheck_t* a, unaryop_t* n) {
       }
       incuse_write(dst);
       implicit_rvalue_deref(a, a->typectx, &n->expr);
-      check_assign(a, dst);
+      check_assign(a, dst, (expr_t*)n);
       if (n->type->kind == TYPE_UNRESOLVED || n->type == type_unknown)
         n->type = n->expr->type;
       break;
@@ -4999,6 +5003,8 @@ static void define_at_unit_level(typecheck_t* a, node_t* n) {
   switch (n->kind) {
     case EXPR_FUN: {
       fun_t* fn = (fun_t*)n;
+      if (fn->recvt)
+        break; // type function
       assertnotnull(fn->name);
       return define(a, fn->name, n);
     }
