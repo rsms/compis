@@ -2230,42 +2230,6 @@ static type_t* type_fun(parser_t* p) {
 }
 
 
-static void typefun_add(parser_t* p, type_t* recvt, sym_t name, fun_t* fn, loc_t loc) {
-  assertnotnull(fn->name);
-  assert(fn->recvt == NULL || fn->recvt == recvt);
-  assert(name != sym__);
-
-  if (fn->name == sym__)
-    fn->name = name;
-
-  fn->recvt = recvt;
-
-  // first, search struct type for field named "name"
-  expr_t* existing = NULL;
-  if (recvt->kind == TYPE_STRUCT)
-    existing = (expr_t*)lookup_struct_field((structtype_t*)recvt, name);
-
-  // next, add (or retrieve existing) function to the type-function table
-  if (!existing) {
-    fun_t* fn2 = typefuntab_add(&currpkg(p)->tfundefs, recvt, name, fn);
-    if UNLIKELY(!fn2)
-      return out_of_mem(p);
-    if (fn2 != fn)
-      existing = (expr_t*)fn2;
-  }
-
-  // report an error if the type function is already defined,
-  // or if there's a struct field with the same name on the recvt.
-  if UNLIKELY(existing) {
-    const char* s = fmtnode(0, recvt);
-    error_at(p, loc, "duplicate %s \"%s\" for type %s",
-      (existing->kind == EXPR_FUN) ? "function" : "member", name, s);
-    if (loc_line(existing->loc))
-      help_at(p, existing, "\"%s\" previously defined here", name);
-  }
-}
-
-
 static void fun_body(parser_t* p, fun_t* n, nodeflag_t fl) {
   funtype_t* ft = (funtype_t*)n->type;
 
@@ -2305,7 +2269,7 @@ static void fun_body(parser_t* p, fun_t* n, nodeflag_t fl) {
 }
 
 
-// fundef = "fun" name "(" params? ")" result? ( ";" | "{" body "}")
+// fundef = "fun" [ type "." ] name "(" params? ")" result? ( ";" | "{" body "}")
 // result = params
 // body   = (stmt ";")*
 static fun_t* fun(parser_t* p, nodeflag_t fl, type_t* nullable recvt, bool requirename) {
@@ -2341,6 +2305,20 @@ static fun_t* fun(parser_t* p, nodeflag_t fl, type_t* nullable recvt, bool requi
         }
       }
     }
+  } else if (currtok(p) == TLBRACK && n->recvt == NULL) {
+    // type function for array type, e.g. "fun [T].name"
+    n->recvt = type_array(p);
+    n->name = sym__;
+    // expect TDOT followed by TID
+    if LIKELY(expect2(p, TDOT, ", expected '.name'")) {
+      if (currtok(p) == TID) {
+        n->name = p->scanner.sym;
+        n->nameloc = currloc(p);
+        next(p);
+      } else {
+        expect2_fail(p, TID, ", expected name");
+      }
+    }
   } else if (requirename) {
     error(p, "missing function name");
   }
@@ -2355,13 +2333,9 @@ static fun_t* fun(parser_t* p, nodeflag_t fl, type_t* nullable recvt, bool requi
   n->paramsendloc = ft->paramsendloc; // location of ")"
   n->resultloc = ft->resultloc;       // location of result
 
-  // define type function or named function
-  if (n->recvt) {
-    typefun_add(p, n->recvt, n->name, n, n->nameloc);
-  } else if (n->name && n->type->kind != NODE_BAD) {
-    // define named function
+  // named function (type function defined later, by typecheck)
+  if (!n->recvt && n->name && n->type->kind != NODE_BAD)
     define(p, n->name, (node_t*)n);
-  }
 
   // no body?
   if (currtok(p) == TSEMI) {

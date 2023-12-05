@@ -1369,6 +1369,11 @@ static irval_t* assign(ircons_t* c, binop_t* n) {
         return v;
       break;
     }
+    case EXPR_SUBSCRIPT: {
+      // e.g. "myarray[3] = x"
+      dlog("TODO %s %s", __FUNCTION__, nodekind_name(left->kind));
+      return v;
+    }
     default:
       assertf(0, "unexpected %s", nodekind_name(left->kind));
       return v;

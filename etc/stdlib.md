@@ -42,6 +42,16 @@ fun example(a [int])
 ```
 
 
+#### `fun [T].resize(mut this, len uint) bool`
+
+Grow or shrink the array to the requested length.
+When growing, new elements are default-initialized.
+When shrinking, if `T` is an owned type, removed elements are dropped.
+Attempting to grow an array where `T` requires explicit initialization casues a panic.
+Returns `false` if an attempt to increase capacity failed (memory could not be allocated.)
+
+
+
 ## std/runtime
 
 - Source: `lib/std/runtime` (distribution: `$COROOT/std/runtime`)

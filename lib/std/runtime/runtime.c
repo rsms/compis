@@ -63,6 +63,20 @@ bool __co_builtin_reserve(void* arrayptr, __co_uint elemsize, __co_uint cap) {
 }
 
 
+bool __co_builtin_resize(void* arrayptr, __co_uint elemsize, __co_uint len) {
+  struct _coAh* a = arrayptr;
+  if (len > a->len) {
+    // grow
+    if (a->cap < len && UNLIKELY(!__co_builtin_reserve(arrayptr, elemsize, len)))
+      return false;
+    // zero newly allocated memory
+    memset((void*)a->ptr + a->len*elemsize, 0, (len - a->len)*elemsize);
+  }
+  a->len = len;
+  return true;
+}
+
+
 void _print(__co_str msg) {
   fwrite(msg.ptr, msg.len, 1, stdout);
   fputc('\n', stdout);

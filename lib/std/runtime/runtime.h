@@ -11,6 +11,10 @@
 #define strncmp __builtin_strncmp
 
 
+#define LIKELY(x)   (__builtin_expect((bool)(x), true))
+#define UNLIKELY(x) (__builtin_expect((bool)(x), false))
+
+
 static inline __attribute__((warn_unused_result))
 bool __must_check_unlikely(bool unlikely) {
   return __builtin_expect(unlikely, false);

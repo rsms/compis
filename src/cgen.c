@@ -1749,8 +1749,10 @@ static void gen_call_builtin(cgen_t* g, const call_t* n) {
     return;
   }
 
-  // .reserve
-  if (target == &g->compiler->builtin_reserve) {
+  // .reserve(cap) or .resize(len)
+  if (target == &g->compiler->builtin_reserve ||
+      target == &g->compiler->builtin_resize)
+  {
     if (recvt->kind == TYPE_ARRAY) {
       const arraytype_t* at = (arraytype_t*)recvt;
       assert(at->len == 0); // only available for dynamic arrays
@@ -2533,6 +2535,10 @@ static void gen_subscript(cgen_t* g, const subscript_t* n) {
   //
   //   ({ u64 v1 = index; __co_checkbounds(recv.len,v1); recv.ptr[v1]; })
   //
+  // Assignment with bounds check:
+  //
+  //   *(__co_checkbounds(a.len,0), &a.ptr[0]) = value;
+  //
   // For arrays of known size, e.g. "[int 3]":
   //
   //   ( __co_checkbounds(3,index), recv[index] )
@@ -2565,55 +2571,75 @@ static void gen_subscript(cgen_t* g, const subscript_t* n) {
       panic("TODO subscript recv type %s", nodekind_name(n->recv->type->kind));
   }
 
+  bool is_exprblock = false; // "({...})" if true, else "(...)"
   u32 index_tmp_id = 0;
-  u32 recv_tmp_id = 0;
 
   if (checkbounds) {
-    if (n->recv->kind != EXPR_ID)
+    u32 recv_tmp_id = 0;
+    if (n->recv->kind != EXPR_ID) {
+      if (g->idgen_local == 0) g->idgen_local++;
       recv_tmp_id = g->idgen_local++;
-    if (!(n->index->flags & NF_CONST) && n->index->kind != EXPR_ID)
+    }
+
+    if (!(n->index->flags & NF_CONST) && n->index->kind != EXPR_ID) {
+      if (g->idgen_local == 0) g->idgen_local++;
       index_tmp_id = g->idgen_local++;
+    }
+
+    if (n->is_assign)
+      CHAR('*');
 
     CHAR('(');
-    if (index_tmp_id || recv_tmp_id)
+    is_exprblock = index_tmp_id || recv_tmp_id;
+    if (is_exprblock)
       CHAR('{');
 
     if (recv_tmp_id) {
       gen_type(g, n->recv->type);
       PRINTF(" " ANON_FMT " = ", recv_tmp_id);
       gen_expr_rvalue(g, n->recv, n->recv->type);
-      PRINT(";\n");
+      CHAR(';');
     }
 
     if (index_tmp_id) {
       gen_type(g, n->index->type);
       PRINTF(" " ANON_FMT " = ", index_tmp_id);
       gen_expr_rvalue(g, n->index, n->index->type);
-      PRINT(";\n");
+      CHAR(';');
     }
 
     PRINT(RT_checkbounds "(");
     if (len_buf[0]) {
+      // length known at compile time
       PRINT(len_buf);
     } else {
       if (recv_tmp_id) {
         PRINTF(ANON_FMT, recv_tmp_id);
+        PRINT(".len");
       } else {
         gen_expr_rvalue(g, n->recv, n->recv->type);
+        PRINT(".len");
+        // gen_expr_rvalue(g, n->recv, n->recv->type);
+        // gen_member_op(g, n->recv->type);
+        // PRINT("len");
       }
-      PRINT(".len");
     }
     CHAR(',');
     if (index_tmp_id) {
+      // index known at compile time
       PRINTF(ANON_FMT, index_tmp_id);
     } else if (n->index->flags & NF_CONST) {
+      // index known at compile time
       PRINTF("%llu", n->index_val);
     } else {
       gen_expr_rvalue(g, n->index, n->index->type);
     }
     CHAR(')');
 
-    CHAR((index_tmp_id || recv_tmp_id) ? ';' : ',');
+    CHAR(is_exprblock ? ';' : ',');
+
+    if (n->is_assign)
+      CHAR('&');
 
     if (recv_tmp_id) {
       PRINTF(ANON_FMT, recv_tmp_id);
@@ -2621,7 +2647,16 @@ static void gen_subscript(cgen_t* g, const subscript_t* n) {
       gen_expr_rvalue(g, n->recv, n->recv->type);
     }
   } else {
-    gen_expr_rvalue(g, n->recv, n->recv->type);
+    const expr_t* recv = n->recv;
+    if (recv->kind == EXPR_DEREF) {
+      const unaryop_t* deref = (unaryop_t*)recv;
+      const type_t* recvbt = unwrap_alias(deref->type);
+      // Note: no need to handle slices here; this can't happen with slices.
+      // Fixed-size array is represented as just a pointer; no deref needed.
+      if (recvbt->kind == TYPE_ARRAY && ((arraytype_t*)recvbt)->len > 0)
+        recv = deref->expr;
+    }
+    gen_expr_rvalue(g, recv, recv->type);
   }
 
   PRINT(ptr_code);
@@ -2636,7 +2671,7 @@ static void gen_subscript(cgen_t* g, const subscript_t* n) {
   }
   CHAR(']');
 
-  if (index_tmp_id || recv_tmp_id)
+  if (is_exprblock)
     PRINT(";}");
   if (checkbounds)
     CHAR(')');

@@ -20,6 +20,7 @@ const char* nodekind_fmt(nodekind_t kind) {
     case EXPR_MEMBER:                                         return "member";
     case EXPR_SUBSCRIPT:                                      return "subscript";
     case EXPR_FIELD:                                          return "field";
+    case EXPR_CALL:                                           return "call";
 
     case TYPE_UNKNOWN:                   return "unknown type";
     case TYPE_ARRAY:                     return "array type";

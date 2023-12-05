@@ -238,7 +238,18 @@ static void incuse_write(void* node) {
       node = n->expr;
       break;
     }
-    // case EXPR_SUBSCRIPT: { subscript_t* n = node; break; } // TODO
+    case EXPR_SUBSCRIPT:
+      node = ((subscript_t*)node)->recv;
+      break;
+    case EXPR_DEREF:
+      node = ((unaryop_t*)node)->expr;
+      break;
+
+    // invalid (caller will handle error reporting)
+    case EXPR_CALL:
+      return;
+
+    // TODO
     default: { node_t* n = node;
       dlog("TODO: %s %s", __FUNCTION__, nodekind_name(n->kind));
       return;
@@ -1438,10 +1449,24 @@ static bool type_can_be_zeroinit(const type_t* t) {
 }
 
 
+// static slicetype_t* mkslicetype(typecheck_t* a, type_t* elem, nodekind_t kind) {
+//   assert(kind == TYPE_MUTSLICE || kind == TYPE_SLICE);
+//   slicetype_t* t = mknode(a, slicetype_t, kind);
+//   t->flags = elem->flags & NF_CHECKED;
+//   // struct { void* ptr; uint cap, len; }
+//   t->align = a->compiler->target.ptrsize;
+//   t->size = a->compiler->target.ptrsize + a->compiler->uinttype->size*2;
+//   t->elem = elem;
+//   transfer_1_nuse_to_wrapper(t, elem);
+//   return t;
+// }
+
+
 static void this_type(typecheck_t* a, local_t* local) {
   type_t* recvt = local->type;
   // pass certain types by value instead of pointer when access is read-only
   if (!local->ismut) {
+    // "this" (immutable)
     if (nodekind_isprimtype(recvt->kind)) // e.g. int, i32
       return;
     if (recvt->kind == TYPE_STRUCT) {
@@ -1451,6 +1476,15 @@ static void this_type(typecheck_t* a, local_t* local) {
       if ((u32)st->align <= a->compiler->target.ptrsize && st->size <= maxsize)
         return;
     }
+  } else {
+    // "mut this"
+    // type_t* recvbt = unwrap_alias(recvt);
+    // if (recvbt->kind == TYPE_ARRAY) {
+    //   // "mut this" for [T] is mut&[T]; a mutable slice
+    //   type_t* elemt = ((arraytype_t*)recvbt)->elem;
+    //   local->type = (type_t*)mkslicetype(a, elemt, TYPE_MUTSLICE);
+    //   return;
+    // }
   }
   // pointer type
   reftype_t* t = mkreftype(a, recvt, local->ismut);
@@ -1752,6 +1786,12 @@ static void arraytype(typecheck_t* a, arraytype_t** tp) {
     //     fmtnode(0, at->elem));
     //   help(a, at->elem, "mark %s `pub`", fmtnode(0, at->elem));
     // }
+    if (a->visitstack.len == 1) {
+      node_t* parent = a->nspath.v[a->nspath.len - 1];
+      dlog("parent %s %s", nodekind_name(parent->kind), fmtnode(0, parent));
+    }
+
+    panic("TODO only set NF_VIS_PUB if parent is usertype");
     node_set_visibility((node_t*)at, NF_VIS_PUB);
   }
 
@@ -1871,6 +1911,46 @@ static void main_fun(typecheck_t* a, fun_t* n) {
 }
 
 
+static bool typefun_add(
+  typecheck_t* a, type_t* recvt, sym_t name, fun_t* fn, loc_t loc)
+{
+  assertnotnull(fn->name);
+  assert(fn->recvt == NULL || fn->recvt == recvt);
+  assert(name != sym__);
+
+  if (fn->name == sym__)
+    fn->name = name;
+
+  fn->recvt = recvt;
+
+  // first, search struct type for field named "name"
+  expr_t* existing = NULL;
+  if (recvt->kind == TYPE_STRUCT)
+    existing = (expr_t*)lookup_struct_field((structtype_t*)recvt, name);
+
+  // next, add (or retrieve existing) function to the type-function table
+  if (!existing) {
+    fun_t* fn2 = typefuntab_add(&a->pkg->tfundefs, recvt, name, fn);
+    if UNLIKELY(!fn2)
+      return out_of_mem(a), false;
+    if (fn2 != fn)
+      existing = (expr_t*)fn2;
+  }
+
+  if LIKELY(!existing)
+    return true;
+
+  // report an error if the type function is already defined,
+  // or if there's a struct field with the same name on the recvt.
+  const char* s = fmtnode(0, recvt);
+  error(a, loc, "duplicate %s \"%s\" for type %s",
+    (existing->kind == EXPR_FUN) ? "function" : "member", name, s);
+  if (loc_line(existing->loc))
+    help(a, existing, "\"%s\" previously defined here", name);
+  return false;
+}
+
+
 static void fun(typecheck_t* a, fun_t* n) {
   fun_t* outer_fun = a->fun;
   a->fun = n;
@@ -1879,6 +1959,11 @@ static void fun(typecheck_t* a, fun_t* n) {
   if (n->recvt) {
     // type function
     type(a, &n->recvt);
+
+    // register type function
+    if (!typefun_add(a, n->recvt, n->name, n, n->nameloc))
+      return;
+
     if (!n->nsparent)
       n->nsparent = (node_t*)n->recvt;
     enter_ns(a, n->recvt);
@@ -2667,6 +2752,12 @@ static void retexpr(typecheck_t* a, retexpr_t* n) {
 }
 
 
+static bool check_assign_to_subscript(typecheck_t* a, subscript_t* m) {
+  dlog("TODO %s", __FUNCTION__);
+  return true;
+}
+
+
 static bool check_assign_to_member(typecheck_t* a, member_t* m) {
   // check mutability of receiver
   assertnotnull(m->recv->type);
@@ -2717,12 +2808,29 @@ static bool check_assign_to_id(typecheck_t* a, idexpr_t* id) {
 }
 
 
+static const fun_t* nullable builtin_call_fun(const typecheck_t* a, const call_t* n) {
+  const fun_t* fun = NULL;
+  if (n->recv->kind == EXPR_MEMBER) {
+    const member_t* m = (member_t*)n->recv;
+    if (m->target && m->target->kind == EXPR_FUN)
+      fun = (fun_t*)m->target;
+  } else if (n->recv->kind == EXPR_FUN) {
+    fun = (fun_t*)n->recv;
+  }
+  if (fun && fun->is_builtin)
+    return (fun_t*)fun;
+  return NULL;
+}
+
+
 static bool check_assign(typecheck_t* a, expr_t* target, expr_t* origin) {
   switch (target->kind) {
     case EXPR_ID:
       return check_assign_to_id(a, (idexpr_t*)target);
     case EXPR_MEMBER:
       return check_assign_to_member(a, (member_t*)target);
+    case EXPR_SUBSCRIPT:
+      return check_assign_to_subscript(a, (subscript_t*)target);
     case EXPR_DEREF: {
       // dereference target, e.g. "var x &int ; *x = 3"
       type_t* t = ((unaryop_t*)target)->expr->type;
@@ -2735,9 +2843,14 @@ static bool check_assign(typecheck_t* a, expr_t* target, expr_t* origin) {
         return true;
       break;
     }
-    case EXPR_CALL:
-      dlog("TODO assignment to call, which is likely a builtin like 'len'");
+    case EXPR_CALL: {
+      const fun_t* builtin_fun = builtin_call_fun(a, (call_t*)target);
+      if (builtin_fun) {
+        error(a, origin, "cannot assign to built-in function %s", builtin_fun->name);
+        return false;
+      }
       break;
+    }
   }
   error(a, origin, "cannot assign to %s (%s)",
     fmtkind(target), nodekind_name(target->kind));
@@ -2754,6 +2867,9 @@ static void assign(typecheck_t* a, binop_t* n) {
     n->type = n->right->type;
     return;
   }
+
+  if (n->left->kind == EXPR_SUBSCRIPT)
+    ((subscript_t*)n->left)->is_assign = true;
 
   expr(a, n->left);
   incuse_write(n->left);
@@ -3425,6 +3541,10 @@ static expr_t* nullable find_builtin_member(
     // reserve(mut this, uint)bool is defined for dynamic arrays
     if (recvbt->kind == TYPE_ARRAY && ((arraytype_t*)recvbt)->len == 0)
       return (expr_t*)&a->compiler->builtin_reserve;
+  } else if (n->name == sym_resize) {
+    // resize(mut this, uint)bool is defined for dynamic arrays
+    if (recvbt->kind == TYPE_ARRAY && ((arraytype_t*)recvbt)->len == 0)
+      return (expr_t*)&a->compiler->builtin_resize;
   }
   return NULL;
 }
@@ -4590,6 +4710,8 @@ static void _type(typecheck_t* a, type_t** tp) {
   }
 
   TRACE_NODE(a, "", tp);
+  visitstack_push(a, t);
+
   switch ((enum nodekind)(*tp)->kind) {
     case TYPE_VOID:
     case TYPE_BOOL:
@@ -4669,6 +4791,7 @@ static void _type(typecheck_t* a, type_t** tp) {
   UNREACHABLE;
 
 end:
+  visitstack_pop(a);
   // note: must access local t here as *tp might have been updated
   a->templatenest -= (u32)!!(t->flags & NF_TEMPLATE);
 }

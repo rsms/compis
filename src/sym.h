@@ -14,6 +14,7 @@ extern sym_t sym_from;    // "from"
 extern sym_t sym_len;     // "len"
 extern sym_t sym_cap;     // "cap"
 extern sym_t sym_reserve; // "reserve"
+extern sym_t sym_resize;  // "resize"
 
 extern sym_t sym_void;    // extern sym_t sym_void_typeid;
 extern sym_t sym_bool;    // extern sym_t sym_bool_typeid;

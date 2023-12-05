@@ -439,6 +439,7 @@ typedef struct {
   expr_t* index;     // e.g. "3" in "x[3]"
   u64     index_val; // valid if index is a constant or comptime
   loc_t   endloc;    // location of terminating ']'
+  bool    is_assign; // true if this is the target of an assignment
 } subscript_t;
 
 typedef u8 abi_t;
@@ -716,6 +717,7 @@ static typeid_t typeid_intern(type_t* t);
 static typeid_t typeid_of(const type_t* t);
 void typeid_init(memalloc_t);
 static u32 typeid_len(typeid_t);
+usize typeid_hash(usize seed, typeid_t);
 
 typeid_t _typeid(type_t*, bool intern);
 inline static typeid_t typeid_intern(type_t* t) {

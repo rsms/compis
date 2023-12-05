@@ -7,7 +7,7 @@
 #include "leb128.h"
 
 
-//#define TYPEID_TRACE
+#define TYPEID_TRACE
 #ifdef TYPEID_TRACE
   #define trace(fmt, args...) _dlog(6, "typeid", __FILE__, __LINE__, fmt, ##args)
 #else
@@ -33,14 +33,19 @@ inline static u64 f64_to_u64(f64 v) { return *(u64*)&v; }
 //inline static f64 u64_to_f64(u64 v) { return *(f64*)&v; }
 
 
-static usize typeid_hash(usize seed, const void* typeidp) {
-  typeid_t typeid = *(typeid_t*)typeidp;
+usize typeid_hash(usize seed, typeid_t typeid) {
   static const u64 secret[4] = {
     0xdb1949b0945c5256llu,
     0x4f85e17c1e7ee8allu,
     0x24ac847a1c0d4bf7llu,
     0xd2952ed7e9fbaf43llu };
   return wyhash(typeid, typeid_len(typeid), seed, secret);
+}
+
+
+static usize _typeid_hash(usize seed, const void* typeidp) {
+  typeid_t typeid = *(typeid_t*)typeidp;
+  return typeid_hash(seed, typeid);
 }
 
 
@@ -66,7 +71,7 @@ static typeid_t typeid_map_intern(typeid_t typeid) {
     buf_appendrepr(&tmpbuf, typeid, typeid_len(typeid));
     trace("[typeid_map_intern] typeid(%u)='%.*s' (hash=0x%lx)",
       typeid_len(typeid), (int)tmpbuf.len, tmpbuf.chars,
-      typeid_hash(typeid_ht.seed, &typeid));
+      typeid_hash(typeid_ht.seed, typeid));
     buf_dispose(&tmpbuf);
   }
   #endif
@@ -74,7 +79,7 @@ static typeid_t typeid_map_intern(typeid_t typeid) {
   // lookup under read-only lock
   rwmutex_rlock(&typeid_mu);
   typeid_t* ent = hashtable_lookup(
-    &typeid_ht, typeid_hash, typeid_eq, sizeof(typeid_t), &typeid);
+    &typeid_ht, _typeid_hash, typeid_eq, sizeof(typeid_t), &typeid);
   rwmutex_runlock(&typeid_mu);
   if (ent) {
     #ifdef TYPEID_TRACE
@@ -95,7 +100,7 @@ static typeid_t typeid_map_intern(typeid_t typeid) {
 
   bool did_insert;
   ent = hashtable_assign(
-    &typeid_ht, typeid_hash, typeid_eq, sizeof(typeid_t), &typeid, &did_insert);
+    &typeid_ht, _typeid_hash, typeid_eq, sizeof(typeid_t), &typeid, &did_insert);
   if UNLIKELY(!ent)
     goto oom;
 

@@ -418,7 +418,7 @@ static void configure_builtin_functions(compiler_t* c) {
   };
   typeid_intern((type_t*)&c->funtype2);
 
-  // fun T.reserve(uint cap) bool
+  // fun [T].reserve(uint cap) bool
   // Generated code is a function call. Implementation in std/runtime.
   c->builtin_reserve = (fun_t){
     .kind = EXPR_FUN, .is_builtin = true, .flags = NF_VIS_PUB | NF_CHECKED, .nuse = 1,
@@ -428,6 +428,11 @@ static void configure_builtin_functions(compiler_t* c) {
     .abi = ABI_C,
     .recvt = type_unknown,
   };
+
+  // fun [T].resize(uint len) bool
+  c->builtin_resize = c->builtin_reserve; // identical signature
+  c->builtin_resize.name = sym_len;
+  c->builtin_resize.mangledname = (char*)(CO_ABI_GLOBAL_PREFIX "builtin_resize");
 
   // Note: when adding or changing builtins, you should also update these functions:
   // - find_builtin_member in typecheck.c

@@ -154,6 +154,12 @@ static void* idexpr(ctx_t* ctx, idexpr_t* n) {
 
 static void* call(ctx_t* ctx, call_t* n) {
   fun_t* recv = eval(ctx, n->recv);
+
+  if (recv->kind == EXPR_MEMBER) {
+    // e.g. "foo.bar()"
+    return error_not_supported(ctx, n, "member call"), n;
+  }
+
   assert_nodekind(recv, EXPR_FUN);
   // TODO check if receiver function has a closure
   if (recv->body == NULL)

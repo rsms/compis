@@ -26,6 +26,7 @@ static rwmutex_t  sym_mu;
   _(len) \
   _(cap) \
   _(reserve) \
+  _(resize) \
 // end FOREACH_PREDEFINED_SYMBOL
 
 #define _(NAME) sym_t sym_##NAME;

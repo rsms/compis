@@ -1,0 +1,48 @@
+// modifing the contents of an array can be done with slices
+fun addint1(a mut&[int 3])
+  a[0] = 1
+
+fun addint2(a mut&[int])
+  a[0] = 1
+
+// built-in array functions are not available on slices,
+// so if you need to call for example [T].reserve(cap) you need to either...
+// 1. pass ownership of your array to the function, or
+// 2. define a type function:
+
+fun addint3(a [int]) [int] // take ownership of array
+  a.reserve(1)
+  a[0] = 1
+  a // return ownership of array
+
+fun [int].addint(mut this)
+  .reserve(1)
+  this[0] = 1
+
+fun [int 4].addint(mut this)
+  this[0] = 1
+
+/* cgen:
+
+static void addint1(__co_int* a) {
+  a[0] = 1ll;
+}
+static void addint2(struct _coDi a) {
+  *(__co_checkbounds(a.len,0),&a.ptr[0]) = 1ll;
+}
+
+#line 45
+static struct _coAi addint3(struct _coAi a) {
+  __co_builtin_reserve(&a, 4, 1llu);
+  *(__co_checkbounds(a.len,0),&a.ptr[0]) = 1ll;
+  return a;
+}
+static void Ai__addint(struct _coAi* this) {
+  __co_builtin_reserve(this, 4, 1llu);
+  *({struct _coAi v1 = (*this);__co_checkbounds(v1.len,0);&v1.ptr[0];}) = 1ll;
+}
+static void A4i__addint(__co_int* this) {
+  this[0] = 1ll;
+}
+
+*/

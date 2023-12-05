@@ -62,6 +62,7 @@ typedef struct compiler_ {
   fun_t       builtin_len;
   fun_t       builtin_cap;
   fun_t       builtin_reserve;
+  fun_t       builtin_resize;
 
   // configurable options (see compiler_config_t)
   bool opt_nolto : 1;
