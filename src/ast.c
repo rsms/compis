@@ -387,6 +387,11 @@ bool ast_toposort_visit_def(
     case TYPE_TEMPLATE:
       goto visit_self;
 
+    case TYPE_IMPORTED:
+      if (visitflags & AST_TOPOSORT_SKIPEXT)
+        return true;
+      goto visit_children;
+
     case TYPE_PLACEHOLDER: {
       // treat placeholdertype_t specially to avoid adding it to defs.
       // note: don't store to n to avoid tripping msan when init is null.

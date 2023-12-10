@@ -681,6 +681,12 @@ static bool intern_usertype(typecheck_t* a, usertype_t** tp) {
   assertnotnull(*tp);
   assert(nodekind_isusertype((*tp)->kind));
 
+  // ——— TODO ———
+  // add all usertypes from imported packages to a->usertypes during import
+
+  if (a->pubnest)
+    node_set_visibility((node_t*)*tp, NF_VIS_PUB);
+
   typeid_t typeid = typeid_intern((type_t*)*tp);
   usertype_t** p = (usertype_t**)map_assign_ptr(&a->usertypes, a->ma, typeid);
 
@@ -967,12 +973,14 @@ static void typectx_pop(typecheck_t* a) {
 
 
 static void visitstack_push(typecheck_t* a, void* node) {
+  trace("visitstack_push %s", nodekind_name(((node_t*)node)->kind));
   if UNLIKELY(!nodearray_push(&a->visitstack, a->ma, node))
     out_of_mem(a);
 }
 
 inline static void visitstack_pop(typecheck_t* a) {
   assert(a->visitstack.len > 0);
+  trace("visitstack_pop %s", nodekind_name(a->visitstack.v[a->visitstack.len-1]->kind));
   a->visitstack.len--;
 }
 
@@ -1779,21 +1787,24 @@ static void arraytype(typecheck_t* a, arraytype_t** tp) {
       error(a, at, "zero length array");
   }
 
-  // check for internal types leaking from public ones
-  if UNLIKELY(a->pubnest) {
-    // if ((at->elem->flags & NF_VIS_PUB) == 0) {
-    //   error(a, at, "public array type of internal subtype %s",
-    //     fmtnode(0, at->elem));
-    //   help(a, at->elem, "mark %s `pub`", fmtnode(0, at->elem));
-    // }
-    if (a->visitstack.len == 1) {
-      node_t* parent = a->nspath.v[a->nspath.len - 1];
-      dlog("parent %s %s", nodekind_name(parent->kind), fmtnode(0, parent));
-    }
-
-    panic("TODO only set NF_VIS_PUB if parent is usertype");
-    node_set_visibility((node_t*)at, NF_VIS_PUB);
-  }
+  // // check for internal types leaking from public ones
+  // if (a->pubnest) {
+  //   // if ((at->elem->flags & NF_VIS_PUB) == 0) {
+  //   //   error(a, at, "public array type of internal subtype %s",
+  //   //     fmtnode(0, at->elem));
+  //   //   help(a, at->elem, "mark %s `pub`", fmtnode(0, at->elem));
+  //   // }
+  //   if (a->visitstack.len > 0) {
+  //     node_t* parent = a->visitstack.v[a->visitstack.len - 1];
+  //     dlog("parent %s %s", nodekind_name(parent->kind), fmtnode(0, parent));
+  //     if (parent->kind == TYPE_STRUCT)
+  //       node_set_visibility((node_t*)at, NF_VIS_PUB);
+  //   } else {
+  //     dlog("parent (none)");
+  //   }
+  // } else {
+  //   dlog("not pub");
+  // }
 
   //assertf(at->_typeid == NULL, "%s", fmtnode(0, at));
   arraytype_calc_size(a, at);
@@ -1815,6 +1826,8 @@ static void intern_opttype(typecheck_t* a, opttype_t** tp) {
 static void opttype(typecheck_t* a, opttype_t** tp) {
   type(a, &(*tp)->elem);
   intern_opttype(a, tp);
+  if (!(*tp)->nsparent)
+    (*tp)->nsparent = a->nspath.v[a->nspath.len - 1];
 }
 
 
@@ -4598,7 +4611,23 @@ static void unresolvedtype(typecheck_t* a, unresolvedtype_t** tp) {
   trace("resolve type \"%s\" (%p) => %s %s",
     name, name, nodekind_name(t ? t->kind : 0), t ? fmtnode(0, t) : "(null)");
 
-  if LIKELY(t && nodekind_istype(t->kind)) {
+  if UNLIKELY(!t)
+    return error(a, *tp, "unknown type \"%s\"", name);
+
+  if (t->kind == STMT_TYPEDEF) {
+    // this happens for imports, e.g.
+    // foo/foo.co
+    //   pub type Foo
+    //     x int
+    // bar/bar.co
+    //   import "foo" { Foo }
+    //   var x Foo
+    //         ~~~
+    t = assertnotnull(((typedef_t*)t)->type);
+    assert(t->flags & NF_CHECKED);
+  }
+
+  if LIKELY(nodekind_istype(t->kind)) {
     type(a, &t);
     t->nuse = (*tp)->nuse; //incuse_read(t); t->nuse += (*tp)->nuse;
     (*tp)->resolved = t;
@@ -4610,21 +4639,13 @@ static void unresolvedtype(typecheck_t* a, unresolvedtype_t** tp) {
       // break cycle to prevent stack overflow in type_isowner
       ((aliastype_t*)t)->elem = type_unknown;
     }
-
     return;
   }
 
-  // error beyond this point
-
-  // not found
-  if (!t) {
-    error(a, *tp, "unknown type \"%s\"", name);
-  } else {
-    // not a type
-    error(a, *tp, "%s is not a type (it's a %s)", name, fmtkind(t));
-    if (loc_line(t->loc))
-      help(a, t, "%s defined here", name);
-  }
+  // not a type
+  error(a, *tp, "%s is not a type (it's a %s)", name, fmtkind(t));
+  if (loc_line(t->loc))
+    help(a, t, "%s defined here", name);
 
   // redefine as "void" in current scope to minimize repetitive errors
   if (!scope_define(&a->scope, a->ma, name, *tp))
@@ -4672,6 +4693,38 @@ static void aliastype(typecheck_t* a, aliastype_t** tp) {
     }
     node_set_visibility((node_t*)t, NF_VIS_PUB);
   }
+}
+
+
+static void importedtype(typecheck_t* a, importedtype_t** tp) {
+  importedtype_t* imt = *tp;
+  assertnull(imt->elem);
+
+  assertnotnull(imt->import->pkg); // should have been resolved by pkgbuild
+  nsexpr_t* api_ns = assertnotnull(imt->import->pkg->api_ns);
+
+  trace("resolving type %s in package %s", imt->name, imt->import->name);
+
+  for (u32 i = 0; i < api_ns->members.len; i++) {
+    if (api_ns->member_names[i] == imt->name) {
+      node_t* n = api_ns->members.v[i];
+      if (n->kind == STMT_TYPEDEF) {
+        n = (node_t*)((typedef_t*)n)->type;
+      } else if (!node_istype(n)) {
+        panic("%s %s is not a type (it's a %s)", imt->name, fmtnode(0, n), fmtkind(n));
+      }
+      assert(n->flags & NF_CHECKED);
+      imt->elem = (type_t*)n;
+      imt->align = imt->elem->align;
+      imt->size = imt->elem->size;
+      if (nodekind_isusertype(imt->elem->kind))
+        imt->mangledname = ((usertype_t*)n)->mangledname;
+      return;
+    }
+  }
+
+  error(a, imt->nameloc, "%s \"%s\" has no type \"%s\"",
+    fmtkind(imt->import), imt->import->name, imt->name);
 }
 
 
@@ -4747,6 +4800,7 @@ static void _type(typecheck_t* a, type_t** tp) {
     case TYPE_OPTIONAL:    opttype(a, (opttype_t**)tp); goto end;
     case TYPE_STRUCT:      structtype(a, (structtype_t**)tp); goto end;
     case TYPE_ALIAS:       aliastype(a, (aliastype_t**)tp); goto end;
+    case TYPE_IMPORTED:    importedtype(a, (importedtype_t**)tp); goto end;
     case TYPE_TEMPLATE:    templatetype(a, (templatetype_t**)tp); goto end;
     case TYPE_PLACEHOLDER: placeholdertype(a, (placeholdertype_t**)tp); goto end;
     case TYPE_UNRESOLVED:  unresolvedtype(a, (unresolvedtype_t**)tp); goto end;
@@ -4922,6 +4976,7 @@ static void exprp(typecheck_t* a, expr_t** np) {
   case TYPE_STRUCT:
   case TYPE_ALIAS:
   case TYPE_NS:
+  case TYPE_IMPORTED:
   case TYPE_UNKNOWN:
   case TYPE_TEMPLATE:
   case TYPE_PLACEHOLDER:

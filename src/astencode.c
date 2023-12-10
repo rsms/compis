@@ -182,6 +182,11 @@ try_string_repr:
 }
 
 
+static void encode_typeid(astencoder_t* a, buf_t* outbuf, typeid_t typeid) {
+  encode_str(a, outbuf, (const char*)typeid->bytes, typeid->len);
+}
+
+
 static void encode_field_nodearray(
   astencoder_t* a, buf_t* outbuf, const void* fp, ast_field_t f)
 {
@@ -408,6 +413,17 @@ static void encode_node(astencoder_t* a, buf_t* outbuf, const node_t* n) {
 
     // update outbuf->len
     buf_setlenp(outbuf, p);
+
+    // special attributes of type_t
+    if (nodekind_istype(n->kind)) {
+      if (((type_t*)n)->_typeid) {
+        buf_push(outbuf, ' ');
+        encode_typeid(a, outbuf, ((type_t*)n)->_typeid);
+      } else {
+        buf_push(outbuf, ' ');
+        buf_push(outbuf, '0');
+      }
+    }
 
     // encode fields
     for (u8 i = 0; i < g_ast_fieldlentab[n->kind]; i++) {
@@ -656,6 +672,7 @@ static void reg_syms(astencoder_t* a, const node_t* n) {
   case TYPE_STRUCT:     return ADDSYMZ(((structtype_t*)n)->name);
   case TYPE_UNRESOLVED: return ADDSYM(((unresolvedtype_t*)n)->name);
   case TYPE_ALIAS:      return ADDSYM(((aliastype_t*)n)->name);
+  case TYPE_IMPORTED:   return ADDSYM(((importedtype_t*)n)->name);
 
   // no symbols
   case NODE_BAD:
@@ -999,6 +1016,8 @@ typedef struct astdecoder_ {
   const u8*   pend;
   const u8*   pcurr;
   err_t       err;
+  u32         tmpbufcap;
+  u8          tmpbuf[];
 } astdecoder_t;
 
 #define DEC_PARAMS  astdecoder_t* d, const u8* const pend, const u8* p
@@ -1195,10 +1214,16 @@ static const u8* dec_noderef(DEC_PARAMS, node_t** dst, bool allow_null) {
 }
 
 
-static const u8* dec_str(DEC_PARAMS, u8** dstp, bool allow_null) {
+// flags for dec_str1
+#define DEC_STR_NULLABLE (1u<<0) // allow '_', which sets *dstp=NULL
+#define DEC_STR_TMPBUF   (1u<<1) // use tmpbuf instead of mem_alloc when possible
+#define DEC_STR_LEN32    (1u<<2) // store length in first 4 bytes
+
+
+static const u8* dec_str1(DEC_PARAMS, u8** dstp, u32 flags) {
   // string = '"' <byte 0x20..0xFF>* '"' // compis-escaped
   if UNLIKELY(DEC_DATA_AVAIL < 2 || *p != '"') { // min size is 2 ("")
-    if LIKELY(*p == '_' && allow_null) {
+    if LIKELY(*p == '_' && (flags & DEC_STR_NULLABLE)) {
       *dstp = NULL;
       return p + 1;
     }
@@ -1206,21 +1231,38 @@ static const u8* dec_str(DEC_PARAMS, u8** dstp, bool allow_null) {
   }
 
   // validate string literal and calculate its decoded length
-  usize enclen = DEC_DATA_AVAIL, declen;
+  usize enclen = DEC_DATA_AVAIL;
+  usize declen;
   err_t err = co_strlit_check(p, &enclen, &declen);
   if UNLIKELY(err)
     goto end_invalid;
 
-  // allocate memory for string (+1 for NUL terminator)
-  u8* dst = mem_alloc(d->ast_ma, declen + 1).p;
-  if UNLIKELY(!dst)
-    return DEC_ERROR(ErrNoMem, "out of memory");
+  // we assume that typeid_t has a 4 byte "len" header
+  static_assert(offsetof(typeid_data_t, bytes) == 4, "");
+
+  u8* dst;
+  usize dstcap = declen + ((u32)!!(flags & DEC_STR_LEN32) * 3) + 1;
+  if ((flags & DEC_STR_TMPBUF) && (usize)d->tmpbufcap >= dstcap) {
+    dst = d->tmpbuf;
+  } else {
+    // allocate memory for string (+1 for NUL terminator)
+    dst = mem_alloc(d->ast_ma, dstcap).p;
+    if UNLIKELY(!dst)
+      goto oom;
+  }
+
   *dstp = dst;
-  dst[declen] = 0;
+
+  if (flags & DEC_STR_LEN32) {
+    *(u32*)dst = (u32)declen;
+    dst += 4;
+  } else {
+    dst[declen] = 0;
+  }
 
   if (enclen - 2 == declen) {
     // copy verbatim string
-    memcpy(dst, p + 1, declen);
+    memcpy(dst, p, declen);
   } else {
     // decode string with escape sequence
     if UNLIKELY(( err = co_strlit_decode(p, enclen, dst, declen) ))
@@ -1229,9 +1271,30 @@ static const u8* dec_str(DEC_PARAMS, u8** dstp, bool allow_null) {
   //dlog("decoded string:\n————————\n%.*s\n———————", (int)declen, (const char*)dst);
   p += enclen;
   return p;
+
 end_invalid:
   p += enclen;
   return DEC_ERROR(err, "invalid string literal");
+
+oom:
+  return DEC_ERROR(ErrNoMem, "out of memory");
+}
+
+
+static const u8* dec_str(DEC_PARAMS, u8** dstp, bool allow_null) {
+  return dec_str1(DEC_ARGS, dstp, DEC_STR_NULLABLE * (u32)allow_null);
+}
+
+
+static const u8* dec_typeid(DEC_PARAMS, typeid_t* dstp) {
+  u8* str;
+  p = dec_str1(DEC_ARGS, &str, DEC_STR_TMPBUF | DEC_STR_LEN32);
+  if (p != pend) {
+    *dstp = typeid_intern_typeid((typeid_t)str);
+    if (str != d->tmpbuf)
+      mem_freex(d->ast_ma, MEM(str, ((typeid_t)str)->len));
+  }
+  return p;
 }
 
 
@@ -1652,6 +1715,12 @@ static const u8* decode_node(DEC_PARAMS, u32 node_id) {
   p = dec_whitespace(DEC_ARGS);
   p = dec_loc(DEC_ARGS, &n->loc);
 
+  // read typeid
+  if (nodekind_istype(kind)) {
+    p = dec_whitespace(DEC_ARGS);
+    p = dec_typeid(DEC_ARGS, &((type_t*)n)->_typeid);
+  }
+
   // read fields
   for (u8 i = 0; i < g_ast_fieldlentab[n->kind]; i++) {
     p = decode_field(DEC_ARGS, n, fieldtab[i]);
@@ -1735,16 +1804,23 @@ astdecoder_t* nullable astdecoder_open(
   const u8*   src,
   usize       srclen)
 {
-  astdecoder_t* d = mem_alloct(c->ma, astdecoder_t);
-  if (d) {
-    d->ast_ma = ast_ma;
-    d->ma = c->ma;
-    d->c = c;
-    d->srcname = srcname;
-    d->pstart = src;
-    d->pend = src + srclen;
-    d->pcurr = src;
-  }
+  u32 tmpbufcap = 2048;
+  mem_t m = mem_alloc(c->ma, sizeof(astdecoder_t) + tmpbufcap);
+  if (!m.p)
+    return NULL;
+
+  astdecoder_t* d = m.p;
+  memset(d, 0, sizeof(astdecoder_t));
+
+  d->ast_ma = ast_ma;
+  d->ma = c->ma;
+  d->c = c;
+  d->srcname = srcname;
+  d->pstart = src;
+  d->pend = src + srclen;
+  d->pcurr = src;
+  d->tmpbufcap = tmpbufcap;
+
   return d;
 }
 
@@ -1754,7 +1830,6 @@ void astdecoder_close(astdecoder_t* d) {
     mem_freex(d->ma, MEM(d->srctab, (usize)d->srccount * sizeof(*d->srctab)));
   dec_tmptabs_free(d);
   nodearray_dispose(&d->tmpnodearray, d->ma);
-
   mem_freet(d->ma, d);
 }
 

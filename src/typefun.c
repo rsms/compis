@@ -20,12 +20,12 @@ static usize tfunent_hash(usize seed, const void* entp) {
   assertnotnull(ent->recvt->_typeid);
   hash = typeid_hash(hash, ent->recvt->_typeid);
 
-  {
-    buf_t* tmpbuf = tmpbuf_get(0);
-    buf_appendrepr(tmpbuf, ent->recvt->_typeid, typeid_len(ent->recvt->_typeid));
-    dlog("tfunent_hash (\"%.*s\" \"%s\") => 0x%llx",
-      (int)tmpbuf->len, tmpbuf->chars, ent->name, hash);
-  }
+  // {
+  //   buf_t* tmpbuf = tmpbuf_get(0);
+  //   buf_appendrepr(tmpbuf, ent->recvt->_typeid, typeid_len(ent->recvt->_typeid));
+  //   dlog("tfunent_hash (\"%.*s\" \"%s\") => 0x%llx",
+  //     (int)tmpbuf->len, tmpbuf->chars, ent->name, hash);
+  // }
 
   return hash;
 }
@@ -36,15 +36,15 @@ static bool tfunent_eq(const void* ent1, const void* ent2) {
   const tfunent_t* b = ent2;
   assertnotnull(a->recvt->_typeid);
   assertnotnull(b->recvt->_typeid);
-  {
-    buf_t* a_typeid = tmpbuf_get(0);
-    buf_t* b_typeid = tmpbuf_get(1);
-    buf_appendrepr(a_typeid, a->recvt->_typeid, typeid_len(a->recvt->_typeid));
-    buf_appendrepr(b_typeid, b->recvt->_typeid, typeid_len(b->recvt->_typeid));
-    dlog("tfunent_eq (%.*s %s) <> (%.*s %s)",
-      (int)a_typeid->len, a_typeid->chars, a->name,
-      (int)b_typeid->len, b_typeid->chars, b->name);
-  }
+  // {
+  //   buf_t* a_typeid = tmpbuf_get(0);
+  //   buf_t* b_typeid = tmpbuf_get(1);
+  //   buf_appendrepr(a_typeid, a->recvt->_typeid, typeid_len(a->recvt->_typeid));
+  //   buf_appendrepr(b_typeid, b->recvt->_typeid, typeid_len(b->recvt->_typeid));
+  //   dlog("tfunent_eq (%.*s %s) <> (%.*s %s)",
+  //     (int)a_typeid->len, a_typeid->chars, a->name,
+  //     (int)b_typeid->len, b_typeid->chars, b->name);
+  // }
   return (a->recvt->_typeid == b->recvt->_typeid && a->name == b->name);
 }
 

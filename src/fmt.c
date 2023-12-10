@@ -5,7 +5,9 @@
 
 const char* nodekind_fmt(nodekind_t kind) {
   switch (kind) {
-    case STMT_TYPEDEF: return "type definition";
+    case STMT_TYPEDEF:  return "type definition";
+    case STMT_IMPORT:   return "imported package";
+    case NODE_IMPORTID: return "imported member";
 
     case EXPR_PARAM:                                          return "parameter";
     case EXPR_LET:                                            return "binding";
@@ -75,7 +77,7 @@ static void local(FMT_PARAMS, const local_t* nullable n) {
 }
 
 
-static void funtype(FMT_PARAMS, const funtype_t* nullable n) {
+static void fmt_funtype(FMT_PARAMS, const funtype_t* nullable n) {
   assert(maxdepth > 0);
   CHAR('(');
   for (u32 i = 0; i < n->params.len; i++) {
@@ -92,7 +94,7 @@ static void funtype(FMT_PARAMS, const funtype_t* nullable n) {
 }
 
 
-static void structtype(FMT_PARAMS, const structtype_t* nullable t) {
+static void fmt_structtype(FMT_PARAMS, const structtype_t* t) {
   if (t->name) {
     PRINT(t->name);
   } else if (maxdepth <= 1) {
@@ -138,7 +140,12 @@ static void structtype(FMT_PARAMS, const structtype_t* nullable t) {
 }
 
 
-static void templateparam(FMT_PARAMS, const templateparam_t* tparam) {
+static void fmt_importedtype(FMT_PARAMS, const importedtype_t* t) {
+  PRINT(t->import->name), CHAR('.'), PRINT(t->name);
+}
+
+
+static void fmt_templateparam(FMT_PARAMS, const templateparam_t* tparam) {
   PRINT(tparam->name);
   if (tparam->init && maxdepth > 1) {
     PRINT(" = ");
@@ -216,7 +223,7 @@ static void fmt(FMT_PARAMS, const node_t* nullable n) {
   }
 
   case NODE_TPLPARAM:
-    templateparam(FMT_ARGS, (templateparam_t*)n);
+    fmt_templateparam(FMT_ARGS, (templateparam_t*)n);
     break;
 
   case STMT_IMPORT:
@@ -236,7 +243,7 @@ static void fmt(FMT_PARAMS, const node_t* nullable n) {
     FALLTHROUGH;
   case EXPR_PARAM:
   case EXPR_FIELD:
-    return local(FMT_ARGS, (const local_t*)n);
+    return local(FMT_ARGS, (local_t*)n);
 
   case EXPR_NS: {
     const nsexpr_t* ns = (nsexpr_t*)n;
@@ -286,8 +293,8 @@ static void fmt(FMT_PARAMS, const node_t* nullable n) {
   }
 
   case EXPR_CALL: {
-    const call_t* call = (const call_t*)n;
-    fmt(FMT_ARGS, (const node_t*)call->recv);
+    const call_t* call = (call_t*)n;
+    fmt(FMT_ARGS, (node_t*)call->recv);
     CHAR('(');
     fmt_nodearray(FMT_ARGS, &call->args, ", ");
     CHAR(')');
@@ -295,35 +302,35 @@ static void fmt(FMT_PARAMS, const node_t* nullable n) {
   }
 
   case EXPR_TYPECONS: {
-    const typecons_t* tc = (const typecons_t*)n;
-    fmt(FMT_ARGS, (const node_t*)tc->type);
+    const typecons_t* tc = (typecons_t*)n;
+    fmt(FMT_ARGS, (node_t*)tc->type);
     CHAR('(');
-    fmt(FMT_ARGS, (const node_t*)tc->expr);
+    fmt(FMT_ARGS, (node_t*)tc->expr);
     CHAR(')');
     break;
   }
 
   case EXPR_MEMBER:
-    fmt(FMT_ARGS, (node_t*)((const member_t*)n)->recv);
+    fmt(FMT_ARGS, (node_t*)((member_t*)n)->recv);
     CHAR('.');
-    PRINT(((const member_t*)n)->name);
+    PRINT(((member_t*)n)->name);
     break;
 
   case EXPR_SUBSCRIPT:
-    fmt(FMT_ARGS, (node_t*)((const subscript_t*)n)->recv);
+    fmt(FMT_ARGS, (node_t*)((subscript_t*)n)->recv);
     CHAR('[');
-    fmt(FMT_ARGS, (node_t*)((const subscript_t*)n)->index);
+    fmt(FMT_ARGS, (node_t*)((subscript_t*)n)->index);
     CHAR(']');
     break;
 
   case EXPR_IF:
     PRINT("if ");
-    fmt(FMT_ARGS, (node_t*)((const ifexpr_t*)n)->cond);
+    fmt(FMT_ARGS, (node_t*)((ifexpr_t*)n)->cond);
     CHAR(' ');
-    fmt(FMT_ARGS, (node_t*)((const ifexpr_t*)n)->thenb);
-    if (((const ifexpr_t*)n)->elseb) {
+    fmt(FMT_ARGS, (node_t*)((ifexpr_t*)n)->thenb);
+    if (((ifexpr_t*)n)->elseb) {
       PRINT(" else ");
-      fmt(FMT_ARGS, (node_t*)((const ifexpr_t*)n)->elseb);
+      fmt(FMT_ARGS, (node_t*)((ifexpr_t*)n)->elseb);
     }
     break;
 
@@ -355,9 +362,9 @@ static void fmt(FMT_PARAMS, const node_t* nullable n) {
 
   case EXPR_RETURN:
     PRINT("return");
-    if (((const retexpr_t*)n)->value) {
+    if (((retexpr_t*)n)->value) {
       CHAR(' ');
-      fmt(FMT_ARGS, (node_t*)((const retexpr_t*)n)->value);
+      fmt(FMT_ARGS, (node_t*)((retexpr_t*)n)->value);
     }
     break;
 
@@ -449,11 +456,14 @@ static void fmt(FMT_PARAMS, const node_t* nullable n) {
     break;
 
   case TYPE_STRUCT:
-    return structtype(FMT_ARGS, (const structtype_t*)n);
+    return fmt_structtype(FMT_ARGS, (structtype_t*)n);
+
+  case TYPE_IMPORTED:
+    return fmt_importedtype(FMT_ARGS, (importedtype_t*)n);
 
   case TYPE_FUN:
     PRINT("fun");
-    return funtype(FMT_ARGS, (const funtype_t*)n);
+    return fmt_funtype(FMT_ARGS, (funtype_t*)n);
 
   case TYPE_ARRAY: {
     arraytype_t* t = (arraytype_t*)n;
@@ -479,7 +489,7 @@ static void fmt(FMT_PARAMS, const node_t* nullable n) {
   }
 
   case TYPE_PTR: {
-    const ptrtype_t* pt = (const ptrtype_t*)n;
+    const ptrtype_t* pt = (ptrtype_t*)n;
     CHAR('*');
     fmt(FMT_ARGS, (node_t*)pt->elem);
     break;
@@ -487,7 +497,7 @@ static void fmt(FMT_PARAMS, const node_t* nullable n) {
 
   case TYPE_REF:
   case TYPE_MUTREF: {
-    const reftype_t* pt = (const reftype_t*)n;
+    const reftype_t* pt = (reftype_t*)n;
     PRINT(n->kind == TYPE_MUTREF ? "mut&" : "&");
     fmt(FMT_ARGS, (node_t*)pt->elem);
     break;
@@ -495,7 +505,7 @@ static void fmt(FMT_PARAMS, const node_t* nullable n) {
 
   case TYPE_OPTIONAL: {
     CHAR('?');
-    fmt(FMT_ARGS, (node_t*)((const opttype_t*)n)->elem);
+    fmt(FMT_ARGS, (node_t*)((opttype_t*)n)->elem);
     break;
 
   case TYPE_NS:
@@ -526,7 +536,7 @@ static void fmt(FMT_PARAMS, const node_t* nullable n) {
 
   case TYPE_PLACEHOLDER: {
     const placeholdertype_t* pt = (placeholdertype_t*)n;
-    templateparam(FMT_ARGS, pt->templateparam);
+    fmt_templateparam(FMT_ARGS, pt->templateparam);
     break;
   }
 

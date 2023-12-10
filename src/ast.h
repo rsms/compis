@@ -75,17 +75,18 @@ typedef u8 nodekind_t;
 // end FOREACH_NODEKIND_PRIMTYPE
 #define FOREACH_NODEKIND_USERTYPE(_) /* nodekind_t, TYPE, enctag */\
   /* user types */\
-  _( TYPE_ARRAY,    arraytype_t,  'arry')/* nodekind_is*type expects position */\
-  _( TYPE_FUN,      funtype_t,    'fun ')\
-  _( TYPE_PTR,      ptrtype_t,    'ptr ')\
-  _( TYPE_REF,      reftype_t,    'ref ')/* &T      */\
-  _( TYPE_MUTREF,   reftype_t,    'mref')/* mut&T   */\
-  _( TYPE_SLICE,    slicetype_t,  'slc ')/* &[T]    */\
-  _( TYPE_MUTSLICE, slicetype_t,  'mslc')/* mut&[T] */\
-  _( TYPE_OPTIONAL, opttype_t,    'opt ')/* ?T */\
-  _( TYPE_STRUCT,   structtype_t, 'st  ')\
-  _( TYPE_ALIAS,    aliastype_t,  'alis')\
-  _( TYPE_NS,       nstype_t,     'ns  ')\
+  _( TYPE_ARRAY,    arraytype_t,    'arry')/* nodekind_is*type expects position */\
+  _( TYPE_FUN,      funtype_t,      'fun ')\
+  _( TYPE_PTR,      ptrtype_t,      'ptr ')\
+  _( TYPE_REF,      reftype_t,      'ref ')/* &T      */\
+  _( TYPE_MUTREF,   reftype_t,      'mref')/* mut&T   */\
+  _( TYPE_SLICE,    slicetype_t,    'slc ')/* &[T]    */\
+  _( TYPE_MUTSLICE, slicetype_t,    'mslc')/* mut&[T] */\
+  _( TYPE_OPTIONAL, opttype_t,      'opt ')/* ?T */\
+  _( TYPE_STRUCT,   structtype_t,   'st  ')\
+  _( TYPE_ALIAS,    aliastype_t,    'alis')\
+  _( TYPE_NS,       nstype_t,       'ns  ')\
+  _( TYPE_IMPORTED, importedtype_t, 'impt')/* T.name */\
   /* special types replaced by typecheck */\
   _( TYPE_TEMPLATE,    templatetype_t,    'tpl ')/* template instance */ \
   _( TYPE_PLACEHOLDER, placeholdertype_t, 'plac')/* template parameter */ \
@@ -139,13 +140,14 @@ static_assert(NF_VIS_PKG < NF_VIS_PUB, "");
 #define NODEFLAGS_BUBBLE  NF_UNKNOWN
 
 // NODEFLAGS_TYPEID_MASK: flags included in typeid
-#define NODEFLAGS_TYPEID_MASK NF_VIS_MASK \
+#define NODEFLAGS_TYPEID_MASK /*NF_VIS_MASK*/0 \
                             /*| NF_NARROWED*/ \
                             | NF_TEMPLATE \
                             | NF_TEMPLATEI \
 // end NODEFLAGS_TYPEID_MASK
 
-typedef const u8* typeid_t;
+typedef struct typeid_data_t { u32 len; u8 bytes[]; } typeid_data_t;
+typedef const typeid_data_t* typeid_t;
 
 
 ASSUME_NONNULL_BEGIN
@@ -171,7 +173,7 @@ typedef struct pkg_ {
   str_t           root;     // root + path = dir
   str_t           dir;      // absolute path to source directory
   bool            isadhoc;  // single-file package
-  ptrarray_t      srcfiles; // source files, uniquely sorted by name
+  ptrarray_t      srcfiles; // source files (srcfile_t*[]), uniquely sorted by name
   map_t           defs;     // package-level definitions
   rwmutex_t       defs_mu;  // protects access to defs field
   typefuntab_t    tfundefs; // type functions defined by the package
@@ -200,7 +202,7 @@ typedef struct node_ {
   bool       _unused3 : 1;
   bool       _unused4 : 1;
   bool       _unused5 : 1;
-  bool       _unused6 : 1;
+  bool       is_external : 1; // imported
   bool       is_builtin : 1;
   bool       used_at_compile_time : 1; // definitely used, even if nuse==0
   nodeflag_t flags;
@@ -274,11 +276,13 @@ typedef struct templateparam_ {
 
 typedef struct {
   type_t;
+
   // templateparams
   // If flags&NF_TEMPLATE: list of templateparam_t*
   // If flags&NF_TEMPLATEI: list of parameter arguments (node_t*)
   // Note: NF_TEMPLATEI is set on instances of templatetype_t.
-  nodearray_t     templateparams;
+  nodearray_t templateparams;
+
   char* nullable  mangledname; // allocated in ast_ma
   fun_t* nullable dropfun;
 } usertype_t;
@@ -322,6 +326,7 @@ typedef struct { // type A B
 
 typedef struct { // ?T
   ptrtype_t;
+  node_t* nullable nsparent;
 } opttype_t;
 
 typedef struct { // &T, mut&T
@@ -357,6 +362,14 @@ typedef struct {
   bool             hasinit;  // true if at least one field has an initializer
   // TODO: move hasinit to nodeflag_t
 } structtype_t;
+
+typedef struct {
+  usertype_t;
+  import_t*        import;  // e.g. "x" in "x.T"
+  sym_t            name;    // e.g. "T" in "x.T"
+  loc_t            nameloc; // source location of name (.loc is location of ".")
+  type_t* nullable elem;    // e.g. actual effective type
+} importedtype_t;
 
 typedef struct {
   sym_t   name;
@@ -429,7 +442,7 @@ typedef struct {
   expr_t;
   expr_t*          recv;    // e.g. "x" in "x.y"
   sym_t            name;    // e.g. "y" in "x.y"
-  loc_t            nameloc; // source location of name
+  loc_t            nameloc; // source location of name (.loc is location of ".")
   expr_t* nullable target;  // e.g. "y" in "x.y"
 } member_t;
 
@@ -692,9 +705,14 @@ node_t* nullable ast_transform_children(
 // pointing to a dependency (inserted before the first dependant.)
 // If visibility>0, only nodes with one of the provided visibility flags are included.
 bool ast_toposort_visit_def(
-  nodearray_t* defs, memalloc_t ma, nodeflag_t visibility, node_t* n, u32 flags);
+  nodearray_t* defs,
+  memalloc_t   ma,
+  nodeflag_t   visibility,
+  node_t*      n,
+  u32          flags);
 // flags for ast_toposort_visit_def
 #define AST_TOPOSORT_TOPLEVEL (1u<<0) // n is top level
+#define AST_TOPOSORT_SKIPEXT  (1u<<1) // skip imported nodes
 
 
 // funtype_params_origin returns the origin of parameters, e.g.
@@ -716,8 +734,9 @@ inline static sym_t primtype_name(nodekind_t kind) { // e.g. "i64"
 static typeid_t typeid_intern(type_t* t);
 static typeid_t typeid_of(const type_t* t);
 void typeid_init(memalloc_t);
-static u32 typeid_len(typeid_t);
+inline static u32 typeid_len(typeid_t t) { return t->len; }
 usize typeid_hash(usize seed, typeid_t);
+typeid_t typeid_intern_typeid(typeid_t);
 
 typeid_t _typeid(type_t*, bool intern);
 inline static typeid_t typeid_intern(type_t* t) {
@@ -725,9 +744,6 @@ inline static typeid_t typeid_intern(type_t* t) {
 }
 inline static typeid_t typeid_of(const type_t* t) {
   return t->_typeid ? t->_typeid : _typeid((type_t*)t, false);
-}
-inline static u32 typeid_len(typeid_t ti) {
-  return *(u32*)(ti - 4);
 }
 
 

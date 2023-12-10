@@ -50,7 +50,7 @@ static u8 tagtab[NODEKIND_COUNT] = {
   [TYPE_F64]  = 'd',
 
   // all other kinds use characters <='Z': 0-9 A-Z
-  [NODE_UNIT]        = 'M',
+  [NODE_UNIT]        = 'U',
   [EXPR_LET]         = 'N', // two-stage tag: Ng
   [EXPR_VAR]         = 'N', // two-stage tag: Ng
   [EXPR_FUN]         = 'N', // two-stage tag: Nf
@@ -63,6 +63,7 @@ static u8 tagtab[NODEKIND_COUNT] = {
   [TYPE_SLICE]       = 'S',
   [TYPE_MUTSLICE]    = 'D',
   [TYPE_ALIAS]       = 'L',
+  [TYPE_IMPORTED]    = 0,   // unused
   [TYPE_FUN]         = 'F',
   [TYPE_PLACEHOLDER] = 'H',
   [TYPE_TEMPLATE]    = 'I', // instance of template, e.g. "var x Foo<int>"
@@ -121,7 +122,8 @@ static usize offstab_ent_hashfn(usize seed, const void* entp) {
 }
 
 
-static void type(encoder_t* e, const type_t* t);
+static void mangle_type(encoder_t* e, const type_t* t);
+static void mangle_anon_structtype(encoder_t* e, const structtype_t* st);
 
 
 static void append_zname(encoder_t* e, const char* name) {
@@ -256,7 +258,7 @@ static void end_path(encoder_t* e, const node_t* n) {
       dlog("TODO: mangle anonymous function");
       // TODO: include closure in signature
       buf_print(&e->buf, "1_");
-      type(e, ((fun_t*)n)->type);
+      mangle_type(e, ((fun_t*)n)->type);
     }
     break;
 
@@ -264,7 +266,7 @@ static void end_path(encoder_t* e, const node_t* n) {
     if (((structtype_t*)n)->name) {
       append_zname(e, ((structtype_t*)n)->name);
     } else {
-      dlog("TODO unnamed type");
+      mangle_anon_structtype(e, (structtype_t*)n);
     }
     break;
 
@@ -279,7 +281,7 @@ static void end_path(encoder_t* e, const node_t* n) {
   case TYPE_OPTIONAL:
   case TYPE_SLICE:
   case TYPE_MUTSLICE:
-    type(e, ((ptrtype_t*)n)->elem);
+    mangle_type(e, ((ptrtype_t*)n)->elem);
     break;
 
   }
@@ -291,7 +293,7 @@ static void end_path(encoder_t* e, const node_t* n) {
     for (u32 i = 0; i < t->templateparams.len; i++) {
       // TODO: support expressions, e.g. "type Foo<Size> {...}; var x Foo<123>"
       assert(node_istype(t->templateparams.v[i]));
-      type(e, (type_t*)t->templateparams.v[i]);
+      mangle_type(e, (type_t*)t->templateparams.v[i]);
     }
   }
 }
@@ -303,21 +305,38 @@ static void funtype1(encoder_t* e, const funtype_t* ft) {
     buf_push(&e->buf, 'T');
     for (u32 i = 0; i < ft->params.len; i++) {
       const local_t* param = (local_t*)ft->params.v[i];
-      type(e, param->type);
+      mangle_type(e, param->type);
     }
     buf_push(&e->buf, 'E');
   }
-  type(e, ft->result);
+  mangle_type(e, ft->result);
 }
 
 
-static void type(encoder_t* e, const type_t* t) {
+static void mangle_anon_structtype(encoder_t* e, const structtype_t* st) {
+  // anonymous struct
+  //   TAG nfields typeof(field0) typeof(field1) ... typeof(fieldN)
+  assert(st->mangledname == NULL);
+  buf_print_u32(&e->buf, st->fields.len, 10);
+  for (u32 i = 0; i < st->fields.len; i++) {
+    const local_t* field = (local_t*)st->fields.v[i];
+    mangle_type(e, field->type);
+  }
+}
+
+
+static void mangle_type(encoder_t* e, const type_t* t) {
   assert(t->kind < NODEKIND_COUNT);
   assert(nodekind_istype(t->kind));
-  //dlog("mangle type %s#%p", nodekind_name(t->kind), t);
+  dlog("mangle type %s#%p", nodekind_name(t->kind), t);
+
+  if (node_isusertype((node_t*)t) && ((usertype_t*)t)->mangledname) {
+    buf_print(&e->buf, ((usertype_t*)t)->mangledname + strlen(CO_MANGLE_PREFIX));
+    return;
+  }
 
   u8 tag = tagtab[t->kind];
-  assertf(tag, "missing tag for %s", nodekind_name(t->kind));
+  assertf(tag != 0, "missing tag for %s", nodekind_name(t->kind));
 
   // primitive types use lower-case characters
   if (tag > 'Z') {
@@ -358,7 +377,7 @@ static void type(encoder_t* e, const type_t* t) {
     buf_push(&e->buf, tag);
     if (((arraytype_t*)t)->len)
       buf_print_u64(&e->buf, ((arraytype_t*)t)->len, 10);
-    type(e, ((ptrtype_t*)t)->elem);
+    mangle_type(e, ((ptrtype_t*)t)->elem);
     break;
 
   case TYPE_PTR:
@@ -368,25 +387,14 @@ static void type(encoder_t* e, const type_t* t) {
   case TYPE_MUTSLICE:
   case TYPE_OPTIONAL:
     buf_push(&e->buf, tag);
-    type(e, ((ptrtype_t*)t)->elem);
+    mangle_type(e, ((ptrtype_t*)t)->elem);
     break;
 
-  case TYPE_STRUCT: {
-    const structtype_t* st = (structtype_t*)t;
-    if (st->mangledname) {
-      buf_print(&e->buf, st->mangledname + strlen(CO_MANGLE_PREFIX));
-    } else {
-      // anonymous struct
-      //   TAG nfields typeof(field0) typeof(field1) ... typeof(fieldN)
-      buf_push(&e->buf, tag);
-      buf_print_u32(&e->buf, st->fields.len, 10);
-      for (u32 i = 0; i < st->fields.len; i++) {
-        const local_t* field = (local_t*)st->fields.v[i];
-        type(e, field->type);
-      }
-    }
+  case TYPE_STRUCT:
+    buf_push(&e->buf, tag);
+    buf_push(&e->buf, 's'); // two-stage tag
+    mangle_anon_structtype(e, (structtype_t*)t);
     break;
-  }
 
   case TYPE_FUN:
     buf_push(&e->buf, tag);
@@ -397,9 +405,9 @@ static void type(encoder_t* e, const type_t* t) {
     // templatetype_t is an instantation of a template
     const templatetype_t* tt = (templatetype_t*)t;
     buf_push(&e->buf, tag);
-    type(e, (type_t*)tt->recv);
+    mangle_type(e, (type_t*)tt->recv);
     for (u32 i = 0; i < tt->args.len; i++)
-      type(e, (type_t*)tt->args.v[i]);
+      mangle_type(e, (type_t*)tt->args.v[i]);
     break;
   }
 
@@ -411,6 +419,11 @@ static void type(encoder_t* e, const type_t* t) {
   case TYPE_ALIAS:
     buf_push(&e->buf, tag);
     append_zname(e, ((aliastype_t*)t)->name);
+    break;
+
+  case TYPE_IMPORTED:
+    // Note: no tag for imported type; it is mangled as the imported type
+    mangle_type(e, ((importedtype_t*)t)->elem);
     break;
 
   default:
@@ -487,7 +500,7 @@ bool compiler_mangle_type(
   if (!encoder_init(&e, c, pkg, buf))
     return false;
   buf_reserve(buf, 16);
-  type(&e, t);
+  mangle_type(&e, t);
   return encoder_finalize(&e, buf);
 }
 
@@ -533,10 +546,15 @@ bool compiler_mangle(
     nsstack_push(&e, ns);
     switch (ns->kind) {
       case EXPR_VAR:
-      case EXPR_LET:    ns = assertnotnull(((local_t*)ns)->nsparent); break;
-      case EXPR_FUN:    ns = assertnotnull(((fun_t*)ns)->nsparent); break;
-      case TYPE_STRUCT: ns = assertnotnull(((structtype_t*)ns)->nsparent); break;
-      case TYPE_ALIAS:  ns = assertnotnull(((aliastype_t*)ns)->nsparent); break;
+      case EXPR_LET:      ns = assertnotnull(((local_t*)ns)->nsparent); break;
+      case EXPR_FUN:      ns = assertnotnull(((fun_t*)ns)->nsparent); break;
+      case TYPE_STRUCT:
+        if (((structtype_t*)ns)->name == NULL)
+          goto endpath;
+        ns = assertnotnull(((structtype_t*)ns)->nsparent);
+        break;
+      case TYPE_ALIAS:    ns = assertnotnull(((aliastype_t*)ns)->nsparent); break;
+      //case TYPE_OPTIONAL: ns = assertnotnull(((opttype_t*)ns)->nsparent); break;
 
       case NODE_UNIT:
         goto endpath;

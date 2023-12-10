@@ -152,8 +152,8 @@ static void startloc(cgen_t* g, loc_t loc) {
   } else {
     if (g->outbuf.len && g->outbuf.chars[g->outbuf.len-1] != '\n')
       CHAR('\n');
-    if (g->scopenest == 0)
-      CHAR('\n');
+    // if (g->scopenest == 0)
+    //   CHAR('\n');
     PRINTF("#line %u", lineno);
     if (!inputok) {
       const srcfile_t* sf = assertnotnull(loc_srcfile(loc, locmap(g)));
@@ -338,7 +338,7 @@ static const char* operator(op_t op) {
 }
 
 
-static bool is_compound_primtype(const type_t* t) {
+static bool elemtype_needs_defguard(const type_t* t) {
   for (;;) switch (t->kind) {
     case TYPE_PTR:
     case TYPE_REF:
@@ -350,22 +350,29 @@ static bool is_compound_primtype(const type_t* t) {
       t = ((ptrtype_t*)t)->elem;
       break;
     default:
-      return nodekind_isprimtype(t->kind);
+      // Public types may appear in multiple pub.h files.
+      // Composite types of primitive types requires a defguard since
+      // their mangledname is not namespaced.
+      return (t->flags & NF_VIS_PUB) || nodekind_isprimtype(t->kind);
   }
 }
 
 
-static bool maybe_gen_ptrtype_defguard(cgen_t* g, const ptrtype_t* t) {
-  if (!is_compound_primtype(t->elem))
-    return false;
-  assertnotnull(t->mangledname);
-  PRINTF("\n#ifndef " CO_ABI_GLOBAL_PREFIX "DEF_%s", t->mangledname), g->lineno++;
-  PRINTF("\n#define " CO_ABI_GLOBAL_PREFIX "DEF_%s", t->mangledname), g->lineno++;
-  return true;
+static void gen_defguard_begin(cgen_t* g, const char* mangledname) {
+  PRINTF("\n#ifndef " CO_ABI_GLOBAL_PREFIX "DEF_%s", mangledname), g->lineno++;
+  PRINTF("\n#define " CO_ABI_GLOBAL_PREFIX "DEF_%s", mangledname), g->lineno++;
 }
 
-static void gen_ptrtype_defguard_end(cgen_t* g) {
+
+static void gen_defguard_end(cgen_t* g) {
   PRINT("\n#endif"), g->lineno++;
+}
+
+
+static bool maybe_gen_ptrtype_defguard_begin(cgen_t* g, const ptrtype_t* t) {
+  if ((t->flags & NF_VIS_PUB) || elemtype_needs_defguard(t->elem))
+    return gen_defguard_begin(g, assertnotnull(t->mangledname)), true;
+  return false;
 }
 
 
@@ -377,7 +384,7 @@ static void gen_slicetype_def(cgen_t* g, const slicetype_t* t) {
   if (nodekind_isprimtype(t->elem->kind))
     return; // predefined in prelude
 
-  bool defguard = maybe_gen_ptrtype_defguard(g, (ptrtype_t*)t);
+  bool defguard = maybe_gen_ptrtype_defguard_begin(g, (ptrtype_t*)t);
 
   startline(g, t->loc);
   gen_slicetype(g, t), PRINT(" {");
@@ -388,7 +395,7 @@ static void gen_slicetype_def(cgen_t* g, const slicetype_t* t) {
   gen_type(g, t->elem);
   PRINT("* ptr;};");
 
-  if (defguard) gen_ptrtype_defguard_end(g);
+  if (defguard) gen_defguard_end(g);
 }
 
 
@@ -409,7 +416,7 @@ static void gen_arraytype_def(cgen_t* g, const arraytype_t* t) {
   if (nodekind_isprimtype(t->elem->kind))
     return; // predefined in prelude
 
-  bool defguard = maybe_gen_ptrtype_defguard(g, (ptrtype_t*)t);
+  bool defguard = maybe_gen_ptrtype_defguard_begin(g, (ptrtype_t*)t);
 
   startline(g, t->loc);
   gen_arraytype(g, t), PRINT(" {");
@@ -418,7 +425,12 @@ static void gen_arraytype_def(cgen_t* g, const arraytype_t* t) {
   gen_type(g, t->elem);
   PRINT("* ptr;};");
 
-  if (defguard) gen_ptrtype_defguard_end(g);
+  if (defguard) gen_defguard_end(g);
+}
+
+
+static void gen_importedtype(cgen_t* g, const importedtype_t* t) {
+  gen_type(g, t->elem);
 }
 
 
@@ -517,13 +529,13 @@ static void gen_opttype_def(cgen_t* g, opttype_t* t) {
   if (opttype_byptr(g, t->elem) || nodekind_isprimtype(t->elem->kind))
     return;
 
-  bool defguard = maybe_gen_ptrtype_defguard(g, (ptrtype_t*)t);
+  bool defguard = maybe_gen_ptrtype_defguard_begin(g, (ptrtype_t*)t);
 
   startline(g, t->loc);
   gen_opttype_name(g, t);
   PRINT("{bool ok; "); gen_type(g, t->elem); PRINT(" v;};");
 
-  if (defguard) gen_ptrtype_defguard_end(g);
+  if (defguard) gen_defguard_end(g);
 }
 
 static void gen_opttype(cgen_t* g, const opttype_t* t) {
@@ -607,12 +619,16 @@ static void gen_structtype(cgen_t* g, const structtype_t* st) {
 }
 
 static void gen_structtype_def(cgen_t* g, structtype_t* st) {
+  // must use a defguard for anonymous structs in pub.h
+  if (st->name == NULL && (st->flags & NF_VIS_PUB))
+    gen_defguard_begin(g, assertnotnull(st->mangledname));
+
   startline(g, st->loc);
   gen_structtype(g, st), PRINT(" {");
 
   if (st->fields.len == 0) {
     PRINT("u8 _unused; };");
-    return;
+    goto end;
   }
 
   g->indent++;
@@ -667,6 +683,10 @@ static void gen_structtype_def(cgen_t* g, structtype_t* st) {
     startlinex(g);
 
   PRINT("};");
+
+end:
+  if (st->name == NULL && (st->flags & NF_VIS_PUB))
+    gen_defguard_end(g);
 }
 
 
@@ -701,6 +721,7 @@ static void gen_type(cgen_t* g, const type_t* t) {
   case TYPE_STRUCT:   return gen_structtype(g, (const structtype_t*)t);
   case TYPE_ALIAS:    return gen_aliastype(g, (const aliastype_t*)t);
   case TYPE_ARRAY:    return gen_arraytype(g, (const arraytype_t*)t);
+  case TYPE_IMPORTED: return gen_importedtype(g, (const importedtype_t*)t);
 
   default:
     panic("unexpected type_t %s (%u)", nodekind_name(t->kind), t->kind);
@@ -2974,6 +2995,7 @@ static void gen_expr(cgen_t* g, const expr_t* n) {
   case TYPE_STRUCT:
   case TYPE_ALIAS:
   case TYPE_NS:
+  case TYPE_IMPORTED:
   case TYPE_TEMPLATE:
   case TYPE_PLACEHOLDER:
   case TYPE_UNKNOWN:
@@ -3156,6 +3178,7 @@ static void assign_mangledname(cgen_t* g, node_t* n) {
     case TYPE_STRUCT:
     case TYPE_ALIAS:
     case TYPE_NS:
+    case TYPE_IMPORTED:
       p = &((usertype_t*)n)->mangledname;
       break;
 
@@ -3357,7 +3380,8 @@ static void gen_unit(cgen_t* g, unit_t* unit, cgen_pkgapi_t* pkgapi) {
   nodeflag_t visibility = 0;
   for (u32 i = 0; i < children.len; i++) {
     node_t* n = children.v[i];
-    if (!ast_toposort_visit_def(&defs, g->ma, visibility, n, AST_TOPOSORT_TOPLEVEL))
+    u32 flags = AST_TOPOSORT_TOPLEVEL | AST_TOPOSORT_SKIPEXT;
+    if (!ast_toposort_visit_def(&defs, g->ma, visibility, n, flags))
       goto end; // OOM
   }
 
@@ -3504,7 +3528,7 @@ static void add_pkg_defs(
   cgen_t* g, unit_t** unitv, u32 unitc, nodearray_t* defs, nodeflag_t visibility)
 {
   // topologically sort type & function definitions
-  u32 visitflags = AST_TOPOSORT_TOPLEVEL;
+  u32 visitflags = AST_TOPOSORT_TOPLEVEL | AST_TOPOSORT_SKIPEXT;
   for (u32 i = 0; i < unitc; i++) {
     nodearray_t children = unitv[i]->children;
     for (u32 i = 0; i < children.len; i++) {

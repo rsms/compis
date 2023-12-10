@@ -171,9 +171,8 @@ static const ast_field_t k_fieldsof_arraylit_t[] = {
 // type
 
 #define TYPE_FIELDS /* type_t */ \
-  FIELD_ID(type_t, size,    U64), \
-  FIELD_ID(type_t, align,   U8), \
-  FIELD___(type_t, _typeid, U64) \
+  FIELD_ID(type_t, size,  U64), \
+  FIELD_ID(type_t, align, U8) \
 // end TYPE_FIELDS
 
 #define USERTYPE_FIELDS /* usertype_t */ \
@@ -244,6 +243,13 @@ static const ast_field_t k_fieldsof_templatetype_t[] = {
 static const ast_field_t k_fieldsof_placeholdertype_t[] = {
   USERTYPE_FIELDS,
   FIELD_ID(placeholdertype_t, templateparam, NODE),
+};
+static const ast_field_t k_fieldsof_importedtype_t[] = {
+  USERTYPE_FIELDS,
+  FIELD_ID(importedtype_t, import,  NODE),
+  FIELD_ID(importedtype_t, name,    SYM),
+  FIELD_ID(importedtype_t, nameloc, LOC),
+  FIELD_ID(importedtype_t, elem,    NODEZ),
 };
 
 #undef FIELD

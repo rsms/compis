@@ -237,6 +237,11 @@ typedef double             f64;
   #define countof(x) ((sizeof(x)/sizeof(0[x])) / ((usize)(!(sizeof(x) % sizeof(0[x])))))
 #endif
 
+#ifndef alignof
+  // named "_Alignof" in C11 until C23, in C23 it is available as "alignof"
+  #define alignof _Alignof
+#endif
+
 #if __has_builtin(__builtin_offsetof)
   #undef offsetof
   #define offsetof __builtin_offsetof

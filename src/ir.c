@@ -2294,6 +2294,7 @@ static irval_t* expr(ircons_t* c, void* expr_node) {
   case TYPE_STRUCT:
   case TYPE_ALIAS:
   case TYPE_NS:
+  case TYPE_IMPORTED:
   case TYPE_UNKNOWN:
   case TYPE_TEMPLATE:
   case TYPE_PLACEHOLDER:

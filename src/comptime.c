@@ -476,6 +476,7 @@ static void* eval1(ctx_t* ctx, void* np) {
   case TYPE_OPTIONAL:
   case TYPE_ALIAS:
   case TYPE_NS:
+  case TYPE_IMPORTED:
   case TYPE_TEMPLATE:
   case TYPE_PLACEHOLDER:
   case TYPE_UNRESOLVED:

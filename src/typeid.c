@@ -7,7 +7,7 @@
 #include "leb128.h"
 
 
-#define TYPEID_TRACE
+// #define TYPEID_TRACE
 #ifdef TYPEID_TRACE
   #define trace(fmt, args...) _dlog(6, "typeid", __FILE__, __LINE__, fmt, ##args)
 #else
@@ -19,7 +19,7 @@
 #define TYPEID_TAG_SYM   '#'
 #define TYPEID_TAG_STR   '"'
 #define TYPEID_TAG_REF   '&'
-#define TYPEID_TAG_TID   '$'
+// #define TYPEID_TAG_TID   '$'
 
 
 static memalloc_t  typeid_ma;
@@ -39,7 +39,7 @@ usize typeid_hash(usize seed, typeid_t typeid) {
     0x4f85e17c1e7ee8allu,
     0x24ac847a1c0d4bf7llu,
     0xd2952ed7e9fbaf43llu };
-  return wyhash(typeid, typeid_len(typeid), seed, secret);
+  return wyhash(typeid->bytes, typeid->len, seed, secret);
 }
 
 
@@ -50,9 +50,9 @@ static usize _typeid_hash(usize seed, const void* typeidp) {
 
 
 static bool typeid_eq(const void* ap, const void* bp) {
-  typeid_t a = *(typeid_t*)ap, b = *(typeid_t*)bp;
-  u32 az = typeid_len(a), bz = typeid_len(b);
-  return az == bz && memcmp(a, b, az) == 0;
+  typeid_t a = *(typeid_t*)ap;
+  typeid_t b = *(typeid_t*)bp;
+  return a->len == b->len && memcmp(a->bytes, b->bytes, a->len) == 0;
 }
 
 
@@ -64,13 +64,53 @@ void typeid_init(memalloc_t ma) {
 }
 
 
+typeid_t typeid_intern_typeid(typeid_t typeid) {
+
+  rwmutex_lock(&typeid_mu);
+
+  bool did_insert;
+  typeid_t* ent = hashtable_assign(
+    &typeid_ht, _typeid_hash, typeid_eq, sizeof(typeid_t), &typeid, &did_insert);
+  if UNLIKELY(!ent)
+    goto oom;
+
+  if (did_insert) {
+    usize nbyte = sizeof(typeid_data_t) + typeid->len;
+    typeid_data_t* typeid2 = mem_alloc(typeid_ma, nbyte).p;
+    if UNLIKELY(!typeid2)
+      goto oom;
+    memcpy(typeid2, typeid, nbyte);
+    *ent = typeid2;
+  }
+
+  #ifdef TYPEID_TRACE
+  {
+    typeid = *ent;
+    buf_t tmpbuf = buf_make(typeid_ma);
+    buf_appendrepr(&tmpbuf, typeid->bytes, typeid->len);
+    trace("[%s] %s typeid %p (%u) '%.*s'", __FUNCTION__,
+      did_insert ? "add" : "use existing",
+      typeid, typeid->len, (int)tmpbuf.len, tmpbuf.chars);
+    buf_dispose(&tmpbuf);
+  }
+  #endif
+
+  rwmutex_unlock(&typeid_mu);
+
+  return *ent;
+oom:
+  panic("out of memory");
+  UNREACHABLE;
+}
+
+
 static typeid_t typeid_map_intern(typeid_t typeid) {
   #ifdef TYPEID_TRACE
   {
     buf_t tmpbuf = buf_make(typeid_ma);
-    buf_appendrepr(&tmpbuf, typeid, typeid_len(typeid));
-    trace("[typeid_map_intern] typeid(%u)='%.*s' (hash=0x%lx)",
-      typeid_len(typeid), (int)tmpbuf.len, tmpbuf.chars,
+    buf_appendrepr(&tmpbuf, typeid->bytes, typeid->len);
+    trace("[%s] typeid(%u)='%.*s' (hash=0x%lx)", __FUNCTION__,
+      typeid->len, (int)tmpbuf.len, tmpbuf.chars,
       typeid_hash(typeid_ht.seed, typeid));
     buf_dispose(&tmpbuf);
   }
@@ -81,13 +121,15 @@ static typeid_t typeid_map_intern(typeid_t typeid) {
   typeid_t* ent = hashtable_lookup(
     &typeid_ht, _typeid_hash, typeid_eq, sizeof(typeid_t), &typeid);
   rwmutex_runlock(&typeid_mu);
+
   if (ent) {
     #ifdef TYPEID_TRACE
     {
+      typeid = *ent;
       buf_t tmpbuf = buf_make(typeid_ma);
-      buf_appendrepr(&tmpbuf, typeid, typeid_len(typeid));
+      buf_appendrepr(&tmpbuf, typeid->bytes, typeid->len);
       trace("use existing typeid %p (%u) '%.*s'",
-        typeid, typeid_len(typeid), (int)tmpbuf.len, tmpbuf.chars);
+        typeid, typeid->len, (int)tmpbuf.len, tmpbuf.chars);
       buf_dispose(&tmpbuf);
     }
     #endif
@@ -96,41 +138,7 @@ static typeid_t typeid_map_intern(typeid_t typeid) {
   }
 
   // not found; assign under full write lock
-  rwmutex_lock(&typeid_mu);
-
-  bool did_insert;
-  ent = hashtable_assign(
-    &typeid_ht, _typeid_hash, typeid_eq, sizeof(typeid_t), &typeid, &did_insert);
-  if UNLIKELY(!ent)
-    goto oom;
-
-  if (did_insert) {
-    usize nbyte = (usize)typeid_len(typeid) + 4;
-    u8* bytes = mem_alloc(typeid_ma, nbyte).p;
-    if UNLIKELY(!bytes)
-      goto oom;
-    memcpy(bytes, typeid - 4, nbyte);
-    *ent = bytes + 4;
-    typeid = *ent;
-  }
-
-  #ifdef TYPEID_TRACE
-  {
-    buf_t tmpbuf = buf_make(typeid_ma);
-    buf_appendrepr(&tmpbuf, typeid, typeid_len(typeid));
-    trace("[typeid_map_intern] %s typeid %p (%u) '%.*s'",
-      did_insert ? "add" : "use existing",
-      typeid, typeid_len(typeid), (int)tmpbuf.len, tmpbuf.chars);
-    buf_dispose(&tmpbuf);
-  }
-  #endif
-
-  rwmutex_unlock(&typeid_mu);
-
-  return typeid;
-oom:
-  panic("out of memory");
-  return NULL;
+  return typeid_intern_typeid(typeid);
 }
 
 
@@ -142,24 +150,26 @@ static void typeid_fmt_node1(PARAMS, node_t* n);
 
 
 static typeid_t typeid_make(PARAMS, type_t* t) {
-  usize buf_offs = buf->len;
   safecheckxf(buf_reserve(buf, 256), "out of memory");
 
   // reserve 4 bytes (4-byte aligned) for length prefix
+  usize buf_offs = buf->len;
   usize start_offs = ALIGN2(buf_offs, 4);
-  buf->len += 4 + (start_offs - buf_offs);
+  // buf->len += 4 + (start_offs - buf_offs);
+  buf->len = start_offs + 4;
 
   typeid_fmt_node1(ARGS, (node_t*)t);
 
   safecheckf(!buf->oom, "out of memory");
 
-  // set length prefix
-  typeid_t typeid = &buf->bytes[start_offs];
-  assertf(IS_ALIGN2((uintptr)typeid, 4), "%p", typeid);
-  safecheck(buf->len - start_offs <= (usize)U32_MAX);
-  *(u32*)typeid = (u32)(buf->len - start_offs);
+  typeid_data_t* typeid = (typeid_data_t*)&buf->bytes[start_offs];
 
-  typeid = typeid_map_intern(typeid + 4);
+  safecheck(buf->len - (start_offs + 4) <= (usize)U32_MAX);
+  typeid->len = (u32)(buf->len - (start_offs + 4));
+
+  typeid = (typeid_data_t*)typeid_map_intern(typeid);
+
+  // reset buffer
   buf->len = buf_offs;
 
   if (intern)
@@ -171,12 +181,21 @@ static typeid_t typeid_make(PARAMS, type_t* t) {
 static void typeid_fmt_type(PARAMS, type_t* t) {
   typeid_t typeid;
   if (t->_typeid) {
+    #ifdef TYPEID_TRACE
+    {
+      buf_t tmpbuf = buf_make(typeid_ma);
+      buf_appendrepr(&tmpbuf, t->_typeid->bytes, t->_typeid->len);
+      trace("%*s   append existing typeid %p (%u) '%.*s'",
+        ind, "", t->_typeid, t->_typeid->len, (int)tmpbuf.len, tmpbuf.chars);
+      buf_dispose(&tmpbuf);
+    }
+    #endif
     typeid = t->_typeid;
   } else {
-    typeid = typeid_make(ARGS, t);
+    typeid = typeid_make(ARGS, t); // note: sets t->_typeid if arg intern==true
   }
-  buf_push(buf, TYPEID_TAG_TID);
-  buf_append(buf, typeid, typeid_len(typeid));
+  //buf_push(buf, TYPEID_TAG_TID);
+  buf_append(buf, typeid->bytes, typeid->len);
 }
 
 
@@ -189,9 +208,19 @@ static void typeid_fmt_cstr(buf_t* buf, u8 tag, const char* cstr) {
 
 
 static void typeid_fmt_node(PARAMS, node_t* n) {
-  if (node_istype(n))
-    return typeid_fmt_type(ARGS, (type_t*)n);
-  typeid_fmt_node1(ARGS, n);
+  if (node_istype(n)) {
+    typeid_fmt_type(ARGS, (type_t*)n);
+  } else {
+    typeid_fmt_node1(ARGS, n);
+  }
+}
+
+
+static void typeid_fmt_nodearray(PARAMS, nodearray_t* na) {
+  buf_push(buf, TYPEID_TAG_ARRAY);
+  buf_print_leb128_u64(buf, na->len);
+  for (u32 i = 0; i < na->len; i++)
+    typeid_fmt_node(ARGS, na->v[i]);
 }
 
 
@@ -210,7 +239,8 @@ static void typeid_fmt_node1(PARAMS, node_t* n) {
     return;
   }
 
-  trace("%*s -> typeid_fmt %s %p", ind, "", nodekind_name(n->kind), n);
+  trace("%*s -> typeid_fmt %s n=%p buf.len=%zu",
+    ind, "", nodekind_name(n->kind), n, buf->len);
   ind += 2;
 
   // kind
@@ -220,20 +250,45 @@ static void typeid_fmt_node1(PARAMS, node_t* n) {
   // flags
   buf_print_leb128_u64(buf, n->flags & NODEFLAGS_TYPEID_MASK);
 
-  // expr.type
-  if (node_isexpr(n) && ((expr_t*)n)->type)
-    typeid_fmt_type(ARGS, ((expr_t*)n)->type);
+  // startoffs: skip field before this offset (they are handled specially)
+  usize startoffs = sizeof(node_t);
+  if (node_istype(n)) {
+    if (node_isusertype(n)) {
+      startoffs = sizeof(usertype_t);
+      usertype_t* t = (usertype_t*)n;
+      // has template parameters or args?
+      if (n->flags & (NF_TEMPLATE | NF_TEMPLATEI))
+        typeid_fmt_nodearray(ARGS, &t->templateparams);
+    } else {
+      // type_t
+      //
+      // Note: we don't encode size or align fields since these are always the
+      // same for the specific type.
+      // E.g. "&[int]" is unconditionally a slice type with an "int" element;
+      // it is distinct from "&[i32]", which is distinct from "&[i64]".
+      //
+      // Note: we ignore type_t.typeid here since typeid_fmt_node checks for this
+      // before calling typeid_fmt_node1.
+      //
+      startoffs = sizeof(type_t);
+    }
+  }
 
   const ast_field_t* fieldtab = g_ast_fieldtab[n->kind];
   u8 fieldlen = g_ast_fieldlentab[n->kind];
   u64 u64val;
 
-  for (u8 fieldidx = 0; fieldidx < fieldlen; fieldidx++) {
-    ast_field_t f = fieldtab[fieldidx];
-    void* fp = (void*)n + f.offs;
+  u8 fieldidx = 0;
+  for (; fieldidx < fieldlen; fieldidx++) {
+    if (fieldtab[fieldidx].offs >= startoffs)
+      break;
+  }
 
-    if (f.isid == 0)
+  for (; fieldidx < fieldlen; fieldidx++) {
+    ast_field_t f = fieldtab[fieldidx];
+    if (f.isid == 0) // skip fields which are not part of an AST node's identity
       continue;
+    void* fp = (void*)n + f.offs;
 
     trace("%*s : %s %s (+%u)", ind, "", f.name, ast_fieldtype_str(f.type), f.offs);
 
@@ -245,21 +300,16 @@ static void typeid_fmt_node1(PARAMS, node_t* n) {
     case AST_FIELD_STRZ:
       if (*(void**)fp == NULL)
         break;
-      f.type--;
+      f.type--; // non ...Z type
       goto switch_again;
 
     case AST_FIELD_NODE:
       typeid_fmt_node(ARGS, *(node_t**)fp);
       break;
 
-    case AST_FIELD_NODEARRAY: {
-      nodearray_t* na = fp;
-      buf_push(buf, TYPEID_TAG_ARRAY);
-      buf_print_leb128_u64(buf, na->len);
-      for (u32 i = 0; i < na->len; i++)
-        typeid_fmt_node(ARGS, na->v[i]);
+    case AST_FIELD_NODEARRAY:
+      typeid_fmt_nodearray(ARGS, (nodearray_t*)fp);
       break;
-    }
 
     case AST_FIELD_U8:  u64val = (u64)*(u8*)fp; goto write_u64;
     case AST_FIELD_U16: u64val = (u64)*(u16*)fp; goto write_u64;
@@ -291,7 +341,8 @@ static void typeid_fmt_node1(PARAMS, node_t* n) {
   seenstack->len--; // pop
 
   ind -= 2;
-  trace("%*s <— typeid_fmt %s %p", ind, "", nodekind_name(n->kind), n);
+  trace("%*s <— typeid_fmt %s n=%p buf.len=%zu",
+    ind, "", nodekind_name(n->kind), n, buf->len);
 }
 
 

@@ -265,7 +265,7 @@ static void flags(RPARAMS, const node_t* n) {
   // don't include NF_UNKNOWN for TYPE_UNKNOWN (always and obviously true)
   flags &= ~(NF_UNKNOWN * (nodeflag_t)(n->kind == TYPE_UNKNOWN));
 
-  if (flags & ( NF_RVALUE | NF_NEG | NF_UNKNOWN
+  if (flags & ( NF_RVALUE | NF_NEG | NF_UNKNOWN | NF_VIS_PUB | NF_VIS_PKG
               | NF_TEMPLATE | NF_TEMPLATEI | NF_CYCLIC))
   {
     PRINT(" {");
@@ -275,6 +275,8 @@ static void flags(RPARAMS, const node_t* n) {
     if (flags & NF_TEMPLATE)  CHAR('t');
     if (flags & NF_TEMPLATEI) CHAR('i');
     if (flags & NF_CYCLIC)    CHAR('c');
+    if (flags & NF_VIS_PUB)   CHAR('P');
+    if (flags & NF_VIS_PKG)   CHAR('G');
     CHAR('}');
   }
 }
@@ -364,6 +366,17 @@ static void repr_type(RPARAMS, const type_t* t) {
   case TYPE_SLICE:
     CHAR(' '), repr_type(RARGSFL(fl | REPRFLAG_HEAD), ((slicetype_t*)t)->elem);
     break;
+  case TYPE_IMPORTED: {
+    const importedtype_t* imt = (importedtype_t*)t;
+    CHAR(' '), repr(RARGSFL(fl | REPRFLAG_HEAD), (node_t*)imt->import);
+    CHAR(' '), PRINT(imt->name);
+    if (imt->elem) {
+      CHAR(' '), repr_type(RARGSFL(fl | REPRFLAG_HEAD), imt->elem);
+    } else {
+      PRINT(" null");
+    }
+    break;
+  }
   case TYPE_TEMPLATE: {
     const templatetype_t* tt = (templatetype_t*)t;
     CHAR(' '), repr(
@@ -484,6 +497,7 @@ static void repr(RPARAMS, const node_t* nullable n) {
   switch (n->kind) {
 
   case STMT_TYPEDEF:  repr_typedef(RARGS, (typedef_t*)n); break;
+  case STMT_IMPORT:   CHAR(' '); repr_import(RARGS, (import_t*)n); break;
   case EXPR_FUN:      repr_fun(RARGS, (fun_t*)n); break;
   case EXPR_CALL:     repr_call(RARGS, (call_t*)n); break;
   case EXPR_TYPECONS: repr_typecons(RARGS, (typecons_t*)n); break;

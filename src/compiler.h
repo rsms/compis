@@ -165,6 +165,7 @@ typedef struct {
   unit_t* nullable unit;     // current unit
   expr_t* nullable dotctx;   // for ".name" shorthand
   ptrarray_t       dotctxstack;
+  ptrarray_t       membertypes;
 
   // free_nodearrays is a free list of nodearray_t's
   struct {

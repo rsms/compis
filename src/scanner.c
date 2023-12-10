@@ -686,7 +686,9 @@ err_t co_strlit_decode(const u8* src, usize srclen, u8* dst, usize declen) {
         case 'f':  *dst++ = (u8)0xC; break;
         case 'r':  *dst++ = (u8)0xD; break;
         case 'x': // \xXX
-          assert(src < end-3 && ishexdigit(src[1]) && ishexdigit(src[2]));
+          assertf(src <= end-3, "%p <= %p-3(%p)", src, end, end-3);
+          assertf(ishexdigit(src[1]) && ishexdigit(src[2]),
+            "0x%02x '%c', 0x%02x '%c'", src[1], src[1], src[2], src[2]);
           *dst++ = read_u8hex(src+1);
           src += 2;
           break;
@@ -928,6 +930,7 @@ static void scan1(scanner_t* s) {
       FALLTHROUGH;
     default:
       s->tok = TDOT;
+      s->insertsemi = true;
   } break;
   case '0': MUSTTAIL return zeronumber(s);
   default:

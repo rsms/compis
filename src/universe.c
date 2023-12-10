@@ -24,7 +24,7 @@ void universe_init() {
       .flags = (NF_VIS_PUB | NF_CHECKED | ((kind_) == TYPE_UNKNOWN ? NF_UNKNOWN : 0)), \
       .size = (size_), \
       .align = (size_), \
-      ._typeid = (const u8*)&typeid_##NAME[1], \
+      ._typeid = (typeid_data_t*)&typeid_##NAME, \
     }; \
     /*dlog("%s._typeid = \\x%02x%c%c%c%c", \
       nodekind_name(kind_), typeid[0], typeid[1], typeid[2], typeid[3], typeid[4]);*/ \

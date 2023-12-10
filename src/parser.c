@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "colib.h"
 #include "compiler.h"
+#include "path.h"
 
 #ifdef DEBUG
 #include "abuf.h"
@@ -346,6 +347,21 @@ static void _diag(parser_t* p, origin_t origin, diagkind_t kind, const char* fmt
 #define error_at(p, origin, fmt, args...)   diag(p, origin, DIAG_ERR, (fmt), ##args)
 #define warning_at(p, origin, fmt, args...) diag(p, origin, DIAG_WARN, (fmt), ##args)
 #define help_at(p, origin, fmt, args...)    diag(p, origin, DIAG_HELP, (fmt), ##args)
+
+
+static const char* diag_srcfile_name(parser_t* p, loc_t loc, buf_t* tmpbuf) {
+  const srcfile_t* srcfile = loc_srcfile(loc, locmap(p));
+  if (srcfile) {
+    if (srcfile->pkg && srcfile->pkg->dir.len > 0) {
+      buf_print(tmpbuf, relpath(srcfile->pkg->dir.p));
+      buf_push(tmpbuf, PATH_SEP);
+    }
+    buf_append(tmpbuf, srcfile->name.p, srcfile->name.len);
+    if (buf_nullterm(tmpbuf))
+      return tmpbuf->chars;
+  }
+  return "<input>";
+}
 
 
 static void stop_parsing(parser_t* p) {
@@ -788,36 +804,111 @@ static type_t* type(parser_t* p, prec_t prec) {
 }
 
 
-static type_t* named_type(parser_t* p, sym_t name, loc_t loc) {
+static int membertype_intern_cmp(const void* aptr, const void* bptr, void* ctx) {
+  const importedtype_t* a = *(importedtype_t**)aptr;
+  const importedtype_t* b = *(importedtype_t**)bptr;
+  __uint128_t a_key =
+    (((__uint128_t)(uintptr)a->import->name) << 64) | ((__uint128_t)(uintptr)a->name);
+  __uint128_t b_key =
+    (((__uint128_t)(uintptr)b->import->name) << 64) | ((__uint128_t)(uintptr)b->name);
+  return a_key < b_key ? -1 : (int)(b_key < a_key)/* 1 or 0 */;
+}
+
+
+static type_t* parse_membertype(parser_t* p, import_t* im, loc_t loc) {
+  // foo.T
+  loc = currloc(p);
+  next(p); // consume "."
+  if UNLIKELY(currtok(p) != TID) {
+    expect_fail(p, TID, "");
+    return mkbad(p);
+  }
+  // intern "x.y" types as the same one may appear very often.
+  // Key is (addressof_importname_symbol, addressof_name_symbol)
+  importedtype_t ref = { .import = im, .name = p->scanner.sym };
+  importedtype_t* ref1 = &ref;
+  importedtype_t** ent = array_sortedset_assign(
+    importedtype_t*, &p->membertypes, p->ma, &ref1, membertype_intern_cmp, NULL);
+  if UNLIKELY(!ent)
+    return out_of_mem(p), mkbad(p);
+  importedtype_t* t = *ent;
+  if (!t) {
+    t = mknode(p, importedtype_t, TYPE_IMPORTED);
+    t->flags |= NF_VIS_PUB;
+    t->loc = loc;
+    t->import = im;
+    t->name = p->scanner.sym;
+    t->nameloc = currloc(p);
+    *ent = t;
+  }
+  next(p); // consume name
+  return (type_t*)t;
+}
+
+
+// static importedtype_t* nullable interned_membertype_get(
+//   parser_t* p, sym_t pkgname, sym_t membername)
+// {
+//   static array_t membertypes = {}; // FIXME
+//   importedtype_t
+// }
+
+
+static type_t* named_type1(parser_t* p, sym_t name, loc_t loc, bool parse_member) {
   if UNLIKELY(name == sym__) {
-    if (loc) {
-      error_at(p, loc, "cannot use placeholder name (\"_\") as type");
-    } else {
-      error(p, "cannot use placeholder name (\"_\") as type");
+    error_at(p, loc, "cannot use placeholder name (\"_\") as type");
+    goto unresolved;
+  }
+  const node_t* n = lookup(p, name);
+  if (!n) {
+    if UNLIKELY(parse_member && currtok(p) == TDOT) {
+      // e.g. "unknownid.Foo"
+      next(p); // consume "."
+      if (currtok(p) == TID) next(p); // consume name
+      error_at(p, loc, "unknown package \"%s\"", name);
+      if (loc_line(loc)) {
+        loc_set_line(&loc, 1);
+        loc_set_col(&loc, 1);
+        loc_set_width(&loc, 0);
+        help_at(p, loc, "add 'import \"%s\"' to top of %s",
+          name, diag_srcfile_name(p, loc, tmpbuf_get(0)));
+      }
     }
+    goto unresolved;
   }
 
-  const node_t* t = lookup(p, name);
-  if (!t)
+  if (node_istype(n))
+    return (type_t*)n;
+
+  if (n->kind == NODE_IMPORTID)
     goto unresolved;
 
-  if (node_istype(t))
-    return (type_t*)t;
+  if (n->kind == NODE_TPLPARAM)
+    return mkplaceholdertype(p, (templateparam_t*)n, loc);
 
-  if (t->kind == NODE_TPLPARAM)
-    return mkplaceholdertype(p, (templateparam_t*)t, loc);
+  if (parse_member && n->kind == STMT_IMPORT && currtok(p) == TDOT)
+    return parse_membertype(p, (import_t*)n, loc);
 
-  trace("expected named type but found %s", nodekind_name(t->kind));
-
+  error_at(p, loc, "%s \"%s\" is not a type", nodekind_fmt(n->kind), name);
 unresolved:
   return mkunresolvedtype(p, name, loc);
 }
 
 
+static type_t* named_type(parser_t* p, sym_t name, loc_t loc) {
+  return named_type1(p, name, loc, /*parse_member*/false);
+}
+
+static type_t* named_type_or_member(parser_t* p, sym_t name, loc_t loc) {
+  return named_type1(p, name, loc, /*parse_member*/true);
+}
+
+
 static type_t* type_id(parser_t* p) {
-  type_t* t = named_type(p, p->scanner.sym, 0);
-  next(p);
-  return t;
+  sym_t name = p->scanner.sym;
+  loc_t loc = currloc(p);
+  next(p); // consume TID
+  return named_type_or_member(p, name, loc);
 }
 
 
@@ -883,13 +974,7 @@ static type_t* type_array(parser_t* p) {
 }
 
 
-fun_t* nullable lookup_typefun(parser_t* p, type_t* recv, sym_t name) {
-  // find function map for recv
-  return typefuntab_lookup(&currpkg(p)->tfundefs, recv, name);
-}
-
-
-local_t* nullable lookup_struct_field(structtype_t* st, sym_t name) {
+static local_t* nullable lookup_struct_field(structtype_t* st, sym_t name) {
   for (u32 i = 0; i < st->fields.len; i++) {
     local_t* f = (local_t*)st->fields.v[i];
     if (f->name == name)
@@ -900,8 +985,11 @@ local_t* nullable lookup_struct_field(structtype_t* st, sym_t name) {
 
 
 // field = id ("," id)* type ("=" expr ("," expr))
+// Returns true if at least one field has an initializer (e.g. "= initexpr")
 static bool struct_fieldset(parser_t* p, structtype_t* st, nodearray_t* fields) {
   u32 fields_start = fields->len;
+
+  // parse names, e.g "x, y, z" or just "x"
   for (;;) {
     local_t* f = mknode(p, local_t, EXPR_FIELD);
     f->name = p->scanner.sym;
@@ -911,15 +999,17 @@ static bool struct_fieldset(parser_t* p, structtype_t* st, nodearray_t* fields) 
       return false;
     }
 
-    node_t* existing = (node_t*)lookup_struct_field(st, f->name);
-    if LIKELY(!existing)
-      existing = (node_t*)lookup_typefun(p, (type_t*)st, f->name);
-    if UNLIKELY(existing) {
-      const char* s = fmtnode(0, st);
-      error_at(p, f, "duplicate %s \"%s\" for type %s",
-        (existing->kind == EXPR_FIELD) ? "field" : "member", f->name, s);
-      if (loc_line(existing->loc))
-        warning_at(p, (node_t*)existing, "previously defined here");
+    // Look for duplicate field definition.
+    // Note: It is not possible for fields to collide with type functions since a
+    // type function can only be defined after a type is defined and after its fields.
+    for (u32 i = 0; i < fields->len; i++) {
+      local_t* f2 = (local_t*)fields->v[i];
+      if UNLIKELY(f->name == f2->name) {
+        error_at(p, f, "duplicate field \"%s\" for type %s", f->name, fmtnode(0, st));
+        if (loc_line(f2->loc))
+          warning_at(p, (node_t*)f2, "previously defined here");
+        break;
+      }
     }
 
     pnodearray_push(p, fields, f);
@@ -928,7 +1018,10 @@ static bool struct_fieldset(parser_t* p, structtype_t* st, nodearray_t* fields) 
     next(p);
   }
 
+  // parse type, e.g. "int" in "x int"
   type_t* t = type(p, PREC_MEMBER);
+
+  // apply type to fields
   for (u32 i = fields_start; i < fields->len; i++) {
     local_t* f = (local_t*)fields->v[i];
     f->type = t;
@@ -936,10 +1029,15 @@ static bool struct_fieldset(parser_t* p, structtype_t* st, nodearray_t* fields) 
     bubble_flags(st, f);
   }
 
+  // check if there's an initializer, e.g. "= initexpr".
+  // If not, stop here
   if (currtok(p) != TASSIGN)
-    return false;
+    return false; // no field initializer
 
-  next(p);
+  // parse initializer(s)
+  // Note that we support multiple initializers for multiple fields, e.g.
+  // "x, y int = 1, 2"
+  next(p); // consume "="
   u32 i = fields_start;
   for (;;) {
     if (i == fields->len) {
@@ -2784,6 +2882,7 @@ bool parser_init(parser_t* p, compiler_t* c) {
 void parser_dispose(parser_t* p) {
   map_dispose(&p->tmpmap, p->ma);
   ptrarray_dispose(&p->dotctxstack, p->ma);
+  ptrarray_dispose(&p->membertypes, p->ma);
   scanner_dispose(&p->scanner);
   scope_dispose(&p->scope, p->ma);
   array_dispose(nodearray_t, (array_t*)&p->free_nodearrays, p->ma);

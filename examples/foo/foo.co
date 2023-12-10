@@ -1,0 +1,21 @@
+pub type Foo
+  // x [int]
+  // y [[int] 3]
+  // z [int 3] // TODO: cgen as "__co_int y[3]" (currently "__co_int* y")
+  vec2
+    a, b int
+  // vec3
+  //   a, b, c int
+
+pub type Bar
+  tuple
+    a, b int
+
+// pub type FooOfFoo
+//   foo ?Foo
+
+/*
+
+typeid_intern_typeid] use existing typeid 0x61d00000a108 (11) 'arry\x800int \0'
+
+*/
