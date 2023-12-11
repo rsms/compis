@@ -981,22 +981,22 @@ err_t pkgbuild_import(pkgbuild_t* pb) {
 
 
 static err_t report_bad_mainfun(pkgbuild_t* pb, const fun_t* fn) {
-  // There's a "main" function but it doesn't qualify for being THE main function.
-  // Note that we know that the issue is missing "pub" qualifier, since typecheck
-  // has already verified that a "pub fun main(..." has the correct signature.
-  const funtype_t* ft = assertnotnull((funtype_t*)fn->type);
-
-  if (ft->params.len == 0 && ft->result == type_void) {
-    report_diag(pb->c, ast_origin(&pb->c->locmap, (node_t*)fn), DIAG_ERR,
-      "program's main function is not public");
-    report_diag(pb->c, origin_make(&pb->c->locmap, fn->loc), DIAG_HELP,
-      "mark function as `pub` (or build with --no-main flag)");
-  } else {
-    report_diag(pb->c, ast_origin(&pb->c->locmap, (node_t*)fn), DIAG_ERR,
-      "invalid signature of program's main function");
-    report_diag(pb->c, origin_make(&pb->c->locmap, fn->loc), DIAG_HELP,
-      "change signature to `pub fun main()` (or build with --no-main flag)");
-  }
+  // // There's a "main" function but it doesn't qualify for being THE main function.
+  // // Note that we know that the issue is missing "pub" qualifier, since typecheck
+  // // has already verified that a "pub fun main(..." has the correct signature.
+  // const funtype_t* ft = assertnotnull((funtype_t*)fn->type);
+  //
+  // if (ft->params.len == 0 && ft->result == type_void) {
+  //   report_diag(pb->c, ast_origin(&pb->c->locmap, (node_t*)fn), DIAG_ERR,
+  //     "program's main function is not public");
+  //   report_diag(pb->c, origin_make(&pb->c->locmap, fn->loc), DIAG_HELP,
+  //     "mark function as `pub` (or build with --no-main flag)");
+  // } else {
+  report_diag(pb->c, ast_origin(&pb->c->locmap, (node_t*)fn), DIAG_ERR,
+    "invalid signature of program's main function");
+  report_diag(pb->c, origin_make(&pb->c->locmap, fn->loc), DIAG_HELP,
+    "change signature to `fun main()` (or build with --no-main flag)");
+  // }
 
   return ErrCanceled;
 }

@@ -62,7 +62,7 @@ bool ast_is_main_fun(const fun_t* fn) {
     fn->kind == EXPR_FUN &&
     fn->recvt == NULL &&
     fn->name == sym_main &&
-    (fn->flags & NF_VIS_PUB) &&
+    // (fn->flags & NF_VIS_PUB) &&
     (fn->nsparent != NULL && fn->nsparent->kind == NODE_UNIT);
 }
 
