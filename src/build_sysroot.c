@@ -816,7 +816,7 @@ static err_t copy_sysinc_headers(const compiler_t* c) {
   bgtask_t* task = bgtask_open(c->ma, "sysinc", 0, 0);
   err_t err = copy_target_layer_dirs(c, task, "sysinc", "include");
   if (!err) {
-    str_t srcpath = path_join(coroot, "compis", "coprelude.h");
+    str_t srcpath = path_join(coroot, "co", "coprelude.h");
     str_t dstpath = path_join(c->sysroot, "include", "coprelude.h");
     err = fs_copyfile(srcpath.p, dstpath.p, 0);
     str_free(dstpath);

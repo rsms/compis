@@ -312,7 +312,7 @@ static err_t configure_cflags(compiler_t* c, const compiler_config_t* config) {
   #if defined(CO_DISTRIBUTION)
     strlist_addf(cflags_all, "-include%s/include/coprelude.h", c->sysroot);
   #else
-    strlist_addf(cflags_all, "-include%s/compis/coprelude.h", coroot);
+    strlist_addf(cflags_all, "-include%s/co/coprelude.h", coroot);
   #endif
   u32 cflags_co_end = c->cflags_all.len;
   // end of cflags_compis
