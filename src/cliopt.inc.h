@@ -34,12 +34,12 @@ static void cliopt_print();
 
 // ———————————————————————————————————————————————————————————————————————————————————
 
-static bool cli_valload_str(void* valptr, const char* value) {
+UNUSED static bool cli_valload_str(void* valptr, const char* value) {
   *(const char**)valptr = value;
   return true;
 }
 
-static bool cli_valload_bool(void* valptr, const char* value) {
+UNUSED static bool cli_valload_bool(void* valptr, const char* value) {
   *(bool*)valptr = true;
   return true;
 }
