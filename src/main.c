@@ -28,12 +28,13 @@ u8 coverbose = 0;
 u32 comaxproc = 1;
 
 // externally-implemented tools
-int main_build(int argc, char*const* argv); // build.c
+int main_build(int argc, char* argv[]); // build.c
+int build_sysroot_main(int argc, char* argv[]); // build_sysroot.c
 int cc_main(int argc, char* argv[], bool iscxx); // cc.c
-int llvm_ar_main(int argc, char **argv); // llvm/llvm-ar.cc
-int llvm_nm_main(int argc, char **argv); // llvm/llvm-nm.cc
-int llvm_link_main(int argc, char **argv); // llvm/llvm-link.cc
-int llvm_llc_main(int argc, char **argv); // llvm/llvm-llc.cc
+int llvm_ar_main(int argc, char* argv[]); // llvm/llvm-ar.cc
+int llvm_nm_main(int argc, char* argv[]); // llvm/llvm-nm.cc
+int llvm_link_main(int argc, char* argv[]); // llvm/llvm-link.cc
+int llvm_llc_main(int argc, char* argv[]); // llvm/llvm-llc.cc
 
 static linkerfn_t nullable ld_impl(const target_t* t);
 static const char* ld_impl_name(linkerfn_t nullable f);
@@ -53,23 +54,24 @@ static int usage(FILE* f) {
   fprintf(f,
     "Usage: %s <command> [args ...]\n"
     "Commands:\n"
-    "  build     Build a package\n"
+    "  build         Build a package\n"
     "\n"
-    "  ar        Archiver\n"
-    "  cc        C compiler (clang)\n"
-    "  c++       C++ compiler (clang++)\n"
-    "  ranlib    Archive index generator\n"
-    "  nm        Symbol table dumper\n"
+    "  ar            Archiver\n"
+    "  cc            C compiler (clang)\n"
+    "  c++           C++ compiler (clang++)\n"
+    "  ranlib        Archive index generator\n"
+    "  nm            Symbol table dumper\n"
     "\n"
     "%s" // ld for host, if any
-    "  ld.lld    ELF linker\n"
-    "  ld64.lld  Mach-O linker\n"
-    "  lld-link  COFF linker\n"
-    "  wasm-ld   WebAssembly linker\n"
+    "  ld.lld        ELF linker\n"
+    "  ld64.lld      Mach-O linker\n"
+    "  lld-link      COFF linker\n"
+    "  wasm-ld       WebAssembly linker\n"
     "\n"
-    "  help      Print help on stdout and exit\n"
-    "  targets   List supported targets\n"
-    "  version   Print version on stdout and exit\n"
+    "  build-sysroot Prebuild sysroot\n"
+    "  help          Print help on stdout and exit\n"
+    "  targets       List supported targets\n"
+    "  version       Print version on stdout and exit\n"
     "\n"
     "For help with a specific command:\n"
     "  %s <command> --help\n"
@@ -264,6 +266,7 @@ int main(int argc, char* argv[]) {
 
   // command dispatch
   if IS("build")                return main_build(argc, argv);
+  if IS("build-sysroot")        return build_sysroot_main(argc, argv);
   if IS("cc", "clang")          return cc_main(argc, argv, /*iscxx*/false);
   if IS("c++", "clang++")       return cc_main(argc, argv, /*iscxx*/true);
   if IS("ld")                   return ld_main(argc, argv);

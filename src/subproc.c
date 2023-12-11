@@ -152,6 +152,7 @@ err_t subproc_await(subproc_t* p) {
   #elif defined(SUBPROC_USE_PGRP)
     // wait for process-group leader
     if UNLIKELY(waitpid(p->pid, &status, 0) == -1) {
+      trace("proc[%d] died or experienced an error", p->pid);
       p->err = errno ? err_errno() : ErrIO;
     } else {
       if (status != 0)
@@ -160,16 +161,20 @@ err_t subproc_await(subproc_t* p) {
       while (waitpid(-p->pid, NULL, 0) != -1) {}
       if UNLIKELY(errno != ECHILD && p->err == 0)
         p->err = errno ? err_errno() : ErrCanceled;
+      trace("proc[%d] exited (status: %d %s)",
+        p->pid, status, p->err ? err_str(p->err) : "ok");
     }
   #else // not SUBPROC_USE_PGRP
-    if (waitpid(p->pid, &status, 0) < 0) {
+    if (waitpid(p->pid, &status, 0) == -1) {
       p->err = errno ? err_errno() : ErrIO;
+      trace("proc[%d] died or experienced an error: %s", p->pid, err_str(p->err));
       log_errno("waitpid %d", p->pid);
     } else if (WIFEXITED(status)) {
       if (WEXITSTATUS(status) != 0) {
         p->err = errno ? err_errno() : ErrCanceled;
-        trace("proc[%d] failed (status %d)", p->pid, status);
       }
+      trace("proc[%d] exited (status: %d %s)",
+        p->pid, status, p->err ? err_str(p->err) : "ok");
     } else if (WIFSIGNALED(status)) {
       p->err = errno ? err_errno() : ErrCanceled;
       trace("proc[%d] terminated due to signal %d", p->pid, WTERMSIG(status));
@@ -399,7 +404,7 @@ subproc_t* nullable subprocs_alloc(subprocs_t* sp) {
   }
 
   // saturated; wait for a process to finish
-  trace("subprocs_alloc wait");
+  trace("subprocs_alloc wait (cap=%u)", sp->cap);
   err_t err = subprocs_await_one(sp);
   if (err) {
     // ErrEnd here if subprocs_cancel has been called

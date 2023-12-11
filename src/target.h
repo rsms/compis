@@ -120,6 +120,10 @@ inline static bool target_is_arm(const target_t* t) {
   return t->arch == ARCH_arm;
 }
 
+inline static bool target_is_apple(const target_t* t) {
+  return t->arch == SYS_macos;
+}
+
 void target_llvm_version(const target_t* t, char buf[16]);
 
 // target_from_llvm_triple sets target to match llvm_triple

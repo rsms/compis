@@ -24,7 +24,7 @@ static const char* opt_out = "";
 static const char* opt_targetstr = "";
 static const target_t* opt_target = NULL;
 static bool opt_debug = false;
-static int opt_verbose = false;
+static int opt_verbose = 0;
 static const char* opt_maxproc = "";
 static bool opt_printast = false;
 static bool opt_printir = false;
@@ -93,7 +93,7 @@ static void help(const char* prog) {
     coprogname, prog,
     coprogname, prog,
     coprogname, prog);
-  print_options();
+  cliopt_print();
   exit(0);
 }
 
@@ -132,7 +132,7 @@ static void vlog_config(const compiler_t* c) {
   printf("target:    %s (%s)\n", tmpbuf, opt_target->triple);
 
   if (coverbose == 1) {
-    printf("(--vv for more details)\n");
+    printf("(-vv for more details)\n");
     return;
   }
 
@@ -151,13 +151,11 @@ static void vlog_config(const compiler_t* c) {
   printf("addrtype:  %s\n", primtype_name(c->addrtype->kind));
   printf("uinttype:  %s\n", primtype_name(c->uinttype->kind));
   printf("inttype:   %s\n", primtype_name(c->inttype->kind));
-
 }
 
 
 int main_build(int argc, char* argv[]) {
-  int optind = parse_cli_options(argc, argv, help);
-  if (optind < 0)
+  if (!cliopt_parse(&argc, &argv, help))
     return 1;
 
   coverbose = MAX(coverbose, (u8)opt_verbose);
@@ -184,10 +182,6 @@ int main_build(int argc, char* argv[]) {
 
   if (*opt_maxproc)
     set_comaxproc();
-
-  assert(optind <= argc);
-  argv += optind;
-  argc -= optind;
 
   if (opt_nolink && *opt_out) {
     elog("cannot specify both --no-link and -o (nothing to output when not linking)");
@@ -243,8 +237,8 @@ int main_build(int argc, char* argv[]) {
     vlog_config(&c);
 
   // build sysroot if needed (only reads compiler attributes; never mutates it)
-  if (( err = build_sysroot_if_needed(&c, /*flags*/0) )) {
-    dlog("build_sysroot_if_needed: %s", err_str(err));
+  if (( err = build_sysroot(&c, /*flags*/0) )) {
+    dlog("build_sysroot: %s", err_str(err));
     return 1;
   }
 

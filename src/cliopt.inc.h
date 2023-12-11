@@ -1,6 +1,7 @@
 #ifndef FOREACH_CLI_OPTION
   #error FOREACH_CLI_OPTION not defined
 #endif
+#include <getopt.h>
 
 ASSUME_NONNULL_BEGIN
 
@@ -16,6 +17,22 @@ typedef struct cliopt {
 #endif
 } cliopt_t;
 
+
+typedef struct cliopt_args_t {
+  char* const* argv;
+  int          argc;
+} cliopt_args_t;
+
+
+// cliopt_parse parses command line arguments.
+// When this function returns, argc & argv points to an array of non-option arguments.
+// Returns false if an error occurred.
+static bool cliopt_parse(int* argc, char** argv[], void(*helpfn)(const char* prog));
+
+// cliopt_print prints a summary of all command options
+static void cliopt_print();
+
+// ———————————————————————————————————————————————————————————————————————————————————
 
 static bool cli_valload_str(void* valptr, const char* value) {
   *(const char**)valptr = value;
@@ -37,7 +54,7 @@ static void cli_set_intbool(int* valptr) {
 }
 
 
-static cliopt_t options[] = {
+static cliopt_t g_cli_options[] = {
   #define _VL(ptr) _Generic((ptr), \
     bool*:        NULL, \
     const char**: cli_valload_str \
@@ -94,10 +111,15 @@ static const struct option longopt_spec[] = {
   #undef _DLV
 };
 
+/*typedef struct cliopt_args_t {
+  char* const argv[];
+  int         argc;
+} cliopt_args_t;*/
 
-// returns optind which is the start index into argv of positional arguments.
-// e.g. "while (optind < argc) argv[optind++];"
-static int parse_cli_options(int argc, char** argv, void(*helpfn)(const char* prog)) {
+
+static bool cliopt_parse(int* argcp, char** argvp[], void(*helpfn)(const char* prog)) {
+  int argc = *argcp;
+  char** argv = *argvp;
   int c, i = 0, nerrs = 0, help = 0;
 
   // e.g. "abc:d:f:h"
@@ -139,13 +161,13 @@ static int parse_cli_options(int argc, char** argv, void(*helpfn)(const char* pr
         nerrs++;
         break;
 
-      case ':': warnx("missing value for -%c", optopt); nerrs++; break;
+      case ':': elog("%s: missing value for -%c", coprogname, optopt); nerrs++; break;
 
       case 0:
-        if (options[i].valload) {
-          options[i].valload(options[i].valptr, optarg);
-        } else if (options[i].valptr) {
-          *(bool*)options[i].valptr = true;
+        if (g_cli_options[i].valload) {
+          g_cli_options[i].valload(g_cli_options[i].valptr, optarg);
+        } else if (g_cli_options[i].valptr) {
+          *(bool*)g_cli_options[i].valptr = true;
         }
         break;
 
@@ -157,35 +179,43 @@ static int parse_cli_options(int argc, char** argv, void(*helpfn)(const char* pr
   if (help && helpfn)
     helpfn(argv[0]);
 
-  return nerrs > 0 ? -1 : optind;
+  if (nerrs)
+    return false;
+
+  // getopt_long has shuffled argv around to that all non-option arguments
+  // are at the end, starting at optind
+  *argvp = *argvp + optind;
+  *argcp = *argcp - optind;
+
+  return true;
 }
 
 
-static void print_options1(bool isdebug) {
+static void cliopt_print1(bool isdebug) {
   // calculate description column
   int descr_col = 0;
   int descr_max_col = 30;
   int descr_sep_w = 2; // spaces separating argspec and description
-  for (usize i = 0; i < countof(options); i++) {
+  for (usize i = 0; i < countof(g_cli_options); i++) {
     #if DEBUG
-      if (options[i].isdebug != isdebug)
+      if (g_cli_options[i].isdebug != isdebug)
         continue;
     #endif
     struct option o = longopt_spec[i];
     assertnotnull(o.name);
     int w = 6 + (o.name ? 2 + strlen(o.name) : 0);
     // e.g. "  -c  ", "  -c, --name" or "      --name"
-    if (options[i].valname)
-      w += 1 + strlen(options[i].valname); // " valname"
+    if (g_cli_options[i].valname)
+      w += 1 + strlen(g_cli_options[i].valname); // " valname"
     w += descr_sep_w;
     if (w > descr_col)
       descr_col = MIN(descr_max_col, w);
   }
 
   // print
-  for (usize i = 0; i < countof(options); i++) {
+  for (usize i = 0; i < countof(g_cli_options); i++) {
     #if DEBUG
-      if (options[i].isdebug != isdebug)
+      if (g_cli_options[i].isdebug != isdebug)
         continue;
     #endif
     struct option o = longopt_spec[i];
@@ -199,28 +229,28 @@ static void print_options1(bool isdebug) {
     } else {
       printf("      --%s", o.name);
     }
-    if (options[i].valname)
-      printf(" %s", options[i].valname);
+    if (g_cli_options[i].valname)
+      printf(" %s", g_cli_options[i].valname);
     int w = (int)(ftell(stdout) - startcol);
     w += descr_sep_w;
     if (w > descr_col) {
-      printf("\n    %s\n", options[i].descr);
+      printf("\n    %s\n", g_cli_options[i].descr);
     } else {
-      printf("%*s%s\n", (descr_col - w) + descr_sep_w, "", options[i].descr);
+      printf("%*s%s\n", (descr_col - w) + descr_sep_w, "", g_cli_options[i].descr);
     }
   }
 }
 
 
-static void print_options() {
-  print_options1(false);
+static void cliopt_print() {
+  cliopt_print1(false);
 
   // if there are debug-build options, print them separately
   #if DEBUG
-    for (usize i = 0; i < countof(options); i++) {
-      if (options[i].isdebug) {
+    for (usize i = 0; i < countof(g_cli_options); i++) {
+      if (g_cli_options[i].isdebug) {
         printf("Options only available in compis debug build:\n");
-        print_options1(true);
+        cliopt_print1(true);
         break;
       }
     }

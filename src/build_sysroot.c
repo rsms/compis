@@ -17,6 +17,7 @@
 #include <string.h>
 #include <fcntl.h> // open
 #include <unistd.h> // close
+#include <stdlib.h>
 
 
 // CXX_HEADER_INSTALL_DIR: install directory for C++ headers, relative to sysroot
@@ -91,8 +92,13 @@ bad:
 }
 
 
-static str_t lib_install_path(const compiler_t* c, syslib_t lib) {
-  return path_join(c->sysroot, "lib", syslib_filename(&c->target, lib));
+static str_t lib_install_path(const compiler_t* c, const char* filename) {
+  return path_join(c->sysroot, "lib", filename);
+}
+
+
+static str_t syslib_install_path(const compiler_t* c, syslib_t lib) {
+  return lib_install_path(c, syslib_filename(&c->target, lib));
 }
 
 
@@ -163,6 +169,18 @@ static err_t build_libc_musl(const compiler_t* c) {
                           "-Isrc/internal");
   strlist_addf(&build.cc, "-isystem%s/include", c->sysroot);
 
+  // dummy libraries to manufacture
+  const char* dummy_lib_filenames[] = {
+    "libcrypt.a",
+    "libdl.a",
+    "libm.a",
+    "libpthread.a",
+    "libresolv.a",
+    "librt.a",
+    "libutil.a",
+    "libxnet.a",
+  };
+
   if (c->target.arch == ARCH_aarch64 && c->target.sys == SYS_linux && c->lto) {
     // disable LTO for aarch64-linux to work around an issue that causes broken
     // executables where somehow init_have_lse_atomics calling getauxval causes
@@ -207,6 +225,7 @@ static err_t build_libc_musl(const compiler_t* c) {
   #undef ADD_CRT_SOURCE
 
   u32 njobs = cbuild_njobs(&build) + 1 + (u32)(c->target.arch != ARCH_any);
+  njobs += countof(dummy_lib_filenames);
   bgtask_t* task = bgtask_open(c->ma, "libc", njobs, 0);
 
   // copy headers
@@ -225,15 +244,31 @@ static err_t build_libc_musl(const compiler_t* c) {
   for (usize i = 0; i < countof(srcdirs); i++)
     str_free(srcdirs[i]);
   str_free(dstdir);
+  if (err) goto end_early;
 
-  // build library
-  if (!err) {
-    str_t libfile = lib_install_path(c, SYSLIB_C);
-    err = cbuild_build(&build, libfile.p, task);
+  // create dummy libraries
+  slice_t dummy_lib_contents = slice_cstr("!<arch>\n");
+  for (usize i = 0; i < countof(dummy_lib_filenames); i++) {
+    str_t libfile = lib_install_path(c, dummy_lib_filenames[i]);
+    task->n++;
+    bgtask_setstatusf(task, "create {sysroot}%s", libfile.p + strlen(c->sysroot));
+    err = fs_writefile_mkdirs(libfile.p, 0644, dummy_lib_contents);
     str_free(libfile);
+    if (err) goto end_early;
   }
 
-  bgtask_end(task, "");
+  // build library
+  str_t libfile = syslib_install_path(c, SYSLIB_C);
+  err = cbuild_build(&build, libfile.p, task);
+  str_free(libfile);
+  if (err) goto end_early;
+
+end_early:
+  if (err) {
+    bgtask_end(task, "failed: %s", err_str(err));
+  } else {
+    bgtask_end(task, "");
+  }
   bgtask_close(task);
 
 end:
@@ -317,7 +352,7 @@ static err_t build_libc_wasi(const compiler_t* c) {
   #undef ADD_CRT_SOURCE
 
   // build
-  str_t libfile = lib_install_path(c, SYSLIB_C);
+  str_t libfile = syslib_install_path(c, SYSLIB_C);
   err_t err = cbuild_build(&build, libfile.p, NULL);
   str_free(libfile);
 
@@ -468,7 +503,7 @@ static err_t build_librt(const compiler_t* c) {
   //   strlist_add(&srclist, "truncsfbf2.c");
   // }
 
-  str_t libfile = lib_install_path(c, SYSLIB_RT);
+  str_t libfile = syslib_install_path(c, SYSLIB_RT);
   err = cbuild_build(&build, libfile.p, NULL);
   str_free(libfile);
 
@@ -541,16 +576,33 @@ static err_t build_libunwind(const compiler_t* c) {
 
   // add sources
   // ma: temporary memory allocator for storing source filenames
-  memalloc_t ma = memalloc_bump_in(c->ma, countof(libunwind_sources)*PATH_MAX, 0);
+  usize nsources_space_max = PATH_MAX * (
+      countof(libunwind_sources)
+    + countof(libunwind_sources_arm)
+    + countof(libunwind_sources_apple)
+  );
+  memalloc_t ma = memalloc_bump_in(c->ma, nsources_space_max, 0);
   { memalloc_ctx_set_scope(ma);
     for (u32 i = 0; i < countof(libunwind_sources); i++) {
       char* srcfile = safechecknotnull(path_join("src", libunwind_sources[i]).p);
       cbuild_add_source(&build, srcfile);
     }
+    if (target_is_arm(&c->target)) {
+      for (u32 i = 0; i < countof(libunwind_sources_arm); i++) {
+        char* srcfile = safechecknotnull(path_join("src", libunwind_sources_arm[i]).p);
+        cbuild_add_source(&build, srcfile);
+      }
+    }
+    if (target_is_apple(&c->target)) {
+      for (u32 i = 0; i < countof(libunwind_sources_apple); i++) {
+        char* srcfile = safechecknotnull(path_join("src", libunwind_sources_apple[i]).p);
+        cbuild_add_source(&build, srcfile);
+      }
+    }
   }
 
   // build library
-  str_t libfile = lib_install_path(c, SYSLIB_UNWIND);
+  str_t libfile = syslib_install_path(c, SYSLIB_UNWIND);
   err_t err = cbuild_build(&build, libfile.p, NULL);
   str_free(libfile);
 
@@ -715,7 +767,7 @@ static err_t build_libcxxabi(const compiler_t* c) {
   }
 
   // build library
-  str_t libfile = lib_install_path(c, SYSLIB_CXXABI);
+  str_t libfile = syslib_install_path(c, SYSLIB_CXXABI);
   err_t err = cbuild_build(&build, libfile.p, NULL);
   str_free(libfile);
 
@@ -800,7 +852,7 @@ static err_t build_libcxx(const compiler_t* c) {
   }
 
   // build library
-  str_t libfile = lib_install_path(c, SYSLIB_CXX);
+  str_t libfile = syslib_install_path(c, SYSLIB_CXX);
   err_t err = cbuild_build(&build, libfile.p, NULL);
   str_free(libfile);
 
@@ -854,13 +906,14 @@ static bool is_component_built(const compiler_t* c, const char* component) {
 // Returns false if the component is available (another process completed the work.)
 // If false is returned, caller should check *errp.
 static bool build_component(
-  const compiler_t* c, int* lockfdp, err_t* errp, const char* component)
+  const compiler_t* c, int* lockfdp, err_t* errp, int flags, const char* component)
 {
   *errp = 0;
 
   // if the component is installed, no additional work is necessary
-  if (is_component_built(c, component)) {
-    vlog("{sysroot}/%s: up to date", component);
+  if ((flags & SYSROOT_BUILD_FORCE) == 0 && is_component_built(c, component)) {
+    if (coverbose)
+      vlog("%s/%s: up to date", relpath(c->sysroot), component);
     return false;
   }
 
@@ -879,9 +932,10 @@ static bool build_component(
   long lockee_pid;
   err_t err = fs_trylock(lockfd, &lockee_pid);
   if (err == 0) {
-    bool build = !is_component_built(c, component);
+    bool build = (flags & SYSROOT_BUILD_FORCE) || !is_component_built(c, component);
     if (build) {
-      vlog("{sysroot}/%s: building", component);
+      if (coverbose)
+        vlog("%s/%s: building", relpath(c->sysroot), component);
     } else {
       // race condition; component already built
       fs_unlock(lockfd);
@@ -937,38 +991,42 @@ static void finalize_build_component(
 }
 
 
-err_t build_sysroot_if_needed(const compiler_t* c, int flags) {
+err_t build_sysroot(const compiler_t* c, int flags) {
   // Coordinate with other racing processes using file-based locks
   int lockfd;
   err_t err;
+
+  assertf(c->sysroot, "compiler not configured");
 
   if (( err = fs_mkdirs(c->sysroot, 0755, 0) )) {
     elog("mkdirs %s: %s", c->sysroot, err_str(err));
     return err;
   }
 
-  if (!err && c->target.sys != SYS_none && build_component(c, &lockfd, &err, "sysinc")) {
+  if (!err && c->target.sys != SYS_none &&
+      build_component(c, &lockfd, &err, flags, "sysinc"))
+  {
     err = copy_sysinc_headers(c);
     finalize_build_component(c, lockfd, &err, "sysinc");
   }
 
   if (!err && target_has_syslib(&c->target, SYSLIB_C) &&
-      build_component(c, &lockfd, &err, "libc"))
+      build_component(c, &lockfd, &err, flags, "libc"))
   {
     err = build_libc(c);
     finalize_build_component(c, lockfd, &err, "libc");
   }
 
   if (!err && target_has_syslib(&c->target, SYSLIB_RT) &&
-      build_component(c, &lockfd, &err, "librt"))
+      build_component(c, &lockfd, &err, flags, "librt"))
   {
     err = build_librt(c);
     finalize_build_component(c, lockfd, &err, "librt");
   }
 
-  if (!err && (flags & SYSROOT_ENABLE_CXX) &&
+  if (!err && (flags & SYSROOT_BUILD_CXX) &&
       target_has_syslib(&c->target, SYSLIB_CXX) &&
-      build_component(c, &lockfd, &err, "libcxx"))
+      build_component(c, &lockfd, &err, flags, "libcxx"))
   {
     assert(target_has_syslib(&c->target, SYSLIB_UNWIND));
     assert(target_has_syslib(&c->target, SYSLIB_CXXABI));
@@ -980,4 +1038,149 @@ err_t build_sysroot_if_needed(const compiler_t* c, int flags) {
   }
 
   return err;
+}
+
+
+// ———————————————————————————————————————————————————————————————————————————————————
+// "build-sysroot" command-line command
+
+
+// cli options
+static bool opt_help = false;
+static bool opt_force = false;
+static bool opt_debug = false;
+static int  opt_verbose = 0;
+
+#define FOREACH_CLI_OPTION(S, SV, L, LV,  DEBUG_L, DEBUG_LV) \
+  /* S( var, ch, name,          descr) */\
+  /* SV(var, ch, name, valname, descr) */\
+  /* L( var,     name,          descr) */\
+  /* LV(var,     name, valname, descr) */\
+  S( &opt_debug,  'd', "debug",   "Build sysroot for debug mode")\
+  S( &opt_force,  'f', "force",   "Build sysroot even when it's up to date")\
+  S( &opt_verbose,'v', "verbose", "Verbose mode prints extra information")\
+  S( &opt_help,   'h', "help",    "Print help on stdout and exit")\
+// end FOREACH_CLI_OPTION
+
+#include "cliopt.inc.h"
+
+
+static void command_line_help(const char* cmdname) {
+  char tmpbuf[TARGET_FMT_BUFCAP];
+
+  printf(
+    "Builds target sysroot (normally done automatically.)\n"
+    "Usage: %s %s [options] [<target> ...]\n"
+    "Options:\n"
+    "",
+    coprogname, cmdname);
+  cliopt_print();
+
+  target_fmt(target_default(), tmpbuf, sizeof(tmpbuf));
+  printf(
+    "<target>\n"
+    "  Specify what target(s) to build sysroot for.\n"
+    "  If no <target> is specified, the host target (%s) is assumed.\n"
+    "  Available targets:\n",
+    tmpbuf);
+
+  usize maxcol = 80;
+  usize col = strlen("    all"); printf("    all");
+  for (usize i = 0; i < SUPPORTED_TARGETS_COUNT; i++) {
+    target_fmt(&supported_targets[i], tmpbuf, sizeof(tmpbuf));
+    col += 1 + strlen(tmpbuf);
+    if (col > maxcol) {
+      printf("\n    %s", tmpbuf);
+      col = 4 + strlen(tmpbuf);
+    } else {
+      printf(" %s", tmpbuf);
+    }
+  }
+  printf("\n");
+
+  exit(0);
+}
+
+
+static void main_diaghandler(const diag_t* d, void* nullable userdata) {
+  // unused
+}
+
+
+static bool build_sysroot_for_target(compiler_t* compiler, const target_t* target) {
+  err_t err;
+
+  compiler_config_t compiler_config = {
+    .target = target,
+    .buildroot = "build-THIS-IS-A-BUG-IN-COMPIS", // should never be used
+    .buildmode = opt_debug ? BUILDMODE_DEBUG : BUILDMODE_OPT,
+    .verbose = coverbose,
+  };
+  if (( err = compiler_configure(compiler, &compiler_config) )) {
+    dlog("compiler_configure: %s", err_str(err));
+    return false;
+  }
+
+  if (coverbose) {
+    char tmpbuf[TARGET_FMT_BUFCAP];
+    target_fmt(target, tmpbuf, sizeof(tmpbuf));
+    if (coverbose) {
+      vlog("building sysroot for %s at %s", tmpbuf, relpath(compiler->sysroot));
+    } else {
+      log("building sysroot for %s", tmpbuf);
+    }
+  }
+
+  int flags = SYSROOT_BUILD_CXX;
+  if (opt_force) flags |= SYSROOT_BUILD_FORCE;
+  if (( err = build_sysroot(compiler, flags) )) {
+    dlog("build_sysroot: %s", err_str(err));
+    return false;
+  }
+
+  return true;
+}
+
+
+static bool build_sysroot_for_targetstr(compiler_t* compiler, const char* targetstr) {
+  const target_t* target = target_find(targetstr);
+  if (!target) {
+    elog("Invalid target \"%s\"", targetstr);
+    elog("See `%s targets` for a list of supported targets", relpath(coexefile));
+    return false;
+  }
+  return build_sysroot_for_target(compiler, target);
+}
+
+
+int build_sysroot_main(int argc, char* argv[]) {
+  if (!cliopt_parse(&argc, &argv, command_line_help))
+    return 1;
+
+  coverbose = MAX(coverbose, (u8)opt_verbose);
+
+  compiler_t compiler;
+  compiler_init(&compiler, memalloc_default(), &main_diaghandler);
+
+  // if no <target>s are specified, build for the default (host) target
+  if (argc == 0)
+    return build_sysroot_for_target(&compiler, target_default()) == false;
+
+  // handle special "all" target
+  for (int i = 0; i < argc; i++) {
+    if (strcmp(argv[i], "all") == 0) {
+      for (usize i = 0; i < SUPPORTED_TARGETS_COUNT; i++) {
+        if (!build_sysroot_for_target(&compiler, &supported_targets[i]))
+          return 1;
+      }
+      return 0;
+    }
+  }
+
+  // build for specified targets
+  for (int i = 0; i < argc; i++) {
+    if (!build_sysroot_for_targetstr(&compiler, argv[i]))
+      return 1;
+  }
+  return 0;
 }

@@ -29,7 +29,7 @@ bgtask_t* bgtask_open(memalloc_t ma, const char* name, u32 ntotal, int flags) {
   bgt->fpos = -1000000;
 
   // set BGTASK_FANCY (unless set in flags)
-  if ((flags & (BGTASK_NOFANCY | BGTASK_FANCY)) == 0) {
+  if ((flags & (BGTASK_NOFANCY | BGTASK_FANCY)) == 0 && coverbose <= 1) {
     const char* term = getenv("TERM");
     if (isatty(OUTPUT_FILENO) && term && strcmp(term, "dumb") != 0)
       flags |= BGTASK_FANCY;

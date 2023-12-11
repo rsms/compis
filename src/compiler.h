@@ -416,8 +416,9 @@ void scope_iterate(scope_t* s, u32 maxdepth, scopeit_t it, void* nullable ctx);
 const char* visibility_str(nodeflag_t flags);
 
 // sysroot
-#define SYSROOT_ENABLE_CXX (1<<0) // enable libc++, libc++abi, libunwind
-err_t build_sysroot_if_needed(const compiler_t* c, int flags); // build_sysroot.c
+#define SYSROOT_BUILD_CXX   (1<<0) // enable libc++, libc++abi, libunwind
+#define SYSROOT_BUILD_FORCE (1<<1) // (re)build even if up to date
+err_t build_sysroot(const compiler_t* c, int flags); // build_sysroot.c
 const char* syslib_filename(const target_t* target, syslib_t);
 
 

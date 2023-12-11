@@ -3,13 +3,18 @@
 
 static const char* libunwind_sources[] = {
   "libunwind.cpp",
-  "Unwind-EHABI.cpp",
   "Unwind-seh.cpp",
   "Unwind-sjlj.c",
   "UnwindLevel1-gcc-ext.c",
   "UnwindLevel1.c",
   "UnwindRegistersRestore.S",
   "UnwindRegistersSave.S",
-  "Unwind_AIXExtras.cpp",
+};
+
+static const char* libunwind_sources_arm[] = {
+  "Unwind-EHABI.cpp",
+};
+
+static const char* libunwind_sources_apple[] = {
   "Unwind_AppleExtras.cpp",
 };

@@ -344,8 +344,8 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
   if (!custom_sysroot && !print_only) {
     int sysroot_build_flags = 0;
     if (link_libcxx)
-      sysroot_build_flags |= SYSROOT_ENABLE_CXX;
-    if (( err = build_sysroot_if_needed(&c, sysroot_build_flags) ))
+      sysroot_build_flags |= SYSROOT_BUILD_CXX;
+    if (( err = build_sysroot(&c, sysroot_build_flags) ))
       die("failed to configure sysroot: %s", err_str(err));
   }
 
