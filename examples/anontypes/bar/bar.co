@@ -1,0 +1,4 @@
+pub type Bar
+  x [[int]]
+  vec2
+    a, b int

@@ -1,0 +1,11 @@
+import "./foo"
+import "./bar"
+
+type Bar
+  x ?foo.Foo
+  y foo.Bar
+  vec2
+    a, b int
+
+fun main() {
+}

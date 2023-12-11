@@ -1,0 +1,10 @@
+pub type Foo
+  x [[int]]
+  vec2
+    a, b int
+  vec3
+    a, b, c int
+
+pub type Bar
+  tuple
+    a, b int
