@@ -359,13 +359,19 @@ static bool elemtype_needs_defguard(const type_t* t) {
 
 
 static void gen_defguard_begin(cgen_t* g, const char* mangledname) {
-  PRINTF("\n#ifndef " CO_ABI_GLOBAL_PREFIX "DEF_%s", mangledname), g->lineno++;
-  PRINTF("\n#define " CO_ABI_GLOBAL_PREFIX "DEF_%s", mangledname), g->lineno++;
+  if (g->outbuf.len && g->outbuf.chars[g->outbuf.len-1] != '\n') {
+    g->lineno++;
+    CHAR('\n');
+  }
+  PRINTF("\n#ifndef " CO_ABI_GLOBAL_PREFIX "DEF_%s", mangledname);
+  PRINTF("\n#define " CO_ABI_GLOBAL_PREFIX "DEF_%s", mangledname);
+  g->lineno += 2;
 }
 
 
 static void gen_defguard_end(cgen_t* g) {
-  PRINT("\n#endif"), g->lineno++;
+  PRINT("\n#endif\n");
+  g->lineno += 2;
 }
 
 
@@ -619,8 +625,8 @@ static void gen_structtype(cgen_t* g, const structtype_t* st) {
 }
 
 static void gen_structtype_def(cgen_t* g, structtype_t* st) {
-  // must use a defguard for anonymous structs in pub.h
-  if (st->name == NULL && (st->flags & NF_VIS_PUB))
+  // must use a defguard for anonymous structs
+  if (st->name == NULL)
     gen_defguard_begin(g, assertnotnull(st->mangledname));
 
   startline(g, st->loc);
@@ -685,7 +691,7 @@ static void gen_structtype_def(cgen_t* g, structtype_t* st) {
   PRINT("};");
 
 end:
-  if (st->name == NULL && (st->flags & NF_VIS_PUB))
+  if (st->name == NULL)
     gen_defguard_end(g);
 }
 
