@@ -912,8 +912,10 @@ static bool build_component(
 
   // if the component is installed, no additional work is necessary
   if ((flags & SYSROOT_BUILD_FORCE) == 0 && is_component_built(c, component)) {
-    if (coverbose)
-      vlog("%s/%s: up to date", relpath(c->sysroot), component);
+    if (coverbose) {
+      vlog("%s/%s: up to date",
+        coverbose > 1 ? relpath(c->sysroot) : path_base_cstr(c->sysroot), component);
+    }
     return false;
   }
 
@@ -934,8 +936,10 @@ static bool build_component(
   if (err == 0) {
     bool build = (flags & SYSROOT_BUILD_FORCE) || !is_component_built(c, component);
     if (build) {
-      if (coverbose)
-        vlog("%s/%s: building", relpath(c->sysroot), component);
+      if (coverbose) {
+        vlog("%s/%s: building",
+          coverbose > 1 ? relpath(c->sysroot) : path_base_cstr(c->sysroot), component);
+      }
     } else {
       // race condition; component already built
       fs_unlock(lockfd);
@@ -1121,14 +1125,12 @@ static bool build_sysroot_for_target(compiler_t* compiler, const target_t* targe
     return false;
   }
 
+  char tmpbuf[TARGET_FMT_BUFCAP];
+  target_fmt(target, tmpbuf, sizeof(tmpbuf));
   if (coverbose) {
-    char tmpbuf[TARGET_FMT_BUFCAP];
-    target_fmt(target, tmpbuf, sizeof(tmpbuf));
-    if (coverbose) {
-      vlog("building sysroot for %s at %s", tmpbuf, relpath(compiler->sysroot));
-    } else {
-      log("building sysroot for %s", tmpbuf);
-    }
+    vlog("building sysroot for %s at %s", tmpbuf, relpath(compiler->sysroot));
+  } else {
+    log("building sysroot for %s", tmpbuf);
   }
 
   int flags = SYSROOT_BUILD_CXX;
