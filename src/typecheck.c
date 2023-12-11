@@ -5212,7 +5212,7 @@ static err_t autoimport_runtime(typecheck_t* a) {
     return 0;
 
   // add runtime's API to our package-level scope
-  const nsexpr_t* ns = rt_pkg->api_ns;
+  const nsexpr_t* ns = assertnotnull(rt_pkg->api_ns);
   return pkg_def_addm(a->pkg, a->ma, ns->member_names, ns->members.v, ns->members.len);
 }
 

@@ -898,8 +898,8 @@ err_t pkgbuild_import(pkgbuild_t* pb) {
 
   assert(pkg->imports.len == 0);
 
-  // add "std/runtime" dependency (for top-level packages only)
-  if ((pb->flags & PKGBUILD_DEP) == 0 && pb->c->opt_nostdruntime == false) {
+  // add automatic "std/runtime" dependency
+  if (pb->c->opt_nostdruntime == false) {
     pkg_t* rt_pkg;
     if (( err = compiler_get_runtime_pkg(pb->c, &rt_pkg) )) {
       if (err == ErrNotFound)
