@@ -452,6 +452,7 @@ XFLAGS+=(
   -Wno-pragma-once-outside-header \
 )
 $TESTING_ENABLED && XFLAGS+=( -D${PP_PREFIX}TESTING_ENABLED )
+$VERBOSE && XFLAGS+=( -v )
 XFLAGS_NATIVE=()
 
 CFLAGS=( -std=c11 -fms-extensions -Wno-microsoft )
