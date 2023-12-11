@@ -2,9 +2,9 @@
 set -euo pipefail
 source "$(dirname "$0")/lib.sh"
 
-LINUX_VERSION=6.1.7
+LINUX_VERSION=6.6.6
 LINUX_VERSION_MAJOR=${LINUX_VERSION%%.*}
-LINUX_SHA256=4ab048bad2e7380d3b827f1fad5ad2d2fc4f2e80e1c604d85d1f8781debe600f
+LINUX_SHA256=ebf70a917934b13169e1be5b95c3b6c2fea5bc14e6dc144f1efb8a0016b224c8
 LINUX_SRCDIR="$DEPS_DIR/linux-$LINUX_VERSION"
 SYSINC_SRCDIR="$PROJECT/lib/sysinc-src"
 
@@ -24,18 +24,19 @@ if [ "$(uname -s)" != Linux ]; then
   fi
 fi
 
-[ ! -f "$LINUX_SRCDIR/Makefile" ] &&
+if [ ! -f "$LINUX_SRCDIR/Makefile" ]; then
   _download \
     https://mirrors.kernel.org/pub/linux/kernel/v${LINUX_VERSION_MAJOR}.x/linux-$LINUX_VERSION.tar.xz \
     "$LINUX_SHA256" \
-    "$DOWNLOAD_DIR/linux-$LINUX_VERSION.tar.xz" &&
+    "$DOWNLOAD_DIR/linux-$LINUX_VERSION.tar.xz"
   _extract_tar \
     "$DOWNLOAD_DIR/linux-$LINUX_VERSION.tar.xz" \
     "$LINUX_SRCDIR"
+fi
 
 _pushd "$LINUX_SRCDIR"
 
-for arch in arm arm64 riscv x86; do
+for arch in arm arm64 riscv x86 i386; do
   co_arch=${arch/arm64/aarch64}
   co_arch=${co_arch/x86/x86_64}
   co_arch=${co_arch/riscv/riscv64}
@@ -43,12 +44,12 @@ for arch in arm arm64 riscv x86; do
   rm -rf "$DESTDIR.tmp"
   # note: do not use -j here!
   echo "make ARCH=$arch headers_install > $(_relpath "$DESTDIR.log")"
-  # (
+  (
     make ARCH=$arch INSTALL_HDR_PATH="$DESTDIR.tmp" headers_install
     rm -rf "$DESTDIR"
     mv "$DESTDIR.tmp/include" "$DESTDIR"
     rm -rf "$DESTDIR.tmp"
-  # ) > "$DESTDIR.log" 2>&1 &
+  ) > "$DESTDIR.log" 2>&1 &
 done
 wait
 rm -f "$SYSINC_SRCDIR/"*-linux.log
