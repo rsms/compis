@@ -173,7 +173,13 @@ static void cocachedir_init(memalloc_t ma) {
   if (envvar && *envvar) {
     cocachedir = path_abs(envvar).p;
   } else {
-    cocachedir = path_join(sys_homedir(), COCACHE_DEFAULT "/" CO_VERSION_STR).p;
+    cocachedir = path_join(sys_homedir(), COCACHE_DEFAULT PATH_SEP_STR
+      #if defined(CO_DISTRIBUTION)
+        CO_VERSION_STR
+      #else
+        "dev"
+      #endif
+    ).p;
   }
   safecheck(cocachedir != NULL);
 }
