@@ -273,6 +273,16 @@ static err_t cbuild_build_compile(cbuild_t* b, bgtask_t* task, strlist_t* objfil
       bgtask_setstatusf(task, "compile %s", relpath(obj->srcfile));
     }
 
+    if UNLIKELY(coverbose > 2) {
+      char* const* argv = strlist_array(args);
+      if (*argv) {
+        printf("[spawn] %s %s", coexefile, *argv);
+        while (*++argv)
+          printf(" %s", *argv);
+        printf("\n");
+      }
+    }
+
     err = compiler_spawn_tool(b->c, subprocs, args, b->srcdir);
     strlist_restore(args, snapshot);
     if (err)

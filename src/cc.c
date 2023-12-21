@@ -114,7 +114,11 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
         config.verbose = true;
         coverbose = MAX(coverbose, 2);
         print_only = true;
+
       } else if (streq(arg, "--help") || streq(arg, "-help")) {
+        print_only = true;
+
+      } else if (streq(arg, "--version") || streq(arg, "-V")) {
         print_only = true;
       }
 

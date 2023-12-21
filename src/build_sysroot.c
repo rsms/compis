@@ -169,6 +169,9 @@ static err_t build_libc_musl(const compiler_t* c) {
                           "-Isrc/internal");
   strlist_addf(&build.cc, "-isystem%s/include", c->sysroot);
 
+  if (coverbose > 2)
+    strlist_add(&build.cc, "-v");
+
   // dummy libraries to manufacture
   const char* dummy_lib_filenames[] = {
     "libcrypt.a",
