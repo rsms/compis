@@ -1031,13 +1031,19 @@ err_t build_sysroot(const compiler_t* c, int flags) {
     finalize_build_component(c, lockfd, &err, "librt");
   }
 
+  if (!err && (flags & SYSROOT_BUILD_UNWIND) &&
+      target_has_syslib(&c->target, SYSLIB_UNWIND) &&
+      build_component(c, &lockfd, &err, flags, "libunwind"))
+  {
+    err = build_libunwind(c);
+    finalize_build_component(c, lockfd, &err, "libunwind");
+  }
+
   if (!err && (flags & SYSROOT_BUILD_CXX) &&
       target_has_syslib(&c->target, SYSLIB_CXX) &&
       build_component(c, &lockfd, &err, flags, "libcxx"))
   {
-    assert(target_has_syslib(&c->target, SYSLIB_UNWIND));
     assert(target_has_syslib(&c->target, SYSLIB_CXXABI));
-    err = build_libunwind(c);
     if (!err) err = build_cxx_config_site(c); // __config_site header
     if (!err) err = build_libcxxabi(c);
     if (!err) err = build_libcxx(c);
@@ -1136,7 +1142,7 @@ static bool build_sysroot_for_target(compiler_t* compiler, const target_t* targe
     log("building sysroot for %s", tmpbuf);
   }
 
-  int flags = SYSROOT_BUILD_CXX;
+  int flags = SYSROOT_BUILD_CXX | SYSROOT_BUILD_UNWIND;
   if (opt_force) flags |= SYSROOT_BUILD_FORCE;
   if (( err = build_sysroot(compiler, flags) )) {
     dlog("build_sysroot: %s", err_str(err));

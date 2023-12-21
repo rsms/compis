@@ -76,6 +76,7 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
   bool link_libc = true;
   bool link_libcxx = iscxx;
   bool link_librt = true;
+  bool explicit_link_libunwind = false; // -lunwind
   bool startfiles = true;
   bool nostdinc = false;
   bool custom_ld = false;
@@ -185,7 +186,15 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
         iscompiling = true;
       } else if (streq(arg, "-x")) {
         iscompiling = true;
+      } else if (string_startswith(arg, "-L") || string_startswith(arg, "-l")) {
+        if (streq(arg+2, "unwind"))
+          explicit_link_libunwind = true;
+        has_link_flags = true;
       } else if (streq(arg, "-L") || streq(arg, "-l")) {
+        if (i+1 < user_argc) {
+          if (streq(user_argv[i+1], "unwind"))
+            explicit_link_libunwind = true;
+        }
         has_link_flags = true;
       } else if (streq(arg, "-o")) {
         // infer "no linking" based on output filename
@@ -347,6 +356,8 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
   // build sysroot
   if (!custom_sysroot && !print_only) {
     int sysroot_build_flags = 0;
+    if (explicit_link_libunwind || link_libcxx)
+      sysroot_build_flags |= SYSROOT_BUILD_UNWIND;
     if (link_libcxx)
       sysroot_build_flags |= SYSROOT_BUILD_CXX;
     if (( err = build_sysroot(&c, sysroot_build_flags) ))
@@ -400,6 +411,9 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
       }
     }
   }
+
+  if (explicit_link_libunwind)
+    strlist_addf(&args, "-isystem%s/libunwind/include", coroot);
 
   // linker flags
   if (link) {
