@@ -15,7 +15,12 @@ cd "$PROJECT"
 #    so that you have e.g. "/Volumes/Command Line Developer Tools"
 # 3. Run this script
 #
+# Run with -dry-run to just find headers, without updating sysinc.
+#
 [ "$(uname -s)" = Darwin ] || _err "must run this script on macOS"
+case "${1:-}" in
+  -h|--help) echo "usage: $0 [-dry-run]"; exit 0;;
+esac
 
 PBZX=$OUT_DIR/pbzx
 CLT_TMP_DIR="$OUT_DIR/apple-clt-tmp"
@@ -32,8 +37,10 @@ case "$HOST_ARCH" in
 esac
 IFS=. read -r MIN_VER_MAJ MIN_VER_MIN <<< "$TARGET_SYS_MINVERSION"
 
+COMPIS="$OUT_DIR/opt-$HOST_ARCH-$HOST_SYS/co"
+
 _require_compis() {
-  if [ ! -f "$OUT_DIR/opt/co" ]; then
+  if [ ! -f "$COMPIS" ]; then
     echo "building compis"
     $BASH "$PROJECT/build.sh"
   fi
@@ -129,7 +136,7 @@ _import_headers() { # <sdk-dir> <sysversion> <sdkver>
   _require_compis
 
   echo "  finding headers"
-  "$OUT_DIR/opt/co" cc \
+  "$COMPIS" cc \
     -nostdinc \
     --sysroot="$sdkdir/" \
     --target=x86_64-macos.$sysver \
@@ -170,6 +177,7 @@ _import_libs() { # <sdk-dir> <sysversion>
   local sysroot_name dst_libdir name ent alias src srcdir dst
   local libs_anyarch=( libSystem.tbd )
   local cs1 cs2
+  local do_copy
 
   # import libs for any arch
   sysroot_name="any-macos.$sysver"
@@ -180,6 +188,7 @@ _import_libs() { # <sdk-dir> <sysversion>
     [ -e "$src" ] || continue
     src="$(realpath "$src")"
     dst="$dst_libdir/$name"
+    do_copy=1
 
     if [ -e "$dst" ]; then
       cs1=$(sha256sum "$src" | cut -d' ' -f1)
@@ -188,14 +197,16 @@ _import_libs() { # <sdk-dir> <sysversion>
         cat <<- END >&2
 
   ——————————————————————————————————— note ————————————————————————————————————
-  Will NOT overwrite $(_relpath "$dst") which is different from
+  Overwriting $(_relpath "$dst") which is different from
   $(_relpath "$src")
-  To replace it, 'rm $(_relpath "$dst")' and re-run this script
   —————————————————————————————————————————————————————————————————————————————
 
 END
+      else
+        do_copy=0
       fi
-    else
+    fi
+    if [ $do_copy -eq 1 ]; then
       echo "  copying lib $name -> $(_relpath "$dst")"
       mkdir -p "$dst_libdir"
       install -m 0644 "$src" "$dst"
@@ -334,7 +345,9 @@ for d in "${SDKS[@]}"; do
     "$ver" "$(basename "$path")" "$(_relpath "$SUBDIR")"
 done
 
-[ "${1:-}" != "-dry-run" ] || exit
+if [ "${1:-}" = "-dry-run" ]; then
+  exit 0
+fi
 
 # actually import
 for d in "${SDKS[@]}"; do
