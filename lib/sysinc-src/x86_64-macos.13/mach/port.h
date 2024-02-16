@@ -423,6 +423,7 @@ enum mach_port_guard_exception_codes {
 	kGUARD_EXC_MOD_REFS_NON_FATAL           = 1u << 21,
 	kGUARD_EXC_IMMOVABLE_NON_FATAL          = 1u << 22,
 	kGUARD_EXC_REQUIRE_REPLY_PORT_SEMANTICS = 1u << 23,
+	kGUARD_EXC_THREAD_SET_STATE             = 1u << 24,
 };
 
 #define MAX_FATAL_kGUARD_EXC_CODE (1u << 7)

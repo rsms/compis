@@ -377,6 +377,7 @@ typedef integer_t       cpu_threadtype_t;
 #define CPUFAMILY_INTEL_SKYLAKE         0x37fc219f
 #define CPUFAMILY_INTEL_KABYLAKE        0x0f817246
 #define CPUFAMILY_INTEL_ICELAKE         0x38435547
+#define CPUFAMILY_INTEL_ICELAKE_SP       0x87e5d08e
 #define CPUFAMILY_INTEL_COMETLAKE       0x1cf8a03e
 #define CPUFAMILY_ARM_9                 0xe73283ae
 #define CPUFAMILY_ARM_11                0x8ff620d8
@@ -396,6 +397,10 @@ typedef integer_t       cpu_threadtype_t;
 #define CPUFAMILY_ARM_FIRESTORM_ICESTORM 0x1b588bb3
 #define CPUFAMILY_ARM_BLIZZARD_AVALANCHE 0xda33d83d
 #define CPUFAMILY_ARM_EVEREST_SAWTOOTH  0x8765edea
+#define CPUFAMILY_ARM_IBIZA             0xfa33415e
+#define CPUFAMILY_ARM_PALMA 0x72015832
+#define CPUFAMILY_ARM_COLL 0x2876f5b5
+#define CPUFAMILY_ARM_LOBOS 0x5f4dea93
 
 /* Described in rdar://64125549 */
 #define CPUSUBFAMILY_UNKNOWN            0

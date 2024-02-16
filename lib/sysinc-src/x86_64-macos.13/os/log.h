@@ -23,6 +23,8 @@ __BEGIN_DECLS
 OS_OBJECT_DECL_SWIFT(os_log);
 #elif OS_OBJECT_USE_OBJC
 OS_OBJECT_DECL(os_log);
+#elif defined(__has_ptrcheck)
+typedef struct os_log_s *__single os_log_t;
 #else
 typedef struct os_log_s *os_log_t;
 #endif /* OS_OBJECT_USE_OBJC */

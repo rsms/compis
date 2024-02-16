@@ -46,6 +46,10 @@ __attribute__((availability(macosx, introduced=10.14)))
 	__attribute__((availability(macosx, introduced=12.0)))
 #endif // __MAC_12_0
 
+#ifndef __MAC_13_3
+#define __MAC_13_3 130300
+#endif // __MAC_13_3
+
 #ifndef __AVAILABILITY_INTERNAL__MAC_10_2_DEP__MAC_10_11
 #define __AVAILABILITY_INTERNAL__MAC_10_2_DEP__MAC_10_11
 #endif // __AVAILABILITY_INTERNAL__MAC_10_2_DEP__MAC_10_11

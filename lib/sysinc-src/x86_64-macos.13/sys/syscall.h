@@ -75,7 +75,7 @@
 #define	SYS_fchflags       35
 #define	SYS_sync           36
 #define	SYS_kill           37
-			/* 38  old stat */
+#define	SYS_crossarch_trap 38
 #define	SYS_getppid        39
 			/* 40  old lstat */
 #define	SYS_dup            41

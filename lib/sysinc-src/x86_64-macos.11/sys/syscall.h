@@ -556,7 +556,7 @@
 #define	SYS_ulock_wake     516
 #define	SYS_fclonefileat   517
 #define	SYS_fs_snapshot    518
-			/* 519  */
+#define	SYS_register_uexc_handler 519
 #define	SYS_terminate_with_payload 520
 #define	SYS_abort_with_payload 521
 #define	SYS_necp_session_open 522
