@@ -6,7 +6,9 @@ set -euo pipefail
 source "$(dirname "$0")/lib.sh"
 cd "$PROJECT"
 
-if [ ! -f "$OUT_DIR/opt/co" ]; then
+COMPIS="$OUT_DIR/opt-$HOST_ARCH-$HOST_SYS/co"
+
+if [ ! -f "$COMPIS" ]; then
   echo "building compis"
   $BASH "$PROJECT/build.sh"
 fi
@@ -42,9 +44,9 @@ if [ ! -f "$XZ/lib/liblzma.a" ]; then
   _pushd "$XZ_SRC"
   echo "building xz (liblzma)"
 
-  CC="$OUT_DIR/opt/co cc" \
-  AR="$OUT_DIR/opt/co ar" \
-  RANLIB="$OUT_DIR/opt/co ranlib" \
+  CC="$COMPIS cc" \
+  AR="$COMPIS ar" \
+  RANLIB="$COMPIS ranlib" \
   ./configure \
     --prefix= \
     --enable-static \
@@ -86,9 +88,9 @@ if [ ! -f "$OPENSSL/lib/libcrypto.a" ]; then
   _pushd "$OPENSSL_SRC"
   echo "building openssl (libcrypto)"
 
-  CC="$OUT_DIR/opt/co cc" \
-  AR="$OUT_DIR/opt/co ar" \
-  RANLIB="$OUT_DIR/opt/co ranlib" \
+  CC="$COMPIS cc" \
+  AR="$COMPIS ar" \
+  RANLIB="$COMPIS ranlib" \
   CFLAGS="-I$LLVMBOX/include -isystem$MACOS_SDK/usr/include -Wno-unused-command-line-argument" \
   LDFLAGS="-L$LLVMBOX/lib -L$MACOS_SDK/usr/lib" \
   ./config \
@@ -140,9 +142,9 @@ if [ ! -f "$LIBXAR/lib/libxar.a" ]; then
     "-L$LLVMBOX/lib" \
   )
 
-  CC="$OUT_DIR/opt/co cc" \
-  AR="$OUT_DIR/opt/co ar" \
-  RANLIB="$OUT_DIR/opt/co ranlib" \
+  CC="$COMPIS cc" \
+  AR="$COMPIS ar" \
+  RANLIB="$COMPIS ranlib" \
   CFLAGS="${XAR_CFLAGS[@]}" \
   CPPFLAGS="${XAR_CFLAGS[@]}" \
   LDFLAGS="${XAR_LDFLAGS[@]}" \
@@ -168,7 +170,8 @@ fi
 
 echo "building $(_relpath "$PBZX")"
 mkdir -p "$(dirname "$PBZX")"
-"$OUT_DIR/opt/co" cc \
+"$COMPIS" cc \
+  -DTARGET_OS_EMBEDDED=0 \
   "-I$LLVMBOX/include" "-L$LLVMBOX/lib" -lz \
   "-I$XZ/include"      "-L$XZ/lib"      -llzma \
   "-I$OPENSSL/include" "-L$OPENSSL/lib" -lcrypto \
