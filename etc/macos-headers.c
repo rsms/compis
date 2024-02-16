@@ -226,6 +226,14 @@ SOFTWARE.
 #include <sys/vnode.h>
 #include <getopt.h> // getopt_long
 
+// Depended on by glib
+#include <arpa/ftp.h>
+#include <nameser.h>
+#include <arpa/nameser.h>
+#include <arpa/nameser_compat.h>
+#include <arpa/telnet.h>
+#include <arpa/tftp.h>
+
 // Provided by macOS LibC
 #include <memory.h>
 #include <fts.h> // libxar
