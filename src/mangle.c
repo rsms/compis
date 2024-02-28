@@ -328,7 +328,7 @@ static void mangle_anon_structtype(encoder_t* e, const structtype_t* st) {
 static void mangle_type(encoder_t* e, const type_t* t) {
   assert(t->kind < NODEKIND_COUNT);
   assert(nodekind_istype(t->kind));
-  dlog("mangle type %s#%p", nodekind_name(t->kind), t);
+  //dlog("mangle type %s#%p", nodekind_name(t->kind), t);
 
   if (node_isusertype((node_t*)t) && ((usertype_t*)t)->mangledname) {
     buf_print(&e->buf, ((usertype_t*)t)->mangledname + strlen(CO_MANGLE_PREFIX));
