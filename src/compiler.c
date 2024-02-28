@@ -118,9 +118,9 @@ static err_t configure_target(compiler_t* c, const compiler_config_t* config) {
   c->ldname = target_linker_name(&c->target);
 
   if (target_is_riscv(&c->target) && isatty(STDOUT_FILENO)) {
-    elog("%s: warning: RISC-V support is experimental", coprogname);
+    vlog("%s: warning: RISC-V support is experimental", coprogname);
   } else if (target_is_arm(&c->target) && isatty(STDOUT_FILENO)) {
-    elog("%s: warning: ARM support is experimental", coprogname);
+    vlog("%s: warning: ARM support is experimental", coprogname);
   }
 
   // enable LTO for optimized builds.
