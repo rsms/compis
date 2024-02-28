@@ -1062,7 +1062,10 @@ err_t build_sysroot(const compiler_t* c, int flags) {
 static bool opt_help = false;
 static bool opt_force = false;
 static bool opt_debug = false;
+static bool opt_print = false;
+static bool opt_nolto = false;
 static int  opt_verbose = 0;
+static int  g_target_count = 1;
 
 #define FOREACH_CLI_OPTION(S, SV, L, LV,  DEBUG_L, DEBUG_LV) \
   /* S( var, ch, name,          descr) */\
@@ -1071,6 +1074,8 @@ static int  opt_verbose = 0;
   /* LV(var,     name, valname, descr) */\
   S( &opt_debug,  'd', "debug",   "Build sysroot for debug mode")\
   S( &opt_force,  'f', "force",   "Build sysroot even when it's up to date")\
+  L( &opt_print,       "print",   "Just print the absolute path (don't build)")\
+  L( &opt_nolto,       "no-lto",  "Build sysroot without LTO")\
   S( &opt_verbose,'v', "verbose", "Verbose mode prints extra information")\
   S( &opt_help,   'h', "help",    "Print help on stdout and exit")\
 // end FOREACH_CLI_OPTION
@@ -1122,19 +1127,30 @@ static void main_diaghandler(const diag_t* d, void* nullable userdata) {
 
 static bool build_sysroot_for_target(compiler_t* compiler, const target_t* target) {
   err_t err;
+  char tmpbuf[TARGET_FMT_BUFCAP];
 
   compiler_config_t compiler_config = {
     .target = target,
     .buildroot = "build-THIS-IS-A-BUG-IN-COMPIS", // should never be used
     .buildmode = opt_debug ? BUILDMODE_DEBUG : BUILDMODE_OPT,
     .verbose = coverbose,
+    .nolto = opt_nolto,
   };
   if (( err = compiler_configure(compiler, &compiler_config) )) {
     dlog("compiler_configure: %s", err_str(err));
     return false;
   }
 
-  char tmpbuf[TARGET_FMT_BUFCAP];
+  if (opt_print) {
+    if (g_target_count > 1) {
+      target_fmt(target, tmpbuf, sizeof(tmpbuf));
+      printf("%s %s\n", tmpbuf, compiler->sysroot);
+    } else {
+      printf("%s\n", compiler->sysroot);
+    }
+    return true;
+  }
+
   target_fmt(target, tmpbuf, sizeof(tmpbuf));
   if (coverbose) {
     vlog("building sysroot for %s at %s", tmpbuf, relpath(compiler->sysroot));
@@ -1174,12 +1190,15 @@ int build_sysroot_main(int argc, char* argv[]) {
   compiler_init(&compiler, memalloc_default(), &main_diaghandler);
 
   // if no <target>s are specified, build for the default (host) target
-  if (argc == 0)
-    return build_sysroot_for_target(&compiler, target_default()) == false;
+  if (argc == 0) {
+    bool ok = build_sysroot_for_target(&compiler, target_default());
+    return ok ? 0 : 1;
+  }
 
   // handle special "all" target
   for (int i = 0; i < argc; i++) {
     if (strcmp(argv[i], "all") == 0) {
+      g_target_count = SUPPORTED_TARGETS_COUNT;
       for (usize i = 0; i < SUPPORTED_TARGETS_COUNT; i++) {
         if (!build_sysroot_for_target(&compiler, &supported_targets[i]))
           return 1;
@@ -1189,6 +1208,7 @@ int build_sysroot_main(int argc, char* argv[]) {
   }
 
   // build for specified targets
+  g_target_count = argc;
   for (int i = 0; i < argc; i++) {
     if (!build_sysroot_for_targetstr(&compiler, argv[i]))
       return 1;
