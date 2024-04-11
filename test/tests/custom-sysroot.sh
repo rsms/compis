@@ -1,6 +1,6 @@
 # Build a C program with a custom --sysroot and -isysroot.
 # Use wasi sysroot since it's small.
-CFLAGS="--target=wasm32-wasi"
+CFLAGS=--target=wasm32-wasi
 
 # query for effective sysroot
 SYSROOT=$(
@@ -13,6 +13,9 @@ echo "using custom sysroot: $SYSROOT"
 
 # build actual sysroot (if needed)
 c++ $CFLAGS -c hello.cc
+
+# tell cc where to find libc++ headers, since they are absent in SYSROOT
+CFLAGS="$CFLAGS -isystem$COROOT/libcxx/include"
 
 # try both "--sysroot=" and "--sysroot" command-line arg flavors
 # since these take different code paths in cc.c

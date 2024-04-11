@@ -136,6 +136,8 @@ static err_t configure_target(compiler_t* c, const compiler_config_t* config) {
     c->lto = 0;
   }
 
+  c->uconf = userconfig_for_target(&c->target);
+
   return 0;
 }
 
@@ -269,7 +271,7 @@ static err_t configure_cflags(compiler_t* c, const compiler_config_t* config) {
 
   // ————— start of cflags_sysinc —————
 
-  // DISABLED, for now.
+  // [macos] DISABLED, for now.
   // Including this for all source files causes problems with feature detection
   // code like that found in zlib's zutil.h.
   // Maybe it can be conditionally included for objc compilation?
@@ -546,13 +548,13 @@ err_t configure_builddir(compiler_t* c, const compiler_config_t* config) {
 
 err_t compiler_configure(compiler_t* c, const compiler_config_t* config) {
   err_t err;
-  err = configure_options(c, config);  if (err) return dlog("x"), err;
-  err = configure_target(c, config);   if (err) return dlog("x"), err;
-  err = configure_sysroot(c, config);  if (err) return dlog("x"), err;
-  err = configure_buildroot(c, config);if (err) return dlog("x"), err;
+  err = configure_options(c, config); if (err) return dlog("x"), err;
+  err = configure_target(c, config); if (err) return dlog("x"), err;
+  err = configure_sysroot(c, config); if (err) return dlog("x"), err;
+  err = configure_buildroot(c, config); if (err) return dlog("x"), err;
   err = configure_builddir(c, config); if (err) return dlog("x"), err;
-  err = configure_cflags(c, config);   if (err) return dlog("x"), err;
-  err = configure_builtins(c);         if (err) return dlog("x"), err;
+  err = configure_cflags(c, config); if (err) return dlog("x"), err;
+  err = configure_builtins(c); if (err) return dlog("x"), err;
   return err;
 }
 

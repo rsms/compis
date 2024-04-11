@@ -157,11 +157,18 @@ static err_t build_libc_musl(const compiler_t* c) {
   strlist_add(&build.cc,
     "-Os",
     "-pipe",
-    "-fomit-frame-pointer",
-    "-fno-unwind-tables",
     "-fno-asynchronous-unwind-tables",
     "-ffunction-sections",
     "-fdata-sections" );
+  if (c->buildmode == BUILDMODE_OPT) {
+    strlist_add(&build.cc,
+      "-fomit-frame-pointer",
+      "-fno-unwind-tables");
+  } else {
+    strlist_add(&build.cc,
+      "-g",
+      "-funwind-tables");
+  }
   strlist_addf(&build.cc, "-Iarch/%s", arch_name(c->target.arch));
   strlist_addf(&build.cc, "-Iinclude-arch/%s", arch_name(c->target.arch));
   strlist_add(&build.cc,  "-Iarch/generic",
@@ -909,7 +916,7 @@ static bool is_component_built(const compiler_t* c, const char* component) {
 // Returns false if the component is available (another process completed the work.)
 // If false is returned, caller should check *errp.
 static bool build_component(
-  const compiler_t* c, int* lockfdp, err_t* errp, int flags, const char* component)
+  const compiler_t* c, int* lockfdp, err_t* errp, u32 flags, const char* component)
 {
   *errp = 0;
 
@@ -998,7 +1005,7 @@ static void finalize_build_component(
 }
 
 
-err_t build_sysroot(const compiler_t* c, int flags) {
+err_t build_sysroot(const compiler_t* c, u32 flags) {
   // Coordinate with other racing processes using file-based locks
   int lockfd;
   err_t err;
@@ -1031,7 +1038,7 @@ err_t build_sysroot(const compiler_t* c, int flags) {
     finalize_build_component(c, lockfd, &err, "librt");
   }
 
-  if (!err && (flags & SYSROOT_BUILD_UNWIND) &&
+  if (!err && (flags & SYSROOT_BUILD_LIBUNWIND) &&
       target_has_syslib(&c->target, SYSLIB_UNWIND) &&
       build_component(c, &lockfd, &err, flags, "libunwind"))
   {
@@ -1039,7 +1046,7 @@ err_t build_sysroot(const compiler_t* c, int flags) {
     finalize_build_component(c, lockfd, &err, "libunwind");
   }
 
-  if (!err && (flags & SYSROOT_BUILD_CXX) &&
+  if (!err && (flags & SYSROOT_BUILD_LIBCXX) &&
       target_has_syslib(&c->target, SYSLIB_CXX) &&
       build_component(c, &lockfd, &err, flags, "libcxx"))
   {
@@ -1158,7 +1165,7 @@ static bool build_sysroot_for_target(compiler_t* compiler, const target_t* targe
     log("building sysroot for %s", tmpbuf);
   }
 
-  int flags = SYSROOT_BUILD_CXX | SYSROOT_BUILD_UNWIND;
+  u32 flags = SYSROOT_BUILD_LIBC | SYSROOT_BUILD_LIBCXX | SYSROOT_BUILD_LIBUNWIND;
   if (opt_force) flags |= SYSROOT_BUILD_FORCE;
   if (( err = build_sysroot(compiler, flags) )) {
     dlog("build_sysroot: %s", err_str(err));

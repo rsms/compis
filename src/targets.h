@@ -34,11 +34,15 @@ SYS(wasi)
 
 // TARGET(arch, sys, sysver, intsize, ptrsize, llvm_triple)
 // IMPORTANT: these MUST be sorted by sysver, per sys (for default min version select)
-TARGET(aarch64, linux, "", 8, 8, "aarch64-linux-musl")
-TARGET(arm,     linux, "", 4, 4, "arm-linux-musl")
-TARGET(i386,    linux, "", 4, 4, "i386-linux-musl")
-TARGET(riscv64, linux, "", 8, 8, "riscv64-linux-musl")
-TARGET(x86_64,  linux, "", 8, 8, "x86_64-linux-musl")
+// llvm_triple is of the form:
+//   ARCHITECTURE-VENDOR-OPERATING_SYSTEM
+// or
+//   ARCHITECTURE-VENDOR-OPERATING_SYSTEM-ENVIRONMENT
+TARGET(aarch64, linux, "", 8, 8, "aarch64-unknown-linux-musl")
+TARGET(arm,     linux, "", 4, 4, "arm-unknown-linux-musl")
+TARGET(i386,    linux, "", 4, 4, "i386-unknown-linux-musl")
+TARGET(riscv64, linux, "", 8, 8, "riscv64-unknown-linux-musl")
+TARGET(x86_64,  linux, "", 8, 8, "x86_64-unknown-linux-musl")
 
 TARGET(aarch64, macos, "11", 8, 8, "arm64-apple-darwin20")
 TARGET(aarch64, macos, "12", 8, 8, "arm64-apple-darwin21")

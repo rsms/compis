@@ -2,6 +2,7 @@
 #include "llvm/llvm.h"
 #include "compiler.h"
 #include "path.h"
+#include "userconfig.h"
 #include "clang/Basic/Version.inc" // CLANG_VERSION_STRING
 
 #include <stdlib.h>
@@ -269,6 +270,8 @@ int main(int argc, char* argv[]) {
       return 1;
   }
   #endif
+
+  userconfig_load(argc, argv);
 
   // command dispatch
   if IS("build")                return main_build(argc, argv);

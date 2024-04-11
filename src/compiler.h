@@ -17,6 +17,7 @@
 #include "tokens.h"
 #include "diag.h"
 #include "ast.h"
+#include "userconfig.h"
 ASSUME_NONNULL_BEGIN
 
 typedef u8 buildmode_t;
@@ -75,6 +76,9 @@ typedef struct compiler_ {
   bool opt_nolibcxx : 1;
   bool opt_nostdruntime : 1;
   u8   opt_verbose; // 0=off 1=on 2=extra
+
+  // userconfig
+  const userconfig_t* uconf;
 
   // data created during parsing & analysis
   // mutex must be locked when multiple threads share a compiler instance
@@ -416,10 +420,11 @@ void scope_iterate(scope_t* s, u32 maxdepth, scopeit_t it, void* nullable ctx);
 const char* visibility_str(nodeflag_t flags);
 
 // sysroot
-#define SYSROOT_BUILD_FORCE  (1<<0) // (re)build even if up to date
-#define SYSROOT_BUILD_CXX    (1<<1) // enable libc++, libc++abi
-#define SYSROOT_BUILD_UNWIND (1<<2) // enable libunwind
-err_t build_sysroot(const compiler_t* c, int flags); // build_sysroot.c
+#define SYSROOT_BUILD_FORCE     (1<<0) // (re)build even if up to date
+#define SYSROOT_BUILD_LIBC      (1<<2) // libc
+#define SYSROOT_BUILD_LIBCXX    (1<<3) // libc++, libc++abi
+#define SYSROOT_BUILD_LIBUNWIND (1<<4) // libunwind
+err_t build_sysroot(const compiler_t* c, u32 flags); // build_sysroot.c
 const char* syslib_filename(const target_t* target, syslib_t);
 
 

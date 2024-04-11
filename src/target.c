@@ -4,6 +4,7 @@
 #include "path.h"
 #include "llvm/llvm.h"
 #include <string.h>
+#include <fnmatch.h>
 
 
 #define TARGET(ARCH, SYS, SYSVER, ...) \
@@ -162,6 +163,28 @@ const target_t* target_find(const char* target_str) {
   #endif
 
   return NULL;
+}
+
+
+bool target_str_match(const char* target_str, const char* pattern) {
+  return fnmatch(pattern, target_str, FNM_CASEFOLD) == 0;
+}
+
+
+u32 target_find_matching(
+  const char* pattern, const target_t** targets, u32 targets_cap)
+{
+  char tmpbuf[TARGET_FMT_BUFCAP];
+  u32 nmatches = 0;
+  for (usize i = 0; i < SUPPORTED_TARGETS_COUNT; i++) {
+    target_fmt(&supported_targets[i], tmpbuf, sizeof(tmpbuf));
+    if (target_str_match(tmpbuf, pattern)) {
+      if (nmatches < targets_cap)
+        targets[nmatches] = &supported_targets[i];
+      nmatches++;
+    }
+  }
+  return nmatches;
 }
 
 

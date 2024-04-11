@@ -77,13 +77,23 @@ extern const target_t supported_targets[];
 
 // target = arch "-" sys ("." sysver)?
 const target_t* target_default(); // host target (aka "native" target)
+
 const target_t* nullable target_find(const char* target); // null if invalid
+
+// target_id_match returns true if pattern matches a targets string,
+// as returned by target_fmt.
+bool target_str_match(const char* target_str, const char* pattern);
+
+// target_find_matching populates 'targets' with targets which string matches pattern;
+// a case-insensitive glob pattern.
+// Returns the total number of matching targets, which may be larger than targets_cap.
+u32 target_find_matching(
+  const char* pattern, const target_t** targets, u32 targets_cap);
+
 usize target_fmt(const target_t* t, char* buf, usize bufcap);
 const char* arch_name(arch_t);
 const char* sys_name(sys_t);
 void print_supported_targets(); // prints with log()
-
-typedef err_t (*target_str_visitor_t)(const char* s, void* ctx);
 
 // target_layers returns all possible coroot "layers" for target
 // as absolute paths, rooted in "{coroot}/{basedir}/", or "{coroot}/" if basedir is "".

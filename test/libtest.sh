@@ -3,6 +3,7 @@ source "$PROJECT/etc/lib.sh"
 TEST_DIR="$PROJECT/test"
 COEXE="${COEXE:-"$OUT_DIR/opt/co"}"
 COPATH="$(dirname "$COEXE")"
+COROOT=$PROJECT/lib
 VERBOSE=${VERBOSE:-false}
 VERY_VERBOSE=${VERY_VERBOSE:-false}
 

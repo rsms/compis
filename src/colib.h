@@ -1230,6 +1230,7 @@ void co_qsort(void* base, usize nmemb, usize size, co_qsort_cmp cmp, void* nulla
     static void test_##NAME(unittest_t* unittest)
 
 #else // if !defined(CO_ENABLE_TESTS)
+  typedef struct unittest_t unittest_t;
   #if __has_attribute(unused) && __has_attribute(pure)
     #define UNITTEST_ATTRS __attribute__((unused,pure))
   #elif __has_attribute(unused)
@@ -1239,9 +1240,9 @@ void co_qsort(void* base, usize nmemb, usize size, co_qsort_cmp cmp, void* nulla
   #else
     #define UNITTEST_ATTRS
   #endif
-  #define DEF_TEST(NAME)                                    \
+  #define UNITTEST_DEF(NAME)                                    \
     _Pragma("GCC diagnostic ignored \"-Wunused-variable\"") \
-    UNITTEST_ATTRS static void test_##NAME(CoTesting* unittest)
+    UNITTEST_ATTRS static void test_##NAME(unittest_t* unittest)
   inline static u32 unittest_runall() { return 0; }
 #endif // defined(CO_ENABLE_TESTS)
 

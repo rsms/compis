@@ -73,9 +73,9 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
   static target_t custom_target;
 
   bool link = true;
-  bool link_libc = true;
-  bool link_libcxx = iscxx;
-  bool link_librt = true;
+  bool enable_libc = true;
+  bool enable_libcxx = iscxx;
+  bool enable_librt = true;
   bool explicit_link_libunwind = false; // -lunwind
   bool startfiles = true;
   bool nostdinc = false;
@@ -86,6 +86,10 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
   bool explicit_exceptions = false;
   bool explicit_cxx_exceptions = false;
   const char* nullable custom_sysroot = NULL;
+  // bool opt_static_pie = false;
+  int opt_pie = -1; // -1 = not specified
+  int opt_static = -1; // -1 = not specified
+  bool opt_shared = false; // -shared or --dynamic; building a shared library
 
   bool iscompiling = false;
   bool ispastflags = false;
@@ -101,102 +105,115 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
   for (int i = 1; i < user_argc; i++) {
     char* arg = user_argv[i];
     if (*arg == '-' && !ispastflags) {
+      usize arglen = strlen(arg);
+      #define ISARG(str) \
+        (strlen(str) == arglen && memcmp(str, arg, strlen(str)) == 0)
 
-      // general options
-      if (streq(arg, "-v") || streq(arg, "--verbose")) {
+      if (ISARG("-v") || ISARG("--verbose")) {
         config.verbose = true;
         coverbose = MAX(coverbose, 1);
-      } else if (streq(arg, "-vv")) {
+      } else if (ISARG("-vv")) {
         // note: -vv is compis-specific and is converted to "-v"
         arg[2] = 0; // "-vv" -> "-v"
         config.verbose = true;
         coverbose = MAX(coverbose, 2);
-      } else if (streq(arg, "-###")) {
+      } else if (ISARG("-###")) {
         config.verbose = true;
         coverbose = MAX(coverbose, 2);
         print_only = true;
-
-      } else if (streq(arg, "--help") || streq(arg, "-help")) {
+      } else if (ISARG("--help") || ISARG("-help")) {
         print_only = true;
-
-      } else if (streq(arg, "--version") || streq(arg, "-V")) {
+      } else if (ISARG("--version") || ISARG("-V")) {
         print_only = true;
-      }
-
-      // linker flags
-      else if (streq(arg, "-nostartfiles")) {
+      } else if (ISARG("-nostartfiles")) {
         // Do not use the standard system startup files when linking.
         // The standard system libraries are used normally, unless -nostdlib, -nolibc,
         // or -nodefaultlibs is used.
         startfiles = false;
-      } else if (streq(arg, "-nodefaultlibs")) {
+      } else if (ISARG("-nodefaultlibs")) {
         // Do not use the standard system libraries when linking.
         // Only the libraries you specify are passed to the linker, and options
         // specifying linkage of the system libraries are ignored.
         // The standard startup files are used normally, unless -nostartfiles is used.
-        link_librt = false;
-        link_libc = false;
-        link_libcxx = false;
-      } else if (streq(arg, "-nolibc")) {
+        enable_librt = false;
+        enable_libc = false;
+        enable_libcxx = false;
+      } else if (ISARG("-nolibc")) {
         // Do not use the C library or system libraries tightly coupled with it when
         // linking. Still link with the startup files, librt and libstdc++ unless
         // options preventing their inclusion are used as well.
-        link_libc = false;
-      } else if (streq(arg, "-nostdlib") || streq(arg, "--no-standard-libraries")) {
+        enable_libc = false;
+        startfiles = false;
+      } else if (ISARG("-nostdlib") || ISARG("--no-standard-libraries")) {
         // Do not use the standard system startup files or libraries when linking.
         // No startup files and only the libraries you specify are passed to the linker,
         // and options specifying linkage of the system libraries are ignored.
-        link_librt = false;
-        link_libc = false;
-        link_libcxx = false;
+        enable_librt = false;
+        enable_libc = false;
+        enable_libcxx = false;
         startfiles = false;
-      } else if (streq(arg, "-nostdlib++")) {
+      } else if (ISARG("-nostdlib++")) {
         // Do not implicitly link with standard C++ libraries
-        link_libcxx = false;
-      } else if (streq(arg, "-fno-lto")) {
+        enable_libcxx = false;
+      } else if (ISARG("-pie") || ISARG("-fpie") || ISARG("-fPIC") || ISARG("-fPIE")) {
+        opt_pie = 1;
+      } else if (ISARG("-no-pie") ||
+                 ISARG("-nopie") ||
+                 ISARG("-fno-pie") ||
+                 ISARG("-fno-PIC") ||
+                 ISARG("-fno-PIE"))
+      {
+        opt_pie = 0;
+      } else if (ISARG("-static-pie")) {
+        // opt_static_pie = true;
+        opt_pie = 1;
+        opt_static = 1;
+      } else if (ISARG("-static") || ISARG("--static")) {
+        opt_static = 1;
+      } else if (ISARG("-shared") || ISARG("--shared") || ISARG("-dynamic")) {
+        opt_static = 0;
+        opt_shared = true;
+      } else if (ISARG("-fno-lto")) {
         config.nolto = true;
       } else if (string_startswith(arg, "-fuse-ld=")) {
         custom_ld = true;
         // must disable LTO, or else clang complains:
         //   "error: 'x86_64-unknown': unable to pass LLVM bit-code files to linker"
         config.nolto = true;
-      }
-
-      // compilation flags
-      else if (streq(arg, "-nostdinc") ||
-               streq(arg, "--no-standard-includes") ||
-               streq(arg, "-nostdlibinc"))
+      } else if (ISARG("-nostdinc") ||
+                 ISARG("--no-standard-includes") ||
+                 ISARG("-nostdlibinc"))
       {
         // Do not search the standard system directories for header files.
         // Only the directories explicitly specified with -I, -iquote, -isystem,
         // and/or -idirafter options (and the directory of the current file,
         // if appropriate) are searched.
         nostdinc = true;
-      } else if (streq(arg, "-ffreestanding")) {
+      } else if (ISARG("-ffreestanding")) {
         // Assert that compilation targets a freestanding environment.
         // This implies -fno-builtin. A freestanding environment is one in which the
         // standard library may not exist, and program startup may not necessarily be
         // at main.
         freestanding = true;
-      } else if (streq(arg, "-c") || streq(arg, "-S") || streq(arg, "-E")) {
+      } else if (ISARG("-c") || ISARG("-S") || ISARG("-E")) {
         // -c "only compile"
         // -S "only assemble"
         // -E "only preprocess"
         link = false;
         iscompiling = true;
-      } else if (streq(arg, "-x")) {
+      } else if (ISARG("-x")) {
         iscompiling = true;
-      } else if (string_startswith(arg, "-L") || string_startswith(arg, "-l")) {
-        if (streq(arg+2, "unwind"))
+      } else if (ISARG("-l")) {
+        has_link_flags = true;
+        if (i+1 < user_argc && streq(user_argv[i+1], "unwind"))
           explicit_link_libunwind = true;
+      } else if (ISARG("-L")) {
         has_link_flags = true;
-      } else if (streq(arg, "-L") || streq(arg, "-l")) {
-        if (i+1 < user_argc) {
-          if (streq(user_argv[i+1], "unwind"))
-            explicit_link_libunwind = true;
-        }
+      } else if (string_startswith(arg, "-L") || string_startswith(arg, "-l")) {
         has_link_flags = true;
-      } else if (streq(arg, "-o")) {
+        if (ISARG("-lunwind"))
+          explicit_link_libunwind = true;
+      } else if (ISARG("-o")) {
         // infer "no linking" based on output filename
         if (i+1 < user_argc) {
           arg = user_argv[i+1];
@@ -211,42 +228,36 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
             link = false;
           }
         }
-      } else if (streq(arg, "-O0")) {
+      } else if (ISARG("-O0")) {
         config.nolto = true;
       } else if (string_startswith(arg, "-O")) {
         config.nolto = false;
-      } else if (streq(arg, "--co-debug")) {
+      } else if (ISARG("--co-debug")) {
         config.buildmode = BUILDMODE_DEBUG;
-      } else if (streq(arg, "-fsyntax-only")) {
+      } else if (ISARG("-fsyntax-only")) {
         link = false;
-      } else if (streq(arg, "-fno-exceptions") || streq(arg, "-fno-cxx-exceptions")) {
+      } else if (ISARG("-fno-exceptions") || ISARG("-fno-cxx-exceptions")) {
         cxx_exceptions = false;
-      } else if (streq(arg, "-fcxx-exceptions")) {
+      } else if (ISARG("-fcxx-exceptions")) {
         explicit_cxx_exceptions = true;
         explicit_exceptions = true;
-      } else if (streq(arg, "-fexceptions")) {
+      } else if (ISARG("-fexceptions")) {
         explicit_exceptions = true;
       } else if (string_startswith(arg, "-mmacosx-version-min=")) {
         // TODO: parse and check that: value <= target.sysver && value >= minver(target)
         config.sysver = arg + strlen("-mmacosx-version-min=");
-      }
-
-      // flags that affect both compilation and linking
-      else if (string_startswith(arg, "--target=") || streq(arg, "-target")) {
-        if (arg[1] == '-') { // --target=...
-          target_arg = arg + strlen("--target=");
-        } else {
-          if (i + 1 == user_argc)
-            break;
+      } else if (ISARG("-target")) {
+        if (i + 1 < user_argc)
           target_arg = user_argv[i+1];
-        }
-      } else if (streq(arg, "--sysroot")) {
+      } else if (string_startswith(arg, "--target=")) {
+        target_arg = arg + strlen("--target=");
+      } else if (ISARG("--sysroot")) {
         // a bug (or shortcoming?) in clang causes clang's driver to populate system
         // search directories assuming sysroot ends in "/", which it often does not.
         // (For example cmake will strip trailing slashes in CMAKE_OSX_SYSROOT.)
         if (i+1 < user_argc)
           custom_sysroot = user_argv[i+1] = add_trailing_slash(c.ma, user_argv[i+1]);
-      } else if (streq(arg, "-isysroot")) {
+      } else if (ISARG("-isysroot")) {
         // This option is like the --sysroot option, but applies only to header files.
         // On Darwin targets it applies to both header files and libraries.
         if (i+1 < user_argc)
@@ -254,16 +265,16 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
       } else if (string_startswith(arg, "--sysroot=")) {
         user_argv[i] = add_trailing_slash(c.ma, user_argv[i]);
         custom_sysroot = user_argv[i] + strlen("--sysroot=");
-      } else if (streq(arg, "-fno-lto")) {
+      } else if (ISARG("-fno-lto")) {
         config.nolto = true;
       } else if (string_startswith(arg, "-flto")) {
         config.nolto = false;
         if (config.buildmode == BUILDMODE_DEBUG)
           die("error: %s cannot be used together with --co-debug", arg);
-      } else if (streq(arg, "-fmodules") || streq(arg, "-fcxx-modules")) {
+      } else if (ISARG("-fmodules") || ISARG("-fcxx-modules")) {
         if (enable_modules == NULL)
           enable_modules = arg;
-      } else if (streq(arg, "--")) {
+      } else if (ISARG("--")) {
         ispastflags = true;
       }
     }
@@ -289,6 +300,7 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
         }
       }
     }
+    #undef ISARG
   } // end of argv loop
 
   // if any link flags are given, then infer invocation as "linking"
@@ -323,19 +335,33 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
     target = target_default();
   }
 
+  // PIE if not specified (i.e. not explicitly set with e.g -pie or -nopie)
+  // note: see also: opt_static_pie (set by -static-pie)
+  if (opt_pie == -1)
+    opt_pie = 0; // disabled by default
+
+  // we need userconfig before compiler_configure to determine enable_libc
+  const userconfig_t* uconf = userconfig_for_target(target);
+
+  if (!custom_sysroot && *uconf->sysroot)
+    custom_sysroot = uconf->sysroot;
+
   // update link_LIB vars depending on target
-  link_librt  = link_librt  && target_has_syslib(target, SYSLIB_RT);
-  link_libc   = link_libc   && !freestanding && target_has_syslib(target, SYSLIB_C);
-  link_libcxx = link_libcxx && !freestanding && target_has_syslib(target, SYSLIB_CXX);
-  // FIXME: link_libcxx is also used to enable/disable C++ header inclusion
+  if (enable_librt && !target_has_syslib(target, SYSLIB_RT))
+    enable_librt = false;
+  if (enable_libc) {
+    if (freestanding || !target_has_syslib(target, SYSLIB_C))
+      enable_libc = false;
+  }
+  if (enable_libcxx && (freestanding || !target_has_syslib(target, SYSLIB_CXX)))
+    enable_libcxx = false;
 
   // configure compiler
   config.target = target;
   config.buildroot = "build-THIS-IS-A-BUG-IN-COMPIS"; // should never be used
-  config.nolibc = !link_libc;
-  config.nolibcxx = !link_libcxx;
+  config.nolibc = !enable_libc;
+  config.nolibcxx = !enable_libcxx;
   config.sysroot = custom_sysroot;
-
   err_t err = 0;
   if (err || ( err = compiler_configure(&c, &config) ))
     die("compiler_configure: %s", err_str(err));
@@ -356,12 +382,20 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
   // build sysroot
   if (!custom_sysroot && !print_only) {
     int sysroot_build_flags = 0;
-    if (explicit_link_libunwind || link_libcxx)
-      sysroot_build_flags |= SYSROOT_BUILD_UNWIND;
-    if (link_libcxx)
-      sysroot_build_flags |= SYSROOT_BUILD_CXX;
-    if (( err = build_sysroot(&c, sysroot_build_flags) ))
-      die("failed to configure sysroot: %s", err_str(err));
+
+    if (enable_libc)
+      sysroot_build_flags |= SYSROOT_BUILD_LIBC;
+
+    if (explicit_link_libunwind || enable_libcxx)
+      sysroot_build_flags |= SYSROOT_BUILD_LIBUNWIND;
+
+    if (enable_libcxx)
+      sysroot_build_flags |= SYSROOT_BUILD_LIBCXX;
+
+    if (sysroot_build_flags) {
+      if (( err = build_sysroot(&c, sysroot_build_flags) ))
+        die("failed to configure sysroot: %s", err_str(err));
+    }
   }
 
   // build actual args passed to clang
@@ -395,8 +429,8 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
     }
 
     // add include flags for system headers and libc
-    if (!nostdinc) {
-      if (link_libcxx) {
+    if (!nostdinc && !custom_sysroot) {
+      if (enable_libcxx) {
         // We need to specify C++ include directories here so that they are searched
         // before clang resource dir. If we don't do this, the wrong cstddef header
         // will be used and we'll see errors like this:
@@ -405,14 +439,12 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
         strlist_addf(&args, "-isystem%s/libcxxabi/include", coroot);
         strlist_addf(&args, "-isystem%s/libunwind/include", coroot);
       }
-      if (!custom_sysroot) {
-        strlist_add_slice(&args, c.cflags_sysinc);
-        strlist_addf(&args, "-isystem%s/clangres/include", coroot);
-      }
+      strlist_add_slice(&args, c.cflags_sysinc);
+      strlist_addf(&args, "-isystem%s/clangres/include", coroot);
     }
   }
 
-  if (explicit_link_libunwind)
+  if (explicit_link_libunwind && !custom_sysroot)
     strlist_addf(&args, "-isystem%s/libunwind/include", coroot);
 
   // linker flags
@@ -437,7 +469,8 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
 
     strlist_add(&args, "-nodefaultlibs");
 
-    if (link_librt || link_libc || link_libcxx) {
+    bool link_bundled_libs = enable_librt || enable_libc || enable_libcxx;
+    if (link_bundled_libs) {
       if (custom_sysroot) {
         str_t libdir = path_join(c.sysroot, "lib");
         if (fs_isdir(libdir.p)) {
@@ -451,7 +484,7 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
             libdir.len = 0;
           }
         }
-        if (link_librt && libdir.len > 0) {
+        if (enable_librt && libdir.len > 0) {
           // TODO: build librt separately from other syslibs
           // and use it even for custom sysroots as it's libc-independent.
           // Also make sure that config.sysver is honred.
@@ -462,17 +495,17 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
         }
         str_free(libdir);
       } else {
+        // no custom sysroot
         strlist_addf(&args, "-L%s/lib", c.sysroot);
-        if (link_librt)
+        if (enable_librt)
           strlist_add(&args, "-lrt");
       }
-      if (link_libc) {
+      if (enable_libc)
         strlist_add(&args, "-lc");
-        if (link_libcxx) {
-          strlist_add(&args, "-lc++", "-lc++abi");
-          if (cxx_exceptions)
-            strlist_add(&args, "-lunwind");
-        }
+      if (enable_libcxx) {
+        strlist_add(&args, "-lc++", "-lc++abi");
+        if (cxx_exceptions)
+          strlist_add(&args, "-lunwind");
       }
     }
 
@@ -492,9 +525,38 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
         break;
       }
       case SYS_linux: {
-        if (startfiles)
-          strlist_addf(&args, "%s/lib/crt1.o", c.sysroot);
-        strlist_add(&args, "-nostartfiles", "-static", "-L-user-start");
+        // note: opt_static==-1 means static/shared is not specified; default to static
+        // if (opt_static)
+        //   strlist_add(&args, "-static");
+
+        strlist_add(&args, "-nostartfiles");
+
+        if (startfiles) {
+          // See clang/lib/Driver/ToolChains/Gnu.cpp
+          // musl startfiles:
+          //   crt1.o  [exe] position-dependent _start
+          //   rcrt1.o [exe] position-independent _start, static libc
+          //   Scrt1.o [exe] position-independent _start, shared libc
+          //   crti.o  [exe, shlib] function prologs for the .init and .fini sections
+          //   crtn.o  [exe, shlib] function epilogs for the .init/.fini sections
+          if (!opt_shared) {
+            // rcrt1.o is used when libc is statically linked, but not other libraries
+            const char* crt1;
+            if (opt_pie) {
+              if (opt_static) {
+                crt1 = "rcrt1.o";
+              } else {
+                crt1 = "Scrt1.o";
+              }
+            } else {
+              crt1 = "crt1.o";
+            }
+            strlist_addf(&args, "%s/lib/%s", c.sysroot, crt1);
+          }
+          // note: we don't use crti or crtn (legacy) with our built-in musl libc
+          //strlist_addf(&args, "%s/lib/crti.o", c.sysroot);
+        }
+        // strlist_add(&args, "-L-user-start");
         // strlist_add(&args, "-l-user-start"); // FIXME: if there are input files
         break;
       }
@@ -522,6 +584,9 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
         }
         break;
     }
+
+    if (*uconf->linkflags)
+      strlist_add(&args, uconf->linkflags);
   }
 
   // append user arguments
@@ -546,10 +611,10 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
     }
   }
 
-  if (target->sys == SYS_linux && link) {
-    // strlist_add(&args, "-l-user-end"); // FIXME: if there are input files
-    strlist_add(&args, "-L-user-end");
-  }
+  // if (target->sys == SYS_linux && link) {
+  //   // strlist_add(&args, "-l-user-end"); // FIXME: if there are input files
+  //   strlist_add(&args, "-L-user-end");
+  // }
 
   // build argv array
   char* const* argv = strlist_array(&args);
