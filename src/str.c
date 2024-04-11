@@ -131,10 +131,13 @@ isize str_replace(str_t* s, slice_t olds, slice_t news, isize limit) {
 
   // first, calculate how much additional space we need
   usize additional_space_needed = 0;
+  usize first_match_i = 0;
   for (usize i = 0; i <= s->len - olds.len; i++) {
     if (memcmp(&s->p[i], olds.p, olds.len) == 0) {
-      if (nsubs++ == limit)
+      if (nsubs == limit)
         break;
+      nsubs++;
+      first_match_i = i;
       if (news.len > olds.len)
         additional_space_needed += news.len - olds.len;
       i += olds.len - 1;
@@ -146,8 +149,8 @@ isize str_replace(str_t* s, slice_t olds, slice_t news, isize limit) {
     return -1;
 
   // now we can replace the substrings
-  isize nsub_countdown = nsubs + 1;
-  for (usize i = 0; --nsub_countdown > 0 && i <= s->len - olds.len; i++) {
+  isize nsub_countdown = nsubs;
+  for (usize i = first_match_i; nsub_countdown > 0 && i <= s->len - olds.len; i++) {
     if (memcmp(&s->p[i], olds.p, olds.len) == 0) {
       if (news.len != olds.len) {
         // move the rest of the string to make room for the new substring
@@ -156,6 +159,7 @@ isize str_replace(str_t* s, slice_t olds, slice_t news, isize limit) {
       }
       memcpy(&s->p[i], news.p, news.len);
       i += news.len - 1;
+      nsub_countdown--;
     }
   }
 
