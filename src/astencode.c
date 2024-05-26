@@ -396,7 +396,6 @@ static void encode_node(astencoder_t* a, buf_t* outbuf, const node_t* n) {
   // get field table for kind
   const ast_field_t* fieldtab = g_ast_fieldtab[n->kind];
 
-  // check for universal type
   if (fieldtab == g_fieldsof_type_t) {
     // universal type is encoded solely by kind
     buf_setlenp(outbuf, p);
@@ -1237,10 +1236,9 @@ static const u8* dec_str1(DEC_PARAMS, u8** dstp, u32 flags) {
   if UNLIKELY(err)
     goto end_invalid;
 
-  // we assume that typeid_t has a 4 byte "len" header
-  static_assert(offsetof(typeid_data_t, bytes) == 4, "");
-
+  // if DEC_STR_LEN32 is set, the string has a 4 byte "len" header
   u8* dst;
+  static_assert(offsetof(typeid_data_t, bytes) == 4, "");
   usize dstcap = declen + ((u32)!!(flags & DEC_STR_LEN32) * 3) + 1;
   if ((flags & DEC_STR_TMPBUF) && (usize)d->tmpbufcap >= dstcap) {
     dst = d->tmpbuf;
@@ -1254,6 +1252,7 @@ static const u8* dec_str1(DEC_PARAMS, u8** dstp, u32 flags) {
   *dstp = dst;
 
   if (flags & DEC_STR_LEN32) {
+    // note: assumes mem_alloc always returns >=4B aligned address
     *(u32*)dst = (u32)declen;
     dst += 4;
   } else {
@@ -1262,13 +1261,14 @@ static const u8* dec_str1(DEC_PARAMS, u8** dstp, u32 flags) {
 
   if (enclen - 2 == declen) {
     // copy verbatim string
-    memcpy(dst, p, declen);
+    // p+1 = advance past opening '"' byte
+    memcpy(dst, p+1, declen);
   } else {
     // decode string with escape sequence
     if UNLIKELY(( err = co_strlit_decode(p, enclen, dst, declen) ))
       goto end_invalid;
   }
-  //dlog("decoded string:\n————————\n%.*s\n———————", (int)declen, (const char*)dst);
+  // dlog("decoded string:\n————————\n%.*s\n———————", (int)declen, (const char*)dst);
   p += enclen;
   return p;
 
@@ -1734,7 +1734,7 @@ static const u8* decode_node(DEC_PARAMS, u32 node_id) {
   // dlog("nodetab[%u] = (kind %s, flags 0x%04x, loc 0x%llx)",
   //   node_id, nodekind_name(n->kind), n->flags, n->loc);
 
-  // intern strtype
+  // intern builtin types like 'str'
   assert(d->c->strtype.kind == TYPE_ALIAS);
   if (
     n->kind == TYPE_ALIAS &&
