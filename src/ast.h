@@ -484,6 +484,7 @@ typedef struct fun_ { // fun is a declaration (stmt) or an expression depending 
   block_t* nullable body;         // NULL if function is a prototype
   type_t* nullable  recvt;        // non-NULL for type functions (type of "this")
   char* nullable    mangledname;  // mangled name, created in ast_ma
+  nodearray_t       params;       // local_t*[] (mutable copy of funtype.params)
   loc_t             paramsloc;    // location of "(" ...
   loc_t             paramsendloc; // location of ")"
   loc_t             resultloc;    // location of result

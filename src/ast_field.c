@@ -69,6 +69,7 @@ static const ast_field_t k_fieldsof_fun_t[] = {
   FIELD_ID(fun_t, body,         NODEZ),
   FIELD_ID(fun_t, recvt,        NODEZ),
   FIELD___(fun_t, mangledname,  STRZ),
+  FIELD___(fun_t, params,       NODEARRAY),
   FIELD___(fun_t, paramsloc,    LOC),
   FIELD___(fun_t, paramsendloc, LOC),
   FIELD___(fun_t, resultloc,    LOC),

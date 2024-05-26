@@ -2426,7 +2426,10 @@ static fun_t* fun(parser_t* p, nodeflag_t fl, type_t* nullable recvt, bool requi
   n->type = (type_t*)ft;
   bubble_flags(n, n->type);
 
-  // copy source locations (funtype may be interned, so we keep local copies of these)
+  // Copy params and source locations.
+  // funtype may later become interned, so we keep local copies of these.
+  // Note: params array itself is copied by typecheck so that we don't have to
+  // typecheck the same function signature many times.
   n->paramsloc = ft->paramsloc;       // location of "(" ...
   n->paramsendloc = ft->paramsendloc; // location of ")"
   n->resultloc = ft->resultloc;       // location of result

@@ -1103,8 +1103,8 @@ static node_t* nullable lookup(typecheck_t* a, sym_t name) {
 static void define_allow_replace(typecheck_t* a, sym_t name, void* n) {
   if (name == sym__)
     return;
-  trace("define \"%s\" => %s (%s)", name, fmtnode(0, n),
-    node_isexpr(n) ? fmtnode(1, ((expr_t*)n)->type) : "");
+  trace("define \"%s\" => %s (%s) node_t#%p", name, fmtnode(0, n),
+    node_isexpr(n) ? fmtnode(1, ((expr_t*)n)->type) : "", n);
   if (!scope_define(&a->scope, a->ma, name, n))
     out_of_mem(a);
 }
@@ -1852,13 +1852,13 @@ static void funtype1(typecheck_t* a, funtype_t** np, type_t* thistype) {
   }
   type(a, &ft->result);
   typectx_pop(a);
-  // TODO: consider NOT interning function types with parameters that have initializers
-  intern_usertype(a, (usertype_t**)np);
 }
 
 
 static void funtype(typecheck_t* a, funtype_t** np) {
-  return funtype1(a, np, type_unknown);
+  funtype1(a, np, type_unknown);
+  // TODO: consider NOT interning function types with parameters that have initializers
+  intern_usertype(a, (usertype_t**)np);
 }
 
 
@@ -1989,31 +1989,19 @@ static void fun(typecheck_t* a, fun_t* n) {
     }
   }
 
-  // first, check function type
-  if CHECK_ONCE(n->type) {
-    type_t* thistype = n->recvt ? n->recvt : type_unknown;
-    funtype1(a, (funtype_t**)&n->type, thistype);
-  }
-
+  // Check function type.
+  // Note: we require this to not already be checked because we need to copy params.
+  assertf((n->type->flags & NF_CHECKED) == 0, "function's type already checked");
+  type_t* thistype = n->recvt ? n->recvt : type_unknown;
+  funtype1(a, (funtype_t**)&n->type, thistype);
+  // Save parameters before potentially replacing the function type with an interned one.
+  // This is required since we update local_t to track reads & writes.
+  n->params = ((funtype_t*)n->type)->params;
+  intern_usertype(a, (usertype_t**)&n->type);
   funtype_t* ft = (funtype_t*)n->type;
   assert(ft->kind == TYPE_FUN);
 
   enter_scope(a);
-
-  // parameters
-  if (ft->params.len > 0) {
-    for (u32 i = 0; i < ft->params.len; i++) {
-      local_t* param = (local_t*)ft->params.v[i];
-      if ((param->flags & NF_CHECKED) == 0) {
-        expr(a, param);
-      } else if (n->body && param->name != sym__) {
-        // Must define in scope, even if we have checked param already.
-        // This can happen because multiple functions with the same signatue
-        // may share one funtype_t, which holds the parameters.
-        define(a, param->name, param);
-      }
-    }
-  }
 
   // check signature of special "drop" function
   if (n->recvt && n->name == sym_drop) {
@@ -2031,6 +2019,12 @@ static void fun(typecheck_t* a, fun_t* n) {
 
   // body
   if (n->body) {
+    // define parameters
+    for (u32 i = 0; i < n->params.len; i++) {
+      local_t* param = (local_t*)n->params.v[i];
+      define(a, param->name, param);
+    }
+
     // If the function returns a value, mark the block as rvalue.
     // This causes block_noscope() to treat the last expression specially.
     n->body->flags = COND_FLAG(n->body->flags, NF_RVALUE, ft->result != type_void);
@@ -2064,7 +2058,7 @@ static void fun(typecheck_t* a, fun_t* n) {
     }
 
     // check for unused parameters
-    check_unused(a, (const node_t**)ft->params.v, ft->params.len);
+    check_unused(a, (const node_t**)n->params.v, n->params.len);
 
     // is this the "main" function?
     if (ast_is_main_fun(n))
