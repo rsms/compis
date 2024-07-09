@@ -53,6 +53,8 @@ origin_t ast_origin(locmap_t* lm, const node_t* n) {
     fun_t* fn = (fun_t*)n;
     if (loc_line(fn->nameloc))
       r = origin_union(r, origin_make(lm, fn->nameloc));
+    // if (loc_line(fn->paramsendloc) == loc_line(n->loc))
+    //   r = origin_union(r, origin_make(lm, fn->paramsendloc));
     return r;
   }
 
