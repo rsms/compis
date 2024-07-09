@@ -455,12 +455,13 @@ static bool extend_loc_to_endloc(parser_t* p, loc_t* loc) {
 // maybe_start_of_type returns true if tok can possibly be the start of a type decl
 static bool maybe_start_of_type(parser_t* p, tok_t tok) {
   switch (tok) {
-    case TLPAREN:   // (  tuple type
-    case TLBRACK:   // [  array type
-    case TAND:      // &  ref type
-    case TQUESTION: // ?  optional type
-    case TSTAR:     // *  pointer type
-    case TID:       //    named type
+    case TLPAREN:   // (   tuple type
+    case TLBRACK:   // [   array type
+    case TAND:      // &   ref type
+    case TMUT:      // mut ref type
+    case TQUESTION: // ?   optional type
+    case TSTAR:     // *   pointer type
+    case TID:       //     named type
       return true;
   }
   return false;
@@ -1061,79 +1062,61 @@ static bool struct_fieldset(parser_t* p, structtype_t* st, nodearray_t* fields) 
 
 static fun_t* fun(parser_t*, nodeflag_t, type_t* nullable recvt, bool requirename);
 
-// struct parser that allows inline "fun" definitions in struct
-// static type_t* type_struct1(parser_t* p, structtype_t* st) {
-//   while (currtok(p) != TRBRACE) {
-//     if (currtok(p) == TFUN)
-//       goto funs;
-//     st->hasinit |= struct_fieldset(p, st);
-//     if (currtok(p) != TSEMI)
-//       break;
-//     next(p);
-//   }
-//   goto end_fields_and_funs;
-// funs:
-//   assert(currtok(p) == TFUN);
-//   u32 first_fn_index = p->unit->children.len;
-//   fun_t* fn;
-//   for (;;) {
-//     fn = fun(p, 0, /*recvt*/(type_t*)st, /*requirename*/true);
-//     // Append the function to the unit, not to the structtype.
-//     // This simplifies both the general implementation and code generation.
-//     push_child(p, &p->unit->children, fn);
-//     bubble_flags(p->unit, fn);
-//     if (currtok(p) != TSEMI)
-//       break;
-//     next(p);
-//     if UNLIKELY(currtok(p) != TFUN) {
-//       if (currtok(p) != TID)
-//         break;
-//       fun_t* fn1 = p->unit->children.v[first_fn_index];
-//       error(p, "fields cannot be defined after type functions");
-//       if (loc_line(fn1->loc)) {
-//         help_at(p, fn1->loc, "define the field \"%s\" before this function",
-//           p->scanner.sym);
-//       } else if (loc_line(fn->loc)) {
-//         help_at(p, fn->loc, "a function was defined here");
-//       }
-//       fastforward(p, (const tok_t[]){ TRBRACE, 0 });
-//       break;
-//     }
-//   }
-// end_fields_and_funs:
-//   expect(p, TRBRACE, "to end struct");
-//   for (u32 i = 0; i < st->fields.len; i++) {
-//     local_t* f = st->fields.v[i];
-//     type_t* ft = assertnotnull(f->type);
-//     st->align = MAX(st->align, ft->align);
-//     st->size += ft->size;
-//   }
-//   st->size = ALIGN2(st->size, st->align);
-//   return (type_t*)st;
-// }
 
-
-// struct parser that prohibits inline "fun" definitions in struct
-static type_t* type_struct1(parser_t* p, structtype_t* st) {
+static void type_struct1_funs(parser_t* p, structtype_t* st) {
   bool reported_fun = false;
-  nodearray_t nary = pnodearray_alloc(p);
-  while (currtok(p) != TRBRACE) {
-    if UNLIKELY(currtok(p) == TFUN) {
-      if (!reported_fun) {
+  u32 first_fn_index = p->toplevel_stmts.len;
+
+  for (;;) {
+    if (!p->experiments.fun_in_struct && !reported_fun) {
         reported_fun = true;
         error(p, "functions are not allowed in struct definitions");
       }
-      fun(p, 0, /*recvt*/(type_t*)st, /*requirename*/false);
+      fun_t* fn = fun(p, 0, /*recvt*/(type_t*)st, /*requirename*/false);
       if (!expect(p, TSEMI, ""))
         break;
-      continue;
+      // Append the function to the unit, not to the structtype.
+      // This simplifies both the general implementation and code generation.
+      if (!pnodearray_push(p, &p->toplevel_stmts, fn))
+        break;
+      bubble_flags(p->unit, fn);
+
+      if (currtok(p) != TFUN) {
+        if UNLIKELY(currtok(p) == TID) {
+          error(p, "fields cannot be defined after type functions");
+          if (first_fn_index < p->toplevel_stmts.len) {
+            fun_t* fn1 = (fun_t*)p->toplevel_stmts.v[first_fn_index];
+            assert_nodekind(fn1, EXPR_FUN);
+            if (loc_line(fn1->loc)) {
+              help_at(p, fn1->loc, "define field '%s' above this function",
+                p->scanner.sym);
+            } else if (loc_line(fn->loc)) {
+              help_at(p, fn->loc, "a function was defined here");
+            }
+          }
+          fastforward(p, (const tok_t[]){ TRBRACE, 0 });
+        }
+        break;
+      }
+  }
+}
+
+
+static type_t* type_struct1(parser_t* p, structtype_t* st) {
+  nodearray_t fields = pnodearray_alloc(p);
+  while (currtok(p) != TRBRACE) {
+    // <fun>
+    if UNLIKELY(currtok(p) == TFUN) {
+      type_struct1_funs(p, st);
+      break;
     }
-    st->hasinit |= struct_fieldset(p, st, &nary);
+    // <field> <type> ...
+    st->hasinit |= struct_fieldset(p, st, &fields);
     if (currtok(p) != TSEMI)
       break;
     next(p);
   }
-  pnodearray_assignto(p, &nary, &st->fields);
+  pnodearray_assignto(p, &fields, &st->fields);
   expect(p, TRBRACE, "to match {");
   return (type_t*)st;
 }
@@ -2372,7 +2355,7 @@ static void fun_body(parser_t* p, fun_t* n, nodeflag_t fl) {
 // body   = (stmt ";")*
 static fun_t* fun(parser_t* p, nodeflag_t fl, type_t* nullable recvt, bool requirename) {
   fun_t* n = mkexpr(p, fun_t, EXPR_FUN, fl);
-  next(p);
+  next(p); // consume "fun"
   n->recvt = recvt;
 
   // name
@@ -2840,18 +2823,18 @@ err_t parser_parse(parser_t* p, memalloc_t ast_ma, srcfile_t* srcfile, unit_t** 
   // first, parse any import statements
   parse_imports(p);
 
-  nodearray_t stmts = pnodearray_alloc(p);
+  p->toplevel_stmts = pnodearray_alloc(p);
 
   // next, parse rest of file
   while (currtok(p) != TEOF) {
     stmt_t* n = stmt(p);
-    if (!pnodearray_push(p, &stmts, n))
+    if (!pnodearray_push(p, &p->toplevel_stmts, n))
       break;
     bubble_flags(unit, n);
     expect2(p, TSEMI, "");
   }
 
-  pnodearray_assignto(p, &stmts, &unit->children);
+  pnodearray_assignto(p, &p->toplevel_stmts, &unit->children);
 
   leave_scope(p);
 
@@ -2864,6 +2847,9 @@ err_t parser_parse(parser_t* p, memalloc_t ast_ma, srcfile_t* srcfile, unit_t** 
 
 bool parser_init(parser_t* p, compiler_t* c) {
   memset(p, 0, sizeof(*p));
+
+  // TODO: make this set by a comment "//!enable_experiment fun_in_struct"
+  p->experiments.fun_in_struct = true;
 
   if (!scanner_init(&p->scanner, c))
     return false;
