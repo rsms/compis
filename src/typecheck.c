@@ -1712,7 +1712,7 @@ static void structtype(typecheck_t* a, structtype_t** tp) {
     }
 
     type_t* t = concrete_type(a->compiler, f->type);
-    assertf(t->align > 0, "%s", nodekind_name(t->kind));
+    assertf(t->align > 0 || t->kind == TYPE_UNRESOLVED, "%s", nodekind_name(t->kind));
     f->offset = ALIGN2(size, t->align);
     size = f->offset + t->size;
     align = MAX(align, t->align); // alignment of struct is max alignment of fields
@@ -1731,7 +1731,7 @@ static void structtype(typecheck_t* a, structtype_t** tp) {
 
   st->align = align;
   st->size = ALIGN2(size, (u64)align);
-  assert(st->size > 0);
+  //assertf(st->size > 0, "TODO: support empty \"zero size\" structs");
 
   // if (st->flags & NF_TEMPLATEI) {
   if (!intern_usertype(a, (usertype_t**)tp))
