@@ -10,6 +10,15 @@
 #include <sys/stat.h>
 
 
+enum build_reason {
+  BUILD_REASON_DEFAULT,
+  BUILD_REASON_NO_LIBFILE,
+  BUILD_REASON_NO_METAFILE,
+  BUILD_REASON_BAD_METAFILE,
+  BUILD_REASON_SRC_CHANGE,
+};
+
+
 #define trace_import(fmt, va...) \
   _trace(opt_trace_import, 3, "import", "%*s" fmt, /*indent*/0, "", ##va)
 
@@ -18,8 +27,12 @@
 
 
 static err_t build_pkg(
-  pkgcell_t pkgc, compiler_t* c, const char* outfile,
-  memalloc_t api_ma, u32 pkgbuild_flags);
+  pkgcell_t pkgc,
+  compiler_t* c,
+  const char* outfile,
+  memalloc_t api_ma,
+  u32 pkgbuild_flags,
+  enum build_reason build_reason);
 
 static void load_dependency(
   compiler_t* c, memalloc_t api_ma, const pkgcell_t* parent, pkg_t* pkg, bool sync);
@@ -591,11 +604,24 @@ static err_t load_pkg_api(memalloc_t api_ma, pkg_t* pkg, astdecoder_t* astdec) {
 }
 
 
-static err_t build_dependency(compiler_t* c, memalloc_t api_ma, pkgcell_t pkgc) {
-  trace_import("\"%s\" building dependency \"%s\"",
-    pkgc.parent->pkg->path.p, pkgc.pkg->path.p);
+static const char* build_reason_str(enum build_reason build_reason) {
+  switch (build_reason) {
+    case BUILD_REASON_DEFAULT:      return "";
+    case BUILD_REASON_NO_LIBFILE:   return "missing libfile";
+    case BUILD_REASON_NO_METAFILE:  return "missing metafile";
+    case BUILD_REASON_BAD_METAFILE: return "bad metafile";
+    case BUILD_REASON_SRC_CHANGE:   return "source changed";
+  }
+}
+
+
+static err_t build_dependency(
+  compiler_t* c, memalloc_t api_ma, pkgcell_t pkgc, enum build_reason build_reason)
+{
+  trace_import("\"%s\" building dependency \"%s\" (%s)",
+    pkgc.parent->pkg->path.p, pkgc.pkg->path.p, build_reason_str(build_reason));
   u32 pkgbuildflags = PKGBUILD_DEP;
-  err_t err = build_pkg(pkgc, c, /*outfile*/"", api_ma, pkgbuildflags);
+  err_t err = build_pkg(pkgc, c, /*outfile*/"", api_ma, pkgbuildflags, build_reason);
   if (err)
     dlog("error while building pkg %s: %s", pkgc.pkg->path.p, err_str(err));
   return err;
@@ -679,6 +705,7 @@ static void load_dependency0(
   pkgcell_t pkgc = { .parent = parent, .pkg = pkg };
   sha256_t* imports_api_sha256v = NULL;
   u32 imports_api_sha256c = 0;
+  enum build_reason build_reason = BUILD_REASON_DEFAULT;
 
   // get library file mtime
   str_t libfile = {0};
@@ -699,7 +726,8 @@ static void load_dependency0(
   // if no libfile exist, build
   if (libmtime == 0) {
     did_build = true;
-    if (( err = build_dependency(c, api_ma, pkgc) )) {
+    build_reason = BUILD_REASON_NO_LIBFILE;
+    if (( err = build_dependency(c, api_ma, pkgc, build_reason) )) {
       dlog("build_dependency: %s", err_str(err));
       encdata = NULL;
       goto end;
@@ -724,7 +752,8 @@ open_metafile:
 
     // build package and then try opening metafile again
     did_build = true;
-    if (( err = build_dependency(c, api_ma, pkgc) )) {
+    build_reason = BUILD_REASON_NO_METAFILE;
+    if (( err = build_dependency(c, api_ma, pkgc, build_reason) )) {
       dlog("build_dependency: %s", err_str(err));
       goto end;
     }
@@ -777,6 +806,7 @@ open_metafile:
       goto end;
     dlog("attempting rebuild (invalid metafile \"%s\")", relpath(metafile.p));
     // try building; maybe the metafile is b0rked
+    build_reason = BUILD_REASON_BAD_METAFILE;
     pkg->mtime = 0;
     err = 0;
   }
@@ -796,7 +826,9 @@ rebuild:
 
     // at least one source file has been modified since metafile was modified
     did_build = true;
-    if (( err = build_dependency(c, api_ma, pkgc) ))
+    if (build_reason == BUILD_REASON_DEFAULT)
+      build_reason = BUILD_REASON_SRC_CHANGE;
+    if (( err = build_dependency(c, api_ma, pkgc, build_reason) ))
       goto end;
 
     // close old metafile and associated resources
@@ -1484,8 +1516,12 @@ err_t pkgbuild_link(pkgbuild_t* pb, const char* outfile) {
 
 
 static err_t build_pkg(
-  pkgcell_t pkgc, compiler_t* c, const char* outfile,
-  memalloc_t api_ma, u32 pkgbuild_flags)
+  pkgcell_t         pkgc,
+  compiler_t*       c,
+  const char*       outfile,
+  memalloc_t        api_ma,
+  u32               pkgbuild_flags,
+  enum build_reason build_reason)
 {
   err_t err;
   bool did_await_compilation = false;
@@ -1495,7 +1531,15 @@ static err_t build_pkg(
     return ErrCanceled;
   }
 
-  vlog("building package \"%s\" (%s)", pkgc.pkg->path.p, pkgc.pkg->dir.p);
+  if (coverbose) {
+    const char* dir = relpath(pkgc.pkg->dir.p);
+    if (build_reason == BUILD_REASON_DEFAULT) {
+      vlog("building package \"%s\" (%s)", pkgc.pkg->path.p, dir);
+    } else {
+      const char* reason = build_reason_str(build_reason);
+      vlog("building package \"%s\" (%s) [%s]", pkgc.pkg->path.p, dir, reason);
+    }
+  }
 
   // create pkgbuild_t struct
   pkgbuild_t* pb = mem_alloct(c->ma, pkgbuild_t);
@@ -1573,7 +1617,8 @@ err_t build_toplevel_pkg(
     return ErrNoMem;
   }
 
-  err_t err = build_pkg((pkgcell_t){NULL,pkg}, c, outfile, api_ma, pkgbuild_flags);
+  err_t err = build_pkg(
+    (pkgcell_t){NULL,pkg}, c, outfile, api_ma, pkgbuild_flags, BUILD_REASON_DEFAULT);
 
   if ((pkgbuild_flags & PKGBUILD_NOCLEANUP) == 0)
     memalloc_bump2_dispose(api_ma);
