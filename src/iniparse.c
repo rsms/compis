@@ -43,32 +43,6 @@ static iniparse_result_t iniparse_section(iniparse_t* p) {
 }
 
 
-static iniparse_result_t iniparse_entry_v1(iniparse_t* p) {
-  p->name = p->srcp;
-  p->value = p->srcp;
-  p->valuelen = 0;
-  const char* end;
-  while (++p->srcp < p->srcend && *p->srcp != '\n') {
-    if (*p->srcp == '=' || *p->srcp == ':') {
-      end = p->srcp;
-      while (--end > p->name && *end <= ' ') {}
-      p->namelen = (u32)(uintptr)((end + 1) - p->name);
-      while (++p->srcp < p->srcend && (*p->srcp == ' ' || *p->srcp == '\t')) {}
-      p->value = p->srcp;
-    }
-  }
-  end = p->srcp;
-  if (p->name == p->value) {
-    while (--end > p->name && *end <= ' ') {}
-    p->namelen = (u32)(uintptr)((end + 1) - p->name);
-  } else if (p->value < p->srcend) {
-    while (--end > p->value && *end <= ' ') {}
-    p->valuelen = (u32)(uintptr)((end + 1) - p->value);
-  }
-  return INIPARSE_VALUE;
-}
-
-
 static iniparse_result_t iniparse_entry(iniparse_t* p) {
   p->value = p->srcp;
   p->namelen = 0;
