@@ -95,6 +95,9 @@ static slice_t replace_tabs(str_t* buf, const char* line, usize len, usize* ntab
   if (i == len)
     return (slice_t){ .chars=line, .len=len };
 
+  // count number of leading tabs (we already found one)
+
+
   str_appendlen(buf, line, len);
   usize ntabs = str_replace(buf, slice_cstr("\t"), slice_cstr(TAB_STR), -1);
   if (ntabs < 0) {
@@ -107,14 +110,14 @@ static slice_t replace_tabs(str_t* buf, const char* line, usize len, usize* ntab
 }
 
 
-static void add_srcline_ctx(abuf_t* s, int lnw, u32 ln, slice_t line) {
-  abuf_fmt(s, "%*u   │ ", lnw,ln);
+static void add_srcline_ctx(abuf_t* s, int linew, u32 lineno, slice_t line) {
+  abuf_fmt(s, "%*u   │ ", linew, lineno);
   abuf_append(s, line.chars, line.len);
 }
 
 
 static void add_srcline(
-  abuf_t* s, int lnw, u32 ln, slice_t line, origin_t origin)
+  abuf_t* s, int linew, u32 lineno, slice_t line, origin_t origin)
 {
   bool has_column = origin.column > 0;
   if (!has_column) {
@@ -126,24 +129,41 @@ static void add_srcline(
     }
   }
 
-  int indent = (int)origin.column - 1;
-  if (origin.width == 0 && origin.focus_col > 0)
-    indent = (int)origin.focus_col - 1;
-
-  abuf_fmt(s, "%*u → │ ", lnw,ln);
+  abuf_fmt(s, "%*u → │ ", linew, lineno);
   abuf_append(s, line.chars, line.len);
 
-  if (has_column)
-    abuf_fmt(s, "\n%*s   │ %*s", lnw,"", indent,"");
+  if (!has_column)
+    return;
+
+  // find indentation, which might be a mixture of TAB and SP
+  usize indent_len = 0;
+  for (; indent_len < line.len &&
+         (line.chars[indent_len] == ' ' || line.chars[indent_len] == '\t');
+         indent_len++)
+  {}
+
+  usize extra_indent_col;
+  if (origin.width == 0 && origin.focus_col > origin.column) {
+    extra_indent_col = origin.focus_col;
+  } else {
+    extra_indent_col = origin.column;
+  }
+  assert(extra_indent_col > 0);
+  assert(extra_indent_col - 1 >= indent_len);
+  usize extra_indent = (usize)extra_indent_col - 1 - indent_len;
+
+  abuf_fmt(s, "\n%*s   │ %.*s", linew,"", (int)indent_len, line.chars);
+  abuf_fill(s, ' ', extra_indent);
 
   if (origin.width == 0) {
-    if (has_column)
-      abuf_str(s, "↑");
+    abuf_str(s, "↑");
     return;
   }
 
   if (origin.focus_col == 0) {
-    abuf_fill(s, '~', origin.width);
+    // abuf_fill(s, '~', origin.width);
+    for (usize n = origin.width; n--;)
+      abuf_str(s, "▔");
     return;
   }
 
@@ -190,11 +210,13 @@ static void add_srclines(compiler_t* c, origin_t origin, abuf_t* s) {
     return;
   }
 
-  u32 nlinesbefore = 0; // TODO: make configurable
-  u32 nlinesafter = 0; // TODO: make configurable
+  u32 nlinesbefore = 1; // TODO: make configurable
+  u32 nlinesafter = 1; // TODO: make configurable
+
+  assert(origin.line > 0);
   u32 startline = origin.line - MIN(origin.line - 1, nlinesbefore);
   u32 endline = origin.line + nlinesafter + 1;
-  u32 ln = startline;
+  u32 lineno = startline;
 
   // start & end of line
   const char* p = (const char*)srcfile->data;
@@ -215,50 +237,52 @@ static void add_srclines(compiler_t* c, origin_t origin, abuf_t* s) {
   }
 
   c->diag.srclines = s->p;
-  int lnw = (int)ndigits10((u64)endline);
+  int linew = (int)ndigits10((u64)endline);
   str_t buf = {0};
 
   for (;;) {
     buf.len = 0;
     usize line_rawlen = (usize)(uintptr)(end - p);
-    usize ntabs;
-    slice_t line = replace_tabs(&buf, p, line_rawlen, &ntabs);
-    if (ntabs > 0) {
-      // TODO: only increment columns for tabs in indentation.
-      // Currently we (incorrectly) assume that tabs are only found in line indetation.
-      // Doing this correctly will require knowledge of individual tab locations and
-      // their effective column values.
-      isize last_tab_idx = string_lastindexof(p, line_rawlen, '\t');
-      //  →→foo
-      //  ~~~^~
-      //  01234
-      //  ||
-      //  12345
-      if (origin.column > 1 && origin.column-1 <= last_tab_idx)
-        origin.column += ntabs * (TAB_WIDTH-1);
-      if (origin.column <= last_tab_idx+1 && origin.width > 1)
-        origin.width += ntabs * (TAB_WIDTH-1);
-      if (origin.focus_col > 1 && origin.focus_col-1 <= last_tab_idx)
-        origin.focus_col += ntabs * (TAB_WIDTH-1);
-    }
 
-    if (ln != origin.line) {
+    slice_t line = (slice_t){ .chars=p, .len=line_rawlen };
+
+    // usize ntabs;
+    // replace_tabs(&buf, p, line_rawlen, &ntabs);
+    // slice_t line = replace_tabs(&buf, p, line_rawlen, &ntabs);
+    // if (ntabs > 0) {
+    //   // TODO: only increment columns for tabs in indentation.
+    //   // Currently we (incorrectly) assume that tabs are only found in line indetation.
+    //   // Doing this correctly will require knowledge of individual tab locations and
+    //   // their effective column values.
+    //   isize last_tab_idx = string_lastindexof(p, line_rawlen, '\t');
+    //   //  →→foo
+    //   //  ~~~^~
+    //   //  01234
+    //   //  ||
+    //   //  12345
+    //   if (origin.column > 1 && origin.column-1 <= last_tab_idx)
+    //     origin.column += ntabs * (TAB_WIDTH-1);
+    //   if (origin.column <= last_tab_idx+1 && origin.width > 1)
+    //     origin.width += ntabs * (TAB_WIDTH-1);
+    //   if (origin.focus_col > 1 && origin.focus_col-1 <= last_tab_idx)
+    //     origin.focus_col += ntabs * (TAB_WIDTH-1);
+    // }
+
+    if (lineno != origin.line) {
       // context line
-      add_srcline_ctx(s, lnw, ln, line);
-      continue;
-    }
-
-    if (p + origin.column >= srcend)
+      add_srcline_ctx(s, linew, lineno, line);
+    } else if (p + origin.column >= srcend) {
       break;
-
-    // origin line
-    // (s, int lnw, u32 ln, slice_t line, origin_t origin)
-    assert(p < srcend);
-    assert(p + line_rawlen <= srcend);
-    add_srcline(s, lnw, ln, line, origin);
+    } else {
+      // origin line
+      // (s, int linew, u32 lineno, slice_t line, origin_t origin)
+      assert(p < srcend);
+      assert(p + line_rawlen <= srcend);
+      add_srcline(s, linew, lineno, line, origin);
+    }
 
     // done?
-    if (end == srcend || ++ln == endline)
+    if (end == srcend || ++lineno == endline)
       break;
 
     abuf_c(s, '\n');
