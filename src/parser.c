@@ -338,6 +338,7 @@ static void _diag(parser_t* p, origin_t origin, diagkind_t kind, const char* fmt
   p->scanner.errcount += (kind == DIAG_ERR);
   report_diagv(p->scanner.compiler, origin, kind, fmt, ap);
   va_end(ap);
+  // panic("");
 }
 
 #define error(p, fmt, args...)   _diag(p, curr_origin(p), DIAG_ERR, (fmt), ##args)
@@ -731,6 +732,9 @@ static void dotctx_pop(parser_t* p) {
 }
 
 
+static expr_t* expr_call(parser_t* p, expr_t* recv, nodeflag_t fl);
+
+
 static stmt_t* stmt(parser_t* p) {
   tok_t tok = currtok(p);
   const stmt_parselet_t* parselet = &stmt_parsetab[tok];
@@ -755,12 +759,36 @@ static stmt_t* stmt(parser_t* p) {
 
 static expr_t* expr_infix(parser_t* p, prec_t prec, expr_t* n, nodeflag_t fl) {
   for (;;) {
-    const parselet_t*parselet = &expr_parsetab[currtok(p)];
+    const parselet_t* parselet = &expr_parsetab[currtok(p)];
     if (parselet->infix == NULL || parselet->prec < prec)
-      return n;
+      break;
     log_pratt_infix(p, "expr", parselet->infix, parselet->prec, prec);
     n = parselet->infix(p, parselet, n, fl);
   }
+
+  // shorthand call syntax, e.g. "f arg1, arg2"
+  if (p->experiments.shorthand_call_syntax) switch (currtok(p)) {
+    case TID:
+    case TINTLIT:
+    case TFLOATLIT:
+    case TBYTELIT:
+    case TSTRLIT:
+    case TCHARLIT:
+    {
+      bool was_in_shorthand_call = p->in_shorthand_call;
+      p->in_shorthand_call = true;
+      n = expr_call(p, n, fl);
+      p->in_shorthand_call = false;
+
+      // disallow nested shorthand calls; it's confusing.
+      // e.g. "f a, b c" is equivalent to "f(a, b(c))" not "f(a, b)(c)"
+      if UNLIKELY(was_in_shorthand_call) {
+        error_at(p, n, "nested shorthand call");
+        help_at(p, n, "put parentheses around arguments: %s", fmtnode(0, n));
+      }
+    }
+  }
+  return n;
 }
 
 
@@ -1464,9 +1492,9 @@ static block_t* block(parser_t* p, nodeflag_t fl) {
   if (currtok(p) != TRBRACE && currtok(p) != TEOF) {
     for (;;) {
       expr_t* cn = expr(p, PREC_LOWEST, fl);
+
       if (!pnodearray_push(p, &nary, cn))
         break;
-      bubble_flags(n, cn);
 
       if (exited) {
         if (!reported_unreachable) {
@@ -1662,6 +1690,9 @@ static expr_t* expr_strlit(parser_t* p, const parselet_t* pl, nodeflag_t fl) {
   slice_t str = scanner_strval(&p->scanner);
   n->bytes = (u8*)mem_strdup(p->ast_ma, str, 0);
   n->len = str.len;
+
+  // TODO: multiline string
+  loc_set_width(&n->loc, n->len + 2);
 
   if UNLIKELY(!n->bytes) {
     out_of_mem(p);
@@ -1943,7 +1974,9 @@ static expr_t* named_param_or_id(parser_t* p, nodeflag_t fl) {
 
 // args = ( arg (("," | ";") arg) ("," | ";")? )?
 // arg  = expr | id "=" expr
-static void args(parser_t* p, call_t* n, type_t* recvtype, nodeflag_t fl) {
+static void args(
+  parser_t* p, call_t* n, type_t* recvtype, nodeflag_t fl, bool is_shorthand)
+{
   local_t param0 = { {{EXPR_PARAM}}, .type = recvtype };
   local_t** paramv = (local_t*[]){ &param0 };
   u32 paramc = 1;
@@ -1966,6 +1999,10 @@ static void args(parser_t* p, call_t* n, type_t* recvtype, nodeflag_t fl) {
 
   nodearray_t args = pnodearray_alloc(p);
 
+  // allow separating arguments with ';' for normal "f(...)" enclosed arguments,
+  // but not for shorthand "f ..." arguments.
+  tok_t extra_septok = is_shorthand ? TCOMMA : TSEMI;
+
   for (;;) {
     expr_t* arg;
     if (currtok(p) == TID) {
@@ -1979,7 +2016,7 @@ static void args(parser_t* p, call_t* n, type_t* recvtype, nodeflag_t fl) {
     pnodearray_push(p, &args, arg);
     bubble_flags(n, arg);
 
-    if (currtok(p) != TSEMI && currtok(p) != TCOMMA)
+    if (currtok(p) != extra_septok && currtok(p) != TCOMMA)
       break;
     next(p);
   }
@@ -2024,9 +2061,7 @@ static expr_t* prim_typecons(parser_t* p, type_t* t, nodeflag_t fl) {
 
 
 // call = expr "(" args? ")"
-static expr_t* expr_postfix_call(
-  parser_t* p, const parselet_t* pl, expr_t* recv, nodeflag_t fl)
-{
+static expr_t* expr_call(parser_t* p, expr_t* recv, nodeflag_t fl) {
   type_t* recvtype = recv->type;
 
   // common case of primitive typecast
@@ -2035,7 +2070,12 @@ static expr_t* expr_postfix_call(
     return prim_typecons(p, (type_t*)id->ref, fl);
 
   call_t* n = mkexpr(p, call_t, EXPR_CALL, fl);
-  next(p);
+  bool is_shorthand = currtok(p) != TLPAREN;
+  if (is_shorthand) {
+    n->loc = recv->loc;
+  } else {
+    next(p); // consume "("
+  }
   n->recv = recv;
   recv->flags |= NF_RVALUE;
   bubble_flags(n, recv);
@@ -2053,11 +2093,25 @@ static expr_t* expr_postfix_call(
 
   // args?
   if (currtok(p) != TRPAREN)
-    args(p, n, recvtype, fl);
-  n->argsendloc = currloc(p);
-  expect(p, TRPAREN, "to end function call");
+    args(p, n, recvtype, fl, is_shorthand);
+
+  if (is_shorthand) {
+    // note: we never get into the shorthand state without at least one argument
+    assert(n->args.len > 0);
+    n->argsendloc = n->args.v[n->args.len-1]->loc;
+  } else {
+    n->argsendloc = currloc(p);
+    expect(p, TRPAREN, "to end function call");
+  }
 
   return (expr_t*)n;
+}
+
+
+static expr_t* expr_postfix_call(
+  parser_t* p, const parselet_t* pl, expr_t* recv, nodeflag_t fl)
+{
+  return expr_call(p, recv, fl);
 }
 
 
@@ -2850,6 +2904,7 @@ bool parser_init(parser_t* p, compiler_t* c) {
 
   // TODO: make this set by a comment "//!enable_experiment fun_in_struct"
   p->experiments.fun_in_struct = true;
+  p->experiments.shorthand_call_syntax = true;
 
   if (!scanner_init(&p->scanner, c))
     return false;

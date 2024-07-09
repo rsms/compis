@@ -1,0 +1,7 @@
+// shorthand call syntax
+fun print_two(line1, line2 str)
+	print line1
+	print line2
+
+fun main()
+	print_two "hello", "world"

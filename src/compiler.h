@@ -160,7 +160,8 @@ typedef struct {
 } scanner_t;
 
 typedef struct {
-  bool fun_in_struct; // struct t { fun f() }
+  bool fun_in_struct; // "struct t { fun f() }"
+  bool shorthand_call_syntax; // "f arg" as alternative to "f(arg)"
 } experiments_t;
 
 typedef struct {
@@ -176,6 +177,7 @@ typedef struct {
   ptrarray_t       membertypes;
   nodearray_t      toplevel_stmts; // finally transferred to unit->children
   experiments_t    experiments;
+  bool             in_shorthand_call;
 
   // free_nodearrays is a free list of nodearray_t's
   struct {
