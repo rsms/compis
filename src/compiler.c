@@ -470,6 +470,8 @@ static err_t configure_builtins(compiler_t* c) {
     {sym_str,  &c->strtype},
   };
 
+  // Note: When adding, renaming or removing builtins, remember to update astencode
+
   if UNLIKELY(!map_init(&c->builtins, c->ma, countof(entries)))
     return ErrNoMem;
 

@@ -160,6 +160,10 @@ typedef struct {
 } scanner_t;
 
 typedef struct {
+  bool fun_in_struct; // struct t { fun f() }
+} experiments_t;
+
+typedef struct {
   scanner_t        scanner;
   memalloc_t       ma;     // general allocator (== scanner.compiler->ma)
   memalloc_t       ast_ma; // AST allocator
@@ -170,6 +174,8 @@ typedef struct {
   expr_t* nullable dotctx;   // for ".name" shorthand
   ptrarray_t       dotctxstack;
   ptrarray_t       membertypes;
+  nodearray_t      toplevel_stmts; // finally transferred to unit->children
+  experiments_t    experiments;
 
   // free_nodearrays is a free list of nodearray_t's
   struct {
