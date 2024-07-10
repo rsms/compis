@@ -5,10 +5,29 @@
 #include "compiler.h"
 #include "abuf.h"
 #include "path.h"
+#include <unistd.h>
+#include <stdlib.h>
 
 
 #define TAB_STR    "    "
 #define TAB_WIDTH  strlen(TAB_STR)
+
+
+static bool g_enable_colors = false;
+
+
+static void init_diag() {
+  static bool g_one_time_init = false;
+  if (g_one_time_init)
+    return;
+  g_one_time_init = true;
+  const char* COMPIS_TERM_COLORS = getenv("COMPIS_TERM_COLORS");
+  if (COMPIS_TERM_COLORS) {
+    g_enable_colors = (*COMPIS_TERM_COLORS != '0' && *COMPIS_TERM_COLORS != 0);
+  } else {
+    g_enable_colors = !!isatty(STDERR_FILENO);
+  }
+}
 
 
 const char* tok_name(tok_t t) {
@@ -111,16 +130,21 @@ static slice_t replace_tabs(str_t* buf, const char* line, usize len, usize* ntab
 
 
 static void add_srcline_ctx(abuf_t* s, int linew, u32 lineno, slice_t line) {
+  if (g_enable_colors)
+    abuf_str(s, "\e[2m"); // dimmed
+
   abuf_fmt(s, "%*u   │ ", linew, lineno);
   abuf_append(s, line.chars, line.len);
+
+  if (g_enable_colors)
+    abuf_str(s, "\e[0m"); // reset
 }
 
 
 static void add_srcline(
   abuf_t* s, int linew, u32 lineno, slice_t line, origin_t origin)
 {
-  bool has_column = origin.column > 0;
-  if (!has_column) {
+  if (origin.column == 0) {
     origin.width = 0;
     if (origin.focus_col > 0) {
       origin.column = origin.focus_col;
@@ -130,10 +154,56 @@ static void add_srcline(
   }
 
   abuf_fmt(s, "%*u → │ ", linew, lineno);
-  abuf_append(s, line.chars, line.len);
 
-  if (!has_column)
+  if (origin.column == 0 && origin.focus_col == 0)
     return;
+
+  // fancy ANSI-style underline for range, when "colors" are enabled
+  if (g_enable_colors && origin.column > 0 && origin.width > 0) {
+    usize col1 = origin.column - 1;
+    if (col1 >= line.len) {
+      // this is some sort of bug; log, don't crash
+      elog("BUG (%zu %zu) %s:%d", col1, line.len, __FILE__, __LINE__);
+      abuf_append(s, line.chars, line.len);
+      return;
+    }
+
+    // append first chunk of line, leading up to col1
+    abuf_append(s, line.chars, col1);
+
+    // start "bold" + "underline" style
+    abuf_str(s, "\e[1;4m");
+
+    // highlight focus column (when inside range)
+    bool highlight_focus_col =
+      origin.focus_col > col1 && origin.focus_col < col1 + origin.width;
+    if (highlight_focus_col) {
+      usize col2 = origin.focus_col - 1;
+      abuf_append(s, line.chars + col1, (col2 - col1));
+      abuf_str(s, "\e[37;44m"); // set fg=white & bg=blue
+      abuf_append(s, line.chars + col2, 1);
+      abuf_str(s, "\e[39;49m"); // reset fg & bg color
+      abuf_append(s, line.chars + col2 + 1, origin.width - 1 - (col2 - col1));
+    } else {
+      // append second chunk
+      abuf_append(s, line.chars + col1, origin.width);
+    }
+
+    // reset style
+    abuf_str(s, "\e[0m");
+
+    // append final chunk
+    abuf_append(s, line.chars + col1 + origin.width, line.len - col1 - origin.width);
+
+    // if there's no column to "focus" on (point an arrow to), we are done
+    if (origin.focus_col == 0 || highlight_focus_col)
+      return;
+  } else {
+    // no fancy styling
+    abuf_append(s, line.chars, line.len);
+    if (origin.column == 0)
+      return;
+  }
 
   // find indentation, which might be a mixture of TAB and SP
   usize indent_len = 0;
@@ -155,11 +225,13 @@ static void add_srcline(
   abuf_fmt(s, "\n%*s   │ %.*s", linew,"", (int)indent_len, line.chars);
   abuf_fill(s, ' ', extra_indent);
 
+  // point to an interesting point
   if (origin.width == 0) {
     abuf_str(s, "↑");
     return;
   }
 
+  // underline an interesting range
   if (origin.focus_col == 0) {
     // abuf_fill(s, '~', origin.width);
     for (usize n = origin.width; n--;)
@@ -197,7 +269,7 @@ static void add_srcline(
 }
 
 
-static void add_srclines(compiler_t* c, origin_t origin, abuf_t* s) {
+static void add_srclines(compiler_t* c, origin_t origin, diagkind_t kind, abuf_t* s) {
   // note: we're doing a const cast for srcfile_open
   srcfile_t* srcfile = (srcfile_t*)assertnotnull(origin.file);
 
@@ -212,6 +284,10 @@ static void add_srclines(compiler_t* c, origin_t origin, abuf_t* s) {
 
   u32 nlinesbefore = 1; // TODO: make configurable
   u32 nlinesafter = 1; // TODO: make configurable
+  if (kind == DIAG_HELP) {
+    nlinesbefore = 0;
+    nlinesafter = 0;
+  }
 
   assert(origin.line > 0);
   u32 startline = origin.line - MIN(origin.line - 1, nlinesbefore);
@@ -303,6 +379,8 @@ static void add_srclines(compiler_t* c, origin_t origin, abuf_t* s) {
 static void _report_diagv(
   compiler_t* c, origin_t origin, diagkind_t kind, const char* fmt, va_list ap)
 {
+  init_diag();
+
   va_list ap2;
   buf_clear(&c->diagbuf);
   buf_reserve(&c->diagbuf, 1024);
@@ -350,7 +428,7 @@ static void _report_diagv(
     // populate c->diag.srclines
     c->diag.srclines = "";
     if (origin.file && origin.line)
-      add_srclines(c, origin, &s);
+      add_srclines(c, origin, kind, &s);
 
     usize len = abuf_terminate(&s);
     if (len < c->diagbuf.cap) {
