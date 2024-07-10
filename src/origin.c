@@ -62,8 +62,8 @@ origin_t ast_origin(locmap_t* lm, const node_t* n) {
     binop_t* op = (binop_t*)n;
     if (loc_line(op->left->loc) == 0 || loc_line(op->right->loc) == 0)
       return r;
-    origin_t left_origin = origin_make(lm, op->left->loc);
-    origin_t right_origin = origin_make(lm, op->right->loc);
+    origin_t left_origin = ast_origin(lm, (node_t*)op->left);
+    origin_t right_origin = ast_origin(lm, (node_t*)op->right);
     r = origin_union(left_origin, right_origin);
     r.focus_col = loc_col(n->loc);
     return r;
