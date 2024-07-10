@@ -102,33 +102,6 @@ end:
 }
 
 
-static slice_t replace_tabs(str_t* buf, const char* line, usize len, usize* ntabsp) {
-  // find first tab
-  u32 i = 0;
-  while (i < len && line[i] != '\t')
-    i++;
-
-  *ntabsp = 0;
-
-  // return a slice to line if no tabs were found
-  if (i == len)
-    return (slice_t){ .chars=line, .len=len };
-
-  // count number of leading tabs (we already found one)
-
-
-  str_appendlen(buf, line, len);
-  usize ntabs = str_replace(buf, slice_cstr("\t"), slice_cstr(TAB_STR), -1);
-  if (ntabs < 0) {
-    elog("ran out of memory while formatting diagnostic");
-  } else {
-    *ntabsp = (usize)ntabs;
-  }
-
-  return str_slice(*buf);
-}
-
-
 static void add_srcline_ctx(abuf_t* s, int linew, u32 lineno, slice_t line) {
   if (g_enable_colors)
     abuf_str(s, "\e[2m"); // dimmed
@@ -321,28 +294,6 @@ static void add_srclines(compiler_t* c, origin_t origin, diagkind_t kind, abuf_t
     usize line_rawlen = (usize)(uintptr)(end - p);
 
     slice_t line = (slice_t){ .chars=p, .len=line_rawlen };
-
-    // usize ntabs;
-    // replace_tabs(&buf, p, line_rawlen, &ntabs);
-    // slice_t line = replace_tabs(&buf, p, line_rawlen, &ntabs);
-    // if (ntabs > 0) {
-    //   // TODO: only increment columns for tabs in indentation.
-    //   // Currently we (incorrectly) assume that tabs are only found in line indetation.
-    //   // Doing this correctly will require knowledge of individual tab locations and
-    //   // their effective column values.
-    //   isize last_tab_idx = string_lastindexof(p, line_rawlen, '\t');
-    //   //  →→foo
-    //   //  ~~~^~
-    //   //  01234
-    //   //  ||
-    //   //  12345
-    //   if (origin.column > 1 && origin.column-1 <= last_tab_idx)
-    //     origin.column += ntabs * (TAB_WIDTH-1);
-    //   if (origin.column <= last_tab_idx+1 && origin.width > 1)
-    //     origin.width += ntabs * (TAB_WIDTH-1);
-    //   if (origin.focus_col > 1 && origin.focus_col-1 <= last_tab_idx)
-    //     origin.focus_col += ntabs * (TAB_WIDTH-1);
-    // }
 
     if (lineno != origin.line) {
       // context line
