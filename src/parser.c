@@ -1652,9 +1652,15 @@ static expr_t* floatlit(parser_t* p, nodeflag_t fl) {
   floatlit_t* n = mkexpr(p, floatlit_t, EXPR_FLOATLIT, fl);
   char* endptr = NULL;
 
+  usize width = scanner_lit(&p->scanner).len;
+
   // note: scanner always starts float litbuf with '+'
-  if (fl & NF_NEG)
+  if (fl & NF_NEG) {
+    width--;
     p->scanner.litbuf.chars[0] = '-';
+  }
+
+  loc_set_width(&n->loc, width);
 
   n->f64val = strtod(p->scanner.litbuf.chars, &endptr);
   if UNLIKELY(endptr != p->scanner.litbuf.chars + p->scanner.litbuf.len) {
