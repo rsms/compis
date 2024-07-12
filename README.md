@@ -49,6 +49,24 @@ Compis attempts to make local reasoning about code as easy as possible.
 There are no implicit type conversion, no side effects from language constructs
 and the lifetime constraints of a value is explicitly encoded in its type.
 
+Here's a parts list:
+
+- booleans `bool` (`true, false`)
+- machine-sized integers `int, uint` (`-123, 0xbeef, 0b1111011`)
+- size-specific integers `i8, u8, i16, u16, i32, u32, i64, u64`
+- size-specific floating-point numbers `f32, f64` (`1.2`, `1.e39`)
+- fixed-size arrays `[i32 3]` (`let a = [1, 2, 3]`)
+- runtime-sized arrays `[i32]` (`let a [i32] = [1, 2, 3]`)
+- unicode character literals `'A' == 0x0041, '↔' == 0x2194, '🆎' == 0x1F18E` (`u32`)
+- ASCII byte-sized character literals `u8('A')`
+- structure types `struct MyThing { field1, field2 type; field3 type; }`
+- functions `fun name(x, y int, z str) int` (`let s = name(1, 2, "three")`)
+- anonymous functions `fun (x, y t1, z t2) result`
+- type functions `fun MyThing.foo(this, x, y int) int` (`var x MyThing; x.foo(1,2)`)
+- "optional" types `var x MyThing?; if x { typeof(x) == MyThing }`
+- variables `var x, y, z int; var a = 123; a = 456`
+- read-only bindings `let a = [1, 2, 3]` (values are mutable `a[1] = 22`)
+
 
 ## Memory safety
 
