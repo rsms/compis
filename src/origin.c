@@ -58,6 +58,21 @@ origin_t ast_origin(locmap_t* lm, const node_t* n) {
     return r;
   }
 
+  case EXPR_MEMBER: {
+    member_t* m = (member_t*)n;
+    // 1/2 version where both recv and member are highlighted:
+    // if (loc_line(m->recv->loc) == 0 || loc_line(m->nameloc) == 0)
+    //   return r;
+    // origin_t left_origin = ast_origin(lm, (node_t*)m->recv);
+    // origin_t right_origin = origin_make(lm, m->nameloc);
+    // return origin_union(left_origin, right_origin);
+    //
+    // 2/2 version where only member is highlighted:
+    if (loc_line(m->nameloc) == 0)
+      return r;
+    return origin_union(r, origin_make(lm, m->nameloc));
+  }
+
   case EXPR_BINOP: {
     binop_t* op = (binop_t*)n;
     if (loc_line(op->left->loc) == 0 || loc_line(op->right->loc) == 0)
