@@ -11,6 +11,13 @@ typedef array_type(map_t) maparray_t;
 DEF_ARRAY_TYPE_API(map_t, maparray)
 
 
+typedef enum {
+  Liveness_DEAD,
+  Liveness_ZOMBIE, // some members are dead
+  Liveness_LIVE,
+} Liveness;
+
+
 typedef struct {
   compiler_t* compiler;
   pkg_t*      pkg;
@@ -195,6 +202,13 @@ inline static locmap_t* locmap(ircons_t* c) {
 #define error(c, origin, fmt, args...)    diag(c, origin, DIAG_ERR, (fmt), ##args)
 #define warning(c, origin, fmt, args...)  diag(c, origin, DIAG_WARN, (fmt), ##args)
 #define help(c, origin, fmt, args...)     diag(c, origin, DIAG_HELP, (fmt), ##args)
+
+
+static type_t* unwind_aliastypes(type_t* t) {
+  while (t->kind == TYPE_ALIAS)
+    t = assertnotnull(((aliastype_t*)t)->elem);
+  return t;
+}
 
 
 // static type_t* basetype(type_t* t) {
@@ -725,28 +739,83 @@ static irblock_t* entry_block(irfun_t* f) {
 static irval_t* intconst(ircons_t* c, type_t* t, u64 value, loc_t loc);
 
 
-static void create_liveness_var(ircons_t* c, irval_t* v) {
+static irval_t* create_liveness_var(ircons_t* c, irval_t* v, Liveness liveness) {
   assert(v->var.live == NULL);
 
-  // create initial (always true) liveness var in the block that defines v
+  // create initial liveness var in the block that defines v
   char tmp[32];
   sym_t name = sym_snprintf(tmp, sizeof(tmp), ".v%u_live", v->id);
   v->var.live = name;
 
-  // initially dead or alive?
-  bool islive = !deadset_has(c->deadset, v->id);
-  irval_t* islivev = intconst(c, type_bool, islive, (loc_t){0});
+  irval_t* islivev = intconst(c, type_bool, (u64)liveness, (loc_t){0});
 
   irblock_t* b = irval_block(c, v);
   var_write_inblock(c, b, name, islivev);
+
+  return islivev;
 }
 
 
-static void write_liveness_var(ircons_t* c, irval_t* owner, bool islive) {
+static irval_t* write_liveness_var(ircons_t* c, irval_t* owner, Liveness liveness) {
   if (owner->var.live == NULL)
-    create_liveness_var(c, owner);
-  irval_t* islivev = intconst(c, type_bool, (u64)islive, (loc_t){0});
+    return create_liveness_var(c, owner, liveness);
+  // update
+  irval_t* islivev_curr = var_read(c, owner->var.live, type_bool, (loc_t){0});
+  assert(islivev_curr->op == OP_ICONST);
+  if (islivev_curr->aux.i64val == (u64)liveness)
+    return islivev_curr;
+  irval_t* islivev = intconst(c, type_bool, (u64)liveness, (loc_t){0});
+  islivev->dead_members = islivev_curr->dead_members;
   var_write_inblock(c, c->b, owner->var.live, islivev);
+  return islivev;
+}
+
+
+bool dead_members_has(
+  const u8* nullable dead_members, usize member_count, usize member_index)
+{
+  assert(member_index < member_count);
+  if (!dead_members)
+    return false;
+  const u8* bits;
+  if (member_count > sizeof(dead_members) * 8) {
+    bits = dead_members;
+  } else {
+    bits = (u8*)&dead_members;
+  }
+  return bit_get(bits, member_index);
+}
+
+
+static err_t dead_members_add(
+  memalloc_t ma, u8** dead_membersp, usize member_count, usize member_index)
+{
+  assert(member_index < member_count);
+
+  u8* bits;
+
+  if LIKELY(member_count <= sizeof(*dead_membersp) * 8) {
+    // bits fits in address
+    bits = (u8*)dead_membersp;
+  } else {
+    // heap allocated storage
+    if (*dead_membersp == NULL) {
+      // allocate heap memory for large structs
+      const usize member_count_max = 32768;
+      if (member_count > member_count_max)
+        return ErrOverflow;
+      *dead_membersp = mem_alloc_zeroed(ma, IDIV_CEIL_X(member_count, 8)).p;
+      if (*dead_membersp == NULL)
+        return ErrNoMem;
+    }
+    bits = *dead_membersp;
+  }
+
+  if UNLIKELY(bit_get(bits, member_index))
+    return ErrExists;
+
+  bit_set(bits, member_index);
+  return 0;
 }
 
 
@@ -837,6 +906,12 @@ static void backpropagate_drop_to_ast(ircons_t* c, irval_t* v, irval_t* dropv) {
     return out_of_mem(c);
   d->name = name;
   d->type = v->type;
+
+  // get dead_members, if any
+  if (v->var.live) {
+    irval_t* liveness_var = var_read(c, v->var.live, type_bool, (loc_t){0});
+    d->dead_members = liveness_var->dead_members;
+  }
 }
 
 
@@ -916,6 +991,27 @@ static void drop(ircons_t* c, irval_t* v, loc_t loc) {
 }
 
 
+static void drop_reassign(ircons_t* c, irval_t* v, loc_t loc) {
+  assert(irval_block(c, v) == c->b);
+
+  // we expect this path to be taken only from 'move' (called by 'assign')
+  // where v is a new MOVE op carrying the old value
+  assert(v->op == OP_MOVE);
+  assert(v->nuse == 0);
+  assert(irval_block(c, v) == c->b);
+
+  // convert the MOVE op to DROP
+  irval_t* dropv = v;
+  dropv->op = OP_DROP;
+  dropv->type = type_void;
+  dropv->var.src = dropv->var.dst;
+  // note: arg 0 is already the value to drop
+  v = dropv->argv[0];
+
+  trace("\e[1;33m" "drop replaced v%u in b%u" "\e[0m", v->id, c->b->id);
+}
+
+
 static void conditional_drop(ircons_t* c, irval_t* control, irval_t* owner) {
   // creates "if (!.vN_live) { drop(vN) }"
   irblock_t* ifb = end_block(c);
@@ -968,9 +1064,12 @@ static void owners_unwind_one(ircons_t* c, const bitset_t* deadset, irval_t* v) 
       return;
     } else {
       // dlog("transitive liveness variable (%s = %s)",
-      //   v->var.live, liveness_var->aux.i64val ? "true" : "false");
+      //   v->var.live,
+      //   liveness_var->aux.i64val == Liveness_DEAD   ? "dead" :
+      //   liveness_var->aux.i64val == Liveness_ZOMBIE ? "zombie" :
+      //                                                 "live");
       assert(liveness_var->op == OP_ICONST);
-      assert(liveness_var->aux.i64val == 0); // maybe legit. needs testing
+      assert(liveness_var->aux.i64val != Liveness_LIVE); // maybe legit. needs testing
       // ^ if hit, .vN_live==true -- revisit logic.
     }
   }
@@ -1074,11 +1173,77 @@ static void owners_drop_lost(
         owners_del_at(c, i);
       } else {
         // belongs to a parent scope; update its liveness var
-        write_liveness_var(c, v, false);
+        write_liveness_var(c, v, Liveness_DEAD);
       }
     }
   }
 }
+
+
+static void move_owner_member(ircons_t* c, irval_t* old_owner, member_t* member) {
+  // check for illegal move of member of referenced compound value
+  if UNLIKELY(type_isref(member->recv->type)) {
+    expr_t* origin = (expr_t*)member;
+    error(c, origin,
+          "cannot transfer ownership of struct field value from reference");
+    return;
+  }
+
+  structtype_t* st = (structtype_t*)unwind_aliastypes(member->recv->type);
+  if (st->kind != TYPE_STRUCT)
+    panic("TODO: %s", nodekind_name(st->kind));
+
+  // dlog("TODO: track extraction: member of type %s (%s) from compound type %s (%s)",
+  //   fmtnode(0, old_owner->type), nodekind_name(old_owner->type->kind),
+  //   fmtnode(1, member->recv->type), nodekind_name(member->recv->type->kind));
+  // TODO: track "dead" & "partial dead"
+  // 1. check if member is live, error if not
+  // 2. mark member as "dead"
+  // 3. mark receiver as "partially dead", since we can't use receiver anymore,
+  //    though we can access any other fields of it
+  //
+  // Later when dropping the fields of the receiver, we need to check if
+  // a field is live before generating a drop for it.
+
+  if UNLIKELY(old_owner->op != OP_GEP)
+    panic("TODO: owner is not GEP");
+
+  irval_t* owner = old_owner->argv[0]; // GEP target
+
+  if UNLIKELY(deadset_has(c->deadset, owner->id)) {
+    // owner is dead; we have already reported an error diagnostic "use of dead value"
+    return;
+  }
+
+  // calculate member index
+  usize member_index = 0;
+  for (; member_index < (usize)st->fields.len; member_index++) {
+    if (st->fields.v[member_index] == (node_t*)member->target)
+      break;
+  }
+  assertf(member_index < (usize)st->fields.len,
+          "member %s not found", fmtnode(0, member->target));
+
+  // update dead_members in liveness var.
+  // note: write_liveness_var loads any existing one.
+  trace("\e[1;33m" "mark member #%zu of v%u as dead" "\e[0m",
+        member_index, old_owner->id);
+  irval_t* liveness_var = write_liveness_var(c, owner, Liveness_ZOMBIE);
+  // TODO FIXME ast_ma instead of ir_ma since this is passed on to AST
+  err_t err = dead_members_add(
+    c->ir_ma, &liveness_var->dead_members, st->fields.len, member_index);
+
+  if UNLIKELY(err) {
+    c->err = err;
+    expr_t* origin = (expr_t*)member;
+    if (err == ErrExists) {
+      error(c, origin, "use of dead struct field '%s'", member->name);
+    } else if (err == ErrOverflow) {
+      error(c, origin, "cannot transfer ownership of struct field; struct too large");
+    }
+  }
+}
+
 
 static void move_owner(
   ircons_t* c,
@@ -1087,6 +1252,18 @@ static void move_owner(
   irval_t* nullable replace_owner,
   expr_t*           rvalue_origin)
 {
+  // check for zombie
+  if (old_owner->var.live) {
+    irval_t* liveness_var = var_read(c, old_owner->var.live, type_bool, (loc_t){0});
+    if UNLIKELY(liveness_var && liveness_var->aux.i64val != Liveness_LIVE) {
+      error(c, rvalue_origin,
+            "use of %sdead value of type %s",
+            liveness_var->aux.i64val == Liveness_ZOMBIE ? "partially " : "",
+            fmtnode(0, old_owner->type));
+      return;
+    }
+  }
+
   if (new_owner) {
     if (replace_owner) {
       trace("\e[1;33m" "move owner: v%u -> v%u, replacing v%u" "\e[0m",
@@ -1094,9 +1271,14 @@ static void move_owner(
       assert(type_isowner(replace_owner->type));
       u32 owners_index = owners_indexof(c, replace_owner, U32_MAX);
       if (owners_index != U32_MAX) {
-        assertf(owners_index != U32_MAX, "owner v%u not found", replace_owner->id);
         c->owners.entries.v[owners_index] = new_owner;
-        deadset_add(c, &c->deadset, replace_owner->id);
+        bool prev_is_live = !deadset_has(c->deadset, replace_owner->id);
+        // trace("\e[1;33m" "add v%u to deadset" "\e[0m", replace_owner->id);
+        // deadset_add(c, &c->deadset, replace_owner->id);
+        if (prev_is_live) {
+          trace("  drop replaced v%u", replace_owner->id);
+          drop_reassign(c, replace_owner, (loc_t){0});
+        }
       }
     } else {
       trace("\e[1;33m" "move owner: v%u -> v%u" "\e[0m", old_owner->id, new_owner->id);
@@ -1114,34 +1296,31 @@ static void move_owner(
 
   // when on a conditional path, e.g. from "if", track liveness vars
   if (c->condnest) {
-    // mark old_owner as no longer live by setting its liveness var to false
-    write_liveness_var(c, old_owner, false);
+    // mark old_owner as no longer live by setting its liveness var to DEAD
+    write_liveness_var(c, old_owner, Liveness_DEAD);
     if (new_owner)
-      write_liveness_var(c, new_owner, true);
+      write_liveness_var(c, new_owner, Liveness_LIVE);
   }
 
-  // track "dead" members and "partial dead" compound values
-  if (rvalue_origin->kind == EXPR_MEMBER ||
-      rvalue_origin->kind == EXPR_SUBSCRIPT)
-  {
-    const expr_t* compound_val = NULL;
-    if (rvalue_origin->kind == EXPR_MEMBER) {
-      compound_val = ((member_t*)rvalue_origin)->recv;
-    } else if (rvalue_origin->kind == EXPR_SUBSCRIPT) {
-      compound_val = ((subscript_t*)rvalue_origin)->recv;
-    }
-    dlog("TODO: track extraction of member of type %s (%s) from compound type %s (%s)",
-      fmtnode(0, old_owner->type), nodekind_name(old_owner->type->kind),
-      fmtnode(1, compound_val->type), nodekind_name(compound_val->type->kind));
-    // TODO: track "dead" & "partial dead"
-    // 1. check if member is live, error if not
-    // 2. mark member as "dead"
-    // 3. mark receiver as "partially dead", since we can't use receiver anymore,
-    //    though we can access any other fields of it
-    //
-    // Later when dropping the fields of the receiver, we need to check if
-    // a field is live before generating a drop for it.
+  // Disallow moving owned array members.
+  // This is just too complicated to support. For example, consider the following:
+  //   fun consume_element(v DroppableThing) {}
+  //   fun example(a [DroppableThing], index uint)
+  //     consume_element(a[index])
+  // How can we track which element of a is now dead?
+  // We could just mark the entire array a as dead in the above scenario, but that
+  // would likely not be what people expect. Plus, how would we know what elements to
+  // drop once a falls out of scope?
+  if UNLIKELY(rvalue_origin->kind == EXPR_SUBSCRIPT) {
+    // const expr_t* compound_val = ((subscript_t*)rvalue_origin)->recv;
+    error(c, rvalue_origin, "cannot transfer ownership of array element");
+    // TODO: help("pass a reference")
+    return;
   }
+
+  // track "dead" members and "partial dead" struct values
+  if (rvalue_origin->kind == EXPR_MEMBER)
+    move_owner_member(c, old_owner, (member_t*)rvalue_origin);
 }
 
 
@@ -1218,13 +1397,6 @@ static irval_t* move_or_copy(
 }
 
 
-static type_t* unwind_aliastypes(type_t* t) {
-  while (t->kind == TYPE_ALIAS)
-    t = assertnotnull(((aliastype_t*)t)->elem);
-  return t;
-}
-
-
 //—————————————————————————————————————————————————————————————————————————————————————
 
 
@@ -1243,6 +1415,7 @@ static irval_t* intconst(ircons_t* c, type_t* t, u64 value, loc_t loc) {
   // - degrades for functions with many constants
   //   - could do binary search if we bookkeep ending index
   t = unwind_aliastypes(t);
+  t = (type_t*)canonical_primtype(c->compiler, t);
   irblock_t* b0 = entry_block(c->f);
   u32 i = 0;
   for (; i < b0->values.len; i++) {
@@ -1335,7 +1508,8 @@ static irval_t* vardef(ircons_t* c, local_t* n) {
     // if (!zeroinit_owner_needs_drop(c, v->type)) {
     //   // mark as dead since the type's zeroinit doesn't need drop (no side effects)
     //   deadset_add(c, &c->deadset, v->id);
-    //   // create_liveness_var(c, v);
+    //   // create_liveness_var(c, v,
+    //        deadset_has(c->deadset, v->id) ? Liveness_DEAD : Liveness_LIVE);
     // }
   }
 
@@ -1384,27 +1558,20 @@ static irval_t* assign(ircons_t* c, binop_t* n) {
   v->type = dst->type; // needed in case dst is subtype of v, e.g. "dst ?T <= v T"
 
   irval_t* curr_owner = var_read(c, varname, v->type, (loc_t){0});
+
+  // do we need to mark the assignment op as "drop old value"?
+  if (type_isowner(v->type)) {
+    if (!deadset_has(c->deadset, curr_owner->id)) {
+      trace("\e[1;33m" "drop old value of owner v%u" "\e[0m", curr_owner->id);
+      n->flags |= NF_DROP;
+    }
+  }
+
   v = move_or_copy(c, v, n->loc, curr_owner, n->right);
 
   comment(c, v, varname);
 
   return assign_local(c, dst, v);
-}
-
-
-static irval_t* ret(ircons_t* c, irval_t* nullable v, loc_t loc, expr_t* rvalue) {
-  c->b->kind = IR_BLOCK_RET;
-  if (v && type_isowner(v->type))
-    move_owner_outside(c, v, rvalue);
-  set_control(c, c->b, v);
-  owners_unwind_all(c);
-  return v ? v : &bad_irval;
-}
-
-
-static irval_t* retexpr(ircons_t* c, retexpr_t* n) {
-  irval_t* v = n->value ? load_expr(c, n->value) : NULL;
-  return ret(c, v, n->loc, n->value);
 }
 
 
@@ -1445,6 +1612,22 @@ static irval_t* subscript(ircons_t* c, subscript_t* n) {
     pusharg(v, load_expr(c, n->index));
   }
   return v;
+}
+
+
+static irval_t* ret(ircons_t* c, irval_t* nullable v, loc_t loc, expr_t* rvalue) {
+  c->b->kind = IR_BLOCK_RET;
+  if (v && type_isowner(v->type))
+    move_owner_outside(c, v, rvalue);
+  set_control(c, c->b, v);
+  owners_unwind_all(c);
+  return v ? v : &bad_irval;
+}
+
+
+static irval_t* retexpr(ircons_t* c, retexpr_t* n) {
+  irval_t* v = n->value ? load_expr(c, n->value) : NULL;
+  return ret(c, v, n->loc, n->value);
 }
 
 
@@ -2155,6 +2338,7 @@ static irval_t* deref(ircons_t* c, expr_t* origin, unaryop_t* n) {
 
 static irval_t* load_local(ircons_t* c, expr_t* origin, local_t* n) {
   irval_t* v = var_read(c, n->name, n->type, n->loc);
+
   if LIKELY(!type_isowner(n->type) || !bitset_has(c->deadset, v->id))
     return v;
 
@@ -2166,12 +2350,11 @@ static irval_t* load_local(ircons_t* c, expr_t* origin, local_t* n) {
     error(c, origin, "use of uninitialized %s %s", nodekind_fmt(n->kind), n->name);
     if (loc_line(v->loc))
       help(c, v, "%s defined here", n->name);
-    return v;
+  } else {
+    error(c, origin, "use of dead value of type %s", fmtnode(0, n->type));
+    if (parentv && parentv->op == OP_MOVE && loc_line(parentv->loc))
+      help(c, parentv, "%s moved here", n->name);
   }
-
-  error(c, origin, "use of dead value %s", n->name);
-  if (parentv && parentv->op == OP_MOVE && loc_line(parentv->loc))
-    help(c, parentv, "%s moved here", n->name);
 
   return v;
 }

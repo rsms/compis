@@ -12,6 +12,7 @@
 #include "str.h"
 #include "thread.h"
 #include "ops.h"
+#include "bits.h"
 
 typedef u8 nodekind_t;
 #define FOREACH_NODEKIND_NODE(_) /* nodekind_t, TYPE, enctag */ \
@@ -120,7 +121,7 @@ typedef u16 nodeflag_t;
 //#define NF_NARROWED  ((nodeflag_t)1<< 4)  // type-narrowed from optional
 #define NF_UNKNOWN     ((nodeflag_t)1<< 5)  // has or contains unresolved identifier
 #define NF_NAMEDPARAMS ((nodeflag_t)1<< 6)  // function has named parameters
-#define NF_DROP        ((nodeflag_t)1<< 7)  // type has drop() function
+#define NF_DROP        ((nodeflag_t)1<< 7)  // type: has drop(), binop: drop oldval
 #define NF_SUBOWNERS   ((nodeflag_t)1<< 8)  // type has owning elements
 #define NF_EXIT        ((nodeflag_t)1<< 9)  // block exits (i.e. "return" or "break")
 #define NF_CONST       ((nodeflag_t)1<< 9)  // [anything but block] is a constant
@@ -372,8 +373,9 @@ typedef struct {
 } importedtype_t;
 
 typedef struct {
-  sym_t   name;
-  type_t* type;
+  sym_t        name;
+  type_t*      type;
+  u8* nullable dead_members; // already-dead members
 } drop_t;
 
 typedef array_type(drop_t) droparray_t;

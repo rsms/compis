@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 #include "ast.h"
+#include "bits.h"
 ASSUME_NONNULL_BEGIN
 
 typedef u8 irflag_t;
-#define IR_FL_SEALED  ((irflag_t)1<< 0) // [block] is sealed
+#define IR_FL_SEALED ((irflag_t)1<< 0) // [block] is sealed
 
 typedef u8 irblockkind_t;
 enum irblockkind {
@@ -32,12 +33,14 @@ typedef struct irval_ {
     void* nullable ptr;
     slice_t        bytes; // pointer into AST node, e.g. strlit_t
   } aux;
-
-  struct {
-    sym_t nullable live;
-    sym_t nullable dst;
-    sym_t nullable src;
-  } var;
+  union {
+    u8* nullable dead_members; // used by livevars to track dead members
+    struct {
+      sym_t nullable live;
+      sym_t nullable dst;
+      sym_t nullable src;
+    } var;
+  };
 
   const char* nullable comment;
 } irval_t;
@@ -80,6 +83,9 @@ typedef struct {
 bool irfmt(compiler_t*, const pkg_t*, buf_t*, const irunit_t*);
 bool irfmt_dot(compiler_t*, const pkg_t*, buf_t*, const irunit_t*);
 bool irfmt_fun(compiler_t*, const pkg_t*, buf_t*, const irfun_t*);
+
+bool dead_members_has(
+  const u8* nullable dead_members, usize member_count, usize member_index);
 
 
 ASSUME_NONNULL_END

@@ -2,6 +2,7 @@
 #include "colib.h"
 #include "compiler.h"
 #include "path.h"
+#include "ir.h"
 #include <sys/stat.h>
 #include <string.h> // memchr
 
@@ -185,6 +186,12 @@ static void startlinex(cgen_t* g) {
   g->lineno++;
   CHAR('\n');
   buf_fill(&g->outbuf, ' ', g->indent*2);
+}
+
+
+static void startline_if_needed(cgen_t* g, loc_t loc) {
+  if (loc_line(loc) != g->lineno && loc_line(loc))
+    startline(g, loc);
 }
 
 
@@ -1005,12 +1012,19 @@ static void gen_drop_custom(cgen_t* g, const drop_t* d, const usertype_t* bt) {
 static void gen_drop_struct_fields(cgen_t* g, const drop_t* d, const structtype_t* st) {
   // dlog(" gen_drop_struct_fields");
   buf_t tmpbuf = buf_make(g->ma);
+
   for (u32 i = st->fields.len; i; ) {
     const local_t* field = (local_t*)st->fields.v[--i];
     const type_t* ft = field->type;
 
     if (!type_isowner(ft)) {
       // dlog("  field (" REPRNODE_FMT ") of type (" REPRNODE_FMT ") is not owner",
+      //   REPRNODE_ARGS(field, 0), REPRNODE_ARGS(ft, 1));
+      continue;
+    }
+
+    if (dead_members_has(d->dead_members, st->fields.len, i)) {
+      // dlog("  field (" REPRNODE_FMT ") of type (" REPRNODE_FMT ") already dead",
       //   REPRNODE_ARGS(field, 0), REPRNODE_ARGS(ft, 1));
       continue;
     }
@@ -1023,8 +1037,10 @@ static void gen_drop_struct_fields(cgen_t* g, const drop_t* d, const structtype_
     as_ptr(g, &tmpbuf, d->type, d->name);
     buf_printf(&tmpbuf, ")->%s", field->name);
 
-    if UNLIKELY(!buf_nullterm(&tmpbuf))
+    if UNLIKELY(!buf_nullterm(&tmpbuf)) {
+      buf_dispose(&tmpbuf);
       return seterr(g, ErrNoMem);
+    }
 
     drop_t d2 = { .name = tmpbuf.chars, .type = field->type };
     gen_drop(g, &d2);
@@ -1144,6 +1160,56 @@ static void gen_drop(cgen_t* g, const drop_t* d) {
 }
 
 
+static void gen_member(cgen_t* g, const member_t* n);
+
+
+static void gen_drop_member(cgen_t* g, member_t* m) {
+  assertnotnull(m->recv);
+  assertnotnull(m->recv->type);
+  assertnotnull(m->target);
+  assertnotnull(m->target->type);
+
+  buf_t buf = buf_make(g->ma);
+
+  // generate access to struct, capturing output by saving current outbuf pos
+  usize outbuf_start = g->outbuf.len;
+  gen_member(g, m);
+
+  // append the generated member receiver access and restore outbuf
+  buf_append(&buf, &g->outbuf.chars[outbuf_start], g->outbuf.len - outbuf_start);
+  g->outbuf.len = outbuf_start;
+
+  if UNLIKELY(!buf_nullterm(&buf)) {
+    seterr(g, ErrNoMem);
+  } else {
+    drop_t d2 = { .name = buf.chars, .type = m->target->type };
+    gen_drop(g, &d2);
+  }
+
+  buf_dispose(&buf);
+}
+
+
+static void gen_drop_expr(cgen_t* g, expr_t* n) {
+  switch (n->kind) {
+    case EXPR_ID: {
+      // drop value of variable
+      drop_t d = { .name = ((idexpr_t*)n)->name, .type = n->type };
+      gen_drop(g, &d);
+      break;
+    }
+    case EXPR_MEMBER: {
+      // drop value of struct field
+      gen_drop_member(g, (member_t*)n);
+      break;
+    }
+    default:
+      panic("unexpected %s", nodekind_name(n->kind));
+  }
+  startline_if_needed(g, n->loc);
+}
+
+
 static void gen_drops(cgen_t* g, const droparray_t* drops) {
   for (u32 i = 0; i < drops->len; i++)
     gen_drop(g, &drops->v[i]);
@@ -1154,12 +1220,6 @@ static sizetuple_t x_semi_begin(cgen_t* g, loc_t loc) {
   if (loc_line(loc) != g->lineno && loc_line(loc))
     return x_semi_begin_startline(g, loc);
   return x_semi_begin_char(g, ' ');
-}
-
-
-static void startline_if_needed(cgen_t* g, loc_t loc) {
-  if (loc_line(loc) != g->lineno && loc_line(loc))
-    startline(g, loc);
 }
 
 
@@ -2056,6 +2116,10 @@ static void gen_assign(cgen_t* g, const binop_t* n) {
       gen_expr_rvalue(g, n->right, n->type);
     return;
   }
+
+  if (n->flags & NF_DROP)
+    gen_drop_expr(g, n->left);
+
   gen_expr(g, n->left);
 
   // Special case for RHS when assigning non-optional value to optional receiver.
