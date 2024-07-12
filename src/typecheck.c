@@ -3292,6 +3292,11 @@ again:
   case TYPE_UINT: basetype = a->compiler->uinttype; goto again;
   default:
     // all other type contexts results in int, uint, i64 or u64 (depending on value)
+    if (n->flags & NF_CHAR) {
+      type = type_u32;
+      basetype = type_u32;
+      goto again;
+    }
     if (a->compiler->target.intsize == 8) {
       if (isneg || n->intval < 0x8000000000000000llu) {
         maxval = 0x8000000000000000llu;
