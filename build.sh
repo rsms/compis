@@ -23,7 +23,7 @@ NON_WATCH_ARGS=()
 TARGET=
 OUT_DIR=
 BUILD_MODE=opt  # opt | opt-fast | debug
-TESTING_ENABLED=false
+ENABLE_TESTS=false
 ONLY_CONFIGURE=false
 STRIP=false
 DEBUGGABLE=true
@@ -45,7 +45,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
   -opt)      BUILD_MODE=opt; shift ;;
   -opt-fast) BUILD_MODE=opt-fast; shift ;;
-  -debug)    BUILD_MODE=debug; TESTING_ENABLED=true; DEBUGGABLE=true; shift ;;
+  -debug)    BUILD_MODE=debug; ENABLE_TESTS=true; DEBUGGABLE=true; shift ;;
   -config)   ONLY_CONFIGURE=true; shift ;;
   -strip)    STRIP=true; DEBUGGABLE=false; shift ;;
   -lto)      ENABLE_LTO=true; shift ;;
@@ -451,7 +451,7 @@ XFLAGS+=(
   -Werror=implicit-int \
   -Wno-pragma-once-outside-header \
 )
-$TESTING_ENABLED && XFLAGS+=( -D${PP_PREFIX}TESTING_ENABLED )
+$ENABLE_TESTS && XFLAGS+=( -D${PP_PREFIX}ENABLE_TESTS )
 $VERBOSE && XFLAGS+=( -v )
 XFLAGS_NATIVE=()
 
@@ -501,7 +501,6 @@ esac
 case "$BUILD_MODE" in
   debug)
     XFLAGS+=( -g -O0 -DDEBUG -ferror-limit=6 )
-    XFLAGS+=( -DCO_ENABLE_TESTS )
     XFLAGS_NATIVE+=(
       -fno-omit-frame-pointer \
       -fno-optimize-sibling-calls \
@@ -737,7 +736,7 @@ _gen_obj_build_rules() { # <target> <srcfile> ...
 
 NATIVE_SOURCES+=( "${COMMON_SOURCES[@]:-}" )
 
-if $TESTING_ENABLED; then
+if $ENABLE_TESTS; then
   NATIVE_SOURCES+=( "${TEST_SOURCES[@]:-}" )
 fi
 

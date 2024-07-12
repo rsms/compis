@@ -1218,7 +1218,6 @@ void co_qsort(void* base, usize nmemb, usize size, co_qsort_cmp cmp, void* nulla
     bool          failed; // set this to true to signal failure
   };
 
-  u32 unittest_runall(); // returns number of FAILED tests
   void unittest_add(unittest_t*);
 
   #define UNITTEST_DEF(NAME)                                                \

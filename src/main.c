@@ -29,7 +29,8 @@ u8 coverbose = 0;
 u32 comaxproc = 1;
 
 // externally-implemented tools
-int main_build(int argc, char* argv[]); // build.c
+int main_build(int argc, char* argv[]); // main_build.c
+int main_selftest(int argc, char* argv[]); // main_selftest.c
 int build_sysroot_main(int argc, char* argv[]); // build_sysroot.c
 int cc_main(int argc, char* argv[], bool iscxx); // cc.c
 int llvm_ar_main(int argc, char* argv[]); // llvm/llvm-ar.cc
@@ -73,6 +74,16 @@ static int usage(FILE* f) {
     "  help          Print help on stdout and exit\n"
     "  targets       List supported targets\n"
     "  version       Print version on stdout and exit\n"
+    ,
+    coprogname,
+    host_ld);
+
+#ifdef CO_ENABLE_TESTS
+  fprintf(f,
+    "  selftest      Run Compis tests\n");
+#endif
+
+  fprintf(f,
     "\n"
     "For help with a specific command:\n"
     "  %s <command> --help\n"
@@ -82,8 +93,6 @@ static int usage(FILE* f) {
     "  COCACHE   Build cache. Defaults to ~/" COCACHE_DEFAULT "\n"
     "  COMAXPROC Parallelism limit. Defaults to number of CPUs (%u)\n"
     "\n",
-    coprogname,
-    host_ld,
     coprogname,
     sys_ncpu());
   return 0;
@@ -260,17 +269,6 @@ int main(int argc, char* argv[]) {
   err_t err = llvm_init();
   if (err) errx(1, "llvm_init: %s", err_str(err));
 
-  // run unit tests
-  #ifdef CO_ENABLE_TESTS
-  if (!IS("cc", "clang") &&
-      !IS("c++", "clang++") &&
-      !IS("ld"))
-  {
-    if (unittest_runall())
-      return 1;
-  }
-  #endif
-
   userconfig_load(argc, argv);
 
   // command dispatch
@@ -282,6 +280,10 @@ int main(int argc, char* argv[]) {
   if IS("targets")              return print_supported_targets(), 0;
   if IS("version", "--version") return print_co_version(), 0;
   if IS("help", "--help", "-h") return usage(stdout);
+
+  #ifdef CO_ENABLE_TESTS
+  if IS("selftest") return main_selftest(argc, argv);
+  #endif
 
   elog("%s: unknown command \"%s\"", coprogname, cmd);
   return 1;
