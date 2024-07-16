@@ -5,6 +5,15 @@
 #include "unicode.h"
 
 
+// DEBUG_INDENT: define to debug indentation
+//#define DEBUG_INDENT
+
+
+// FMTCOL e.g. printf("animal=" FMTCOL_FMT("%s"), FMTCOL_ARG(3, "cat"))
+#define FMTCOL_FMT(pat)    "\e[9%cm" pat "\e[39m"
+#define FMTCOL_ARG(n, val) ('1'+(char)((n)%6)), (val)
+
+
 static const struct { const char* s; u8 len; tok_t t; } keywordtab[] = {
   #define _(NAME, ...)
   #define KEYWORD(str, NAME) {str, (u8)strlen(str), NAME},
@@ -802,29 +811,71 @@ static void identifier(scanner_t* s) {
 }
 
 
-static void skip_comment(scanner_t* s) {
+static void parse_comment(scanner_t* s) {
   assert(s->inp+1 < s->inend);
-  u8 c = s->inp[1];
+  const u8* start = s->inp;
+  loc_t start_loc = s->loc;
 
-  if (c == '/') {
+  if (s->inp[1] == '/') {
     // line comment "// ... <LF>"
     s->inp += 2;
     while (s->inp < s->inend && *s->inp != '\n')
       s->inp++;
-    return;
+  } else {
+    // block comment "/* ... */"
+    s->inp += 2;
+    const u8* startstar = s->inp - 1; // make sure "/*/" != "/**/"
+    while (s->inp < s->inend) {
+      if (*s->inp == '\n') {
+        newline(s);
+      } else if (*s->inp == '/' && *(s->inp - 1) == '*' && s->inp - 1 != startstar) {
+        s->inp++; // consume '*'
+        break;
+      }
+      s->inp++;
+    }
   }
 
-  // block comment "/* ... */"
-  s->inp += 2;
-  const u8* startstar = s->inp - 1; // make sure "/*/" != "/**/"
-  while (s->inp < s->inend) {
-    if (*s->inp == '\n') {
-      newline(s);
-    } else if (*s->inp == '/' && *(s->inp - 1) == '*' && s->inp - 1 != startstar) {
-      s->inp++; // consume '*'
-      break;
-    }
-    s->inp++;
+  #ifdef DEBUG
+  if (opt_trace_scan) {
+    char locstr[128];
+    loc_fmt(s->loc, locstr, sizeof(locstr), &s->compiler->locmap);
+    char litstr[128];
+    string_repr(litstr, sizeof(litstr), start, (uintptr)(s->inp - start));
+    _dlog(3, "S", __FILE__, __LINE__,
+          "\e[2mCOMMENT     \e[0m \"%s\"\t%s", litstr, locstr);
+  }
+  #endif
+
+  if (!s->parse_comments)
+    return;
+
+  // allocate comment
+  memalloc_t ma = s->ast_ma ? s->ast_ma : s->compiler->ma;
+  comment_t* c = mem_alloct(ma, comment_t);
+  if (!c)
+    return out_of_mem(s);
+  c->bytes = start;
+  c->len = (uintptr)(s->inp - start); assert(c->len > 2); // minimum: "//<LF>"
+  c->loc = start_loc;
+  if (loc_line(c->loc) == loc_line(s->loc))
+    loc_set_width(&c->loc, loc_col(s->loc) - loc_col(c->loc));
+
+  // group adjacent comments?
+  comment_t* prev_comment =
+    (s->comments.len > 0) ? s->comments.v[s->comments.len-1] : NULL;
+  if (prev_comment &&
+      loc_line(prev_comment->loc) == loc_line(s->loc) - 1 &&
+      loc_col(prev_comment->loc) == loc_col(s->loc) &&
+      prev_comment->bytes[1] == c->bytes[1])
+  {
+    // same type of comment with same indentation on adjacent lines
+    assertnull(prev_comment->next);
+    prev_comment->next = c;
+  } else {
+    // new comment
+    if (!commentarray_push(&s->comments, s->compiler->ma, c))
+      return out_of_mem(s);
   }
 }
 
@@ -910,7 +961,7 @@ static void scan1(scanner_t* s) {
     case '*':
       s->inp--;
       s->insertsemi = insertsemi;
-      skip_comment(s);
+      parse_comment(s);
       MUSTTAIL return scan0(s);
     case '=':
       ++s->inp, s->tok = TDIVASSIGN; break;
@@ -1020,22 +1071,28 @@ indent_unwind:
     s->inp++;
   }
 
-  // layout algorithm, automatic insertion of ";" "{" and "}"
-  //
-  // We use a layout stack (s.indentstack) of increasing indentations.
-  // The top indentation on the stack holds the current layout indentation.
-  // The initial layout stack contains the single value 0 (never popped.)
-  if (is_linestart) {
+  if ((uintptr)(s->inend - s->inp) > 2 &&
+      s->inp[0] == '/' && (s->inp[1] == '/' || s->inp[1] == '*'))
+  {
+    // ignore comment
+  } else if (is_linestart) {
+    // layout algorithm, automatic insertion of ";" "{" and "}"
+    //
+    // We use a layout stack (s.indentstack) of increasing indentations.
+    // The top indentation on the stack holds the current layout indentation.
+    // The initial layout stack contains the single value 0 (never popped.)
     u32 indent = (u32)(uintptr)(s->inp - s->linestart);
     u32 currindent = *s->indentstack;
 
     // debug log linestart
-    #if 0 && defined(DEBUG)
-    char tmpbuf[32];
-    string_repr(tmpbuf, sizeof(tmpbuf), s->linestart, (usize)indent);
-    dlog("linestart %s │\e[47;30;1m%s\e[0m│ (insertsemi=%s)",
-      (indent > currindent ? "→" : indent < currindent ? "←" : "—"), tmpbuf,
-      s->insertsemi ? "true" : "false");
+    #ifdef DEBUG_INDENT
+    {
+      char tmpbuf[32];
+      string_repr(tmpbuf, sizeof(tmpbuf), s->linestart, (usize)indent);
+      dlog("linestart %s │\e[47;30;1m%s\e[0m│ (insertsemi=%s)",
+        (indent > currindent ? "→" : indent < currindent ? "←" : "—"), tmpbuf,
+        s->insertsemi ? "true" : "false");
+    }
     #endif
 
     // check for mixed-character indentation
@@ -1056,6 +1113,11 @@ indent_unwind:
       if UNLIKELY(s->indentstack >= s->indentstackv + countof(s->indentstackv))
         return indent_error(s, indent, "too many nested indented blocks");
       *(++s->indentstack) = indent; // push
+
+      #ifdef DEBUG_INDENT
+      dlog("indent push %u -> %u", s->indentdst, indent);
+      #endif
+
       s->indentdst = indent;
 
       // produce a "{" token, unless s->tok is an expression continuation
@@ -1068,6 +1130,11 @@ indent_unwind:
     } else if (indent < currindent) {
       // Indentation decreased and s->tok is not "}"; insert "}".
       // set target indentation for indent_unwind
+
+      #ifdef DEBUG_INDENT
+      dlog("indent pop %u -> %u", s->indentdst, indent);
+      #endif
+
       s->indentdst = indent;
 
       // check for unbalanced "partial" indentation reduction
@@ -1181,11 +1248,6 @@ eof:
   }
 }
 #endif
-
-
-// FMTCOL e.g. printf("animal=" FMTCOL_FMT("%s"), FMTCOL_ARG(3, "cat"))
-#define FMTCOL_FMT(pat)    "\e[9%cm" pat "\e[39m"
-#define FMTCOL_ARG(n, val) ('1'+(char)((n)%6)), (val)
 
 
 void scanner_next(scanner_t* s) {

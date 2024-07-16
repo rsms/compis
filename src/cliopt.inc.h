@@ -49,6 +49,10 @@ static void cli_set_bool(bool* valptr) {
   *valptr = true;
 }
 
+static void cli_set_bytebool(u8* valptr) {
+  (*valptr)++;
+}
+
 static void cli_set_intbool(int* valptr) {
   (*valptr)++;
 }
@@ -145,7 +149,8 @@ static bool cliopt_parse(int* argcp, char** argvp[], void(*helpfn)(const char* p
       )
       #define _SETBOOL(p) _Generic((p), \
         bool*: cli_set_bool, \
-        int*:  cli_set_intbool \
+        int*:  cli_set_intbool, \
+        u8*:   cli_set_bytebool \
       )
       #define _S( p, c, ...)  case c: _SETBOOL(p)((void*)p); break;
       #define _SV(p, c, ...)  case c: _UPDATEPTR(p)((void*)p, optarg); break;

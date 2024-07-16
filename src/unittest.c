@@ -65,9 +65,16 @@ u32 unittest_runall() {
   // sort tests by name, ascending
   co_qsort(testv, testc, sizeof(void*), unittest_cmp, NULL);
 
+  // create an arena memory allocator and set it as the contextual allocator
+  memalloc_t ma = memalloc_bump2(/*slabsize*/0, /*flags*/0);
+  assert(ma != memalloc_null());
+  memalloc_t ma_outer = memalloc_ctx_set(ma);
+
   // run tests
   for (u32 i = 0; i < testc; i++) {
     unittest_t* t = testv[i];
+
+    memalloc_bump2_reset(ma, 0);
 
     print_status(t, /*done*/false, "...");
     if (stderr_isatty)
@@ -95,6 +102,10 @@ u32 unittest_runall() {
     if (t->failed)
       nfail++;
   }
+
+  // restore contextural memory allocator
+  memalloc_ctx_set(ma_outer);
+  memalloc_bump2_dispose(ma);
 
   // report failures after all tests has finished running
   if (nfail) {

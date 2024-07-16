@@ -469,6 +469,13 @@ ASSUME_NONNULL_END
       val__; })
   #endif
 
+  #define assert_slice_eq(slice1, slice2) \
+    _assert_slice_eq((slice1), (slice2), __FILE__, __LINE__, __FUNCTION__)
+
+  #define assert_cstr_eq(cstr1, cstr2) \
+    _assert_slice_eq(slice_cstr(cstr1), slice_cstr(cstr2), \
+                     __FILE__, __LINE__, __FUNCTION__)
+
   // assert_no_add_overflow(T a, Y b)
   #if __has_builtin(__builtin_add_overflow_p)
 
@@ -522,6 +529,8 @@ ASSUME_NONNULL_END
   #define assert(cond)                 ((void)0)
   #define assertf(cond, fmt, ...)      ((void)0)
   #define assertcstreq(a,b)            ((void)0)
+  #define assert_slice_eq(a,e)         ((void)0)
+  #define assert_cstr_eq(a,e)          ((void)0)
   #define assertnull(a)                ((void)0)
   #define assertnotnull(a)             ({ a; }) /* note: (a) causes "unused" warnings */
   #define assert_no_add_overflow(a, b) ((void)0)
@@ -917,6 +926,8 @@ usize memalloc_bumpuse(memalloc_t ma);
 // flags is currently unused. Pass 0.
 // Returns memalloc_null() if initial allocation failed.
 memalloc_t memalloc_bump2(usize slabsize, u32 flags);
+// memalloc_bump2_reset forgets all allocations after use
+bool memalloc_bump2_reset(memalloc_t ma, usize use);
 void memalloc_bump2_dispose(memalloc_t ma);
 usize memalloc_bump2_cap(memalloc_t ma); // total capacity, in bytes
 usize memalloc_bump2_use(memalloc_t ma); // allocated memory, in bytes
@@ -963,6 +974,15 @@ usize memalloc_bump2_avail(memalloc_t ma); // free memory, in bytes
 inline static slice_t slice_cstr(const char* cstr) {
   return (slice_t){ .chars = cstr, .len = strlen(cstr) };
 }
+
+inline static bool slice_eq(slice_t a, slice_t b) {
+  return a.len == b.len && strncmp(a.chars, b.chars, a.len) == 0;
+}
+
+#ifdef DEBUG
+  void _assert_slice_eq(
+    slice_t a, slice_t b, const char* file, int line, const char* fun);
+#endif
 
 // ——————————————————————————
 // memory api impl

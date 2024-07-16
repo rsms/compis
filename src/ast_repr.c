@@ -3,16 +3,17 @@
 #include "compiler.h"
 
 
-typedef enum reprflag {
+enum ast_repr_flags_internal {
   REPRFLAG_HEAD = 1 << 0, // is list head
   REPRFLAG_SHORT = 1 << 1,
-} reprflag_t;
+};
 
 
 typedef struct {
   buf_t outbuf;
-  err_t err;
   map_t seen;
+  err_t err;
+  u32   flags;
 } repr_t;
 
 
@@ -99,7 +100,7 @@ static void seterr(repr_t* r, err_t err) {
 }
 
 
-#define RPARAMS repr_t* r, usize indent, reprflag_t fl
+#define RPARAMS     repr_t* r, usize indent, u32 fl
 #define RARGS       r, indent, fl
 #define RARGSFL(fl) r, indent, fl
 
@@ -301,7 +302,7 @@ static void repr_type(RPARAMS, const type_t* t) {
     CHAR(' '), PRINT(((structtype_t*)t)->name);
 
   // {flags}
-  if (isnew)
+  if (isnew && (r->flags & AST_REPR_META))
     flags(RARGS, (node_t*)t);
 
   // templateparams
@@ -478,10 +479,11 @@ static void repr(RPARAMS, const node_t* nullable n) {
   if (!isnew)
     goto end;
 
-  flags(RARGS, n);
+  if (r->flags & AST_REPR_META)
+    flags(RARGS, n);
 
   // <type>
-  if (node_isexpr(n)) {
+  if (node_isexpr(n) && (r->flags & AST_REPR_TYPES)) {
     if (r->outbuf.len > 0 && r->outbuf.chars[r->outbuf.len-1] != ' ')
       CHAR(' ');
     expr_t* expr = (expr_t*)n;
@@ -524,8 +526,10 @@ static void repr(RPARAMS, const node_t* nullable n) {
   case EXPR_INTLIT: {
     u64 u = ((intlit_t*)n)->intval;
     CHAR(' ');
-    if (!type_isunsigned(((intlit_t*)n)->type) && (u & 0x8000000000000000)) {
+    if (!type_isunsigned(((intlit_t*)n)->type) && (i64)u < 0ll) {
       u = -u;
+      CHAR('-');
+    } else if ((n->flags & NF_NEG) && ((intlit_t*)n)->type == type_unknown) {
       CHAR('-');
     }
     buf_print_u64(&r->outbuf, u, 10);
@@ -629,7 +633,8 @@ static void repr(RPARAMS, const node_t* nullable n) {
   case EXPR_LET:
   case EXPR_VAR: {
     const local_t* var = (local_t*)n;
-    PRINTF(" {r=%u,w=%d}", var->nuse, var->written);
+    if (r->flags & AST_REPR_META)
+      PRINTF(" {r=%u,w=%d}", var->nuse, var->written);
     if (var->init) {
       CHAR(' ');
       repr(RARGSFL(fl | REPRFLAG_HEAD), (node_t*)var->init);
@@ -652,9 +657,10 @@ static void repr_pkg(repr_t* r, const pkg_t* pkg, const unit_t*const* unitv, u32
 }
 
 
-err_t ast_repr(buf_t* buf, const node_t* n) {
+err_t ast_repr(buf_t* buf, const node_t* n, u32 flags) {
   repr_t r = {
     .outbuf = *buf,
+    .flags = flags,
   };
   if (!map_init(&r.seen, buf->ma, 64))
     return ErrNoMem;
@@ -665,9 +671,12 @@ err_t ast_repr(buf_t* buf, const node_t* n) {
 }
 
 
-err_t ast_repr_pkg(buf_t* buf, const pkg_t* pkg, const unit_t*const* unitv, u32 unitc) {
+err_t ast_repr_pkg(
+  buf_t* buf, const pkg_t* pkg, const unit_t*const* unitv, u32 unitc, u32 flags)
+{
   repr_t r = {
     .outbuf = *buf,
+    .flags = flags,
   };
   if (!map_init(&r.seen, buf->ma, 64))
     return ErrNoMem;

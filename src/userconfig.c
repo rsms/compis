@@ -186,16 +186,6 @@ static bool userconfig_load1(const char* srcfile, const char* src, usize srclen)
 
 
 void userconfig_load(int argc, char* argv[]) {
-  // parse command line arguments
-  for (int i = 0; i < argc; i++) {
-    if (*argv[i] == '-') {
-      if (strcmp(argv[i]+1, "v") == 0) coverbose += 1;
-      if (strcmp(argv[i]+1, "vv") == 0) coverbose += 2;
-      if (strcmp(argv[i]+1, "vvv") == 0) coverbose += 3;
-      if (strcmp(argv[i]+1, "vvvv") == 0) coverbose += 4;
-    }
-  }
-
   const void* data;
   struct stat st;
   err_t err;

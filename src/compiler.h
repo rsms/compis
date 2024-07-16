@@ -127,36 +127,35 @@ typedef struct {
 } scope_t;
 
 typedef struct {
-  srcfile_t* srcfile;     // input source
-  const u8*  inp;         // input buffer current pointer
-  const u8*  inend;       // input buffer end
-  const u8*  linestart;   // start of current line
-  const u8*  tokstart;    // start of current token
-  const u8*  tokend;      // end of previous token
-  loc_t      loc;         // recently parsed token's source location
-  loc_t      endloc;      // source location of end of previously parsed token
-  tok_t      tok;         // recently parsed token (current token during scanning)
-  bool       insertsemi;  // insert a semicolon before next newline
-  u32        lineno;      // monotonic line number counter (!= tok.loc.line)
-  u32        errcount;    // number of error diagnostics reported
-  err_t      err;         // non-syntax error that occurred
+  srcfile_t* srcfile;        // input source
+  const u8*  inp;            // input buffer current pointer
+  const u8*  inend;          // input buffer end
+  const u8*  linestart;      // start of current line
+  const u8*  tokstart;       // start of current token
+  const u8*  tokend;         // end of previous token
+  loc_t      loc;            // recently parsed token's source location
+  loc_t      endloc;         // source location of end of previously parsed token
+  tok_t      tok;            // recently parsed token (current token during scanning)
+  u32        lineno;         // monotonic line number counter (!= tok.loc.line)
+  u32        errcount;       // number of error diagnostics reported
+  err_t      err;            // non-syntax error that occurred
+  bool       insertsemi;     // insert a semicolon before next newline
+  bool       parse_comments; // parse comments
 
-  // u16  indent;           // current level
   u32  indentdst;        // unwind to level
   u32  indentstackv[32]; // previous indentation levels
   u32* indentstack;      // top of indentstackv
 
-  // bool insertsemi2;
-  // tok_t tokq[64];
-  // u8    tokqlen;
+  commentarray_t comments;
 } scanstate_t;
 
 typedef struct {
   scanstate_t;
   compiler_t* compiler;
-  u64         litint;      // parsed INTLIT
-  buf_t       litbuf;      // interpreted source literal (e.g. "foo\n")
-  sym_t       sym;         // current identifier value
+  memalloc_t  ast_ma;   // AST allocator (used for comments by scanner)
+  u64         litint;   // parsed INTLIT
+  buf_t       litbuf;   // interpreted source literal (e.g. "foo\n")
+  sym_t       sym;      // current identifier value
 } scanner_t;
 
 typedef struct {
@@ -167,7 +166,6 @@ typedef struct {
 typedef struct {
   scanner_t        scanner;
   memalloc_t       ma;     // general allocator (== scanner.compiler->ma)
-  memalloc_t       ast_ma; // AST allocator
   scope_t          scope;
   map_t            tmpmap;
   fun_t* nullable  fun;      // current function

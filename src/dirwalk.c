@@ -60,7 +60,7 @@ static void dirinfo_free(dirw0_t* dw, dirinfo_t* dir) {
 }
 
 
-void dirwalk_descend(dirwalk_t* d) {
+static void dirwalk_descend(dirwalk_t* d) {
   if (d->type != S_IFDIR)
     return;
 
@@ -111,10 +111,12 @@ error:
 }
 
 
-dirwalk_t* nullable dirwalk_open(memalloc_t ma, const char* dirpath, UNUSED int flags) {
+err_t dirwalk_open(
+  dirwalk_t** dwp, memalloc_t ma, const char* dirpath, UNUSED int flags)
+{
   dirw0_t* dw = mem_alloc(ma, sizeof(dirw0_t)).p;
   if (!dw)
-    return NULL;
+    return ErrNoMem;
 
   memset(dw, 0, sizeof(*dw) - sizeof(dw->pathbuf));
   dw->d.ma = ma;
@@ -127,7 +129,14 @@ dirwalk_t* nullable dirwalk_open(memalloc_t ma, const char* dirpath, UNUSED int 
   path_cleanx(dw->pathbuf, sizeof(dw->pathbuf), dirpath, pathlen);
   dirwalk_descend(&dw->d);
 
-  return &dw->d;
+  if LIKELY(dw->d.err == 0) {
+    *dwp = (dirwalk_t*)dw;
+    return 0;
+  }
+
+  err_t err = dw->d.err;
+  mem_freet(ma, dw);
+  return err;
 }
 
 

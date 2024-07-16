@@ -58,17 +58,17 @@ err_t pkg_find_files(pkg_t* pkg) {
   if (pkg->dir.len == 0)
     return ErrNotFound;
 
+  err_t err = 0;
+
   memalloc_t ma = memalloc_ctx();
-  dirwalk_t* dw = dirwalk_open(ma, pkg->dir.p, 0);
-  if (!dw)
-    return ErrNoMem;
+  dirwalk_t* dw;
+  if (( err = dirwalk_open(&dw, ma, pkg->dir.p, 0) ))
+    return err;
 
   if (pkg->srcfiles.len > 0) {
     dlog("TODO: free exising `srcfile_t`s");
     return ErrExists;
   }
-
-  err_t err = 0;
 
   while ((err = dirwalk_next(dw)) > 0) {
     if (dw->type != S_IFREG) // ignore

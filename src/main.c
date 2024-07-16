@@ -31,7 +31,7 @@ u32 comaxproc = 1;
 // externally-implemented tools
 int main_build(int argc, char* argv[]); // main_build.c
 int main_selftest(int argc, char* argv[]); // main_selftest.c
-int build_sysroot_main(int argc, char* argv[]); // build_sysroot.c
+int main_build_sysroot(int argc, char* argv[]); // main_build_sysroot.c
 int cc_main(int argc, char* argv[], bool iscxx); // cc.c
 int llvm_ar_main(int argc, char* argv[]); // llvm/llvm-ar.cc
 int llvm_nm_main(int argc, char* argv[]); // llvm/llvm-nm.cc
@@ -42,7 +42,7 @@ static linkerfn_t nullable ld_impl(const target_t* t);
 static const char* ld_impl_name(linkerfn_t nullable f);
 
 
-static int usage(FILE* f) {
+static int help() {
   // ld usage text
   linkerfn_t ldf = ld_impl(target_default());
   char host_ld[128];
@@ -53,7 +53,7 @@ static int usage(FILE* f) {
     host_ld[0] = 0;
   }
 
-  fprintf(f,
+  printf(
     "Usage: %s <command> [args ...]\n"
     "Commands:\n"
     "  build         Build a package\n"
@@ -79,11 +79,11 @@ static int usage(FILE* f) {
     host_ld);
 
 #ifdef CO_ENABLE_TESTS
-  fprintf(f,
+  printf(
     "  selftest      Run Compis tests\n");
 #endif
 
-  fprintf(f,
+  printf(
     "\n"
     "For help with a specific command:\n"
     "  %s <command> --help\n"
@@ -227,7 +227,6 @@ int main(int argc, char* argv[]) {
   const char* cmd = is_multicall ? coprogname : argv[1] ? argv[1] : "";
 
   if (*cmd == 0) {
-    usage(stdout);
     elog("%s: missing command; try `%s help`", coprogname, coprogname);
     return 1;
   }
@@ -255,6 +254,16 @@ int main(int argc, char* argv[]) {
   if IS("ar", "ranlib") return llvm_ar_main(argc, argv); // adds  ~70kB to LTO build
   if IS("nm")           return llvm_nm_main(argc, argv); // adds ~250kB to LTO build
 
+  // parse coverbose specially
+  for (int i = 0; i < argc; i++) {
+    if (argv[i][0] == '-' && argv[i][1] == 'v') {
+      if (strcmp(argv[i]+2, "") == 0) coverbose += 1;
+      if (strcmp(argv[i]+2, "v") == 0) coverbose += 2;
+      if (strcmp(argv[i]+2, "vv") == 0) coverbose += 3;
+      if (strcmp(argv[i]+2, "vvv") == 0) coverbose += 4;
+    }
+  }
+
   // initialize global state
   memalloc_t ma = memalloc_ctx();
   comaxproc_init();
@@ -273,13 +282,13 @@ int main(int argc, char* argv[]) {
 
   // command dispatch
   if IS("build")                return main_build(argc, argv);
-  if IS("build-sysroot")        return build_sysroot_main(argc, argv);
+  if IS("build-sysroot")        return main_build_sysroot(argc, argv);
   if IS("cc", "clang")          return cc_main(argc, argv, /*iscxx*/false);
   if IS("c++", "clang++")       return cc_main(argc, argv, /*iscxx*/true);
   if IS("ld")                   return ld_main(argc, argv);
   if IS("targets")              return print_supported_targets(), 0;
   if IS("version", "--version") return print_co_version(), 0;
-  if IS("help", "--help", "-h") return usage(stdout);
+  if IS("help", "--help", "-h") return help();
 
   #ifdef CO_ENABLE_TESTS
   if IS("selftest") return main_selftest(argc, argv);

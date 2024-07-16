@@ -24,7 +24,7 @@ static const char* opt_out = "";
 static const char* opt_targetstr = "";
 static const target_t* opt_target = NULL;
 static bool opt_debug = false;
-static int opt_verbose = 0;
+static int opt_verbose = 0; // ignored; we use coverbose
 static const char* opt_maxproc = "";
 static bool opt_printast = false;
 static bool opt_printir = false;
@@ -157,8 +157,6 @@ static void vlog_config(const compiler_t* c) {
 int main_build(int argc, char* argv[]) {
   if (!cliopt_parse(&argc, &argv, help))
     return 1;
-
-  coverbose = MAX(coverbose, (u8)opt_verbose);
 
   #if DEBUG
     // --co-trace turns on all trace flags

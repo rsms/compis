@@ -1,0 +1,13 @@
+// comment 1 line 1/1
+
+// comment 2 line 1/2
+// comment 2 line 2/2
+
+// comment 3 for test
+fun test()
+  var x int // comment 4 for x
+            // comment 5 for x
+  // comment 6 for y
+  var y int
+  var /* comment 7 for var
+         and z */ z int

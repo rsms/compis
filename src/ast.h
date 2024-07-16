@@ -191,6 +191,16 @@ typedef struct pkg_ {
 #define PKG_METAFILE_NAME "pub.coast"
 #define PKG_APIHFILE_NAME "pub.h"
 
+typedef struct comment_t {
+  struct comment_t* nullable next; // for grouped, adjacent comments
+  const u8* bytes; // pointer into source where the comment starts
+  u32       len;   // bytes at bytes
+  loc_t     loc;
+  bool      is_block : 1; // "/*...*/" style comment (not "//...")
+} comment_t;
+
+typedef array_type(comment_t*) commentarray_t;
+DEF_ARRAY_TYPE_API(comment_t*, commentarray)
 
 //———————————————————————————————————————————————————————————————————————————————————————
 // AST node structs
@@ -502,13 +512,18 @@ typedef struct compiler_ compiler_t;
 //———————————————————————————————————————————————————————————————————————————————————————
 // functions
 
+enum ast_repr_flags {
+  AST_REPR_TYPES = 1u<<0, // include types
+  AST_REPR_META  = 1u<<1, // include metadata like nodeflags and variable rw count
+};
 
 const char* nodekind_name(nodekind_t); // e.g. "EXPR_INTLIT"
 const char* nodekind_fmt(nodekind_t); // e.g. "variable"
 err_t node_fmt(buf_t* buf, const node_t* nullable n, u32 depth); // e.g. i32, x, "foo"
 const char* fmtnode(u32 bufindex, const void* nullable n); // node_fmt with tmpbuf
-err_t ast_repr(buf_t* buf, const node_t* n); // S-expr AST tree
-err_t ast_repr_pkg(buf_t* buf, const pkg_t* pkg, const unit_t*const* unitv, u32 unitc);
+err_t ast_repr(buf_t* buf, const node_t* n, u32 flags); // S-expr AST tree
+err_t ast_repr_pkg(
+  buf_t* buf, const pkg_t* pkg, const unit_t*const* unitv, u32 unitc, u32 flags);
 node_t* nullable ast_mknode(memalloc_t ast_ma, usize size, nodekind_t kind);
 bool ast_is_main_fun(const fun_t* fn);
 local_t* nullable lookup_struct_field(structtype_t* st, sym_t name);

@@ -1,0 +1,10 @@
+fun test()
+  let _ i32 = 1  //!ast
+  let _ i32 = -1
+
+/*!AST
+(FUN private test [FUN () [VOID {P}]]
+  (BLOCK [VOID {P}]
+    (LET _ [I32 {P}] {r=0,w=0} (INTLIT {r} [I32 {P}] 1))
+    (LET _ [I32 {P}] {r=0,w=0} (INTLIT {rn} [I32 {P}] -1))))
+*/

@@ -150,9 +150,9 @@ static err_t copy_dir(const char* src, const char* dst, mode_t mode, int flags) 
   err_t err;
   memalloc_t ma = memalloc_ctx();
 
-  dirwalk_t* dw = dirwalk_open(ma, src, 0);
-  if (!dw)
-    return ErrNoMem;
+  dirwalk_t* dw;
+  if (( err = dirwalk_open(&dw, ma, src, 0) ))
+    return err;
 
   const char* srcdir = dirwalk_parent_path(dw);
   usize srclen = strlen(srcdir);

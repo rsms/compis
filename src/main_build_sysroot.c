@@ -1071,7 +1071,7 @@ static bool opt_force = false;
 static bool opt_debug = false;
 static bool opt_print = false;
 static bool opt_nolto = false;
-static int  opt_verbose = 0;
+static int  opt_verbose = 0; // ignored; we use coverbose
 static int  g_target_count = 1;
 
 #define FOREACH_CLI_OPTION(S, SV, L, LV,  DEBUG_L, DEBUG_LV) \
@@ -1187,11 +1187,9 @@ static bool build_sysroot_for_targetstr(compiler_t* compiler, const char* target
 }
 
 
-int build_sysroot_main(int argc, char* argv[]) {
+int main_build_sysroot(int argc, char* argv[]) {
   if (!cliopt_parse(&argc, &argv, command_line_help))
     return 1;
-
-  coverbose = MAX(coverbose, (u8)opt_verbose);
 
   compiler_t compiler;
   compiler_init(&compiler, memalloc_default(), &main_diaghandler);

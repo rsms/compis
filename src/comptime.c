@@ -378,7 +378,6 @@ static void* eval1(ctx_t* ctx, void* np);
 
     ctx->traceindent++;
     buf_t* buf0 = tmpbuf_get(0);
-    buf_clear(buf0);
     node_fmt(buf0, (node_t*)n, 0);
     trace("→ %s %s ...", nodekind_name(n->kind), buf0->chars);
 
@@ -389,7 +388,6 @@ static void* eval1(ctx_t* ctx, void* np);
     #if 1
       buf_t* buf1 = tmpbuf_get(1);
       buf_clear(buf0);
-      buf_clear(buf1);
       node_fmt(buf0, (node_t*)n, 0);
       node_fmt(buf1, result, 0);
 

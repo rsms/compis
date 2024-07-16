@@ -343,7 +343,7 @@ static void _report_diagv(
     if (origin.file) {
       str_t filepath;
       if (origin.file->name.len > 0) {
-        if (origin.file->pkg) {
+        if (origin.file->pkg && origin.file->pkg->dir.len > 0) {
           filepath = path_join(relpath(origin.file->pkg->dir.p), origin.file->name.p);
         } else {
           filepath = str_make(relpath(origin.file->name.p));

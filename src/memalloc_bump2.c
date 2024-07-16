@@ -301,7 +301,7 @@ memalloc_t memalloc_bump2(usize slabsize, u32 flags) {
   a->tail = &a->head;
   err_t err = rwmutex_init(&a->tailmu);
   a->end = m.p + m.size;
-  a->ptr = (void*)ALIGN2((uintptr)a->tail + sizeof(bump_allocator_t), MIN_ALIGNMENT);
+  a->ptr = (void*)ALIGN2((uintptr)&a->head + sizeof(bump_allocator_t), MIN_ALIGNMENT);
   a->ma.f = _memalloc_bump_impl;
 
   if UNLIKELY(err) {
@@ -311,6 +311,18 @@ memalloc_t memalloc_bump2(usize slabsize, u32 flags) {
   }
 
   return &a->ma;
+}
+
+
+bool memalloc_bump2_reset(memalloc_t ma, usize use) {
+  assert(ma->f == _memalloc_bump_impl);
+  bump_allocator_t* a = BUMPALLOC_OF_MEMALLOC(ma);
+  assert(memalloc_bump2_use(ma) >= use);
+  void* oldptr = ATOMIC_LOAD(&a->ptr);
+  void* newptr =
+    (void*)ALIGN2((uintptr)&a->head + sizeof(bump_allocator_t), MIN_ALIGNMENT);
+  newptr += use;
+  return AtomicCASAcqRel(&a->ptr, &oldptr, newptr);
 }
 
 

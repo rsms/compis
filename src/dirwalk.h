@@ -19,9 +19,8 @@ typedef struct {
   // + internal fields
 } dirwalk_t;
 
-// dirwalk_open creates a directory walker for directory at dirpath.
-// Returns NULL if memory allocation failed.
-dirwalk_t* nullable dirwalk_open(memalloc_t ma, const char* dirpath, int flags);
+// dirwalk_open creates a directory walker for directory at dirpath
+err_t dirwalk_open(dirwalk_t** dwp, memalloc_t ma, const char* dirpath, int flags);
 
 // dirwalk_close disposes of a directory walker
 void dirwalk_close(dirwalk_t*);

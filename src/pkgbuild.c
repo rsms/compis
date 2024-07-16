@@ -111,7 +111,8 @@ static void pkgbuild_begintask(pkgbuild_t* pb, const char* fmt, ...) {
 
 static err_t dump_ast(const node_t* ast) {
   buf_t buf = buf_make(memalloc_ctx());
-  err_t err = ast_repr(&buf, ast);
+  u32 flags = AST_REPR_TYPES | AST_REPR_META;
+  err_t err = ast_repr(&buf, ast, flags);
   if (!err) {
     fwrite(buf.chars, buf.len, 1, stderr);
     fputc('\n', stderr);
@@ -123,7 +124,8 @@ static err_t dump_ast(const node_t* ast) {
 
 static err_t dump_pkg_ast(const pkg_t* pkg, unit_t*const* unitv, u32 unitc) {
   buf_t buf = buf_make(memalloc_ctx());
-  err_t err = ast_repr_pkg(&buf, pkg, (const unit_t*const*)unitv, unitc);
+  u32 flags = AST_REPR_TYPES | AST_REPR_META;
+  err_t err = ast_repr_pkg(&buf, pkg, (const unit_t*const*)unitv, unitc, flags);
   if (!err) {
     fwrite(buf.chars, buf.len, 1, stderr);
     fputc('\n', stderr);

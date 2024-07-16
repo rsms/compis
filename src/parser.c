@@ -490,7 +490,7 @@ node_t* nullable ast_mknode(memalloc_t ast_ma, usize size, nodekind_t kind) {
 
 
 static node_t* _mknode(parser_t* p, usize size, nodekind_t kind) {
-  mem_t m = mem_alloc_zeroed(p->ast_ma, size);
+  mem_t m = mem_alloc_zeroed(p->scanner.ast_ma, size);
   if UNLIKELY(m.p == NULL)
     return out_of_mem(p), last_resort_node;
   node_t* n = m.p;
@@ -628,7 +628,7 @@ static bool pnodearray_push(parser_t* p, nodearray_t* na, void* n) {
 }
 
 static bool pnodearray_assignto(parser_t* p, nodearray_t* na, nodearray_t* dst) {
-  bool ok = nodearray_copy(dst, p->ast_ma, na);
+  bool ok = nodearray_copy(dst, p->scanner.ast_ma, na);
   if UNLIKELY(!ok)
     out_of_mem(p);
   pnodearray_dispose(p, na);
@@ -637,9 +637,9 @@ static bool pnodearray_assignto(parser_t* p, nodearray_t* na, nodearray_t* dst) 
 
 static void pnodearray_assign1(parser_t* p, nodearray_t* dst, void* n1) {
   if UNLIKELY(dst->cap != 0)
-    mem_freex(p->ast_ma, MEM(dst->v, (usize)dst->cap * sizeof(void*)));
+    mem_freex(p->scanner.ast_ma, MEM(dst->v, (usize)dst->cap * sizeof(void*)));
   usize nbyte = sizeof(void*);
-  node_t** v = mem_alloc(p->ast_ma, nbyte).p;
+  node_t** v = mem_alloc(p->scanner.ast_ma, nbyte).p;
   if UNLIKELY(!v)
     return;
   *v = n1;
@@ -1694,7 +1694,7 @@ static expr_t* expr_strlit(parser_t* p, const parselet_t* pl, nodeflag_t fl) {
   strlit_t* n = mkexpr(p, strlit_t, EXPR_STRLIT, fl);
 
   slice_t str = scanner_strval(&p->scanner);
-  n->bytes = (u8*)mem_strdup(p->ast_ma, str, 0);
+  n->bytes = (u8*)mem_strdup(p->scanner.ast_ma, str, 0);
   n->len = str.len;
 
   // TODO: multiline string
@@ -2744,7 +2744,7 @@ static import_t* parse_import_spec(
   if (!expect_token(p, TSTRLIT, ""))
     return im;
   slice_t strval = scanner_strval(&p->scanner);
-  char* path = mem_strdup(p->ast_ma, strval, 0);
+  char* path = mem_strdup(p->scanner.ast_ma, strval, 0);
   if UNLIKELY(!path)
     return out_of_mem(p), im;
   im->path = path;
@@ -2868,7 +2868,7 @@ static void parse_imports(parser_t* p) {
 
 
 err_t parser_parse(parser_t* p, memalloc_t ast_ma, srcfile_t* srcfile, unit_t** result) {
-  p->ast_ma = ast_ma;
+  p->scanner.ast_ma = ast_ma;
   scope_clear(&p->scope);
 
   scanner_begin(&p->scanner, srcfile);

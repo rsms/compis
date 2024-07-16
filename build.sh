@@ -590,9 +590,9 @@ pushd "$PROJECT" >/dev/null
 SRC_DIR_REL="${SRC_DIR##$PROJECT/}"
 for f in $(find "$SRC_DIR_REL" -name '*.c' -or -name '*.cc'); do
   case "$f" in
-    */test.c|*.test.c|*.test.cc)        TEST_SOURCES+=( "$f" ) ;;
-    *.$TARGET_ARCH.c|*.$TARGET_ARCH.cc) NATIVE_SOURCES+=( "$f" ) ;;
-    *)                                  COMMON_SOURCES+=( "$f" ) ;;
+    */test.c|*.test.c|*.test.cc|main_selftest.c) TEST_SOURCES+=( "$f" ) ;;
+    *.$TARGET_ARCH.c|*.$TARGET_ARCH.cc)          NATIVE_SOURCES+=( "$f" ) ;;
+    *)                                           COMMON_SOURCES+=( "$f" ) ;;
   esac
 done
 popd >/dev/null
