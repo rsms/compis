@@ -1,3 +1,6 @@
+//!experiment fun_in_struct
+//!experiment shorthand_call_syntax
+
 // comment 1 line 1/1
 
 // comment 2 line 1/2
@@ -11,3 +14,17 @@ fun test()
   var y int
   var /* comment 7 for var
          and z */ z int
+
+// comment 8
+
+// comment 9 for test2
+fun test2() {}
+
+/*!expect-ast ;———————————————————————————————————————————————————————————————
+(FUN private test
+   (BLOCK
+     (VAR x)
+     (VAR y)
+     (VAR z)))
+(FUN private test2 (BLOCK))
+*/

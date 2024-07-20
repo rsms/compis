@@ -16,8 +16,8 @@ typedef enum { DIAG_ERR, DIAG_WARN, DIAG_HELP } diagkind_t;
 // diag_t
 typedef struct diag_ {
   compiler_t* compiler; // originating compiler instance
-  const char* msg;      // descriptive message including "srcname:line:col: type:"
-  const char* msgshort; // short descriptive message without source location
+  const char* msg;      // descriptive message e.g. "srcname:line:col: type: message"
+  const char* msgshort; // short descriptive message e.g. "message"
   const char* srclines; // source context (a few lines of the source; may be empty)
   origin_t    origin;   // origin of error (.line=0 if unknown)
   diagkind_t  kind;
@@ -27,6 +27,9 @@ typedef struct diag_ {
 void report_diagv(compiler_t*, origin_t, diagkind_t, const char* fmt, va_list);
 static void report_diag(compiler_t* c, origin_t, diagkind_t, const char* fmt, ...)
   ATTR_FORMAT(printf,4,5);
+
+bool diag_copy(diag_t* dst, const diag_t* src, memalloc_t ma);
+void diag_free_copy(diag_t* dst, memalloc_t ma); // free memory allocated by diag_copy
 
 //———————————————————————————————————————————————————————————————————————————————————————
 // implementation

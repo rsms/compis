@@ -3337,7 +3337,7 @@ again:
 
   n->type = type;
 
-  if UNLIKELY(n->intval > maxval) {
+  if UNLIKELY(n->intval > maxval || (n->flags & NF_OVERFLOW)) {
     const char* ts = fmtnode(0, basetype);
     if (basetype->kind == TYPE_F32 || basetype->kind == TYPE_F64) {
       warning(a, n, "floating-point constant larger than precision of %s", ts);
@@ -4806,7 +4806,6 @@ static void _type(typecheck_t* a, type_t** tp) {
 
     // should never see these
     case NODE_BAD:
-    case NODE_COMMENT:
     case NODE_UNIT:
     case NODE_IMPORTID:
     case NODE_TPLPARAM:
@@ -4851,8 +4850,8 @@ end:
 
 
 static void stmt(typecheck_t* a, stmt_t** np) {
-  if UNLIKELY(a->reported_error)
-    return;
+  // if UNLIKELY(a->reported_error)
+  //   return;
 
   stmt_t* n = *np;
 
@@ -4887,8 +4886,8 @@ static void exprp(typecheck_t* a, expr_t** np) {
 
   assertf(node_isexpr((node_t*)n), "%s", nodekind_name(n->kind));
 
-  if UNLIKELY(a->reported_error)
-    return;
+  // if UNLIKELY(a->reported_error)
+  //   return;
 
   TRACE_NODE(a, "", np);
 
@@ -4941,7 +4940,6 @@ static void exprp(typecheck_t* a, expr_t** np) {
 
   // We should never see these kinds of nodes
   case NODE_BAD:
-  case NODE_COMMENT:
   case NODE_UNIT:
   case NODE_IMPORTID:
   case NODE_TPLPARAM:
@@ -5227,8 +5225,6 @@ err_t typecheck(
     .typectx = type_void,
   };
 
-  // g_noval_.type = type_void;
-
   if (!map_init(&a.postanalyze, a.ma, 32))
     return ErrNoMem;
   if (!map_init(&a.templateimap, a.ma, 32)) {
@@ -5288,6 +5284,13 @@ err_t typecheck(
   }
 
   leave_scope(&a); // package
+
+  // check for cyclic types
+  if (a.err == 0 && compiler_errcount(c) == 0) {
+    a.err = check_typedeps(c, unitv, unitc);
+    if (a.err)
+      dlog("check_typedeps: %s", err_str(a.err));
+  }
 
 end3:
   scope_dispose(&a.scope, a.ma);

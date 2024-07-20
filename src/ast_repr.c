@@ -229,11 +229,13 @@ static void repr_import(RPARAMS, const import_t* im) {
 
 
 static void repr_unit(RPARAMS, const unit_t* n) {
-  CHAR(' ');
-  if (n->srcfile) {
-    PRINTN(n->srcfile->name.p, n->srcfile->name.len);
-  } else {
-    PRINT("<input>");
+  if ((r->flags & AST_REPR_SIMPLE_UNIT) == 0) {
+    CHAR(' ');
+    if (n->srcfile) {
+      PRINTN(n->srcfile->name.p, n->srcfile->name.len);
+    } else {
+      PRINT("<input>");
+    }
   }
 
   if (n->importlist) {
@@ -422,13 +424,15 @@ static void repr(RPARAMS, const node_t* nullable n) {
   if (node_istype(n))
     return repr_type(RARGS, (type_t*)n);
 
-  const char* kindname = STRTAB_GET(nodekind_strtab, n->kind);
-  if (nodekind_isexpr(n->kind)) {
-    kindname += strlen("EXPR_");
-  } else if (n->kind == NODE_UNIT || n->kind == NODE_TPLPARAM) {
-    kindname += strlen("NODE_");
+  if (n->kind != NODE_UNIT || (r->flags & AST_REPR_SIMPLE_UNIT) == 0) {
+    const char* kindname = STRTAB_GET(nodekind_strtab, n->kind);
+    if (nodekind_isexpr(n->kind)) {
+      kindname += strlen("EXPR_");
+    } else if (n->kind == NODE_UNIT || n->kind == NODE_TPLPARAM) {
+      kindname += strlen("NODE_");
+    }
+    REPR_BEGIN('(', kindname);
   }
-  REPR_BEGIN('(', kindname);
 
   bool isnew = !seen(r, n);
 
@@ -524,12 +528,13 @@ static void repr(RPARAMS, const node_t* nullable n) {
     break;
 
   case EXPR_INTLIT: {
-    u64 u = ((intlit_t*)n)->intval;
+    intlit_t* intlit = (intlit_t*)n;
+    u64 u = intlit->intval;
     CHAR(' ');
-    if (!type_isunsigned(((intlit_t*)n)->type) && (i64)u < 0ll) {
+    if (intlit->type != type_unknown && !type_isunsigned(intlit->type) && (i64)u < 0ll) {
       u = -u;
       CHAR('-');
-    } else if ((n->flags & NF_NEG) && ((intlit_t*)n)->type == type_unknown) {
+    } else if (intlit->type == type_unknown && (n->flags & NF_NEG)) {
       CHAR('-');
     }
     buf_print_u64(&r->outbuf, u, 10);
@@ -645,7 +650,8 @@ static void repr(RPARAMS, const node_t* nullable n) {
   }
 
 end:
-  REPR_END(')');
+  if (n->kind != NODE_UNIT || (r->flags & AST_REPR_SIMPLE_UNIT) == 0)
+    REPR_END(')');
 }
 
 

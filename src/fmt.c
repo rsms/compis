@@ -550,7 +550,6 @@ static void fmt(FMT_PARAMS, const node_t* nullable n) {
 
   case NODE_BAD:
   case NODE_IMPORTID:
-  case NODE_COMMENT:
   case NODE_FWDDECL:
     PRINTF("/*%s*/", nodekind_name(n->kind));
     break;

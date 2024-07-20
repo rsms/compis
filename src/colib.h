@@ -435,8 +435,10 @@ ASSUME_NONNULL_END
 
   #define _assertfail(fmt, args...) \
     _panic(__FILE__, __LINE__, __FUNCTION__, "Assertion failed: " fmt, args)
-  // Note: we can't use ", ##args" above in either clang nor gcc for some reason,
+  // Note: above, we can't use ", ##args" in either clang nor gcc for some reason,
   // or else certain applications of this macro are not expanded.
+  #define assertfail(fmt, args...) \
+    _panic(__FILE__, __LINE__, __FUNCTION__, "Assertion failed: " fmt, ##args)
 
   #define assertf(cond, fmt, args...) \
     (UNLIKELY(!(cond)) ? _assertfail(fmt " (%s)", ##args, #cond) : ((void)0))
@@ -606,7 +608,8 @@ ASSUME_NONNULL_END
 #undef log // math.h
 #define log(fmt, args...) printf(fmt "\n", ##args)
 #define elog(fmt, args...) fprintf(stderr, fmt "\n", ##args)
-#define vlog(fmt, args...) (coverbose && printf(fmt "\n", ##args))
+#define vlog(fmt, args...) (UNLIKELY(coverbose) && printf(fmt "\n", ##args))
+#define vvlog(fmt, args...) (UNLIKELY(coverbose > 1) && printf(fmt "\n", ##args))
 
 // debug-build only CLI options (build.c)
 #ifdef DEBUG
@@ -978,6 +981,15 @@ inline static slice_t slice_cstr(const char* cstr) {
 inline static bool slice_eq(slice_t a, slice_t b) {
   return a.len == b.len && strncmp(a.chars, b.chars, a.len) == 0;
 }
+
+slice_t slice_ltrim(slice_t s); // e.g. " \nfoo\n " => "foo\n "
+slice_t slice_rtrim(slice_t s); // e.g. " \nfoo\n " => " \nfoo"
+slice_t slice_trim(slice_t s); // e.g. " \nfoo\n " => "foo"
+
+// slice_iterlines iterates over lines of source, e.g.
+//   for (slice_t line = {}; slice_iterlines(expect, &line);)
+//     dlog("%.*s", (int)line.len, line.chars);
+bool slice_iterlines(slice_t source, slice_t* line);
 
 #ifdef DEBUG
   void _assert_slice_eq(

@@ -20,36 +20,20 @@ fun negative()
 fun int_limits()
   let _ i8 = 127
   let _ i8 = -128
-  //let _ i8 = -129 // error: integer constant overflows type
-  //let _ i8 = 128 // error: integer constant overflows type
   let _ u8 = 255
-  let _ u8 = -128 // == 128
-  //let _ u8 = 256 // error: integer constant overflows type
-  //let _ u8 = -129 // error: integer constant overflows type
+  let _ u8 = -128
 
   let _ i16 = 32767
   let _ i16 = -32768
-  //let _ i16 = -129 // error: integer constant overflows type
-  //let _ i16 = 128 // error: integer constant overflows type
   let _ u16 = 65535
-  let _ u16 = -32768 // == 32768
-  //let _ u16 = 256 // error: integer constant overflows type
-  //let _ u16 = -129 // error: integer constant overflows type
+  let _ u16 = -32768
 
   let _ i32 = 2147483647
   let _ i32 = -2147483648
-  //let _ i32 = -2147483649 // error: integer constant overflows type
-  //let _ i32 = 2147483648 // error: integer constant overflows type
   let _ u32 = 4294967295
-  let _ u32 = -2147483648 // == 2147483648
-  //let _ u32 = 256 // error: integer constant overflows type
-  //let _ u32 = -129 // error: integer constant overflows type
+  let _ u32 = -2147483648
 
   let _ i64 = 9223372036854775807
   let _ i64 = -9223372036854775808
-  //let _ i64 = -2147483649 // error: integer constant overflows type
-  //let _ i64 = 2147483648 // error: integer constant overflows type
   let _ u64 = 18446744073709551615
-  let _ u64 = -9223372036854775808 // == 9223372036854775808
-  //let _ u64 = 256 // error: integer constant overflows type
-  //let _ u64 = -129 // error: integer constant overflows type
+  let _ u64 = -9223372036854775808

@@ -1,0 +1,41 @@
+/*!expect-diag
+error: integer constant overflows i8
+error: integer constant overflows i8
+error: integer constant overflows u8
+error: integer constant overflows u8
+
+error: integer constant overflows i16
+error: integer constant overflows i16
+error: integer constant overflows u16
+error: integer constant overflows u16
+
+error: integer constant overflows i32
+error: integer constant overflows i32
+error: integer constant overflows u32
+error: integer constant overflows u32
+
+error: integer constant overflows i64
+error: integer constant overflows i64
+error: integer constant overflows u64
+error: integer constant overflows u64
+*/
+
+let _ i8 = 128
+let _ i8 = -129
+let _ u8 = 256
+let _ u8 = -129
+
+let _ i16 = 32768
+let _ i16 = -32769
+let _ u16 = 65536
+let _ u16 = -32769
+
+let _ i32 = 2147483648
+let _ i32 = -2147483649
+let _ u32 = 4294967296
+let _ u32 = -2147483649
+
+let _ i64 = 9223372036854775808
+let _ i64 = -9223372036854775809
+let _ u64 = 18446744073709551616
+let _ u64 = -9223372036854775809

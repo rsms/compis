@@ -213,13 +213,13 @@ static void s_expr_fmt1(u32 flags, buf_t* buf, const s_expr_t* n, int depth) {
       // separate values with linebreak either when its a list or if we have
       // already used linebreaks for this list.
       if ((flags & SEXPR_FMT_PRETTY) &&
-          (linebreak = linebreak || cn->type == SEXPR_LIST))
+          (linebreak = (linebreak || cn->type == SEXPR_LIST)))
       {
         buf_printf(buf, "\n%*s", depth * 2, "");
       } else {
         buf_push(buf, ' ');
       }
-    } else if ((flags & SEXPR_FMT_PRETTY) && cn->type == SEXPR_LIST) {
+    } else if ((flags & SEXPR_FMT_PRETTY) && cn->type == SEXPR_LIST && l->kind != '.') {
       // special case for "((x))" -- list where the first child is another list
       buf_printf(buf, "\n%*s", depth * 2, "");
     }

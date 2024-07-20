@@ -136,7 +136,8 @@ static void add_srcline(
     usize col1 = origin.column - 1;
     if (col1 >= line.len) {
       // this is some sort of bug; log, don't crash
-      elog("BUG (%zu %zu) %s:%d", col1, line.len, __FILE__, __LINE__);
+      elog("BUG (origin.column %zu > line.len %zu) %s:%d",
+           col1, line.len, __FILE__, __LINE__);
       abuf_append(s, line.chars, line.len);
       return;
     }
@@ -341,22 +342,13 @@ static void _report_diagv(
     c->diag.msg = s.p;
 
     if (origin.file) {
-      str_t filepath;
-      if (origin.file->name.len > 0) {
-        if (origin.file->pkg && origin.file->pkg->dir.len > 0) {
-          filepath = path_join(relpath(origin.file->pkg->dir.p), origin.file->name.p);
-        } else {
-          filepath = str_make(relpath(origin.file->name.p));
-        }
-      } else {
-        filepath = str_make("<input>");
-      }
+      str_t filename = srcfile_shortname(origin.file);
       if (origin.line > 0) {
-        abuf_fmt(&s, "%s:%u:%u: ", filepath.p, origin.line, origin.column);
+        abuf_fmt(&s, "%s:%u:%u: ", filename.p, origin.line, origin.column);
       } else if (origin.file->name.len > 0) {
-        abuf_fmt(&s, "%s: ", filepath.p);
+        abuf_fmt(&s, "%s: ", filename.p);
       }
-      str_free(filepath);
+      str_free(filename);
     }
 
     switch (kind) {
@@ -407,4 +399,27 @@ void report_diagv(
   rwmutex_lock(&c->diag_mu);
   _report_diagv(c, origin, kind, fmt, ap);
   rwmutex_unlock(&c->diag_mu);
+}
+
+
+bool diag_copy(diag_t* dst, const diag_t* src, memalloc_t ma) {
+  *dst = *src;
+
+  usize srclines_len = strlen(src->srclines);
+  slice_t srcmsg = slice_cstr(src->msg);
+  char* msg = mem_strdup(ma, srcmsg, srclines_len + 1);
+  if (!msg)
+    return false;
+
+  dst->msg = msg;
+  dst->msgshort = msg + (uintptr)(src->msgshort - src->msg);
+  dst->srclines = msg + srcmsg.len + 1;
+  memcpy((char*)dst->srclines, src->srclines, srclines_len + 1);
+
+  return true;
+}
+
+void diag_free_copy(diag_t* d, memalloc_t ma) {
+  usize size = strlen(d->msg) + 1 + strlen(d->srclines) + 1;
+  mem_freex(ma, MEM((void*)d->msg, size));
 }

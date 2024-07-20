@@ -13,11 +13,11 @@
 #include "thread.h"
 #include "ops.h"
 #include "bits.h"
+#include "experiments.h"
 
 typedef u8 nodekind_t;
 #define FOREACH_NODEKIND_NODE(_) /* nodekind_t, TYPE, enctag */ \
   _( NODE_BAD,      node_t,          'BAD ')/* invalid node; parse error */ \
-  _( NODE_COMMENT,  node_t,          'COMN')\
   _( NODE_UNIT,     unit_t,          'UNIT')\
   _( NODE_IMPORTID, importid_t,      'IMID')\
   _( NODE_TPLPARAM, templateparam_t, 'TPAR')\
@@ -120,6 +120,7 @@ typedef u16 nodeflag_t;
 #define NF_NEG         ((nodeflag_t)1<< 4)  // [intlit,floatlit] negative
 //#define NF_NARROWED  ((nodeflag_t)1<< 4)  // type-narrowed from optional
 #define NF_UNKNOWN     ((nodeflag_t)1<< 5)  // has or contains unresolved identifier
+#define NF_OVERFLOW    ((nodeflag_t)1<< 5)  // [intlit] value too large (overflowed)
 #define NF_NAMEDPARAMS ((nodeflag_t)1<< 6)  // function has named parameters
 #define NF_DROP        ((nodeflag_t)1<< 7)  // type: has drop(), binop: drop oldval
 #define NF_SUBOWNERS   ((nodeflag_t)1<< 8)  // type has owning elements
@@ -188,19 +189,19 @@ typedef struct pkg_ {
   unixtime_t         mtime;
 } pkg_t;
 
-#define PKG_METAFILE_NAME "pub.coast"
-#define PKG_APIHFILE_NAME "pub.h"
-
 typedef struct comment_t {
-  struct comment_t* nullable next; // for grouped, adjacent comments
-  const u8* bytes; // pointer into source where the comment starts
-  u32       len;   // bytes at bytes
   loc_t     loc;
-  bool      is_block : 1; // "/*...*/" style comment (not "//...")
+  loc_t     endloc;
+  const u8* bytes;
+  u32       len;
+  u32       _unused;
 } comment_t;
 
-typedef array_type(comment_t*) commentarray_t;
-DEF_ARRAY_TYPE_API(comment_t*, commentarray)
+typedef array_type(comment_t) commentarray_t;
+DEF_ARRAY_TYPE_API(comment_t, commentarray)
+
+#define PKG_METAFILE_NAME "pub.coast"
+#define PKG_APIHFILE_NAME "pub.h"
 
 //———————————————————————————————————————————————————————————————————————————————————————
 // AST node structs
@@ -239,6 +240,7 @@ typedef struct {
   srcfile_t* nullable srcfile;
   typefuntab_t        tfuns;      // imported type functions
   import_t* nullable  importlist; // list head
+  experiments_t       experiments;
 } unit_t;
 
 typedef struct type_ {
@@ -513,8 +515,9 @@ typedef struct compiler_ compiler_t;
 // functions
 
 enum ast_repr_flags {
-  AST_REPR_TYPES = 1u<<0, // include types
-  AST_REPR_META  = 1u<<1, // include metadata like nodeflags and variable rw count
+  AST_REPR_TYPES       = 1u<<0, // include types
+  AST_REPR_META        = 1u<<1, // include metadata like nodeflags and variable rw count
+  AST_REPR_SIMPLE_UNIT = 1u<<2, // exclude "UNIT filename" from output
 };
 
 const char* nodekind_name(nodekind_t); // e.g. "EXPR_INTLIT"

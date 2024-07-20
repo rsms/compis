@@ -127,26 +127,26 @@ typedef struct {
 } scope_t;
 
 typedef struct {
-  srcfile_t* srcfile;        // input source
-  const u8*  inp;            // input buffer current pointer
-  const u8*  inend;          // input buffer end
-  const u8*  linestart;      // start of current line
-  const u8*  tokstart;       // start of current token
-  const u8*  tokend;         // end of previous token
-  loc_t      loc;            // recently parsed token's source location
-  loc_t      endloc;         // source location of end of previously parsed token
-  tok_t      tok;            // recently parsed token (current token during scanning)
-  u32        lineno;         // monotonic line number counter (!= tok.loc.line)
-  u32        errcount;       // number of error diagnostics reported
-  err_t      err;            // non-syntax error that occurred
-  bool       insertsemi;     // insert a semicolon before next newline
-  bool       parse_comments; // parse comments
+  srcfile_t*     srcfile;        // input source
+  const u8*      inp;            // input buffer current pointer
+  const u8*      inend;          // input buffer end
+  const u8*      linestart;      // start of current line
+  const u8*      tokstart;       // start of current token
+  const u8*      tokend;         // end of previous token
+  loc_t          loc;            // recently parsed token's source location
+  loc_t          endloc;         // source location of end of previously parsed token
+  tok_t          tok;            // recently parsed token (current token during scanning)
+  u32            lineno;         // monotonic line number counter (!= tok.loc.line)
+  u32            errcount;       // number of error diagnostics reported
+  err_t          err;            // non-syntax error that occurred
+  bool           insertsemi;     // insert a semicolon before next newline
+  bool           parse_comments; // parse comments
+  bool           int_overflow;   // true if last integer literal overflowed
+  commentarray_t comments;
 
   u32  indentdst;        // unwind to level
   u32  indentstackv[32]; // previous indentation levels
   u32* indentstack;      // top of indentstackv
-
-  commentarray_t comments;
 } scanstate_t;
 
 typedef struct {
@@ -159,22 +159,15 @@ typedef struct {
 } scanner_t;
 
 typedef struct {
-  bool fun_in_struct; // "struct t { fun f() }"
-  bool shorthand_call_syntax; // "f arg" as alternative to "f(arg)"
-} experiments_t;
-
-typedef struct {
   scanner_t        scanner;
   memalloc_t       ma;     // general allocator (== scanner.compiler->ma)
   scope_t          scope;
-  map_t            tmpmap;
   fun_t* nullable  fun;      // current function
   unit_t* nullable unit;     // current unit
   expr_t* nullable dotctx;   // for ".name" shorthand
   ptrarray_t       dotctxstack;
   ptrarray_t       membertypes;
   nodearray_t      toplevel_stmts; // finally transferred to unit->children
-  experiments_t    experiments;
   bool             in_shorthand_call;
 
   // free_nodearrays is a free list of nodearray_t's
@@ -262,6 +255,7 @@ void universe_init();
 void compiler_init(compiler_t*, memalloc_t, diaghandler_t);
 void compiler_dispose(compiler_t*);
 err_t compiler_configure(compiler_t*, const compiler_config_t*);
+err_t compiler_set_experiment_enabled(compiler_t*, slice_t name, bool enabled);
 err_t compile_c_to_obj_async(
   compiler_t* c, subprocs_t* sp, const char* wdir,
   const char* cfile, const char* ofile, filetype_t srctype);
@@ -303,6 +297,10 @@ err_t compiler_run_tool_sync(
 // compiler_errcount retrieves the number of DIAG_ERR diagnostics produced so far
 inline static u32 compiler_errcount(const compiler_t* c) {
   return AtomicLoadAcq(&c->errcount);
+}
+
+inline static void compiler_errcount_reset(compiler_t* c) {
+  return AtomicStoreRel(&c->errcount, 0);
 }
 
 // compiler_get_runtime_pkg resolves the std/runtime package.

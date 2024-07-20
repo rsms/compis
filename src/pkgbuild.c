@@ -1071,16 +1071,6 @@ err_t pkgbuild_analyze(pkgbuild_t* pb) {
     dump_pkg_ast(pb->pkgc.pkg, pb->unitv, pb->unitc);
   }
 
-  // check for cyclic types
-  if (( err = check_typedeps(c, pb->unitv, pb->unitc) )) {
-    dlog("check_typedeps: %s", err_str(err));
-    return err;
-  }
-  if (compiler_errcount(c) > 0) {
-    dlog("check_typedeps: %u diagnostic errors", compiler_errcount(c));
-    return ErrCanceled;
-  }
-
   // build IR -- performs ownership analysis; updates "drops" lists in AST
   dlog_if(opt_trace_ir, "————————— IR —————————");
   if (( err = iranalyze(c, pb->ast_ma, pb->pkgc.pkg, pb->unitv, pb->unitc) )) {

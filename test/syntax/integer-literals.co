@@ -1,10 +1,57 @@
-fun test()
-  let _ i32 = 1  //!ast
-  let _ i32 = -1
+let _ = 1
+let _ = -1
+let _ = 2147483647  // int (32)  int (64)
+let _ = -2147483648 // int (32)  int (64)
+let _ = 4294967295  // uint (32) int (64)
+let _ = -2147483649 // i64 (32)  int (64)
+let _ = 4294967296  // u64 (32)  uint (64)
 
-/*!AST
-(FUN private test [FUN () [VOID {P}]]
-  (BLOCK [VOID {P}]
-    (LET _ [I32 {P}] {r=0,w=0} (INTLIT {r} [I32 {P}] 1))
-    (LET _ [I32 {P}] {r=0,w=0} (INTLIT {rn} [I32 {P}] -1))))
+let _ i8 = 127
+let _ i8 = -128
+let _ u8 = 255
+let _ u8 = -128 // == 128
+
+let _ i16 = 32767
+let _ i16 = -32768
+let _ u16 = 65535
+let _ u16 = -32768 // == 32768
+
+let _ i32 = 2147483647
+let _ i32 = -2147483648
+let _ u32 = 4294967295
+let _ u32 = -2147483648 // == 2147483648
+
+let _ i64 = 9223372036854775807
+let _ i64 = -9223372036854775808
+let _ u64 = 18446744073709551615
+let _ u64 = -9223372036854775808 // == 9223372036854775808
+
+/*!expect-ast ;———————————————————————————————————————————————————————————————
+(LET _ (INTLIT 1))
+(LET _ (INTLIT -1))
+(LET _ (INTLIT 2147483647))
+(LET _ (INTLIT -2147483648))
+(LET _ (INTLIT 4294967295))
+(LET _ (INTLIT -2147483649))
+(LET _ (INTLIT 4294967296))
+
+(LET _ (INTLIT 127))
+(LET _ (INTLIT -128))
+(LET _ (INTLIT 255))
+(LET _ (INTLIT -128))
+
+(LET _ (INTLIT 32767))
+(LET _ (INTLIT -32768))
+(LET _ (INTLIT 65535))
+(LET _ (INTLIT -32768))
+
+(LET _ (INTLIT 2147483647))
+(LET _ (INTLIT -2147483648))
+(LET _ (INTLIT 4294967295))
+(LET _ (INTLIT -2147483648))
+
+(LET _ (INTLIT 9223372036854775807))
+(LET _ (INTLIT -9223372036854775808))
+(LET _ (INTLIT 18446744073709551615))
+(LET _ (INTLIT -9223372036854775808))
 */

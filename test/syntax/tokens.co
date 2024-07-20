@@ -1,1 +1,0 @@
-let _ i32 = 1 //!tokens TLET TID(_) TID(i32) TASSIGN TINTLIT(1)

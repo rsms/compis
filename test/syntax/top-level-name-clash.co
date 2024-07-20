@@ -1,0 +1,7 @@
+/*!expect-diag
+error: redefinition of "a"
+help: "a" previously defined here
+*/
+
+let a = 1
+var a = 2

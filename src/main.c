@@ -73,6 +73,7 @@ static int help() {
     "  build-sysroot Prebuild sysroot\n"
     "  help          Print help on stdout and exit\n"
     "  targets       List supported targets\n"
+    "  experiments   List available experiments\n"
     "  version       Print version on stdout and exit\n"
     ,
     coprogname,
@@ -96,6 +97,35 @@ static int help() {
     coprogname,
     sys_ncpu());
   return 0;
+}
+
+
+// CO_SHORT_VERSION_STR
+#if defined(CO_VERSION_GIT) && !defined(CO_DISTRIBUTION)
+  #define CO_SHORT_VERSION_STR CO_VERSION_STR " (" CO_STRX(CO_VERSION_GIT) ")"
+#elif defined(CO_DEVBUILD)
+  #define CO_SHORT_VERSION_STR CO_VERSION_STR " (dev)"
+#else
+  #define CO_SHORT_VERSION_STR CO_VERSION_STR
+#endif
+
+
+static void print_experiments() {
+  int w = 0, count = 0;
+  #define _(NAME, ...) w = MAX(w, (int)strlen(#NAME)); count++;
+  EXPERIMENTS_FOREACH(_)
+  #undef _
+
+  log("%d experiment%s available in Compis " CO_SHORT_VERSION_STR ".\n"
+      "Caution: Experiments may change or disappear in any version of Compis.\n"
+      , count, count != 1 ? "s" : "");
+
+  printf("%-*s  %s\n", (int)strlen("//!experiment") + 1 + w,
+         "ENABLE WITH COMMENT", "DESCRIPTION");
+  #define _(NAME, description) \
+    printf("//!experiment %-*s  %s\n", w, #NAME, description);
+  EXPERIMENTS_FOREACH(_)
+  #undef _
 }
 
 
@@ -287,6 +317,7 @@ int main(int argc, char* argv[]) {
   if IS("c++", "clang++")       return cc_main(argc, argv, /*iscxx*/true);
   if IS("ld")                   return ld_main(argc, argv);
   if IS("targets")              return print_supported_targets(), 0;
+  if IS("experiments")          return print_experiments(), 0;
   if IS("version", "--version") return print_co_version(), 0;
   if IS("help", "--help", "-h") return help();
 

@@ -695,7 +695,6 @@ static void reg_syms(astencoder_t* a, const node_t* n) {
 
   // no symbols
   case NODE_BAD:
-  case NODE_COMMENT:
   case NODE_UNIT:
   case NODE_IMPORTID:
   case NODE_FWDDECL:

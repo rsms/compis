@@ -1,0 +1,22 @@
+// hierarchical types — useful for generics.
+// For example, to define a tree, without nested types ...
+type Tree1Node<T>
+	left  ?Tree1Node
+	right ?Tree1Node
+	value ?T
+pub type Tree1<T>
+	root ?Tree1Node<T>
+	fun lookup(value T) ?Tree1Node<T>
+// ... which isn't too bad. But it gets better with nested types:
+pub type Tree<T>
+	type Node
+		left  ?Node
+		right ?Node
+		value ?T
+	root ?Node
+	fun lookup(value T) ?Node
+
+fun htypes()
+	var tree Tree<int>
+	if let n = tree.lookup(123)
+		log("found 123")

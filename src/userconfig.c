@@ -219,17 +219,17 @@ void userconfig_load(int argc, char* argv[]) {
     const char* srcfile = filenames[i];
     if (!srcfile || !*srcfile)
       continue;
-    vlog("[userconfig] trying to load %s", srcfile);
     err = mmap_file_ro(srcfile, &data, &st);
     if (err) {
       if (err == ErrNotFound) {
-        if (coverbose > 1) vlog("%s: not found", srcfile);
+        vvlog("[userconfig] %s skipped (not found)", srcfile);
       } else {
         elog("%s: %s", srcfile, err_str(err));
       }
       continue;
     }
     // TODO: test if it's a regular file
+    vvlog("[userconfig] loading %s", srcfile);
     bool ok = userconfig_load1(srcfile, data, st.st_size);
     mmap_unmap(&data, st.st_size);
     if (ok)

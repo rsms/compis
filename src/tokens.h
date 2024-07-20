@@ -69,7 +69,6 @@ _( TANDASSIGN, "&=" )
 _( TXORASSIGN, "^=" )
 _( TORASSIGN,  "|=" )
 
-_( TCOMMENT, "comment" )
 _( TID, "identifier" )
 _( TINTLIT, "integer literal" )
 _( TFLOATLIT, "number literal" )

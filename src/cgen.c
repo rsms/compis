@@ -3032,7 +3032,6 @@ static void gen_expr(cgen_t* g, const expr_t* n) {
 
   // node types we should never see
   case NODE_BAD:
-  case NODE_COMMENT:
   case NODE_UNIT:
   case NODE_IMPORTID:
   case NODE_TPLPARAM:

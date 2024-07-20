@@ -34,6 +34,9 @@ srcfile_t* nullable srcfilearray_add(
   ptrarray_t* srcfiles, const char* name, usize namelen, bool* nullable addedp);
 void srcfilearray_dispose(ptrarray_t* srcfiles);
 
+// srcfile_shortname returns a short name suitable for log messages
+str_t srcfile_shortname(const srcfile_t* sf);
+
 
 filetype_t filetype_guess(const char* filename);
 

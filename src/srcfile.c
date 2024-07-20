@@ -99,3 +99,13 @@ void srcfile_close(srcfile_t* sf) {
   }
   sf->data = NULL;
 }
+
+
+str_t srcfile_shortname(const srcfile_t* sf) {
+  if (sf->name.len > 0) {
+    if (sf->pkg && sf->pkg->dir.len > 0)
+      return path_join(relpath(sf->pkg->dir.p), sf->name.p);
+    return str_make(relpath(sf->name.p));
+  }
+  return str_make("<input>");
+}

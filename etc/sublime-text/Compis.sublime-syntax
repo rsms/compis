@@ -9,6 +9,7 @@ scope: source.compis
 variables:
   identifier: '\b[[:alpha:]_][[:alnum:]_]*\b'
   type_chars: '[[:alnum:]\s,._*&<>\[\]-]'
+  directive:  '\b[[:alnum:]_-]+\b'
 
 contexts:
   main:
@@ -159,12 +160,11 @@ contexts:
         - include: statements
 
   comments:
-    # Special AST block comment e.g. "/*!AST flag flag \n lisp */"
-    - match: (/\*)(\!AST)((\s+(?i:types|usecount|refs|attrs))*)
+    # Special block comment e.g. "/*!expect-ast flag flag \n lisp */"
+    - match: (/\*)(\!expect-ast)\b
       captures:
         1: comment.block.compis
         2: keyword.control.compis
-        3: meta.variable.function.compis
       push:
         - include: scope:source.lisp
         - meta_scope: source.lisp
@@ -172,8 +172,34 @@ contexts:
           scope: comment.block.compis punctuation.definition.comment.end.compis
           pop: true
 
+    # Special line comment e.g. "//!experiment what"
+    - match: (//)(\!experiment)\s+(.+)
+      captures:
+        1: punctuation.definition.comment.compis
+        2: keyword.control.compis
+        3: meta.variable.compis
+      push:
+        - meta_scope: comment.line.compis
+        - match: \S+
+          scope: meta.annotation.compis
+        # End the annotation scope at EOL, but stretch the comment scope
+        # indefinitely to the right.
+        - match: $
+          set: pop-line-comment
+
+    # Special block comment e.g. "/*!experiment what */"
+    - match: (/\*)(\!experiment)\s+((?!\*/)+)
+      captures:
+        1: comment.block.compis
+        2: keyword.control.compis
+        3: meta.variable.compis
+      push:
+        - match: \*/
+          scope: comment.block.compis punctuation.definition.comment.end.compis
+          pop: true
+
     # Special line comment e.g. "//!name ..."
-    - match: (//)(\!{{identifier}})
+    - match: (//)(\!{{directive}})
       captures:
         1: punctuation.definition.comment.compis
         2: meta.keyword.annotation.compis
@@ -185,6 +211,16 @@ contexts:
         # indefinitely to the right.
         - match: $
           set: pop-line-comment
+
+    # Special block comment e.g. "/*!something ... */"
+    - match: (/\*)(\!{{directive}})
+      captures:
+        1: comment.block.compis
+        2: keyword.control.compis
+      push:
+        - match: \*/
+          scope: comment.block.compis punctuation.definition.comment.end.compis
+          pop: true
 
     # Block comment
     - match: /\*

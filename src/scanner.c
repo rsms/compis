@@ -57,6 +57,7 @@ void scanner_begin(scanner_t* s, srcfile_t* srcfile) {
   s->errcount = 0;
   s->err = 0;
   s->tok = TEOF;
+  s->comments.len = 0;
 
   // s->indent = 0;
   s->indentdst = 0;
@@ -381,8 +382,12 @@ static void number(scanner_t* s, int base) {
   }
 end:
   s->litint = acc;
-  if UNLIKELY(any < 0)
-    error(s, "integer literal too large; overflows u64");
+  s->int_overflow = any < 0;
+  // if UNLIKELY(any < 0) {
+  //   // overflow
+  //   // TODO: bigint
+  //   error(s, "integer literal too large; overflows u64");
+  // }
   if UNLIKELY(c == '_')
     error(s, "trailing \"_\" after integer literal");
 }
@@ -811,10 +816,9 @@ static void identifier(scanner_t* s) {
 }
 
 
-static void parse_comment(scanner_t* s) {
+static void scan_comment(scanner_t* s) {
   assert(s->inp+1 < s->inend);
-  const u8* start = s->inp;
-  loc_t start_loc = s->loc;
+  loc_t loc = s->loc;
 
   if (s->inp[1] == '/') {
     // line comment "// ... <LF>"
@@ -836,46 +840,21 @@ static void parse_comment(scanner_t* s) {
     }
   }
 
-  #ifdef DEBUG
-  if (opt_trace_scan) {
-    char locstr[128];
-    loc_fmt(s->loc, locstr, sizeof(locstr), &s->compiler->locmap);
-    char litstr[128];
-    string_repr(litstr, sizeof(litstr), start, (uintptr)(s->inp - start));
-    _dlog(3, "S", __FILE__, __LINE__,
-          "\e[2mCOMMENT     \e[0m \"%s\"\t%s", litstr, locstr);
-  }
-  #endif
-
-  if (!s->parse_comments)
-    return;
-
-  // allocate comment
-  memalloc_t ma = s->ast_ma ? s->ast_ma : s->compiler->ma;
-  comment_t* c = mem_alloct(ma, comment_t);
-  if (!c)
-    return out_of_mem(s);
-  c->bytes = start;
-  c->len = (uintptr)(s->inp - start); assert(c->len > 2); // minimum: "//<LF>"
-  c->loc = start_loc;
-  if (loc_line(c->loc) == loc_line(s->loc))
-    loc_set_width(&c->loc, loc_col(s->loc) - loc_col(c->loc));
-
-  // group adjacent comments?
-  comment_t* prev_comment =
-    (s->comments.len > 0) ? s->comments.v[s->comments.len-1] : NULL;
-  if (prev_comment &&
-      loc_line(prev_comment->loc) == loc_line(s->loc) - 1 &&
-      loc_col(prev_comment->loc) == loc_col(s->loc) &&
-      prev_comment->bytes[1] == c->bytes[1])
-  {
-    // same type of comment with same indentation on adjacent lines
-    assertnull(prev_comment->next);
-    prev_comment->next = c;
-  } else {
-    // new comment
-    if (!commentarray_push(&s->comments, s->compiler->ma, c))
+  // if comments parsing is enabled or the comment is a "special" comment,
+  // add it to s.comments array
+  if UNLIKELY(s->parse_comments || s->tokstart[2] == '!') {
+    comment_t* comment = commentarray_alloc(&s->comments, s->ast_ma, 1);
+    if (!comment)
       return out_of_mem(s);
+
+    if (loc_line(loc) == loc_line(s->loc)) {
+      u32 width = (uintptr)(s->inp - s->tokstart);
+      loc_set_width(&loc, width);
+    }
+    comment->loc = loc;
+    comment->endloc = loc;
+    comment->bytes = s->tokstart;
+    comment->len = litlen(s);
   }
 }
 
@@ -961,7 +940,7 @@ static void scan1(scanner_t* s) {
     case '*':
       s->inp--;
       s->insertsemi = insertsemi;
-      parse_comment(s);
+      scan_comment(s);
       MUSTTAIL return scan0(s);
     case '=':
       ++s->inp, s->tok = TDIVASSIGN; break;

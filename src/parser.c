@@ -254,7 +254,7 @@ inline static pkg_t* currpkg(parser_t* p) {
 
 
 static void next(parser_t* p) {
-  scanner_next(&p->scanner);
+  return scanner_next(&p->scanner);
 }
 
 
@@ -766,8 +766,11 @@ static expr_t* expr_infix(parser_t* p, prec_t prec, expr_t* n, nodeflag_t fl) {
     n = parselet->infix(p, parselet, n, fl);
   }
 
+  if (!p->unit->experiments.shorthand_call_syntax)
+    return n;
+
   // shorthand call syntax, e.g. "f arg1, arg2"
-  if (p->experiments.shorthand_call_syntax) switch (currtok(p)) {
+  switch (currtok(p)) {
     case TID:
     case TINTLIT:
     case TFLOATLIT:
@@ -873,14 +876,6 @@ static type_t* parse_membertype(parser_t* p, import_t* im, loc_t loc) {
   next(p); // consume name
   return (type_t*)t;
 }
-
-
-// static importedtype_t* nullable interned_membertype_get(
-//   parser_t* p, sym_t pkgname, sym_t membername)
-// {
-//   static array_t membertypes = {}; // FIXME
-//   importedtype_t
-// }
 
 
 static type_t* named_type1(parser_t* p, sym_t name, loc_t loc, bool parse_member) {
@@ -1096,7 +1091,7 @@ static void type_struct1_funs(parser_t* p, structtype_t* st) {
   u32 first_fn_index = p->toplevel_stmts.len;
 
   for (;;) {
-    if (!p->experiments.fun_in_struct && !reported_fun) {
+    if (!p->unit->experiments.fun_in_struct && !reported_fun) {
         reported_fun = true;
         error(p, "functions are not allowed in struct definitions");
       }
@@ -1643,6 +1638,7 @@ static expr_t* intlit(parser_t* p, nodeflag_t fl) {
   intlit_t* n = mkexpr(p, intlit_t, EXPR_INTLIT, fl);
   n->intval = p->scanner.litint;
   loc_set_width(&n->loc, scanner_lit(&p->scanner).len);
+  n->flags = COND_FLAG(n->flags, NF_OVERFLOW, p->scanner.int_overflow);
   next(p);
   return (expr_t*)n;
 }
@@ -2867,9 +2863,136 @@ static void parse_imports(parser_t* p) {
 }
 
 
+static bool is_directive_comment(const comment_t* comment) {
+  // starts with "//!" or "/*!"
+  return comment->len > 3 && comment->bytes[2] == '!';
+}
+
+
+static void error_unknown_directive(
+  parser_t* p, const comment_t* comment, slice_t directive)
+{
+  origin_t origin = origin_make(locmap(p), comment->loc);
+  origin.column += 3;
+  if (origin.width > 3) {
+    origin.width -= 3;
+  } else {
+    origin.width = 0;
+  }
+  error_at(p, origin, "unknown directive \"%.*s\"",
+           (int)directive.len, directive.chars);
+}
+
+
+static void parse_directive_experiment(
+  parser_t* p, const comment_t* comment, slice_t name)
+{
+  bool did_enable = false;
+  if (false) {}
+
+  #define _(NAME, ...) \
+    else if (slice_eq(name, slice_cstr(#NAME))) { \
+      did_enable = (p->unit->experiments.NAME == false); \
+      p->unit->experiments.NAME = true; \
+    }
+  EXPERIMENTS_FOREACH(_)
+  #undef _
+
+  else {
+    origin_t origin = origin_make(locmap(p), comment->loc);
+    origin.column = 4;
+    origin.width -= MIN(3, origin.width);
+    warning_at(p, origin, "unknown experiment \"%.*s\"", (int)name.len, name.chars);
+    report_diag(p->scanner.compiler, (origin_t){0}, DIAG_HELP,
+                "See '%s experiments' for a list of experiments", coprogname);
+  }
+  if UNLIKELY(coverbose && did_enable) {
+    str_t filename = srcfile_shortname(p->scanner.srcfile);
+    log("%s: enabling experiment \"%.*s\"", filename.p, (int)name.len, name.chars);
+    str_free(filename);
+  }
+}
+
+
+static bool parse_directive_comment(parser_t* p, const comment_t* comment) {
+  // strip trailing "*/" from block comment
+  usize comment_len = comment->len;
+  assert(comment_len > 3);
+  if (comment->bytes[1] == '*' && // starts with "/*"
+      comment->bytes[comment_len - 2] == '*' &&
+      comment->bytes[comment_len - 1] == '/')
+  {
+    comment_len -= 2;
+  }
+
+  // e.g.
+  //   valid:   "//!foo"
+  //   invalid: "//! foo"
+  assert(is_directive_comment(comment));
+  if UNLIKELY(comment->bytes[3] <= ' ') {
+    origin_t origin = origin_make(locmap(p), comment->loc);
+    origin.focus_col = 4;
+    error_at(p, origin, "malformed directive in comment");
+    return false;
+  }
+
+  // extract directive & value, e.g. {"a","b"} in "//!a b", or {"a",""} "//!a"
+  slice_t directive = { .bytes = comment->bytes + 3, .len = comment_len - 3 };
+  slice_t value = {};
+  for (usize i = 0; i < directive.len; i++) {
+    if (directive.bytes[i] <= ' ') {
+      value.bytes = directive.bytes + i;
+      value.len = directive.len - i;
+      value = slice_trim(value);
+      directive.len = i;
+      break;
+    }
+  }
+
+  if (slice_eq(directive, slice_cstr("experiment"))) {
+    parse_directive_experiment(p, comment, value);
+    return true;
+  }
+
+  if (slice_eq(directive, slice_cstr("expect-ast")))
+    return true;
+
+  if (slice_eq(directive, slice_cstr("expect-diag")))
+    return true;
+
+  error_unknown_directive(p, comment, directive);
+  return false;
+}
+
+
+static bool parse_directive_comments(parser_t* p) {
+  // parse "//!directive" comments
+  for (usize i = 0; i < p->scanner.comments.len; i++) {
+    comment_t* comment = &p->scanner.comments.v[i];
+    if (is_directive_comment(comment)) {
+      if (!parse_directive_comment(p, comment))
+        return false;
+    }
+  }
+  return true;
+}
+
+
+static void check_invalid_directive_comments(parser_t* p) {
+  for (usize i = 0; i < p->scanner.comments.len; i++) {
+    // TODO
+  }
+}
+
+
 err_t parser_parse(parser_t* p, memalloc_t ast_ma, srcfile_t* srcfile, unit_t** result) {
   p->scanner.ast_ma = ast_ma;
+  p->in_shorthand_call = false;
   scope_clear(&p->scope);
+
+  // check for easy-to-make mistake of not setting pkg defs map parent to builtins
+  assertf(srcfile->pkg->defs.parent == &p->scanner.compiler->builtins,
+          "pkg \"%s\" not in builtins namespace", srcfile->pkg->path.p);
 
   scanner_begin(&p->scanner, srcfile);
 
@@ -2882,6 +3005,14 @@ err_t parser_parse(parser_t* p, memalloc_t ast_ma, srcfile_t* srcfile, unit_t** 
 
   // first, parse any import statements
   parse_imports(p);
+
+  // parse "//!directive" comments
+  if (p->scanner.comments.len > 0) {
+    if UNLIKELY(!parse_directive_comments(p)) {
+      p->scanner.comments.len = 0; // reset to avoid check_invalid_directive_comments
+      goto end;
+    }
+  }
 
   p->toplevel_stmts = pnodearray_alloc(p);
 
@@ -2896,7 +3027,12 @@ err_t parser_parse(parser_t* p, memalloc_t ast_ma, srcfile_t* srcfile, unit_t** 
 
   pnodearray_assignto(p, &p->toplevel_stmts, &unit->children);
 
+end:
   leave_scope(p);
+
+  // check for invalid "//!directive" comments after first statement
+  if UNLIKELY(p->scanner.comments.len > 0)
+    check_invalid_directive_comments(p);
 
   p->unit = NULL;
   *result = unit;
@@ -2908,17 +3044,8 @@ err_t parser_parse(parser_t* p, memalloc_t ast_ma, srcfile_t* srcfile, unit_t** 
 bool parser_init(parser_t* p, compiler_t* c) {
   memset(p, 0, sizeof(*p));
 
-  // TODO: make this set by a comment "//!enable_experiment fun_in_struct"
-  p->experiments.fun_in_struct = true;
-  p->experiments.shorthand_call_syntax = true;
-
   if (!scanner_init(&p->scanner, c))
     return false;
-
-  if (!map_init(&p->tmpmap, c->ma, 32)) {
-    scanner_dispose(&p->scanner);
-    return false;
-  }
 
   p->ma = p->scanner.compiler->ma;
 
@@ -2930,7 +3057,6 @@ bool parser_init(parser_t* p, compiler_t* c) {
 
 
 void parser_dispose(parser_t* p) {
-  map_dispose(&p->tmpmap, p->ma);
   ptrarray_dispose(&p->dotctxstack, p->ma);
   ptrarray_dispose(&p->membertypes, p->ma);
   scanner_dispose(&p->scanner);
