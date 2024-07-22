@@ -464,9 +464,48 @@ end:
 }
 
 
-static bool parser_tests(memalloc_t ma) {
-  err_t e;
+typedef struct fileinfo_t {
+  char* name;
+  usize size;
+} fileinfo_t;
 
+
+static int fileinfo_cmp(const void* x, const void* y, void* nullable ctx) {
+  const fileinfo_t* a = x;
+  const fileinfo_t* b = y;
+  return strcasecmp(a->name, b->name);
+}
+
+
+static usize find_co_files(str_t dirpath, fileinfo_t* filev, usize filecap) {
+  err_t e;
+  memalloc_t ma = memalloc_ctx();
+  usize i = 0;
+  dirwalk_t* dw;
+
+  if UNLIKELY(( e = dirwalk_open(&dw, ma, dirpath.p, 0) ))
+    errx(1, "dirwalk_open %s: %s", dirpath.p, err_str(e));
+
+  while ((e = dirwalk_next(dw)) > 0) {
+    if (dw->type != S_IFREG || filetype_guess(dw->name) != FILE_CO)
+      continue;
+    if (i == filecap)
+      errx(1, "too many files in %s", dirpath.p);
+    filev[i].name = mem_strdup(ma, slice_cstr(dw->name), 0);
+    filev[i].size = dirwalk_stat(dw)->st_size;
+    i++;
+  }
+
+  if (e < 0) errx(1, "dirwalk(%s): %s", dirpath.p, err_str(e));
+  dirwalk_close(dw);
+
+  co_qsort(filev, i, sizeof(*filev), fileinfo_cmp, NULL);
+
+  return i;
+}
+
+
+static bool parser_tests(memalloc_t ma) {
   // create compiler instance
   compiler_t compiler;
   create_compiler(&compiler, parser_test_diaghandler, &(compiler_config_t){
@@ -486,21 +525,16 @@ static bool parser_tests(memalloc_t ma) {
   bool pass = true;
 
   // parse all files in the "syntax" directory
-  dirwalk_t* dw;
+  fileinfo_t filev[128];
   str_t dirpath = path_join(coroot, "..", "test", "syntax");
+  usize filenamec = find_co_files(dirpath, filev, countof(filev));
   str_t filename = {};
-  if (( e = dirwalk_open(&dw, ma, dirpath.p, 0) ))
-    errx(1, "dirwalk_open: %s", err_str(e));
-  while ((e = dirwalk_next(dw)) > 0) {
-    if (dw->type != S_IFREG || !is_filename_compis_source(dw->name)) // ignore
-      continue;
+  for (usize i = 0; i < filenamec; i++) {
     str_free(filename);
-    filename = path_join(dirpath.p, dw->name);
-    if (!parser_test_one(&parser, filename, dirwalk_stat(dw)->st_size))
+    filename = path_join(dirpath.p, filev[i].name);
+    if (!parser_test_one(&parser, filename, filev[i].size))
       pass = false;
   }
-  if (e < 0) errx(1, "dirwalk(%s): %s", dirpath.p, err_str(e));
-  dirwalk_close(dw);
 
   parser_dispose(&parser);
   compiler_dispose(&compiler);
