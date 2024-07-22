@@ -605,15 +605,18 @@ bool pkg_libfile(const pkg_t* pkg, const compiler_t* c, str_t* dst) {
 bool pkg_exefile(const pkg_t* pkg, const compiler_t* c, str_t* dst) {
   #define PKG_EXEDIRNAME "bin"
 
-  isize slashi = string_indexof(pkg->path.p, pkg->path.len, '/') + 1;
+  isize slashi = string_indexof(pkg->path.p, pkg->path.len, '/');
+  assert(slashi > -1);
+  slashi++;
 
-  slice_t builddir = slice_cstr(c->builddir);
   slice_t suffix = {0};
   if (target_is_wasm(&c->target))
     suffix = slice_cstr(".wasm");
   // TODO: Windows target:
   // if (c->target.sys == SYS_win32)
   //   suffix = slice_cstr(".exe");
+
+  slice_t builddir = slice_cstr(c->builddir);
 
   usize nbyte = builddir.len
               + 1 + strlen(PKG_EXEDIRNAME)

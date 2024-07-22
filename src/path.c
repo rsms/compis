@@ -142,7 +142,6 @@ const char* path_basen(const char* path, usize* lenp) {
     p--;
   if (p == path) {
     // no base; e.g. "/foo", "foo/", "foo" or "/"
-    *lenp = 0;
     return path;
   }
   p++; // "undo" last PATH_SEP
