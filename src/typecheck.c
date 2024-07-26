@@ -368,10 +368,12 @@ static bool _type_compat(
 static bool type_compat(
   const compiler_t* c, const type_t* x, const type_t* y, bool assignment)
 {
-  return x == y || _type_compat(c, x, y, assignment);
+  return x == y || x == type_any || y == type_any ||
+         _type_compat(c, x, y, assignment);
 }
 static bool type_isequivalent(const compiler_t* c, const type_t* x, const type_t* y) {
-  return x == y || concrete_type(c, (type_t*)x) == concrete_type(c, (type_t*)y);
+  return x == y || x == type_any || y == type_any ||
+         concrete_type(c, (type_t*)x) == concrete_type(c, (type_t*)y);
 }
 static bool type_isassignable( const compiler_t* c, const type_t* x, const type_t* y) {
   return type_compat(c, x, y, true);
@@ -606,6 +608,9 @@ static void out_of_mem(typecheck_t* a) {
 }
 
 
+static bool intern_usertype(typecheck_t* a, usertype_t** tp);
+
+
 #define mknode(a, TYPE, kind)  ( (TYPE*)_mknode((a), sizeof(TYPE), (kind)) )
 
 
@@ -631,6 +636,56 @@ static void transfer_1_nuse_to_wrapper(void* wrapper_node, void* wrapee_node) {
 }
 
 
+static void arraytype_calc_size(typecheck_t* a, arraytype_t* at) {
+  if (at->len == 0) {
+    // type darray<T> {cap, len uint; rawptr T ptr }
+    at->align = MAX(a->compiler->target.ptrsize, a->compiler->target.intsize);
+    at->size = a->compiler->target.intsize*2 + a->compiler->target.ptrsize;
+    return;
+  }
+  u64 size;
+  if (check_mul_overflow(at->len, at->elem->size, &size)) {
+    error(a, at, "array constant too large; overflows uint (%s)",
+      fmtnode(0, a->compiler->uinttype));
+    return;
+  }
+  at->align = at->elem->align;
+  at->size = size;
+}
+
+
+static arraytype_t* mkarraytype(typecheck_t* a, type_t* elem, u64 len) {
+  arraytype_t* at = mknode(a, arraytype_t, TYPE_ARRAY);
+  at->flags = NF_CHECKED;
+  at->elem = elem;
+  at->len = len;
+  arraytype_calc_size(a, at);
+  intern_usertype(a, (usertype_t**)&at);
+  return at;
+}
+
+
+static void intern_opttype(typecheck_t* a, opttype_t** tp) {
+  opttype_t* t = *tp;
+  // assertf(t->elem == type_unknown || t->elem->align > 0,
+  //   "%s %s (align=%u)",
+  //   nodekind_name(t->elem->kind), fmtnode(0,t->elem), t->elem->align);
+  type_t* elem = concrete_type(a->compiler, t->elem);
+  t->align = elem->align;
+  t->size = MAX(elem->align, elem->size) * 2;
+  intern_usertype(a, (usertype_t**)tp);
+}
+
+
+static opttype_t* mkopttype(typecheck_t* a, type_t* elem) {
+  opttype_t* t = mknode(a, opttype_t, TYPE_OPTIONAL);
+  t->elem = elem;
+  t->flags = NF_CHECKED;
+  intern_opttype(a, &t);
+  return t;
+}
+
+
 static reftype_t* mkreftype(typecheck_t* a, type_t* elem, bool ismut) {
   reftype_t* t = mknode(a, reftype_t, ismut ? TYPE_MUTREF : TYPE_REF);
   t->flags = elem->flags & NF_CHECKED;
@@ -649,15 +704,16 @@ static expr_t* mkderef(typecheck_t* a, expr_t* refval, loc_t loc) {
   n->loc = loc;
   n->expr = refval;
   transfer_1_nuse_to_wrapper(n, refval);
-  switch (refval->type->kind) {
+  type_t* t = unwrap_alias(refval->type);
+  switch (t->kind) {
     case TYPE_PTR:
     case TYPE_REF:
     case TYPE_MUTREF:
-      n->type = ((ptrtype_t*)refval->type)->elem;
+      n->type = ((ptrtype_t*)t)->elem;
       break;
     default:
       n->type = type_void;
-      assertf(0, "unexpected %s", nodekind_name(refval->type->kind));
+      assertf(0, "unexpected %s", nodekind_name(t->kind));
   }
   return (expr_t*)n;
 }
@@ -1338,7 +1394,7 @@ static void implicit_rvalue_deref(typecheck_t* a, const type_t* ltype, expr_t** 
       //   let y &[u8] = x          // immutable slice of array
       break;
     }
-    //dlog("mkderef (ref) >> ltype: %s  rtype: %s",
+    // dlog("mkderef (ref) >> ltype: %s  rtype: %s",
     //   fmtnode(0, ltype), fmtnode(1, rval->type));
     *rvalp = mkderef(a, rval, rval->loc);
     rval = *rvalp;
@@ -1471,31 +1527,35 @@ static bool type_can_be_zeroinit(const type_t* t) {
 
 
 static void this_type(typecheck_t* a, local_t* local) {
-  type_t* recvt = local->type;
-  // pass certain types by value instead of pointer when access is read-only
-  if (!local->ismut) {
-    // "this" (immutable)
-    if (nodekind_isprimtype(recvt->kind)) // e.g. int, i32
+  type_t* recvt = unwrap_alias(local->type);
+  trace("this (mut=%s) %s %s",
+        local->ismut ? "true" : "false",
+        nodekind_name(recvt->kind), fmtnode(0, recvt));
+
+  if (local->ismut) {
+    // 'mut this'
+    if (recvt->kind == TYPE_SLICE || recvt->kind == TYPE_REF) {
+      error(a, local, "'this' cannot be 'mut' since receiver of type %s is immutable",
+            fmtnode(0, local->type));
       return;
-    if (recvt->kind == TYPE_STRUCT) {
-      // small structs
-      structtype_t* st = (structtype_t*)recvt;
-      u64 maxsize = (u64)a->compiler->target.ptrsize * 2;
-      if ((u32)st->align <= a->compiler->target.ptrsize && st->size <= maxsize)
-        return;
     }
-  } else {
-    // "mut this"
-    // type_t* recvbt = unwrap_alias(recvt);
-    // if (recvbt->kind == TYPE_ARRAY) {
-    //   // "mut this" for [T] is mut&[T]; a mutable slice
-    //   type_t* elemt = ((arraytype_t*)recvbt)->elem;
-    //   local->type = (type_t*)mkslicetype(a, elemt, TYPE_MUTSLICE);
-    //   return;
-    // }
+  } else if (nodekind_isprimtype(recvt->kind)) {
+    // e.g. 'fun i32.foo(this)'
+    return;
+  } else if (recvt->kind == TYPE_STRUCT &&
+             recvt->size <= (u64)a->compiler->target.ptrsize)
+  {
+    // immutable struct which fits in a register is passed by value
+    return;
   }
-  // pointer type
-  reftype_t* t = mkreftype(a, recvt, local->ismut);
+
+  // since we unwrapped alias, check if underlying type if already a ref, i.e.
+  // &T | mut&T | *T | &[T] | mut&[T]
+  if (type_isptrlike(recvt) || type_isslice(recvt))
+    return;
+
+  // "T" => "&T" or "mut&T"
+  reftype_t* t = mkreftype(a, local->type, local->ismut);
   local->type = (type_t*)t;
 }
 
@@ -1712,7 +1772,32 @@ static void structtype(typecheck_t* a, structtype_t** tp) {
     }
 
     type_t* t = concrete_type(a->compiler, f->type);
-    assertf(t->align > 0 || t->kind == TYPE_UNRESOLVED, "%s", nodekind_name(t->kind));
+
+    // check for recursive type
+    if UNLIKELY(t->align == 0) {
+      // e.g. "type A { x A }"
+      if (t->kind != TYPE_UNRESOLVED) {
+        error(a, f, "recursive structure type %s", fmtnode(0, t));
+        help(a, f->type, "make field an optional reference: ?mut&%s", fmtnode(0, t));
+      }
+    } else if (type_isref(t) && ((ptrtype_t*)t)->elem->kind == TYPE_STRUCT) {
+      // e.g. "type A { x &A }"
+      u32 i = ptrarray_rindexof((ptrarray_t*)&a->visitstack, ((ptrtype_t*)t)->elem);
+      if UNLIKELY(i < U32_MAX) {
+        error(a, f, "recursive structure type %s", fmtnode(0, t));
+        help(a, f->type, "make field optional: ?%s", fmtnode(0, t));
+      }
+    } else if (type_isref(t) &&
+               type_isopt(((ptrtype_t*)t)->elem) &&
+               ((ptrtype_t*)((ptrtype_t*)t)->elem)->elem->kind == TYPE_STRUCT)
+    {
+      // e.g. "type A { x &?A }"
+      u32 i = ptrarray_rindexof((ptrarray_t*)&a->visitstack,
+                                ((ptrtype_t*)((ptrtype_t*)t)->elem)->elem);
+      if UNLIKELY(i < U32_MAX)
+        error(a, f, "recursive structure type %s", fmtnode(0, t));
+    }
+
     f->offset = ALIGN2(size, t->align);
     size = f->offset + t->size;
     align = MAX(align, t->align); // alignment of struct is max alignment of fields
@@ -1742,24 +1827,6 @@ static void structtype(typecheck_t* a, structtype_t** tp) {
     if UNLIKELY(!map_assign_ptr(&a->postanalyze, a->ma, *tp))
       out_of_mem(a);
   }
-}
-
-
-static void arraytype_calc_size(typecheck_t* a, arraytype_t* at) {
-  if (at->len == 0) {
-    // type darray<T> {cap, len uint; rawptr T ptr }
-    at->align = MAX(a->compiler->target.ptrsize, a->compiler->target.intsize);
-    at->size = a->compiler->target.intsize*2 + a->compiler->target.ptrsize;
-    return;
-  }
-  u64 size;
-  if (check_mul_overflow(at->len, at->elem->size, &size)) {
-    error(a, at, "array constant too large; overflows uint (%s)",
-      fmtnode(0, a->compiler->uinttype));
-    return;
-  }
-  at->align = at->elem->align;
-  at->size = size;
 }
 
 
@@ -1808,17 +1875,6 @@ static void arraytype(typecheck_t* a, arraytype_t** tp) {
 
   //assertf(at->_typeid == NULL, "%s", fmtnode(0, at));
   arraytype_calc_size(a, at);
-  intern_usertype(a, (usertype_t**)tp);
-}
-
-
-static void intern_opttype(typecheck_t* a, opttype_t** tp) {
-  opttype_t* t = *tp;
-  assertf(t->elem == type_unknown || t->elem->align > 0,
-    "%s (align=%u)", fmtnode(0,t->elem), t->elem->align);
-  type_t* elem = concrete_type(a->compiler, t->elem);
-  t->align = elem->align;
-  t->size = MAX(elem->align, elem->size) * 2;
   intern_usertype(a, (usertype_t**)tp);
 }
 
@@ -2735,11 +2791,7 @@ static void ifexpr(typecheck_t* a, ifexpr_t* n) {
           "cannot use 'if' as an expression where 'then' branch has no value");
       }
       dlog("TODO: wrap 'then' result in 'makeopt'");
-      opttype_t* t = mknode(a, opttype_t, TYPE_OPTIONAL);
-      t->elem = n->type;
-      t->flags = NF_CHECKED;
-      intern_opttype(a, &t);
-      n->type = (type_t*)t;
+      n->type = (type_t*)mkopttype(a, n->type);
     }
   }
 }
@@ -2760,7 +2812,12 @@ static void retexpr(typecheck_t* a, retexpr_t* n) {
 
 
 static bool check_assign_to_subscript(typecheck_t* a, subscript_t* m) {
-  dlog("TODO %s", __FUNCTION__);
+  type_t* recvt = unwrap_alias(m->recv->type);
+  if UNLIKELY(recvt->kind == TYPE_REF || recvt->kind == TYPE_SLICE) {
+    error(a, m->recv, "assignment to immutable value of type %s",
+          fmtnode(0, m->recv->type));
+    return false;
+  }
   return true;
 }
 
@@ -2768,7 +2825,8 @@ static bool check_assign_to_subscript(typecheck_t* a, subscript_t* m) {
 static bool check_assign_to_member(typecheck_t* a, member_t* m) {
   // check mutability of receiver
   assertnotnull(m->recv->type);
-  switch (m->recv->type->kind) {
+  type_t* recvt = unwrap_alias(m->recv->type);
+  switch (recvt->kind) {
 
   case TYPE_STRUCT:
     // assignment to non-ref "this", e.g. "fun Foo.bar(this Foo) { this = Foo() }"
@@ -2783,7 +2841,8 @@ static bool check_assign_to_member(typecheck_t* a, member_t* m) {
     return true;
 
   case TYPE_REF:
-    error(a, m->recv, "assignment to immutable reference %s", fmtnode(0, m->recv));
+    error(a, m->recv, "assignment to immutable value of type %s",
+          fmtnode(0, m->recv->type));
     return false;
 
   default:
@@ -2916,6 +2975,126 @@ static void assign(typecheck_t* a, binop_t* n) {
     error_unassignable_type(a, n, n->right);
 
   check_assign(a, n->left, n->left);
+}
+
+
+static bool type_has_binop(const compiler_t* c, const type_t* t, op_t op);
+static fun_t* nullable find_binop_custom_fun(
+  typecheck_t* a, type_t* lt, type_t* rt, op_t op, type_t** restypep);
+
+
+static bool type_is_str_subtype(const type_t* t) {
+  // true if t is "&[u8 N]"
+  ptrtype_t* pt = (ptrtype_t*)t;
+  return t->kind == TYPE_REF &&
+         pt->elem->kind == TYPE_ARRAY
+         && ((arraytype_t*)pt->elem)->elem == type_u8;
+}
+
+
+static type_t* builtin_typefun_seq_restype(
+  typecheck_t* a, type_t* ltype, type_t* rtype)
+{
+  // Calculate result type/
+  //   fun example(a &[int 3], b &[int 5])
+  //     let c = a + b
+  // Here, type of c should be "[int 8]" rather than "[int]"
+  type_t* l_bt = unwrap_ptr_and_alias(ltype);
+  type_t* r_bt = unwrap_ptr_and_alias(rtype);
+
+  if (l_bt->kind == TYPE_ARRAY) {
+    assert(r_bt->kind == TYPE_ARRAY);
+    arraytype_t* lt = (arraytype_t*)l_bt;
+    arraytype_t* rt = (arraytype_t*)r_bt;
+
+    // [T N] + [T] = [T]
+    if (lt->len == 0)
+      return ltype;
+    if (rt->len == 0)
+      return rtype;
+
+    // [T x] + [T y] = [T x+y]
+    return (type_t*)mkarraytype(a, type_u8, lt->len + rt->len);
+  }
+
+  return ltype;
+}
+
+
+static fun_t* nullable find_builtin_typefun(
+  typecheck_t* a, type_t* lt, type_t* nullable rt, sym_t name, type_t** restypep)
+{
+  // __add__(a Seq<T>, b Seq<T>) ?[T]
+  if (name == sym___add__) {
+    // '+' is defined for slice and array types which element type is copyable
+    // or have '+' operator.
+    if (type_isslice(lt) || lt->kind == TYPE_ARRAY) {
+      type_t* elemt = ((ptrtype_t*)lt)->elem;
+      type_t* restype_ign;
+      if (type_iscopyable(elemt) ||
+          type_has_binop(a->compiler, elemt, OP_ADD))
+      {
+        assertnotnull(rt);
+
+        // *restypep = builtin_typefun_seq_restype(a, lt, rt);
+        arraytype_t* at;
+        if (((arraytype_t*)lt)->len == 0) {
+          at = (arraytype_t*)lt;
+        } else {
+          at = mkarraytype(a, ((arraytype_t*)lt)->elem, 0);
+        }
+        *restypep = (type_t*)mkopttype(a, (type_t*)at);
+
+        return &a->compiler->builtin_seq___add__;
+      } else if (find_binop_custom_fun(a, elemt, elemt, OP_ADD, &restype_ign) != NULL) {
+        log("TODO: Seq+Seq with elemtype with __add__ impl");
+      }
+    }
+  }
+  return NULL;
+}
+
+
+static fun_t* nullable find_typefun(
+  typecheck_t* a, type_t* recvt, type_t* nullable recvt2, sym_t name, type_t** restypep)
+{
+  type_t* bt = type_unwrap_ptr(recvt); // e.g. &MyMyT => MyMyT
+  type_t* bt2 = recvt2 ? type_unwrap_ptr(recvt2) : NULL;
+  fun_t* fn;
+
+  for (;;) {
+    fn = typefuntab_lookup(&a->pkg->tfundefs, bt, name);
+
+    if (fn) {
+      if (CHECK_ONCE(fn)) {
+        fun(a, fn);
+        if (bt != recvt) log("TODO check if fun is compatible with recvt");
+        // TODO: check if fun is compatible with recvt, which could be for example a ref.
+        // e.g. this should fail:
+        //   fun Foo.bar(mut this)
+        //   fun example(x &Foo)
+        //     x.bar() // error: Foo.bar requires mutable receiver
+      }
+      *restypep = ((funtype_t*)assertnotnull(fn->type))->result;
+      return fn;
+    }
+
+    if (!fn) {
+      if (( fn = find_builtin_typefun(a, bt, bt2, name, restypep) ))
+        return fn;
+    }
+
+    if (!type_is_str_subtype(recvt))
+      return NULL;
+
+    if (bt == (type_t*)&a->compiler->strtype)
+      return NULL;
+
+    // &[u8 N] -> str
+    bt = (type_t*)&a->compiler->strtype;
+    if (bt2 && type_is_str_subtype(bt2))
+      bt2 = bt;
+  }
 }
 
 
@@ -3066,15 +3245,131 @@ static void error_no_operator(
 }
 
 
+static void call_fun(typecheck_t* a, call_t* call, funtype_t* ft);
+
+
+static fun_t* nullable find_binop_custom_fun(
+  typecheck_t* a, type_t* lt, type_t* rt, op_t op, type_t** restypep)
+{
+  sym_t name;
+  switch (op) {
+    // // unary
+    // case OP_INC: name = sym___inc__; break; // "++
+    // case OP_DEC: name = sym___dec__; break; // "--
+    // case OP_INV: name = sym___inv__; break; // "~
+    // case OP_NOT: name = sym___not__; break; // "!
+
+    // binary, arithmetic
+    case OP_ADD: name = sym___add__; break; // +
+    case OP_SUB: name = sym___sub__; break; // -
+    case OP_MUL: name = sym___mul__; break; // *
+    case OP_DIV: name = sym___div__; break; // /
+    case OP_MOD: name = sym___mod__; break; // %
+
+    // binary, bitwise
+    case OP_AND: name = sym___and__; break; // &
+    case OP_OR:  name = sym___or__;  break; // |
+    case OP_XOR: name = sym___xor__; break; // ^
+    case OP_SHL: name = sym___shl__; break; // <<
+    case OP_SHR: name = sym___shr__; break; // >>
+
+    // binary, logical
+    case OP_LAND: name = sym___land__; break; // &&
+    case OP_LOR:  name = sym___lor__;  break; // ||
+
+    // binary, comparison
+    case OP_EQ:   name = sym___eq__;   break; // ==
+    case OP_NEQ:  name = sym___neq__;  break; // !=
+    case OP_LT:   name = sym___lt__;   break; // <
+    case OP_GT:   name = sym___gt__;   break; // >
+    case OP_LTEQ: name = sym___lteq__; break; // <=
+    case OP_GTEQ: name = sym___gteq__; break; // >=
+
+    default: return NULL;
+  }
+
+  bool seen_str = false;
+
+  for (;;) {
+    trace("look for operator impl %s for type %s %s",
+          name, nodekind_name(lt->kind), fmtnode(0, lt));
+
+    fun_t* fn = find_typefun(a, lt, rt, name, restypep);
+    if (fn)
+      return fn;
+
+    if (lt->kind == TYPE_ALIAS) {
+      seen_str = seen_str || (lt == (type_t*)&a->compiler->strtype);
+      lt = ((aliastype_t*)lt)->elem;
+      if (rt->kind == TYPE_ALIAS)
+        rt = ((aliastype_t*)rt)->elem;
+    } else if (lt->kind == TYPE_ARRAY &&
+               ((arraytype_t*)lt)->elem == type_u8 &&
+               !seen_str)
+    {
+      // special case for string literals, e.g. '"abc"' has type '[u8 3]', not 'str'
+      lt = (type_t*)&a->compiler->strtype;
+      if (rt->kind == TYPE_ARRAY && ((arraytype_t*)rt)->elem == type_u8)
+        rt = lt;
+      seen_str = true;
+    } else {
+      return NULL;
+    }
+  }
+}
+
+
+static void binop_custom(typecheck_t* a, binop_t** np) {
+  binop_t* n = *np;
+  type_t* restype;
+  fun_t* opfn = find_binop_custom_fun(a, n->left->type, n->right->type, n->op, &restype);
+
+  if UNLIKELY(!opfn) {
+    // no operator for this type
+    if (noerror(a) || n->left->type != type_unknown) {
+      expr_t* operand = n->left;
+      if (operand->type == type_unknown || n->right->type->kind == TYPE_OPTIONAL)
+        operand = n->right;
+      error_no_operator(a, (expr_t*)n, operand, n->op);
+    }
+    return;
+  }
+
+  // convert binop to call
+  call_t* call = mknode(a, call_t, EXPR_CALL);
+  call->flags = n->flags & (NF_RVALUE | NF_DROP);
+  // call->flags |= NF_CHECKED;
+  call->loc = n->loc;
+  call->recv = (expr_t*)opfn;
+  call->type = restype;
+  node_t** argv = nodearray_alloc(&call->args, a->ast_ma, 2);
+  if UNLIKELY(!argv)
+    return out_of_mem(a);
+  argv[0] = (node_t*)n->left;
+  argv[1] = (node_t*)n->right;
+  call_fun(a, call, (funtype_t*)opfn->type);
+
+  *np = (binop_t*)call;
+}
+
+
 static void binop(typecheck_t* a, binop_t** np) {
   binop_t* n = *np;
   if (n->op == OP_LAND || n->op == OP_LOR)
     return binop_and_or(a, np);
 
-  rvalue_expr(a, a->typectx, &n->left);
+  exprp(a, &n->left);
   typectx_push(a, n->left->type);
-  rvalue_expr(a, a->typectx, &n->right);
+  exprp(a, &n->right);
   typectx_pop(a);
+
+  incuse_read(n->left);
+  incuse_read(n->right);
+  n->left->flags |= NF_RVALUE;
+  n->right->flags |= NF_RVALUE;
+
+  // implicit_rvalue_deref(a, a->typectx, &n->left);
+  // implicit_rvalue_deref(a, a->typectx, &n->right);
 
   switch (n->op) {
     case OP_EQ:
@@ -3108,22 +3403,19 @@ static void binop(typecheck_t* a, binop_t** np) {
       type_t* rt = unwrap_alias(n->right->type);
       if UNLIKELY(!type_iscompatible(a->compiler, lt, rt))
         error_incompatible_types(a, n, n->left->type, n->right->type);
-      if (type_isref(lt))
-        n->left = mkderef(a, n->left, n->left->loc);
-      if (type_isref(rt))
-        n->right = mkderef(a, n->right, n->right->loc);
+      implicit_rvalue_deref(a, lt, &n->left);
+      implicit_rvalue_deref(a, rt, &n->right);
+      // if (type_isref(lt))
+      //   n->left = mkderef(a, n->left, n->left->loc);
+      // if (type_isref(rt))
+      //   n->right = mkderef(a, n->right, n->right->loc);
       n->type = n->left->type;
     }
   }
 
-  if UNLIKELY(!type_has_binop(a->compiler, n->left->type, n->op)) {
-    if (noerror(a) || n->left->type != type_unknown) {
-      expr_t* operand = n->left;
-      if (operand->type == type_unknown || n->right->type->kind == TYPE_OPTIONAL)
-        operand = n->right;
-      error_no_operator(a, (expr_t*)n, operand, n->op);
-    }
-  }
+  assert(*np == n);
+  if (!type_has_binop(a->compiler, n->left->type, n->op))
+    MUSTTAIL return binop_custom(a, np);
 }
 
 
@@ -3376,13 +3668,7 @@ static void strlit(typecheck_t* a, strlit_t* n) {
   }
 
   // &[u8 len]
-  arraytype_t* at = mknode(a, arraytype_t, TYPE_ARRAY);
-  at->flags = NF_CHECKED;
-  at->elem = type_u8;
-  at->len = n->len;
-  arraytype_calc_size(a, at);
-  if (!intern_usertype(a, (usertype_t**)&at))
-    freenode(a, at);
+  arraytype_t* at = mkarraytype(a, type_u8, n->len);
 
   reftype_t* t = mknode(a, reftype_t, TYPE_REF);
   t->elem = (type_t*)at;
@@ -3516,20 +3802,9 @@ static expr_t* nullable find_member(
 
   // note: recvt is never TYPE_OPTIONAL; member() guards for that
 
-  // look for type function
-  type_t* bt2 = type_unwrap_ptr(recvt); // e.g. &MyMyT => MyMyT
-  fun_t* fn = typefuntab_lookup(&a->pkg->tfundefs, bt2, name);
-  if (fn && CHECK_ONCE(fn)) {
-    fun(a, fn);
-    if (bt2 != recvt) panic("TODO check if fun is compatible with recvt");
-    // TODO: check if fun is compatible with recvt, which could be for example a ref.
-    // e.g. this should fail:
-    //   fun Foo.bar(mut this)
-    //   fun example(x &Foo)
-    //     x.bar() // error: Foo.bar requires mutable receiver
-  }
-
-  return (expr_t*)fn;
+  // lookup type function
+  type_t* restype_ign;
+  return (expr_t*)find_typefun(a, recvt, NULL, name, &restype_ign);
 }
 
 
@@ -4119,11 +4394,12 @@ static void call_type(typecheck_t* a, call_t** np, type_t* t) {
 
 
 static void call_fun(typecheck_t* a, call_t* call, funtype_t* ft) {
-  call->type = ft->result;
+  if (!call->type || call->type == type_unknown || (call->type->flags & NF_UNKNOWN))
+    call->type = ft->result;
 
   u32 paramsc = ft->params.len;
   local_t** paramsv = (local_t**)ft->params.v;
-  if (paramsc > 0 && paramsv[0]->isthis) {
+  if (paramsc > 0 && paramsv[0]->isthis && call->recv->kind == EXPR_MEMBER) {
     paramsv++;
     paramsc--;
   }
@@ -4171,6 +4447,7 @@ static void call_fun(typecheck_t* a, call_t* call, funtype_t* ft) {
       arg = (expr_t*)call->args.v[i]; // reload
     }
 
+    arg->flags |= NF_RVALUE;
     incuse_read(arg);
 
     typectx_pop(a);
@@ -4780,6 +5057,7 @@ static void _type(typecheck_t* a, type_t** tp) {
     case TYPE_F32:
     case TYPE_F64:
     case TYPE_NS:
+    case TYPE_ANY:
     case TYPE_UNKNOWN:
       assertf(0, "%s should always be NF_CHECKED", nodekind_name((*tp)->kind));
       goto end;
@@ -4974,6 +5252,7 @@ static void exprp(typecheck_t* a, expr_t** np) {
   case TYPE_ALIAS:
   case TYPE_NS:
   case TYPE_IMPORTED:
+  case TYPE_ANY:
   case TYPE_UNKNOWN:
   case TYPE_TEMPLATE:
   case TYPE_PLACEHOLDER:

@@ -24,6 +24,7 @@ const char* nodekind_fmt(nodekind_t kind) {
     case EXPR_FIELD:                                          return "field";
     case EXPR_CALL:                                           return "call";
 
+    case TYPE_ANY:                       return "any type";
     case TYPE_UNKNOWN:                   return "unknown type";
     case TYPE_ARRAY:                     return "array type";
     case TYPE_FUN:                       return "function type";
@@ -539,6 +540,10 @@ static void fmt(FMT_PARAMS, const node_t* nullable n) {
     fmt_templateparam(FMT_ARGS, pt->templateparam);
     break;
   }
+
+  case TYPE_ANY:
+    PRINT("any");
+    break;
 
   case TYPE_UNKNOWN:
     PRINT("unknown");

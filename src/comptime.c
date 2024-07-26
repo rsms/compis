@@ -462,6 +462,7 @@ static void* eval1(ctx_t* ctx, void* np) {
   case TYPE_UINT:
   case TYPE_F32:
   case TYPE_F64:
+  case TYPE_ANY:
   case TYPE_UNKNOWN:
   case TYPE_STRUCT:
   case TYPE_FUN:

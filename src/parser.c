@@ -3018,10 +3018,15 @@ err_t parser_parse(parser_t* p, memalloc_t ast_ma, srcfile_t* srcfile, unit_t** 
 
   // next, parse rest of file
   while (currtok(p) != TEOF) {
-    stmt_t* n = stmt(p);
-    if (!pnodearray_push(p, &p->toplevel_stmts, n))
+    // note: we must pre-allocate statement in toplevel_stmts array so that
+    // struct definitions preceed any nested type functions
+    node_t** np = nodearray_alloc(&p->toplevel_stmts, p->ma, 1);
+    if UNLIKELY(!np) {
+      out_of_mem(p);
       break;
-    bubble_flags(unit, n);
+    }
+    *np = (node_t*)stmt(p);
+    bubble_flags(unit, *np);
     expect2(p, TSEMI, "");
   }
 

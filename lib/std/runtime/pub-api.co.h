@@ -10,6 +10,12 @@ __co_PKG void __co_mem_free(void* ptr, __co_uint size);
 __co_PKG bool __co_builtin_reserve(void* arrayptr, __co_uint elemsize, __co_uint cap);
 __co_PKG bool __co_builtin_resize(void* arrayptr, __co_uint elemsize, __co_uint len);
 
+__co_PKG struct _coOAh __co_builtin_seq___add__(
+  const void* aptr, __co_uint alen,
+  const void* bptr, __co_uint blen,
+  __co_uint elemsize
+);
+
 inline static void __co_checkbounds(__co_uint len, __co_uint index) {
   if (__builtin_expect(len <= index, false))
     __co_panic_out_of_bounds();

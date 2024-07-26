@@ -39,6 +39,12 @@ void __co_mem_free(void* ptr, __co_uint size) {
 }
 
 
+void _print(__co_str msg) {
+  fwrite(msg.ptr, msg.len, 1, stdout);
+  fputc('\n', stdout);
+}
+
+
 bool __co_builtin_reserve(void* arrayptr, __co_uint elemsize, __co_uint cap) {
   // Defined for dynamic arrays.
   // Requests that arrayptr->cap >= cap.
@@ -77,7 +83,41 @@ bool __co_builtin_resize(void* arrayptr, __co_uint elemsize, __co_uint len) {
 }
 
 
-void _print(__co_str msg) {
-  fwrite(msg.ptr, msg.len, 1, stdout);
-  fputc('\n', stdout);
+// __add__(a Seq<T>, b Seq<T>) ?[T]
+struct _coOAh __co_builtin_seq___add__(
+  const void* aptr, __co_uint alen,
+  const void* bptr, __co_uint blen,
+  __co_uint elemsize
+)
+{
+  __co_uint len;
+  if (check_add_overflow(alen, blen, &len))
+    goto err;
+
+  __co_uint nbyte;
+  if (check_mul_overflow(len, elemsize, &nbyte))
+    goto err;
+  nbyte = ALIGN2(nbyte, sizeof(void*));
+
+  void* p = malloc(nbyte);
+  if (!p) {
+    dlog("malloc (%lu B) FAILED", nbyte);
+    goto err;
+  }
+  dlog("malloc (%lu B) -> %p", nbyte, p);
+
+  memcpy(p, aptr, alen * elemsize);
+  memcpy(p + alen*elemsize, bptr, blen * elemsize);
+
+  return (struct _coOAh){
+    .ok = true,
+    .v = {
+      .cap = nbyte / elemsize,
+      .len = len,
+      .ptr = p,
+    }
+  };
+
+err:
+  return (struct _coOAh){};
 }

@@ -29,6 +29,15 @@ bool __must_check_unlikely(bool unlikely) {
   __builtin_mul_overflow(a__, b__, dst__); \
 }))
 
+#define check_add_overflow(a, b, dst) __must_check_unlikely(({  \
+  __typeof__(a) a__ = (a);                 \
+  __typeof__(b) b__ = (b);                 \
+  __typeof__(dst) dst__ = (dst);           \
+  (void) (&a__ == &b__);                   \
+  (void) (&a__ == dst__);                  \
+  __builtin_add_overflow(a__, b__, dst__); \
+}))
+
 
 #ifdef __APPLE__
   #define strong_alias(name, aliasname) \

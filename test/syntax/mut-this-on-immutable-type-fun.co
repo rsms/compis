@@ -1,0 +1,3 @@
+//!expect-diag error: 'this' cannot be 'mut' since receiver of type str is immutable
+fun str.concat(mut this, other str) str
+	this

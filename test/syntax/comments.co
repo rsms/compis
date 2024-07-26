@@ -21,10 +21,10 @@ fun test()
 fun test2() {}
 
 /*!expect-ast ;———————————————————————————————————————————————————————————————
-(FUN private test
+(FUN test
    (BLOCK
      (VAR x)
      (VAR y)
      (VAR z)))
-(FUN private test2 (BLOCK))
+(FUN test2 (BLOCK))
 */

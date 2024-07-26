@@ -1,0 +1,11 @@
+// Recursive struct type is valid when the field type is an optional ref.
+// Note that it is NOT valid to do "type A { x ?A }" (see separate test.)
+/*!expect-ast
+(STMT_TYPEDEF [STRUCT Node
+	(FIELD prev)
+	(FIELD next)
+])
+*/
+type Node
+	prev ?&Node
+	next ?mut&Node

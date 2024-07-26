@@ -127,7 +127,8 @@ static bool seen(repr_t* r, const void* n) {
 
 
 static void repr_visibility(RPARAMS, const node_t* n) {
-  CHAR(' '), PRINT(visibility_str(n->flags));
+  if ((n->flags & NF_VIS_MASK) != NF_VIS_UNIT)
+    CHAR(' '), PRINT(visibility_str(n->flags));
 }
 
 

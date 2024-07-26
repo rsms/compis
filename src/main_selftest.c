@@ -58,19 +58,19 @@ static err_t dump_ast(const node_t* ast) {
 }
 
 
-static bool is_filename_compis_source(const char* name) {
-  usize namelen = strlen(name);
+// static bool is_filename_compis_source(const char* name) {
+//   usize namelen = strlen(name);
 
-  isize p = string_lastindexof(name, namelen, '.');
-  if (p <= 0 || (usize)p + 1 == namelen)
-    return false;
+//   isize p = string_lastindexof(name, namelen, '.');
+//   if (p <= 0 || (usize)p + 1 == namelen)
+//     return false;
 
-  const char* ext = &name[p+1];
-  if (!strieq(ext, "co") && !strieq(ext, "c"))
-    return false;
+//   const char* ext = &name[p+1];
+//   if (!strieq(ext, "co") && !strieq(ext, "c"))
+//     return false;
 
-  return true;
-}
+//   return true;
+// }
 
 
 static void create_compiler(

@@ -202,7 +202,7 @@ contexts:
     - match: (//)(\!{{directive}})
       captures:
         1: punctuation.definition.comment.compis
-        2: meta.keyword.annotation.compis
+        2: keyword.control.compis
       push:
         - meta_scope: comment.line.compis
         - match: \S+
@@ -601,11 +601,14 @@ contexts:
       push: function-params
 
   function-params:
-    - match: (\s*)(\()(\s*)
+    - match: (\s*)(\()(\s*)(!?(mut)\s+(this)|(this)|)
       captures:
         1: meta.function.compis
         2: meta.function.parameters.compis meta.group.compis punctuation.definition.group.begin.compis
         3: meta.function.parameters.compis meta.group.compis
+        5: storage.modifier.compis
+        6: constant.language.compis
+        7: constant.language.compis
       # Create a temporary context to handle the initial parameter if it does
       # not include a type
       set: function-params-param-name

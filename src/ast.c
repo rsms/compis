@@ -356,7 +356,7 @@ err_t ast_transform(
 //———————————————————————————————————————————————————————————————————————————————————————
 
 
-bool ast_toposort_visit_def(
+static bool ast_toposort_visit_def1(
   nodearray_t* defs, memalloc_t ma, nodeflag_t visibility, node_t* n, u32 visitflags)
 {
   switch (n->kind) {
@@ -397,7 +397,7 @@ bool ast_toposort_visit_def(
       // note: don't store to n to avoid tripping msan when init is null.
       node_t* init = assertnotnull(((placeholdertype_t*)n)->templateparam)->init;
       if (init)
-        MUSTTAIL return ast_toposort_visit_def(defs, ma, visibility, init, visitflags);
+        MUSTTAIL return ast_toposort_visit_def1(defs, ma, visibility, init, visitflags);
       return true;
     }
 
@@ -411,17 +411,24 @@ bool ast_toposort_visit_def(
   }
 
 visit_self:
-  //dlog("[%s] %s#%p", __FUNCTION__, nodekind_name(n->kind), n);
+  // dlog("%s#%p %s%s",
+  //      nodekind_name(n->kind), n, fmtnode(0, n),
+  //      (n->flags & NF_MARK1) ? " (RECURSIVE)" : "");
+
   // If MARK1 is set, n is currently being visited (recursive)
   if UNLIKELY(n->flags & NF_MARK1) {
-    // insert a "forward declaration" node for the recursive definition
-    fwddecl_t* fwddecl = mem_alloct(ma, fwddecl_t);
-    if (!fwddecl)
-      return false;
-    fwddecl->kind = NODE_FWDDECL;
-    fwddecl->decl = n;
-    if (!nodearray_push(defs, ma, (node_t*)fwddecl))
-      return false;
+    // Insert a "forward declaration" node for the recursive definition.
+    // Note: currently the only use of the result of this function is code generation
+    // where we don't need fwd declaration of struct types, so we skip those.
+    if (n->kind != TYPE_STRUCT) {
+      fwddecl_t* fwddecl = mem_alloct(ma, fwddecl_t);
+      if (!fwddecl)
+        return false;
+      fwddecl->kind = NODE_FWDDECL;
+      fwddecl->decl = n;
+      if (!nodearray_push(defs, ma, (node_t*)fwddecl))
+        return false;
+    }
     return true;
   }
   // stop now if n has been visited already
@@ -436,7 +443,7 @@ visit_children:
   visitflags &= ~AST_TOPOSORT_TOPLEVEL;
   ast_childit_t it = ast_childit(n);
   for (node_t** cnp; (cnp = ast_childit_next(&it));) {
-    if (!ast_toposort_visit_def(defs, ma, visibility, *cnp, visitflags))
+    if (!ast_toposort_visit_def1(defs, ma, visibility, *cnp, visitflags))
       return false;
   }
 
@@ -450,4 +457,27 @@ visit_children:
   }
 
   return true;
+}
+
+
+static int ast_toposort_cmp(
+  const node_t** xp, const node_t** yp, void* nullable ctx)
+{
+  // precedence: type, var, function
+  int xn = node_istype(*xp) ? 2 : node_isvar(*xp) ? 1 : 0;
+  int yn = node_istype(*yp) ? 2 : node_isvar(*yp) ? 1 : 0;
+  return yn - xn;
+}
+
+
+bool ast_toposort_visit_def(
+  nodearray_t* defs, memalloc_t ma, nodeflag_t visibility, node_t* n, u32 visitflags)
+{
+  bool ok = ast_toposort_visit_def1(defs, ma, visibility, n, visitflags);
+  if (ok) {
+    // group by 1. type, 2. var, 3. function
+    co_qsort(defs->v, defs->len, sizeof(defs->v[0]),
+      (co_qsort_cmp)ast_toposort_cmp, NULL);
+  }
+  return ok;
 }

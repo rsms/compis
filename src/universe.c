@@ -8,6 +8,7 @@
 FOREACH_NODEKIND_PRIMTYPE(_)
 #undef _
 
+
 #define _(kind_, TYPE, enctag, NAME, size_) \
   type_t* type_##NAME = &_type_##NAME;
 FOREACH_NODEKIND_PRIMTYPE(_)

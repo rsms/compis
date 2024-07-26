@@ -741,6 +741,7 @@ static void reg_syms(astencoder_t* a, const node_t* n) {
   case TYPE_U64:
   case TYPE_U8:
   case TYPE_UINT:
+  case TYPE_ANY:
   case TYPE_UNKNOWN:
   case TYPE_VOID:
     break;

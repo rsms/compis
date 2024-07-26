@@ -1,0 +1,9 @@
+type Foo {}
+fun Foo.drop(mut this) {}
+
+/*!expect-ast ;———————————————————————————————————————————————————————————————
+(STMT_TYPEDEF [STRUCT Foo])
+(FUN Foo.drop
+  (recvt [STRUCTʹ Foo])
+  (BLOCK))
+*/

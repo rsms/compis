@@ -72,6 +72,7 @@ typedef u8 nodekind_t;
   _( TYPE_UINT,    type_t, 'uint', uint, 4 )\
   _( TYPE_F32,     type_t, 'f32 ', f32,  4 )\
   _( TYPE_F64,     type_t, 'f64 ', f64,  8 )\
+  _( TYPE_ANY,     type_t, 'anyt', any, 0 )\
   _( TYPE_UNKNOWN, type_t, 'unkn', unknown, 0 )\
 // end FOREACH_NODEKIND_PRIMTYPE
 #define FOREACH_NODEKIND_USERTYPE(_) /* nodekind_t, TYPE, enctag */\
@@ -122,7 +123,7 @@ typedef u16 nodeflag_t;
 #define NF_UNKNOWN     ((nodeflag_t)1<< 5)  // has or contains unresolved identifier
 #define NF_OVERFLOW    ((nodeflag_t)1<< 5)  // [intlit] value too large (overflowed)
 #define NF_NAMEDPARAMS ((nodeflag_t)1<< 6)  // function has named parameters
-#define NF_DROP        ((nodeflag_t)1<< 7)  // type: has drop(), binop: drop oldval
+#define NF_DROP        ((nodeflag_t)1<< 7)  // [type] has drop(). [binop] drop oldval
 #define NF_SUBOWNERS   ((nodeflag_t)1<< 8)  // type has owning elements
 #define NF_EXIT        ((nodeflag_t)1<< 9)  // block exits (i.e. "return" or "break")
 #define NF_CONST       ((nodeflag_t)1<< 9)  // [anything but block] is a constant

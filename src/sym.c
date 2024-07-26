@@ -27,6 +27,28 @@ static rwmutex_t  sym_mu;
   _(cap) \
   _(reserve) \
   _(resize) \
+  _(__inc__) \
+  _(__dec__) \
+  _(__inv__) \
+  _(__not__) \
+  _(__add__) \
+  _(__sub__) \
+  _(__mul__) \
+  _(__div__) \
+  _(__mod__) \
+  _(__and__) \
+  _(__or__) \
+  _(__xor__) \
+  _(__shl__) \
+  _(__shr__) \
+  _(__land__) \
+  _(__lor__) \
+  _(__eq__) \
+  _(__neq__) \
+  _(__lt__) \
+  _(__gt__) \
+  _(__lteq__) \
+  _(__gteq__) \
 // end FOREACH_PREDEFINED_SYMBOL
 
 #define _(NAME) sym_t sym_##NAME;

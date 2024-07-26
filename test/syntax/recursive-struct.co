@@ -1,0 +1,3 @@
+//!expect-diag error: recursive structure type
+type Node
+	next Node

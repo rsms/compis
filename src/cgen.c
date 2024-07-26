@@ -542,6 +542,13 @@ static void gen_opttype_def(cgen_t* g, opttype_t* t) {
   if (opttype_byptr(g, t->elem) || nodekind_isprimtype(t->elem->kind))
     return;
 
+  // prelude has predefined types for "?[primtype]" and "?[primtype N]"
+  if (t->elem->kind == TYPE_ARRAY &&
+      nodekind_isprimtype(((arraytype_t*)t->elem)->elem->kind))
+  {
+    return; // predefined in prelude
+  }
+
   bool defguard = maybe_gen_ptrtype_defguard_begin(g, (ptrtype_t*)t);
 
   startline(g, t->loc);
@@ -1106,12 +1113,18 @@ static void gen_drop_ptr(cgen_t* g, const drop_t* d, const ptrtype_t* pt) {
 
 
 static void gen_drop_array(cgen_t* g, const drop_t* d, const arraytype_t* at) {
+  char access[3] = {".v"};
+  if (d->type->kind != TYPE_OPTIONAL)
+    access[0] = 0;
+
   if (at->len == 0) {
     // dynamic runtime-sized array
-    PRINTF(RT_mem_free "(%s.ptr, %s.cap * %llu);", d->name, d->name, at->elem->size);
+    PRINTF(RT_mem_free "(%s%s.ptr, %s%s.cap * %llu);",
+           d->name, access, d->name, access, at->elem->size);
   } else {
     // compile time-sized array
-    PRINTF(RT_mem_free "(%s, %llu);", d->name, at->len * at->elem->size);
+    PRINTF(RT_mem_free "(%s%s, %llu);",
+           d->name, access, at->len * at->elem->size);
   }
 }
 
@@ -1817,24 +1830,41 @@ static void gen_call_fn_recv(
 }
 
 
-static void gen_call_builtin(cgen_t* g, const call_t* n) {
+static void gen_builtin_len_or_cap(cgen_t* g, const expr_t* recv, const char* field) {
+  const type_t* recvt = unwrap_ptr_and_alias(recv->type);
+  if (recvt->kind == TYPE_ARRAY && ((arraytype_t*)recvt)->len) {
+    // len or cap of fixed size array becomes just a constant
+    gen_intconst(g, ((arraytype_t*)recvt)->len, g->compiler->uinttype);
+  } else {
+    // field access
+    gen_expr_rvalue(g, recv, recv->type);
+    gen_member_op(g, recv->type);
+    PRINT(field);
+  }
+}
+
+static void gen_builtin_len(cgen_t* g, const expr_t* recv) {
+  gen_builtin_len_or_cap(g, recv, "len");
+}
+
+static void gen_builtin_cap(cgen_t* g, const expr_t* recv) {
+  gen_builtin_len_or_cap(g, recv, "cap");
+}
+
+
+static void gen_call_builtin_member(cgen_t* g, const call_t* n) {
   member_t* m = (member_t*)n->recv;
   fun_t* target = (fun_t*)m->target;
-  const type_t* recvt = unwrap_ptr_and_alias(m->recv->type);
 
-  // .len or .cap
-  if (target == &g->compiler->builtin_len || target == &g->compiler->builtin_cap) {
-    if (recvt->kind == TYPE_ARRAY && ((arraytype_t*)recvt)->len) {
-      // len or cap of fixed size array becomes just a constant
-      gen_intconst(g, ((arraytype_t*)recvt)->len, g->compiler->uinttype);
-    } else {
-      // field access
-      gen_expr_rvalue(g, m->recv, m->recv->type);
-      gen_member_op(g, m->recv->type);
-      PRINT(m->name);
-    }
-    return;
-  }
+  // .len
+  if (target == &g->compiler->builtin_len)
+    return gen_builtin_len(g, m->recv);
+
+  // .cap
+  if (target == &g->compiler->builtin_cap)
+    return gen_builtin_cap(g, m->recv);
+
+  const type_t* recvt = unwrap_ptr_and_alias(m->recv->type);
 
   // .reserve(cap) or .resize(len)
   if (target == &g->compiler->builtin_reserve ||
@@ -1858,13 +1888,57 @@ static void gen_call_builtin(cgen_t* g, const call_t* n) {
 }
 
 
+static void gen_builtin_seq__add__(cgen_t* g, const call_t* call) {
+  fun_t* fun = (fun_t*)call->recv;
+
+  PRINT(fun->mangledname), CHAR('(');
+
+  assertf(call->args.len == fun->params.len,
+          "%u == %u", call->args.len, fun->params.len);
+
+  const type_t* type = unwrap_alias(((expr_t*)call->args.v[0])->type);
+  if (type->kind != TYPE_ARRAY && !type_isslice(type))
+    panic("TODO: implement builtin '%s' for %s", fun->name, nodekind_name(type->kind));
+
+  for (u32 i = 0; i < call->args.len; i++) {
+    expr_t* arg = (expr_t*)call->args.v[i];
+    type = unwrap_alias(arg->type);
+
+    gen_expr(g, arg);
+    if (type->kind != TYPE_ARRAY || ((arraytype_t*)type)->len == 0)
+      PRINT(".ptr");
+
+    PRINT(", ");
+    gen_builtin_len(g, arg);
+
+    PRINT(", ");
+  }
+
+  PRINTF("%llu)", ((arraytype_t*)type)->elem->size);
+}
+
+
+static void gen_call_builtin_fun(cgen_t* g, const call_t* call) {
+  fun_t* fun = (fun_t*)call->recv;
+  assert_nodekind(fun, EXPR_FUN);
+
+  if (fun == &g->compiler->builtin_seq___add__)
+    return gen_builtin_seq__add__(g, call);
+
+  panic("TODO: generate builtin %s", fmtnode(0, fun));
+}
+
+
 static void gen_call_fun(cgen_t* g, const call_t* n) {
   assert(n->recv->type->kind == TYPE_FUN);
   const funtype_t* ft = (funtype_t*)n->recv->type;
 
   // builtin?
-  if (n->recv->kind == EXPR_MEMBER && ((member_t*)n->recv)->target->is_builtin)
-    return gen_call_builtin(g, n);
+  if (n->recv->kind == EXPR_MEMBER && ((member_t*)n->recv)->target->is_builtin) {
+    return gen_call_builtin_member(g, n);
+  } else if (n->recv->is_builtin) {
+    return gen_call_builtin_fun(g, n);
+  }
 
   // owner sink? (i.e. return value is unused but must be dropped)
   bool owner_sink = (n->flags & NF_RVALUE) == 0 && type_isowner(n->type);
@@ -1881,17 +1955,22 @@ static void gen_call_fun(cgen_t* g, const call_t* n) {
   if (thisarg) {
     if (is_this_refp && !is_member_pointer_access(g, thisarg->type))
       CHAR('&');
-    gen_expr(g, thisarg);
+    local_t* this_param = (local_t*)ft->params.v[0];
+    gen_expr_rvalue(g, thisarg, this_param->type);
     if (n->args.len > 0)
       PRINT(", ");
   }
+  u32 ft_param_i = (u32)!!thisarg;
   for (u32 i = 0; i < n->args.len; i++) {
     if (i) PRINT(", ");
     const expr_t* arg = (expr_t*)n->args.v[i];
     if (arg->kind == EXPR_PARAM) // named argument
       arg = ((local_t*)arg)->init;
-    const type_t* dst_t = ((local_t*)ft->params.v[i])->type;
-    gen_expr_rvalue(g, arg, dst_t);
+    const type_t* dst_type = ((local_t*)ft->params.v[ft_param_i++])->type;
+    // dlog("arg %u %s %s : dst_type %u %s %s",
+    //      i, nodekind_name(arg->kind), fmtnode(1, arg),
+    //      ft_param_i-1, nodekind_name(dst_type->kind), fmtnode(0, dst_type));
+    gen_expr_rvalue(g, arg, dst_type);
   }
   CHAR(')');
 
@@ -3067,6 +3146,7 @@ static void gen_expr(cgen_t* g, const expr_t* n) {
   case TYPE_IMPORTED:
   case TYPE_TEMPLATE:
   case TYPE_PLACEHOLDER:
+  case TYPE_ANY:
   case TYPE_UNKNOWN:
   case TYPE_UNRESOLVED:
     break;
@@ -3220,12 +3300,6 @@ static void assign_mangledname(cgen_t* g, node_t* n) {
 
   trace("%s> %s#%p %s", __FUNCTION__, nodekind_name(n->kind), n, fmtnode(0, n));
 
-  if (n == (node_t*)&g->compiler->strtype) {
-    // note: strtype has predefined mangledname.
-    // it also has no nsparent, which compiler_mangle requires
-    return;
-  }
-
   switch (n->kind) {
     case EXPR_FUN:
       p = &((fun_t*)n)->mangledname;
@@ -3248,6 +3322,9 @@ static void assign_mangledname(cgen_t* g, node_t* n) {
     case TYPE_ALIAS:
     case TYPE_NS:
     case TYPE_IMPORTED:
+      // strtype has predefined mangledname
+      if (n == (node_t*)&g->compiler->strtype)
+        return;
       p = &((usertype_t*)n)->mangledname;
       break;
 
@@ -3273,12 +3350,7 @@ static void assign_mangledname(cgen_t* g, node_t* n) {
 }
 
 
-static void gen_fwddecl(cgen_t* g, const fwddecl_t* d, bool is_impl) {
-  // if (d->decl->kind != EXPR_FUN)
-  //   return;
-
-  const node_t* n = assertnotnull(d->decl);
-
+static void gen_fwddecl(cgen_t* g, const node_t* n, bool is_impl) {
   switch (n->kind) {
 
   case EXPR_FUN:
@@ -3350,7 +3422,7 @@ static void gen_def(cgen_t* g, const node_t* n, bool is_impl) {
   switch (n->kind) {
 
   case NODE_FWDDECL:
-    gen_fwddecl(g, (fwddecl_t*)n, is_impl);
+    gen_fwddecl(g, ((fwddecl_t*)n)->decl, is_impl);
     break;
 
   case STMT_TYPEDEF: {
@@ -3454,8 +3526,12 @@ static void gen_unit(cgen_t* g, unit_t* unit, cgen_pkgapi_t* pkgapi) {
       goto end; // OOM
   }
 
-  // dlog("%u unit defs:", defs.len);
-  // dlog_defs(g, defs.v, defs.len, "unit> ");
+  #ifdef DEBUG
+    if (opt_trace_cgen) {
+      trace("%u unit defs:", defs.len);
+      dlog_defs(g, defs.v, defs.len, "  ");
+    }
+  #endif
 
   // reset source tracking
   g->srcfileid = 0;
@@ -3476,8 +3552,19 @@ static void gen_unit(cgen_t* g, unit_t* unit, cgen_pkgapi_t* pkgapi) {
   // generate definitions
   for (u32 i = 0; i < defs.len; i++) {
     node_t* n = defs.v[i];
-    if (n)
-      gen_def(g, n, /*is_impl*/true);
+
+    if (!n)
+      continue;
+
+    // // skip unneccessary forward declaration
+    // if (n->kind == NODE_FWDDECL &&
+    //     i+1 < defs.len &&
+    //     ((fwddecl_t*)n)->decl == defs.v[i+1])
+    // {
+    //   continue;
+    // }
+
+    gen_def(g, n, /*is_impl*/true);
   }
 
 end:
@@ -3486,6 +3573,7 @@ end:
 
 
 err_t cgen_unit_impl(cgen_t* g, unit_t* u, cgen_pkgapi_t* pkgapi) {
+  trace("cgen_unit_impl");
   cgen_reset(g);
 
   if (pkgapi) {
@@ -3493,6 +3581,7 @@ err_t cgen_unit_impl(cgen_t* g, unit_t* u, cgen_pkgapi_t* pkgapi) {
       return ErrNoMem;
   }
 
+  trace("gen_imports");
   gen_imports(g, u);
 
   // Include pre-generated package API.
@@ -3507,10 +3596,13 @@ err_t cgen_unit_impl(cgen_t* g, unit_t* u, cgen_pkgapi_t* pkgapi) {
 
   usize headstart = g->outbuf.len;
 
+  trace("gen_unit");
   gen_unit(g, u, pkgapi);
 
-  if (g->mainfun && (g->flags & CGEN_EXE))
+  if (g->mainfun && (g->flags & CGEN_EXE)) {
+    trace("gen_main");
     gen_main(g);
+  }
 
   return finalize(g, headstart);
 }

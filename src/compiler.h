@@ -59,11 +59,15 @@ typedef struct compiler_ {
   aliastype_t strtype;  // "str"
   funtype_t   funtype1; // "fun(this)uint"
   funtype_t   funtype2; // "fun(mut this, uint) bool"
+  funtype_t   funtype3; // "fun(this, any) any"
   map_t       builtins; // primitive types, like bool and int
-  fun_t       builtin_len;
-  fun_t       builtin_cap;
-  fun_t       builtin_reserve;
-  fun_t       builtin_resize;
+
+  // built-in functions
+  fun_t builtin_len;
+  fun_t builtin_cap;
+  fun_t builtin_reserve;
+  fun_t builtin_resize;
+  fun_t builtin_seq___add__;
 
   // configurable options (see compiler_config_t)
   bool opt_nolto : 1;
@@ -248,6 +252,7 @@ extern type_t* type_uint;
 extern type_t* type_f32;
 extern type_t* type_f64;
 extern type_t* type_unknown;
+extern type_t* type_any;
 void universe_init();
 
 

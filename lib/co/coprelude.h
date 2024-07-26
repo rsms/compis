@@ -86,20 +86,35 @@ struct _coOj { bool ok; __co_uint v; };
 struct _coOf { bool ok; f32       v; };
 struct _coOd { bool ok; f64       v; };
 
-// // ?[T]
-// struct _coOAb { bool ok; struct _coAb v; };
-// struct _coOAa { bool ok; struct _coAa v; };
-// struct _coOAh { bool ok; struct _coAh v; };
-// struct _coOAs { bool ok; struct _coAs v; };
-// struct _coOAt { bool ok; struct _coAt v; };
-// struct _coOAl { bool ok; struct _coAl v; };
-// struct _coOAm { bool ok; struct _coAm v; };
-// struct _coOAx { bool ok; struct _coAx v; };
-// struct _coOAy { bool ok; struct _coAy v; };
-// struct _coOAi { bool ok; struct _coAi v; };
-// struct _coOAj { bool ok; struct _coAj v; };
-// struct _coOAf { bool ok; struct _coAf v; };
-// struct _coOAd { bool ok; struct _coAd v; };
+// ?[T]
+struct _coOAb { bool ok; struct _coAb v; };
+struct _coOAa { bool ok; struct _coAa v; };
+struct _coOAh { bool ok; struct _coAh v; };
+struct _coOAs { bool ok; struct _coAs v; };
+struct _coOAt { bool ok; struct _coAt v; };
+struct _coOAl { bool ok; struct _coAl v; };
+struct _coOAm { bool ok; struct _coAm v; };
+struct _coOAx { bool ok; struct _coAx v; };
+struct _coOAy { bool ok; struct _coAy v; };
+struct _coOAi { bool ok; struct _coAi v; };
+struct _coOAj { bool ok; struct _coAj v; };
+struct _coOAf { bool ok; struct _coAf v; };
+struct _coOAd { bool ok; struct _coAd v; };
+
+// ?[T N]
+struct _coOVb { bool ok; bool*      v; };
+struct _coOVa { bool ok; i8*        v; };
+struct _coOVh { bool ok; u8*        v; };
+struct _coOVs { bool ok; i16*       v; };
+struct _coOVt { bool ok; u16*       v; };
+struct _coOVl { bool ok; i32*       v; };
+struct _coOVm { bool ok; u32*       v; };
+struct _coOVx { bool ok; i64*       v; };
+struct _coOVy { bool ok; u64*       v; };
+struct _coOVi { bool ok; __co_int*  v; };
+struct _coOVj { bool ok; __co_uint* v; };
+struct _coOVf { bool ok; f32*       v; };
+struct _coOVd { bool ok; f64*       v; };
 
 // // ?&[T]
 // struct _coOSb { bool ok; struct _coSb v; };

@@ -68,8 +68,9 @@ static u8 tagtab[NODEKIND_COUNT] = {
   [TYPE_PLACEHOLDER] = 'H',
   [TYPE_TEMPLATE]    = 'I', // instance of template, e.g. "var x Foo<int>"
 };
-#define TEMPLATE_TAG 'T' // template type, e.g. "type Foo<T> {}"
-#define BACKREF_TAG  'B' // back reference "B<base-62-number>_"
+#define ARRAY_FIXEDSIZE_TAG 'V' // 'V' for "[T N]", 'A' for "[T]"
+#define TEMPLATE_TAG        'T' // template type, e.g. "type Foo<T> {}"
+#define BACKREF_TAG         'B' // back reference "B<base-62-number>_"
 
 
 // check tag integrity in debug builds
@@ -78,6 +79,7 @@ __attribute__((constructor)) static void check_tags() {
   u8 seen[256] = {0};
 
   // add "special" tags not in tagtab (not mapped to a nodekind)
+  seen[ARRAY_FIXEDSIZE_TAG] = 0xff;
   seen[TEMPLATE_TAG] = 0xff;
   seen[BACKREF_TAG] = 0xff;
 
@@ -162,6 +164,10 @@ static void start_path(encoder_t* e, const node_t* n) {
 
   u8 tag = tagtab[n->kind];
   assertf(tag, "missing tag for %s", nodekind_name(n->kind));
+
+  if (n->kind == TYPE_ARRAY && ((arraytype_t*)n)->len)
+    tag = ARRAY_FIXEDSIZE_TAG;
+
   buf_push(&e->buf, tag);
 
   if (tag < 'a') switch (n->kind) {
@@ -275,8 +281,8 @@ static void end_path(encoder_t* e, const node_t* n) {
     break;
 
   case TYPE_ARRAY:
-    if (((arraytype_t*)n)->len)
-      buf_print_u64(&e->buf, ((arraytype_t*)n)->len, 10);
+    // if (((arraytype_t*)n)->len)
+    //   buf_print_u64(&e->buf, ((arraytype_t*)n)->len, 10);
     FALLTHROUGH;
   case TYPE_OPTIONAL:
   case TYPE_SLICE:
@@ -374,9 +380,10 @@ static void mangle_type(encoder_t* e, const type_t* t) {
   switch (t->kind) {
 
   case TYPE_ARRAY:
-    buf_push(&e->buf, tag);
     if (((arraytype_t*)t)->len)
-      buf_print_u64(&e->buf, ((arraytype_t*)t)->len, 10);
+      tag = ARRAY_FIXEDSIZE_TAG;
+    buf_push(&e->buf, tag);
+    //buf_print_u64(&e->buf, ((arraytype_t*)t)->len, 10);
     mangle_type(e, ((ptrtype_t*)t)->elem);
     break;
 
@@ -553,7 +560,11 @@ bool compiler_mangle(
           goto endpath;
         ns = assertnotnull(((structtype_t*)ns)->nsparent);
         break;
-      case TYPE_ALIAS:    ns = assertnotnull(((aliastype_t*)ns)->nsparent); break;
+      case TYPE_ALIAS:
+        if (ns == (node_t*)&c->strtype) // "str" has no nsparent
+          goto endpath;
+        ns = assertnotnull(((aliastype_t*)ns)->nsparent);
+        break;
       //case TYPE_OPTIONAL: ns = assertnotnull(((opttype_t*)ns)->nsparent); break;
 
       case NODE_UNIT:
