@@ -288,7 +288,7 @@ static void add_srclines(compiler_t* c, origin_t origin, diagkind_t kind, abuf_t
 
   c->diag.srclines = s->p;
   int linew = (int)ndigits10((u64)endline);
-  str_t buf = {0};
+  str_t buf = {};
 
   for (;;) {
     buf.len = 0;

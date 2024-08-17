@@ -308,7 +308,7 @@ static void del_block_map(ircons_t* c, maparray_t* a, u32 block_id) {
 
 
 static map_t* assign_block_map(ircons_t* c, maparray_t* a, u32 block_id) {
-  static map_t last_resort_map = {0};
+  static map_t last_resort_map = {};
   if (a->len <= block_id) {
     // fill holes
     u32 nholes = (block_id - a->len) + 1;
@@ -381,13 +381,13 @@ static irval_t* insertval(
 
 #define push_TODO_val(c, b, type, fmt, args...) ( \
   dlog("TODO_val " fmt, ##args), \
-  comment((c), pushval((c), (b), OP_NOOP, (loc_t){0}, (type)), "TODO") \
+  comment((c), pushval((c), (b), OP_NOOP, (loc_t)0, (type)), "TODO") \
 )
 
 
 #define make_TODO_val(c, type, fmt, args...) ( \
   dlog("TODO_val " fmt, ##args), \
-  comment((c), mkval((c), OP_NOOP, (loc_t){0}, (type)), "TODO") \
+  comment((c), mkval((c), OP_NOOP, (loc_t)0, (type)), "TODO") \
 )
 
 
@@ -747,7 +747,7 @@ static irval_t* create_liveness_var(ircons_t* c, irval_t* v, Liveness liveness) 
   sym_t name = sym_snprintf(tmp, sizeof(tmp), ".v%u_live", v->id);
   v->var.live = name;
 
-  irval_t* islivev = intconst(c, type_bool, (u64)liveness, (loc_t){0});
+  irval_t* islivev = intconst(c, type_bool, (u64)liveness, (loc_t)0);
 
   irblock_t* b = irval_block(c, v);
   var_write_inblock(c, b, name, islivev);
@@ -760,11 +760,11 @@ static irval_t* write_liveness_var(ircons_t* c, irval_t* owner, Liveness livenes
   if (owner->var.live == NULL)
     return create_liveness_var(c, owner, liveness);
   // update
-  irval_t* islivev_curr = var_read(c, owner->var.live, type_bool, (loc_t){0});
+  irval_t* islivev_curr = var_read(c, owner->var.live, type_bool, (loc_t)0);
   assert(islivev_curr->op == OP_ICONST);
   if (islivev_curr->aux.i64val == (u64)liveness)
     return islivev_curr;
-  irval_t* islivev = intconst(c, type_bool, (u64)liveness, (loc_t){0});
+  irval_t* islivev = intconst(c, type_bool, (u64)liveness, (loc_t)0);
   islivev->dead_members = islivev_curr->dead_members;
   var_write_inblock(c, c->b, owner->var.live, islivev);
   return islivev;
@@ -909,7 +909,7 @@ static void backpropagate_drop_to_ast(ircons_t* c, irval_t* v, irval_t* dropv) {
 
   // get dead_members, if any
   if (v->var.live) {
-    irval_t* liveness_var = var_read(c, v->var.live, type_bool, (loc_t){0});
+    irval_t* liveness_var = var_read(c, v->var.live, type_bool, (loc_t)0);
     d->dead_members = liveness_var->dead_members;
   }
 }
@@ -978,6 +978,7 @@ static void drop(ircons_t* c, irval_t* v, loc_t loc) {
       ptrarray_move_to_end(&c->b->values, i);
     }
     dropv = v;
+    trace("convert MOVE v%u -> DROP v%u", v->id, v->argv[0]->id);
     v = v->argv[0];
   } else {
     dropv = pushval(c, c->b, OP_DROP, loc, type_void);
@@ -1016,8 +1017,8 @@ static void conditional_drop(ircons_t* c, irval_t* control, irval_t* owner) {
   // creates "if (!.vN_live) { drop(vN) }"
   irblock_t* ifb = end_block(c);
 
-  irblock_t* deadb = mkblock(c, c->f, IR_BLOCK_GOTO, (loc_t){0});
-  irblock_t* contb = mkblock(c, c->f, IR_BLOCK_GOTO, (loc_t){0});
+  irblock_t* deadb = mkblock(c, c->f, IR_BLOCK_GOTO, (loc_t)0);
+  irblock_t* contb = mkblock(c, c->f, IR_BLOCK_GOTO, (loc_t)0);
 
   set_control(c, contb, ifb->control);
   contb->kind = ifb->kind;
@@ -1036,7 +1037,7 @@ static void conditional_drop(ircons_t* c, irval_t* control, irval_t* owner) {
   start_block(c, deadb);
   seal_block(c, deadb);
 
-  drop(c, owner, (loc_t){0});
+  drop(c, owner, (loc_t)0);
 
   end_block(c);
 
@@ -1049,12 +1050,12 @@ static void owners_unwind_one(ircons_t* c, const bitset_t* deadset, irval_t* v) 
   if (!deadset_has(deadset, v->id)) {
     // v definitely owns its value at the exit of its owning scope -- drop it
     trace("  v%u is live; drop right here in b%u", v->id, c->b->id);
-    drop(c, v, (loc_t){0});
+    drop(c, v, (loc_t)0);
     return;
   }
   if (v->var.live) {
     // v may be owning its value, maybe not
-    irval_t* liveness_var = var_read(c, v->var.live, type_bool, (loc_t){0});
+    irval_t* liveness_var = var_read(c, v->var.live, type_bool, (loc_t)0);
     trace("  %s = v%u %s", v->var.live, liveness_var->id, op_name(liveness_var->op));
     if (liveness_var->op == OP_PHI) {
       trace("  v%u's ownership is runtime conditional", v->id);
@@ -1254,7 +1255,7 @@ static void move_owner(
 {
   // check for zombie
   if (old_owner->var.live) {
-    irval_t* liveness_var = var_read(c, old_owner->var.live, type_bool, (loc_t){0});
+    irval_t* liveness_var = var_read(c, old_owner->var.live, type_bool, (loc_t)0);
     if UNLIKELY(liveness_var && liveness_var->aux.i64val != Liveness_LIVE) {
       error(c, rvalue_origin,
             "use of %sdead value of type %s",
@@ -1277,7 +1278,7 @@ static void move_owner(
         // deadset_add(c, &c->deadset, replace_owner->id);
         if (prev_is_live) {
           trace("  drop replaced v%u", replace_owner->id);
-          drop_reassign(c, replace_owner, (loc_t){0});
+          drop_reassign(c, replace_owner, (loc_t)0);
         }
       }
     } else {
@@ -1388,6 +1389,8 @@ static irval_t* move_or_copy(
 {
   irval_t* v = rvalue;
   if (type_isowner(rvalue->type)) {
+    // if (v->id == 3) panic("X");
+    dlog("isowner v%u %s", v->id, nodekind_name(rvalue->type->kind));
     v = move(c, rvalue, loc, replace_owner, rvalue_origin);
   } else if (type_isref(rvalue->type)) {
     v = reference(c, rvalue, loc);
@@ -1557,7 +1560,7 @@ static irval_t* assign(ircons_t* c, binop_t* n) {
   sym_t varname = dst->name;
   v->type = dst->type; // needed in case dst is subtype of v, e.g. "dst ?T <= v T"
 
-  irval_t* curr_owner = var_read(c, varname, v->type, (loc_t){0});
+  irval_t* curr_owner = var_read(c, varname, v->type, (loc_t)0);
 
   // do we need to mark the assignment op as "drop old value"?
   if (type_isowner(v->type)) {
@@ -1642,11 +1645,13 @@ static irval_t* typecons(ircons_t* c, typecons_t* n) {
 
 
 static irval_t* call(ircons_t* c, call_t* n) {
-  if (n->recv->kind == EXPR_ID && node_istype(((idexpr_t*)n->recv)->ref)) {
+  if (n->recv->kind == EXPR_ID && node_istype(((idexpr_t*)n->recv)->ref))
     return push_TODO_val(c, c->b, n->type, "type call");
-  }
 
   irval_t* recv = load_expr(c, n->recv);
+
+  assert_nodekind(recv->type, TYPE_FUN);
+  local_t** params = (local_t**)((funtype_t*)recv->type)->params.v;
 
   irval_t* v = mkval(c, OP_CALL, n->loc, n->type);
   pusharg(v, recv);
@@ -1654,7 +1659,13 @@ static irval_t* call(ircons_t* c, call_t* n) {
   for (u32 i = 0; i < n->args.len; i++) {
     expr_t* arg = (expr_t*)n->args.v[i];
     irval_t* arg_v = load_expr(c, arg);
-    if (type_isowner(arg_v->type))
+    // note: we check "isowner" on the parameter type rather than the argument type
+    // as some types are compatible but one is owned and the other is not.
+    // For example:
+    //   fun printstr(s &str)
+    //   fun example(s str)
+    //     printstr(s)  <-- 'str' (owned) is coerced into '&str' (borrowed)
+    if (type_isowner(params[i]->type))
       move_owner_outside(c, arg_v, arg);
     // if (arg_v->op != OP_MOVE)
     //   arg_v = move_or_copy(c, arg_v, arg->loc, NULL);
@@ -2465,6 +2476,7 @@ static irval_t* expr(ircons_t* c, void* expr_node) {
   case TYPE_UINT:
   case TYPE_F32:
   case TYPE_F64:
+  case TYPE_STR:
   case TYPE_ARRAY:
   case TYPE_SLICE:
   case TYPE_MUTSLICE:

@@ -25,6 +25,16 @@ _Noreturn void __co_panic_null(void) {
   __co_panic(__CO_X_STR(u8"null pointer"));
 }
 
+static _Noreturn void __co_panic_oom(void) {
+  __co_panic(__CO_X_STR(u8"out of memory"));
+}
+
+
+void _print(__co_str msg) {
+  fwrite(msg.ptr, msg.len, 1, stdout);
+  fputc('\n', stdout);
+}
+
 
 void* __co_mem_dup(const void* src, __co_uint size) {
   void* ptr = malloc(size);
@@ -33,15 +43,10 @@ void* __co_mem_dup(const void* src, __co_uint size) {
   return ptr;
 }
 
+
 void __co_mem_free(void* ptr, __co_uint size) {
   dlog("%p (%lu B)", ptr, size);
   free(ptr);
-}
-
-
-void _print(__co_str msg) {
-  fwrite(msg.ptr, msg.len, 1, stdout);
-  fputc('\n', stdout);
 }
 
 
@@ -83,7 +88,7 @@ bool __co_builtin_resize(void* arrayptr, __co_uint elemsize, __co_uint len) {
 }
 
 
-// __add__(a Seq<T>, b Seq<T>) ?[T]
+// fun __add__(a Seq<T>, b Seq<T>) ?[T]
 struct _coOAh __co_builtin_seq___add__(
   const void* aptr, __co_uint alen,
   const void* bptr, __co_uint blen,
@@ -120,4 +125,20 @@ struct _coOAh __co_builtin_seq___add__(
 
 err:
   return (struct _coOAh){};
+}
+
+
+// fun __add__(this str, other &[u8]) str
+struct _coSh __co_builtin_str___add__(
+  const void* aptr, __co_uint alen,
+  const void* bptr, __co_uint blen
+)
+{
+  struct _coOAh res = __co_builtin_seq___add__(aptr, alen, bptr, blen, 1);
+  if UNLIKELY(!res.ok)
+    __co_panic_oom();
+  return (struct _coSh){
+    .len = res.v.len,
+    .ptr = res.v.ptr,
+  };
 }

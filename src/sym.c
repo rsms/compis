@@ -62,7 +62,7 @@ FOREACH_PREDEFINED_SYMBOL(_)
 FOREACH_NODEKIND_PRIMTYPE(_)
 #undef _
 
-sym_t _sym_primtype_nametab[PRIMTYPE_COUNT] = {0};
+sym_t _sym_primtype_nametab[PRIMTYPE_COUNT] = {};
 
 
 sym_t sym_intern(const char* key, usize keylen) {

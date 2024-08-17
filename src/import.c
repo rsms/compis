@@ -229,7 +229,7 @@ end:
   // dlog(">>> import_fspath = \"%s\"", fspath_out->p);
   if (err) {
     str_free(*fspath_out);
-    *fspath_out = (str_t){0};
+    *fspath_out = (str_t){};
   }
   return err;
 }
@@ -255,7 +255,7 @@ err_t import_resolve_fspath(str_t* fspath, usize* rootlen_out) {
   }
   #endif
 
-  str_t tmpstr = {0};
+  str_t tmpstr = {};
   err_t err = 0;
   *rootlen_out = 0;
 
@@ -468,9 +468,9 @@ static int pkgimp_cmp(const pkgimp_t* a, const pkgimp_t* b, void* ctx) {
 
 err_t import_pkgs(compiler_t* c, pkg_t* importer_pkg, unit_t* unitv[], u32 unitc) {
   err_t err = 0;
-  str_t importer_dir = {0};
+  str_t importer_dir = {};
 
-  array_type(pkgimp_t) unique_imports = {0};
+  array_type(pkgimp_t) unique_imports = {};
 
   // Build a list of packages to import, sorted uniquely on path.
   // This serves multiple purposes:

@@ -6,19 +6,43 @@ void _assert_slice_eq(
   slice_t a, slice_t b, const char* file, int line, const char* fun)
 {
   if UNLIKELY(!slice_eq(a, b)) {
-    buf_t buf = buf_make(memalloc_ctx());
-    buf_print(&buf, "\n    \"");
-    buf_appendrepr(&buf, a.p, a.len);
-    buf_print(&buf, "\"\n != \"");
-    buf_appendrepr(&buf, b.p, b.len);
-    buf_print(&buf, "\"\n");
-    if (buf_nullterm(&buf)) {
-      _panic(file, line, fun, "Assertion failed: %s", buf.chars);
-    } else {
-      _panic(file, line, fun, "Assertion failed: \"%.*s\" != \"%.*s\"",
-            (int)a.len, a.chars, (int)b.len, b.chars);
+    bool use_repr = false;
+    if (!use_repr) for (usize i = 0; i < a.len; i++) {
+      if (a.bytes[i] < ' ' && a.bytes[i] != '\n') {
+        use_repr = true;
+        break;
+      }
     }
-    buf_dispose(&buf);
+    if (!use_repr) for (usize i = 0; i < b.len; i++) {
+      if (b.bytes[i] < ' ' && b.bytes[i] != '\n') {
+        use_repr = true;
+        break;
+      }
+    }
+    if (use_repr) {
+      buf_t buf = buf_make(memalloc_ctx());
+      buf_print(&buf, "\n\"");
+      buf_appendrepr(&buf, a.p, a.len);
+      buf_print(&buf, "\"\n  !=\n\"");
+      buf_appendrepr(&buf, b.p, b.len);
+      buf_print(&buf, "\"\n");
+      if (buf_nullterm(&buf)) {
+        _panic(file, line, fun, "Assertion failed:%s", buf.chars);
+      } else {
+        _panic(file, line, fun, "Assertion failed: \"%.*s\" != \"%.*s\"",
+              (int)a.len, a.chars, (int)b.len, b.chars);
+      }
+      buf_dispose(&buf);
+    } else {
+      _panic(file, line, fun,
+             "Assertion failed: slice_t x != slice_t y\n"
+             "————————————————————————————————\n"
+             "%.*s\n"
+             "————————————————————————————————\n"
+             "%.*s\n"
+             "————————————————————————————————",
+             (int)a.len, a.chars, (int)b.len, b.chars);
+    }
   }
 }
 

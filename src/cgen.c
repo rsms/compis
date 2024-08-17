@@ -389,6 +389,12 @@ static bool maybe_gen_ptrtype_defguard_begin(cgen_t* g, const ptrtype_t* t) {
 }
 
 
+static void gen_strtype(cgen_t* g, const type_t* t) {
+  // "str" is compatible with byte slice "&[u8]", which is predefined in coprelude.h
+  PRINT(CO_ABI_GLOBAL_PREFIX "str");
+}
+
+
 static void gen_slicetype(cgen_t* g, const slicetype_t* t) {
   PRINT("struct "), PRINT(assertnotnull(t->mangledname));
 }
@@ -451,7 +457,9 @@ static void gen_importedtype(cgen_t* g, const importedtype_t* t) {
 static bool reftype_byvalue(const cgen_t* g, const reftype_t* t) {
   assert(t->kind == TYPE_REF || t->kind == TYPE_MUTREF);
   assertf(!type_isref(t->elem), "ref to a ref should not be possible");
-  return t->kind == TYPE_REF && t->elem->size <= (u64)g->compiler->target.ptrsize;
+  return t->kind == TYPE_REF &&
+         ( t->elem->kind == TYPE_STR ||
+           t->elem->size <= (u64)g->compiler->target.ptrsize );
 }
 
 
@@ -499,8 +507,6 @@ static void gen_aliastype(cgen_t* g, const aliastype_t* t) {
 }
 
 static void gen_aliastype_def(cgen_t* g, const aliastype_t* t) {
-  if (t == &g->compiler->strtype)
-    return; // "str" is predefined in prelude
   startline(g, t->loc);
   PRINT("typedef "), gen_type(g, t->elem);
   PRINTF(" %s;", assertnotnull(t->mangledname));
@@ -731,17 +737,18 @@ static void gen_type(cgen_t* g, const type_t* t) {
   case TYPE_INT:      PRINT(CO_MANGLEDNAME_INT); break;
   case TYPE_UINT:     PRINT(CO_MANGLEDNAME_UINT); break;
 
-  case TYPE_FUN:      return gen_funtype(g, (const funtype_t*)t, NULL);
-  case TYPE_PTR:      return gen_ptrtype(g, (const ptrtype_t*)t);
+  case TYPE_FUN:      return gen_funtype(g, (funtype_t*)t, NULL);
+  case TYPE_PTR:      return gen_ptrtype(g, (ptrtype_t*)t);
   case TYPE_REF:
-  case TYPE_MUTREF:   return gen_reftype(g, (const reftype_t*)t);
+  case TYPE_MUTREF:   return gen_reftype(g, (reftype_t*)t);
   case TYPE_SLICE:
-  case TYPE_MUTSLICE: return gen_slicetype(g, (const slicetype_t*)t);
-  case TYPE_OPTIONAL: return gen_opttype(g, (const opttype_t*)t);
-  case TYPE_STRUCT:   return gen_structtype(g, (const structtype_t*)t);
-  case TYPE_ALIAS:    return gen_aliastype(g, (const aliastype_t*)t);
-  case TYPE_ARRAY:    return gen_arraytype(g, (const arraytype_t*)t);
-  case TYPE_IMPORTED: return gen_importedtype(g, (const importedtype_t*)t);
+  case TYPE_MUTSLICE: return gen_slicetype(g, (slicetype_t*)t);
+  case TYPE_OPTIONAL: return gen_opttype(g, (opttype_t*)t);
+  case TYPE_STR:      return gen_strtype(g, (type_t*)t);
+  case TYPE_STRUCT:   return gen_structtype(g, (structtype_t*)t);
+  case TYPE_ALIAS:    return gen_aliastype(g, (aliastype_t*)t);
+  case TYPE_ARRAY:    return gen_arraytype(g, (arraytype_t*)t);
+  case TYPE_IMPORTED: return gen_importedtype(g, (importedtype_t*)t);
 
   default:
     panic("unexpected type_t %s (%u)", nodekind_name(t->kind), t->kind);
@@ -1129,6 +1136,15 @@ static void gen_drop_array(cgen_t* g, const drop_t* d, const arraytype_t* at) {
 }
 
 
+static void gen_drop_str(cgen_t* g, const drop_t* d) {
+  char access[3] = {".v"};
+  if (d->type->kind != TYPE_OPTIONAL)
+    access[0] = 0;
+
+  PRINTF(RT_mem_free "((void*)%s%s.ptr, %s%s.len);", d->name, access, d->name, access);
+}
+
+
 static void gen_drop(cgen_t* g, const drop_t* d) {
   const type_t* effective_type = d->type;
   const type_t* bt = type_unwrap_ptr_and_opt((type_t*)effective_type);
@@ -1163,6 +1179,9 @@ static void gen_drop(cgen_t* g, const drop_t* d) {
   } else if (bt->kind == TYPE_ARRAY) {
     startlinex(g);
     gen_drop_array(g, d, (arraytype_t*)bt);
+  } else if (bt->kind == TYPE_STR) {
+    startlinex(g);
+    gen_drop_str(g, d);
   }
 
   if (d->type->kind == TYPE_OPTIONAL) {
@@ -1832,15 +1851,24 @@ static void gen_call_fn_recv(
 
 static void gen_builtin_len_or_cap(cgen_t* g, const expr_t* recv, const char* field) {
   const type_t* recvt = unwrap_ptr_and_alias(recv->type);
+
+  // len or cap of fixed size array becomes just a constant
   if (recvt->kind == TYPE_ARRAY && ((arraytype_t*)recvt)->len) {
-    // len or cap of fixed size array becomes just a constant
     gen_intconst(g, ((arraytype_t*)recvt)->len, g->compiler->uinttype);
-  } else {
-    // field access
-    gen_expr_rvalue(g, recv, recv->type);
-    gen_member_op(g, recv->type);
-    PRINT(field);
+    return;
   }
+
+  // .cap of slices is actually .len
+  if (recvt->kind == TYPE_SLICE ||
+      recvt->kind == TYPE_MUTSLICE ||
+      recvt->kind == TYPE_STR)
+  {
+    field = "len";
+  }
+
+  gen_expr_rvalue(g, recv, recv->type);
+  gen_member_op(g, recv->type);
+  PRINT(field);
 }
 
 static void gen_builtin_len(cgen_t* g, const expr_t* recv) {
@@ -1888,7 +1916,7 @@ static void gen_call_builtin_member(cgen_t* g, const call_t* n) {
 }
 
 
-static void gen_builtin_seq__add__(cgen_t* g, const call_t* call) {
+/*static void gen_builtin_seq__add__(cgen_t* g, const call_t* call) {
   fun_t* fun = (fun_t*)call->recv;
 
   PRINT(fun->mangledname), CHAR('(');
@@ -1915,15 +1943,58 @@ static void gen_builtin_seq__add__(cgen_t* g, const call_t* call) {
   }
 
   PRINTF("%llu)", ((arraytype_t*)type)->elem->size);
+}*/
+
+
+// // is_type_u8_slice_compatible returns true if value of type t can be used as byte slice
+// static bool is_type_u8_slice_compatible(const type_t* t) {
+//   return t->kind == TYPE_STR ||
+//          t->kind == TYPE_ARRAY ||
+//          type_isslice(t);
+// }
+
+
+static void gen_builtin_str__add__(cgen_t* g, const call_t* call) {
+  // fun __add__(this str, other &[u8]) str
+  assert(call->args.len == 2);
+  fun_t* fun = (fun_t*)call->recv;
+
+  PRINT(fun->mangledname), CHAR('(');
+
+  for (u32 i = 0;;) {
+    expr_t* arg = (expr_t*)call->args.v[i];
+    const type_t* type = unwrap_alias(arg->type);
+
+    // TODO: optimization for string and array literals.
+    // Currently we generate the following:
+    //   (struct _coSh){1,(const u8[1]){"b"}}.ptr,
+    //   (struct _coSh){1,(const u8[1]){"b"}}.len
+    // But we could instead generate this:
+    //   (const u8[1]){"b"},
+    //   1
+    //
+    gen_expr(g, arg);
+    if (type->kind != TYPE_ARRAY || ((arraytype_t*)type)->len == 0)
+      PRINT(".ptr");
+    PRINT(", ");
+    gen_builtin_len(g, arg);
+
+    if (++i == call->args.len)
+      break;
+    PRINT(", ");
+  }
+
+  CHAR(')');
 }
 
 
 static void gen_call_builtin_fun(cgen_t* g, const call_t* call) {
   fun_t* fun = (fun_t*)call->recv;
   assert_nodekind(fun, EXPR_FUN);
+  assert(call->args.len == fun->params.len);
 
-  if (fun == &g->compiler->builtin_seq___add__)
-    return gen_builtin_seq__add__(g, call);
+  if (fun == &g->compiler->builtin_str___add__)
+    return gen_builtin_str__add__(g, call);
 
   panic("TODO: generate builtin %s", fmtnode(0, fun));
 }
@@ -2092,32 +2163,24 @@ static void gen_strlit_values(cgen_t* g, const strlit_t* n) {
 
 
 static void gen_strlit_values_as_sliceinit(cgen_t* g, const strlit_t* n) {
+  assert(n->type->kind == TYPE_REF);
+  assert(((reftype_t*)n->type)->elem->kind == TYPE_STR);
+
   PRINTF("{%llu,(const u8[%llu]){\"", n->len, n->len);
   buf_appendrepr(&g->outbuf, n->bytes, n->len);
   PRINT("\"}}");
+
+  // PRINTF("{%llu,({static const u8 v[%llu] = {\"", n->len, n->len);
+  // buf_appendrepr(&g->outbuf, n->bytes, n->len);
+  // PRINT("\"};v;})}");
 }
 
 
 static void gen_strlit(cgen_t* g, const strlit_t* n) {
-  // type of strlit is either str or &[u8 N],
-  // generated as (const u8[N]){"..."} without NUL terminator.
-  const type_t* t = n->type;
-  if (t == (type_t*)&g->compiler->strtype) {
-    // str (alias for &[u8])
-    // struct slice { uint len; T* ptr; }
-    // generates: (struct SLICETYPE){ lenexpr, ptrexpr }
-    assert(t->kind == TYPE_ALIAS);
-    CHAR('(');
-    gen_aliastype(g, &g->compiler->strtype);
-    CHAR(')');
-    gen_strlit_values_as_sliceinit(g, n);
-  } else {
-    // &[u8 5]
-    assert(type_isref(t));
-    assert(((reftype_t*)t)->elem->kind == TYPE_ARRAY);
-    PRINTF("(const u8[%llu])", n->len);
-    gen_strlit_values(g, n);
-  }
+  // "str" is compatible with byte slice "&[u8]".
+  // struct _coSh { __co_uint len; const u8* ptr; };
+  PRINT("(struct _coSh)");
+  gen_strlit_values_as_sliceinit(g, n);
 }
 
 
@@ -2131,25 +2194,32 @@ static void gen_arraylit_values(cgen_t* g, const nodearray_t* values) {
 }
 
 
-static void gen_arraylit1(cgen_t* g, const arraylit_t* n, u64 len) {
+static void gen_arraylit_stack(cgen_t* g, const arraylit_t* n, u64 len, bool mut) {
   // "(T[len]){val1, val2, val3}"
   const arraytype_t* at = (arraytype_t*)n->type;
   CHAR('(');
-  // PRINT("const "); // TODO: track constctx
+  if (!mut)
+    PRINT("const ");
   gen_type(g, at->elem);
   PRINTF("[%llu])", len);
   gen_arraylit_values(g, &n->values);
-
-  // PRINTF("[%llu]){", len);
-  // for (u32 i = 0; i < n->values.len; i++) {
-  //   if (i) CHAR(',');
-  //   gen_expr(g, (expr_t*)n->values.v[i]);
-  // }
-  // PRINT("}");
 }
 
 
-static void gen_dyn_arraylit1(cgen_t* g, const arraylit_t* n) {
+static void gen_arraylit_static_slice(cgen_t* g, const arraylit_t* n) {
+  // "(struct slicetype){ len, (const T[len]){val1, val2, val3} }"
+  const slicetype_t* st = (slicetype_t*)n->type;
+  CHAR('(');
+  gen_slicetype(g, st);
+  PRINTF("){%u, (const ", n->values.len);
+  gen_type(g, st->elem);
+  PRINTF("[%u])", n->values.len);
+  gen_arraylit_values(g, &n->values);
+  CHAR('}');
+}
+
+
+static void gen_arraylit_heap(cgen_t* g, const arraylit_t* n) {
   // see also: gen_arraytype_def
   const arraytype_t* at = (arraytype_t*)n->type;
 
@@ -2159,22 +2229,24 @@ static void gen_dyn_arraylit1(cgen_t* g, const arraylit_t* n) {
 
   PRINTF("{%llu,%llu,", len, len);
   PRINT(RT_mem_dup "(&");
-  gen_arraylit1(g, n, n->values.len);
+  gen_arraylit_stack(g, n, n->values.len, /*mut*/false);
   PRINTF(",%llu)}", len * at->elem->size);
 }
 
 
-static void gen_dyn_arraylit(cgen_t* g, const arraylit_t* n) {
-  CHAR('('), gen_type(g, n->type), CHAR(')');
-  gen_dyn_arraylit1(g, n);
-}
-
-
 static void gen_arraylit(cgen_t* g, const arraylit_t* n) {
-  const arraytype_t* at = (arraytype_t*)n->type;
-  if (at->len == 0)
-    return gen_dyn_arraylit(g, n);
-  gen_arraylit1(g, n, at->len);
+  if (n->type->kind == TYPE_SLICE) {
+    gen_arraylit_static_slice(g, n);
+  } else {
+    const arraytype_t* at = (arraytype_t*)n->type;
+    assert_nodekind(at, TYPE_ARRAY);
+    if (at->len == 0) {
+      CHAR('('), gen_type(g, n->type), CHAR(')');
+      gen_arraylit_heap(g, n);
+    } else {
+      gen_arraylit_stack(g, n, at->len, /*mut*/true);
+    }
+  }
 }
 
 
@@ -2268,7 +2340,12 @@ static void gen_varinit(cgen_t* g, const local_t* n) {
 
 
 static void gen_vardef_array(
-  cgen_t* g, const local_t* n, const char* name, const arraytype_t* t, bool is_impl)
+  cgen_t*            g,
+  const local_t*     n,
+  const char*        name,
+  const arraytype_t* t,
+  bool               is_impl,
+  bool               is_mut)
 {
   // "T name[len] = {...}"
   // mini test:
@@ -2277,7 +2354,7 @@ static void gen_vardef_array(
   //   fun f1() { let _ [int 100] = [1,2,3] }    // is subject to this branch
   //   fun f2(k [int 3]) { let _ [int 3] = k }   // not subject to this branch
   //   fun f3(k &[int 3]) { let _ &[int 3] = k } // not subject to this branch
-  if (n->flags & NF_CONST) PRINT("const ");
+  if ((n->flags & NF_CONST) || !is_mut) PRINT("const ");
   if (t->len > 0) {
     gen_type(g, t->elem), CHAR(' '), PRINT(name);
     CHAR('['), PRINTF("%llu", t->len), CHAR(']');
@@ -2302,7 +2379,7 @@ static void gen_vardef_array(
       return;
     if (n->nuse == 0) PRINT(" " ATTR_UNUSED);
     if (n->init) {
-      PRINT(" = "), gen_dyn_arraylit1(g, (arraylit_t*)n->init);
+      PRINT(" = "), gen_arraylit_heap(g, (arraylit_t*)n->init);
     } else {
       PRINT(" = {}");
     }
@@ -2450,7 +2527,7 @@ static void gen_vardef1(
     break;
   case TYPE_ARRAY:
     if (!n->init || n->init->kind == EXPR_ARRAYLIT) {
-      gen_vardef_array(g, n, name, (arraytype_t*)t, is_impl);
+      gen_vardef_array(g, n, name, (arraytype_t*)t, is_impl, /*is_mut*/true);
       goto end;
     }
     is_ptr = ((arraytype_t*)t)->len > 0;
@@ -2479,7 +2556,8 @@ static void gen_vardef1(
         assert( ((reftype_t*)t)->elem->kind == TYPE_ARRAY );
         assert( ((arraytype_t*)((reftype_t*)t)->elem)->len > 0 );
       }
-      gen_vardef_array(g, n, name, (arraytype_t*)((reftype_t*)t)->elem, is_impl);
+      const arraytype_t* at = (arraytype_t*)((reftype_t*)t)->elem;
+      gen_vardef_array(g, n, name, at, is_impl, /*is_mut*/false);
       goto end;
     }
     is_ptr = true;
@@ -3133,6 +3211,7 @@ static void gen_expr(cgen_t* g, const expr_t* n) {
   case TYPE_F32:
   case TYPE_F64:
   case TYPE_ARRAY:
+  case TYPE_STR:
   case TYPE_SLICE:
   case TYPE_MUTSLICE:
   case TYPE_FUN:
@@ -3322,11 +3401,12 @@ static void assign_mangledname(cgen_t* g, node_t* n) {
     case TYPE_ALIAS:
     case TYPE_NS:
     case TYPE_IMPORTED:
-      // strtype has predefined mangledname
-      if (n == (node_t*)&g->compiler->strtype)
-        return;
       p = &((usertype_t*)n)->mangledname;
       break;
+
+    // has predefined mangledname
+    case TYPE_STR:
+      return;
 
     // has no mangledname
     case NODE_FWDDECL:
@@ -3714,9 +3794,48 @@ static void gen_decls(cgen_t* g, node_t** defv, u32 defc) {
 }
 
 
+#ifdef ENABLE_CONSTANT_INTERNING
+
+static err_t cgen_register_constants(
+  cgen_t* g, unit_t** unitv, u32 unitc, cgen_pkgapi_t* pkgapi)
+{
+  /*
+  constant interning of all array constants larger than 8 bytes
+  */
+  u32 nconstants = 0;
+  for (u32 unit_i = 0; unit_i < unitc; unit_i++) {
+    unit_t* unit = unitv[unit_i];
+    nconstants += unit->constants.len;
+  }
+
+  if (nconstants == 0)
+    return 0;
+
+  node_t** dst = nodearray_alloc(&g->constants, g->ma, nconstants);
+  if UNLIKELY(!dst)
+    return (g->err = ErrNoMem);
+
+  for (u32 unit_i = 0; unit_i < unitc; unit_i++) {
+    unit_t* unit = unitv[unit_i];
+    usize count = unit->constants.len;
+    memcpy(dst, unit->constants.v, sizeof(node_t*) * count);
+    dst += count;
+  }
+
+  return 0;
+}
+
+#endif // ENABLE_CONSTANT_INTERNING
+
+
 err_t cgen_pkgapi(cgen_t* g, unit_t** unitv, u32 unitc, cgen_pkgapi_t* pkgapi) {
   memset(pkgapi, 0, sizeof(*pkgapi));
   cgen_reset(g);
+
+  #ifdef ENABLE_CONSTANT_INTERNING
+    cgen_register_constants(g, unitv, unitc, pkgapi);
+    panic("TODO: finish implementation of ENABLE_CONSTANT_INTERNING");
+  #endif
 
   // we assume no AST nodes have been MARK1'd, since we rely on that for toposort
   #ifdef DEBUG

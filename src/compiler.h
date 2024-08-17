@@ -41,6 +41,7 @@ typedef struct compiler_ {
   slice_t     cflags_sysinc; // cflags with -isystemPATH for current target
   const char* ldname;        // name of linker for target ("" if none)
   int         lto;           // LTO level. 0 = disabled
+  target_t    target;        // target triple
 
   // diagnostics
   rwmutex_t      diag_mu;     // must hold lock when accessing the following fields
@@ -50,24 +51,28 @@ typedef struct compiler_ {
   diag_t         diag;        // most recent diagnostic message
   buf_t          diagbuf;     // for diag.msg (also used as tmpbuf)
 
-  // target info
-  target_t    target;   // target triple
-  type_t*     addrtype; // type for storing memory addresses, e.g. u64
-  type_t*     inttype;  // "int"
-  type_t*     uinttype; // "uint"
-  slicetype_t u8stype;  // "&[u8]"
-  aliastype_t strtype;  // "str"
-  funtype_t   funtype1; // "fun(this)uint"
-  funtype_t   funtype2; // "fun(mut this, uint) bool"
-  funtype_t   funtype3; // "fun(this, any) any"
-  map_t       builtins; // primitive types, like bool and int
+  // target-dependent types
+  type_t*     addrtype;    // type for storing memory addresses, e.g. u64
+  type_t*     inttype;     // "int"
+  type_t*     uinttype;    // "uint"
+  slicetype_t u8stype;     // "&[u8]"
+  type_t      strtype;     // "str"
+  reftype_t   refstrtype;  // "&str"
+  local_t     refstrparam; // "_ &str"
+  funtype_t   funtype1;    // "fun(this)uint"
+  funtype_t   funtype2;    // "fun(mut this, uint) bool"
+  funtype_t   funtype3;    // "fun(this &str, other &[u8]) str"
+  node_t*     params_2x_refstr[2]; // "(&str, &str)"
+
+  // built-in primitive types, like bool and int
+  map_t builtins;
 
   // built-in functions
   fun_t builtin_len;
   fun_t builtin_cap;
   fun_t builtin_reserve;
   fun_t builtin_resize;
-  fun_t builtin_seq___add__;
+  fun_t builtin_str___add__;
 
   // configurable options (see compiler_config_t)
   bool opt_nolto : 1;
@@ -203,7 +208,13 @@ typedef struct {
   usize        indent;
   map_t        typedefmap;
   map_t        tmpmap;
+
   const fun_t* nullable mainfun;
+
+  #ifdef ENABLE_CONSTANT_INTERNING
+  nodearray_t constants;
+  #endif
+
   #ifdef DEBUG
   int traceindent;
   #endif
@@ -228,7 +239,6 @@ extern node_t* last_resort_node;
 #define CO_MANGLE_PREFIX     "_co"
 #define CO_ABI_GLOBAL_PREFIX "__co_"
 // mangledname of built-ins
-#define CO_MANGLEDNAME_STR  CO_ABI_GLOBAL_PREFIX "str"
 #define CO_MANGLEDNAME_INT  CO_ABI_GLOBAL_PREFIX "int"
 #define CO_MANGLEDNAME_UINT CO_ABI_GLOBAL_PREFIX "uint"
 

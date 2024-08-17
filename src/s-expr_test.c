@@ -35,9 +35,9 @@ static void s_expr_must_fail_to_parse(
 }
 
 
-static void test_s_expr_fmt(buf_t* buf, const s_expr_t* n, u32 flags) {
+static void test_s_expr_fmt(buf_t* buf, const s_expr_t* n, u32 flags, u32 maxcol) {
   buf_clear(buf);
-  err_t err = s_expr_fmt(n, buf, flags);
+  err_t err = s_expr_fmt(n, buf, flags, maxcol);
   assertf(err == 0, "s_expr_fmt: %s", err_str(err));
 }
 
@@ -131,51 +131,72 @@ UNITTEST_DEF(s_expr_1_parse) {
 
 UNITTEST_DEF(s_expr_2_fmt) {
   memalloc_t ma = memalloc_ctx();
+  const char* input_text;
   s_expr_list_t* list;
   buf_t buf = buf_make(ma);
 
-  list = s_expr_must_parse(ma, "hello [world 123 foo/bar {456(X Y Z)}] a + c ()");
-  assertf(list->kind == '.', "%c", list->kind);
-
   // "compact" plain formatting
-  test_s_expr_fmt(&buf, SEXPR_TYPECAST(list), /*u32 flags*/0);
-  assert_cstr_eq("hello [world 123 foo/bar {456 (X Y Z)}] a + c ()", buf.chars);
-
-  // "pretty" formatting
-  test_s_expr_fmt(&buf, SEXPR_TYPECAST(list), SEXPR_FMT_PRETTY);
-  // dlog("%s", buf.chars);
-  assert_cstr_eq(
-    "hello\n"
-    "[world 123 foo/bar\n"
-    "  {456\n"
-    "    (X Y Z)}]\n"
-    "a\n"
-    "+\n"
-    "c\n"
-    "()"
-    "", buf.chars);
-
+  input_text = "hello [world 123 foo/bar {456 (X Y Z)}] a + c ()";
+  list = s_expr_must_parse(ma, input_text);
+  assertf(list->kind == '.', "%c", list->kind);
+  test_s_expr_fmt(&buf, SEXPR_TYPECAST(list), /*flags*/0, /*maxcol*/80);
+  assert_cstr_eq(input_text, buf.chars); // input == output
   s_expr_free(list, ma);
 
-  // prettyprint helper
+  // "pretty" formatting
+  input_text =
+    "(VAR _ (ARRAYLIT (INTLIT 1) (INTLIT 2) (INTLIT 3)))\n"
+    "(VAR _ (ARRAYLIT (INTLIT 1) (INTLIT 2) (INTLIT 3)))\n"
+    "(VAR _ (ARRAYLIT (INTLIT 1) (INTLIT 2) (INTLIT 3)))\n"
+    "(VAR _ (ARRAYLIT (INTLIT 1) (INTLIT 2) (INTLIT 3)))\n"
+    "(FUN example\n"
+    "  (BLOCK\n"
+    "    (VAR _ (ARRAYLIT (INTLIT 1) (INTLIT 2) (INTLIT 3)))\n"
+    "    (VAR _ (ARRAYLIT (INTLIT 1) (INTLIT 2) (INTLIT 3)))\n"
+    "    (VAR _ (ARRAYLIT (INTLIT 1) (INTLIT 2) (INTLIT 3)))\n"
+    "    (VAR _ (ARRAYLIT (INTLIT 1) (INTLIT 2) (INTLIT 3)))\n"
+    "    (VAR _ (ARRAYLIT (INTLIT 1) (INTLIT 2) (INTLIT 3)))))"
+    ;
+  list = s_expr_must_parse(ma, input_text);
   buf_clear(&buf);
-  err_t err = s_expr_prettyprint(&buf, slice_cstr(
-    "(hello [world 123 foo/bar {456 (X Y Z)}] a + c ())"));
+  test_s_expr_fmt(&buf, SEXPR_TYPECAST(list), SEXPR_FMT_PRETTY, /*maxcol*/80);
+  //dlog("\n————————\n%s\n————————", buf.chars);
+  assert_cstr_eq(input_text, buf.chars); // input == output
+  s_expr_free(list, ma);
+
+  // prettyprint helper, with narrower maxcol
+  input_text =
+    "(VAR _\n"
+    "  (ARRAYLIT\n"
+    "    (INTLIT 1)\n"
+    "    (INTLIT 2)\n"
+    "    (INTLIT 3)))\n"
+    "(VAR _\n"
+    "  (ARRAYLIT\n"
+    "    (INTLIT 1)\n"
+    "    (INTLIT 2)\n"
+    "    (INTLIT 3)))\n"
+    "(FUN example\n"
+    "  (BLOCK\n"
+    "    (VAR _\n"
+    "      (ARRAYLIT\n"
+    "        (INTLIT 1)\n"
+    "        (INTLIT 2)\n"
+    "        (INTLIT 3)))\n"
+    "    (VAR _\n"
+    "      (ARRAYLIT\n"
+    "        (INTLIT 1)\n"
+    "        (INTLIT 2)\n"
+    "        (INTLIT 3)))))"
+    ;
+  buf_clear(&buf);
+  err_t err = s_expr_prettyprint(&buf, slice_cstr(input_text), /*maxcol*/40);
   assertf(err == 0, "%s", err_str(err));
-  assert_cstr_eq(
-    "(hello\n"
-    "  [world 123 foo/bar\n"
-    "    {456\n"
-    "      (X Y Z)}]\n"
-    "  a\n"
-    "  +\n"
-    "  c\n"
-    "  ())"
-    "", buf.chars);
+  assert_cstr_eq(input_text, buf.chars); // input == output
 
   // "((x))" should linebreak after first "("
   list = s_expr_must_parse(ma, "((x))");
-  test_s_expr_fmt(&buf, SEXPR_TYPECAST(list), SEXPR_FMT_PRETTY);
+  test_s_expr_fmt(&buf, SEXPR_TYPECAST(list), SEXPR_FMT_PRETTY, /*maxcol*/80);
   assert_cstr_eq(
     "(\n"
     "  (x))"

@@ -318,7 +318,7 @@ err_t _subproc_fork(
     #ifdef SUBPROC_USE_PGRP
       EXIT_ON_ERROR( setpgrp() );
       EXIT_ON_ERROR( close(fds[0]) );
-      EXIT_ON_ERROR( write(fds[1], &(u8[1]){0}, sizeof(u8)) );
+      EXIT_ON_ERROR( write(fds[1], &(u8[1]){}, sizeof(u8)) );
       EXIT_ON_ERROR( close(fds[1]) );
     #endif
 

@@ -349,7 +349,7 @@ static void typeid_fmt_node1(PARAMS, node_t* n) {
 typeid_t _typeid(type_t* t, bool intern) {
   memalloc_t ma = memalloc_ctx();
   buf_t buf = buf_make(ma);
-  nodearray_t seenstack = {0};
+  nodearray_t seenstack = {};
 
   typeid_t typeid = typeid_make(&buf, intern, &seenstack, 0, t);
 

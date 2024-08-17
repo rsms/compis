@@ -156,7 +156,7 @@ static bool bump_alloc(bump_allocator_t* a, mem_t* m, usize size, bool zeroed) {
     rwmutex_runlock(&a->tailmu);
 
     if UNLIKELY(!bump_alloc_grow(a, size)) {
-      *m = (mem_t){0};
+      *m = (mem_t){};
       return false;
     }
 
@@ -190,7 +190,7 @@ static bool bump_alloc(bump_allocator_t* a, mem_t* m, usize size, bool zeroed) {
     // allocate another slab if needed
     if UNLIKELY(oldptr + size > ATOMIC_LOAD(&a->end)) {
       if (!bump_alloc_grow(a, size)) {
-        *m = (mem_t){0};
+        *m = (mem_t){};
         return false;
       }
       oldptr = ATOMIC_LOAD(&a->ptr);
@@ -232,7 +232,7 @@ static bool bump_alloc(bump_allocator_t* a, mem_t* m, usize size, bool zeroed) {
 
 static bool bump_resize(bump_allocator_t* a, mem_t* m, usize size, bool zeroed) {
   // TODO: grow tail if we can (i.e. when m.p+m.size==a->ptr-m.size)
-  mem_t newmem = {0};
+  mem_t newmem = {};
   if (!bump_alloc(a, &newmem, size, zeroed))
     return false;
   memcpy(newmem.p, m->p, m->size);
@@ -260,7 +260,7 @@ static bool bump_free(bump_allocator_t* a, mem_t* m, usize size, bool zeroed) {
     // Note: we must never "free" tail (ie a->tail=a->tail->prev) since that would
     // break monotonicity which is assumed to make the impl thread safe.
   }
-  *m = (mem_t){0};
+  *m = (mem_t){};
   return true;
 }
 

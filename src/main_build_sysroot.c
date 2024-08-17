@@ -897,7 +897,7 @@ static err_t copy_sysinc_headers(const compiler_t* c) {
 static str_t lockfile_path(const compiler_t* c, const char* component) {
   // IMPORTANT: the lock file must be stored in a directory which is guaranteed
   // not to disappear or move while the lock is held.
-  str_t filename = {0};
+  str_t filename = {};
   str_append(&filename, c->sysroot, PATH_SEP_STR, component, ".lock");
   safecheck(filename.p != NULL);
   return filename;

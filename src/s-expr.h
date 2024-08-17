@@ -45,8 +45,8 @@ err_t s_expr_parse(
   void* nullable                userdata);
 
 void s_expr_free(s_expr_list_t* n, memalloc_t ma);
-err_t s_expr_fmt(const void* /*s_expr_list_t|s_expr_atom_t*/ n, buf_t* buf, u32 flags);
-err_t s_expr_prettyprint(buf_t* dst, slice_t src);
+err_t s_expr_fmt(const void* n, buf_t* buf, u32 flags, u32 maxcol);
+err_t s_expr_prettyprint(buf_t* dst, slice_t src, u32 maxcol);
 s_expr_t* nullable s_expr_at(s_expr_list_t* list, usize index);
 s_expr_atom_t* s_expr_atom_at(s_expr_list_t* list, usize index);
 s_expr_list_t* s_expr_list_at(s_expr_list_t* list, usize index);
@@ -69,7 +69,8 @@ s_expr_list_t* s_expr_list_at(s_expr_list_t* list, usize index);
 //——————————————————————————————————————————————————————————————————————————————————————
 // implementation
 
-err_t _s_expr_fmt(const s_expr_t* n, buf_t* buf, u32 flags);
-#define s_expr_fmt(n, buf, flags) _s_expr_fmt(SEXPR_TYPECAST(n), (buf), (flags))
+err_t _s_expr_fmt(const s_expr_t* n, buf_t* buf, u32 flags, u32 maxcol);
+#define s_expr_fmt(n, buf, flags, maxcol) \
+  _s_expr_fmt(SEXPR_TYPECAST(n), (buf), (flags), (maxcol))
 
 ASSUME_NONNULL_END

@@ -310,12 +310,12 @@ bool path_clean_posix(str_t* path) {
 
 
 str_t path_joinv(usize count, va_list ap) {
-  str_t s = {0};
+  str_t s = {};
   if LIKELY(str_appendv(&s, PATH_SEP, count, ap)) {
     s.len = path_cleanx(s.p, s.cap, s.p, s.len);
     if UNLIKELY(s.len >= s.cap) {
       str_free(s);
-      s = (str_t){0};
+      s = (str_t){};
     }
   }
   return s;

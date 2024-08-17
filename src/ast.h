@@ -72,7 +72,7 @@ typedef u8 nodekind_t;
   _( TYPE_UINT,    type_t, 'uint', uint, 4 )\
   _( TYPE_F32,     type_t, 'f32 ', f32,  4 )\
   _( TYPE_F64,     type_t, 'f64 ', f64,  8 )\
-  _( TYPE_ANY,     type_t, 'anyt', any, 0 )\
+  _( TYPE_ANY,     type_t, 'any ', any,  0 )\
   _( TYPE_UNKNOWN, type_t, 'unkn', unknown, 0 )\
 // end FOREACH_NODEKIND_PRIMTYPE
 #define FOREACH_NODEKIND_USERTYPE(_) /* nodekind_t, TYPE, enctag */\
@@ -89,6 +89,8 @@ typedef u8 nodekind_t;
   _( TYPE_ALIAS,    aliastype_t,    'alis')\
   _( TYPE_NS,       nstype_t,       'ns  ')\
   _( TYPE_IMPORTED, importedtype_t, 'impt')/* T.name */\
+  /* special types defined per compiler instance */\
+  _( TYPE_STR, type_t, 'str ')/* string */\
   /* special types replaced by typecheck */\
   _( TYPE_TEMPLATE,    templatetype_t,    'tpl ')/* template instance */ \
   _( TYPE_PLACEHOLDER, placeholdertype_t, 'plac')/* template parameter */ \
@@ -242,6 +244,10 @@ typedef struct {
   typefuntab_t        tfuns;      // imported type functions
   import_t* nullable  importlist; // list head
   experiments_t       experiments;
+
+  #ifdef ENABLE_CONSTANT_INTERNING
+  nodearray_t constants; // allocated in ast_ma
+  #endif
 } unit_t;
 
 typedef struct type_ {

@@ -18,7 +18,7 @@ and decoding the AST (which refers to the imported packages.)
 
   astdec = astdecoder_open(ma, ast_ma, locmap, srcname, src, srclen);
 
-  pkg_t pkg = {0};
+  pkg_t pkg = {};
   astdecoder_decode_header(astdec, &pkg);
   // load imports here
 

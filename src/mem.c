@@ -63,7 +63,7 @@ static bool bump_alloc(bump_allocator_t* a, mem_t* m, usize size, bool zeroed) {
       memset(m->p, 0, size);
     return true;
   }
-  *m = (mem_t){0};
+  *m = (mem_t){};
   return false;
 }
 
@@ -107,7 +107,7 @@ static bool bump_free(bump_allocator_t* a, mem_t* m, usize size, bool zeroed) {
     if (a->flags & MEMALLOC_STORAGE_ZEROED)
       memset(a->ptr, 0, m->size);
   }
-  *m = (mem_t){0};
+  *m = (mem_t){};
   return true;
 }
 

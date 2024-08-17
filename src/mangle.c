@@ -76,7 +76,7 @@ static u8 tagtab[NODEKIND_COUNT] = {
 // check tag integrity in debug builds
 #ifdef DEBUG
 __attribute__((constructor)) static void check_tags() {
-  u8 seen[256] = {0};
+  u8 seen[256] = {};
 
   // add "special" tags not in tagtab (not mapped to a nodekind)
   seen[ARRAY_FIXEDSIZE_TAG] = 0xff;
@@ -561,8 +561,6 @@ bool compiler_mangle(
         ns = assertnotnull(((structtype_t*)ns)->nsparent);
         break;
       case TYPE_ALIAS:
-        if (ns == (node_t*)&c->strtype) // "str" has no nsparent
-          goto endpath;
         ns = assertnotnull(((aliastype_t*)ns)->nsparent);
         break;
       //case TYPE_OPTIONAL: ns = assertnotnull(((opttype_t*)ns)->nsparent); break;

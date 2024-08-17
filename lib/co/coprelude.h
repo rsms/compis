@@ -56,6 +56,9 @@ struct _coSj { __co_uint len; const __co_uint* ptr; };
 struct _coSf { __co_uint len; const f32*       ptr; };
 struct _coSd { __co_uint len; const f64*       ptr; };
 
+// "str" is a special sometimes-owned type, binary-compatible with "&[u8]"
+typedef struct _coSh __co_str;
+
 // mut&[T]
 struct _coDb { __co_uint len; bool*      ptr; };
 struct _coDa { __co_uint len; i8*        ptr; };
@@ -145,6 +148,3 @@ struct _coOVd { bool ok; f64*       v; };
 // struct _coODj { bool ok; struct _coDj v; };
 // struct _coODf { bool ok; struct _coDf v; };
 // struct _coODd { bool ok; struct _coDd v; };
-
-// type str = &[u8]
-typedef struct _coSh __co_str;

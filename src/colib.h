@@ -1024,14 +1024,14 @@ inline static memalloc_t memalloc_ctx_set(memalloc_t newma) {
 }
 
 WARN_UNUSED_RESULT inline static mem_t mem_alloc(memalloc_t ma, usize size) {
-  mem_t m = {0};
+  mem_t m = {};
   assertnotnull((const void*)ma->f);
   ma->f(ma, &m, size, false);
   return m;
 }
 
 WARN_UNUSED_RESULT inline static mem_t mem_alloc_zeroed(memalloc_t ma, usize size) {
-  mem_t m = {0};
+  mem_t m = {};
   ma->f(ma, &m, size, true);
   return m;
 }

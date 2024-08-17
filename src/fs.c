@@ -226,7 +226,7 @@ static int cstr_cmp(const char** a, const char** b, void* ctx) {
 err_t fs_mkdirs_for_files(memalloc_t ma, const char*const* filev, u32 filec) {
   err_t err = 0;
   char dir[PATH_MAX];
-  ptrarray_t dirs = {0};
+  ptrarray_t dirs = {};
 
   for (u32 i = 0; i < filec; i++) {
     // e.g. "/foo/bar/cat.lol" => "/foo/bar"

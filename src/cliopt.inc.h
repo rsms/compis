@@ -105,7 +105,7 @@ static const struct option longopt_spec[] = {
   #endif
 
   FOREACH_CLI_OPTION(_S, _SV, _L, _LV, _DL, _DLV)
-  {0}
+  {}
 
   #undef _S
   #undef _SV

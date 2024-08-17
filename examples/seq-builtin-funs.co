@@ -1,0 +1,16 @@
+// built-in .len(this)uint and .cap(this)uint type functions
+// for sequence types
+
+fun slice_len(x &[u8]) uint = x.len()
+fun mutslice_len(x mut&[u8]) uint = x.len()
+fun arrayref_len(x &[u8 3]) uint = x.len()
+fun array_len(x [u8]) uint = x.len()
+fun strref_len(x &str) uint = x.len()
+fun str_len(x str) uint = x.len()
+
+fun slice_cap(x &[u8]) uint = x.cap()
+fun mutslice_cap(x mut&[u8]) uint = x.cap()
+fun arrayref_cap(x &[u8 3]) uint = x.cap()
+fun array_cap(x [u8]) uint = x.cap()
+fun strref_cap(x &str) uint = x.cap()
+fun str_cap(x str) uint = x.cap()

@@ -32,6 +32,7 @@ const char* nodekind_fmt(nodekind_t kind) {
     case TYPE_REF: case TYPE_MUTREF:     return "reference type";
     case TYPE_SLICE: case TYPE_MUTSLICE: return "slice type";
     case TYPE_OPTIONAL:                  return "optional type";
+    case TYPE_STR:                       return "string type";
     case TYPE_STRUCT:                    return "struct type";
     case TYPE_ALIAS:                     return "alias type";
     case TYPE_TEMPLATE:                  return "template type";
@@ -454,6 +455,10 @@ static void fmt(FMT_PARAMS, const node_t* nullable n) {
   case TYPE_F32:
   case TYPE_F64:
     PRINT(primtype_name(n->kind));
+    break;
+
+  case TYPE_STR:
+    PRINT("str");
     break;
 
   case TYPE_STRUCT:

@@ -124,7 +124,7 @@ u64 microsleep(u64 microseconds) {
     .tv_sec  = (long)sec,
     .tv_nsec = (microseconds - sec*1000000) * 1000,
   };
-  struct timespec remaining = {0};
+  struct timespec remaining = {};
   if (nanosleep(&request, &remaining) != 0)
     return remaining.tv_sec*1000000 + remaining.tv_nsec/1000;
   return 0;

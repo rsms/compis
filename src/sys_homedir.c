@@ -9,7 +9,7 @@
 
 
 const char* sys_homedir() {
-  static char homedir[PATH_MAX] = {0};
+  static char homedir[PATH_MAX] = {};
   if (*homedir)
     return homedir;
 

@@ -348,7 +348,7 @@ UNITTEST_DEF(array_sortedset) {
 
   memalloc_t ma = memalloc_default();
 
-  ptrarray_t a = {0};
+  ptrarray_t a = {};
   for (usize i = 0; i < countof(insert_data); i++) {
     bool added;
     uintptr v = insert_data[i];

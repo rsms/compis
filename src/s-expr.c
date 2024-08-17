@@ -193,7 +193,34 @@ err_t s_expr_parse(
 }
 
 
-static void s_expr_fmt1(u32 flags, buf_t* buf, const s_expr_t* n, int depth) {
+static void s_expr_fmt_compact(buf_t* buf, const s_expr_t* n) {
+  if (n->type == SEXPR_ATOM) {
+    const s_expr_atom_t* a = (s_expr_atom_t*)n;
+    buf_append(buf, a->chars, a->len);
+  } else {
+    const s_expr_list_t* l = (s_expr_list_t*)n;
+    if (l->kind != '.')
+      buf_push(buf, l->kind);
+    for (const s_expr_t* cn = l->head; cn;) {
+      s_expr_fmt_compact(buf, cn);
+      if (!(cn = cn->next))
+        break;
+      buf_push(buf, ' ');
+    }
+    if (l->kind != '.')
+      buf_push(buf, s_expr_endtok(l->kind));
+  }
+}
+
+
+static void s_expr_fmt_pretty(
+  buf_t*          buf,
+  u32             maxcol,
+  usize           bufstart,
+  const s_expr_t* n,
+  usize           linestart,
+  int             depth)
+{
   if (n->type == SEXPR_ATOM) {
     const s_expr_atom_t* a = (s_expr_atom_t*)n;
     buf_append(buf, a->chars, a->len);
@@ -206,45 +233,78 @@ static void s_expr_fmt1(u32 flags, buf_t* buf, const s_expr_t* n, int depth) {
     buf_push(buf, l->kind);
     depth++;
   }
-  const s_expr_t* cn = l->head;
-  bool linebreak = false;
-  while (cn) {
-    if (cn != l->head) {
-      // separate values with linebreak either when its a list or if we have
-      // already used linebreaks for this list.
-      if ((flags & SEXPR_FMT_PRETTY) &&
-          (linebreak = (linebreak || cn->type == SEXPR_LIST)))
-      {
-        buf_printf(buf, "\n%*s", depth * 2, "");
-      } else {
-        buf_push(buf, ' ');
-      }
-    } else if ((flags & SEXPR_FMT_PRETTY) && cn->type == SEXPR_LIST && l->kind != '.') {
-      // special case for "((x))" -- list where the first child is another list
-      buf_printf(buf, "\n%*s", depth * 2, "");
+
+  usize bufstart_list = buf->len;
+  usize bufstart_last = buf->len;
+  bool insert_linebreaks = l->head && l->head->type == SEXPR_LIST;
+  const s_expr_t* first_list_cn = NULL;
+
+  for (const s_expr_t* cn = l->head; cn; ) {
+    if (cn->type == SEXPR_LIST && !first_list_cn) {
+      first_list_cn = cn;
+      bufstart_list = buf->len;
     }
-    s_expr_fmt1(flags, buf, cn, depth);
+
+    if (insert_linebreaks) {
+      if (buf->len == bufstart && l->kind == '.') {
+        // special case for first item of implicit root list
+        linestart = buf->len;
+      } else {
+        linestart = (u32)buf->len + 1;
+        buf_push(buf, '\n');
+        buf_fill(buf, ' ', (usize)depth * 2);
+      }
+    } else {
+      bufstart_last = buf->len;
+      if (cn != l->head)
+        buf_push(buf, ' ');
+    }
+
+    s_expr_fmt_pretty(buf, maxcol, bufstart, cn, linestart, depth);
+
+    if (buf->len - linestart > maxcol) {
+      if (!insert_linebreaks) {
+        if (first_list_cn) {
+          // rewind to first list entry
+          cn = first_list_cn;
+          buf->len = bufstart_list;
+        } else {
+          // undo this one entry
+          buf->len = bufstart_last;
+        }
+        insert_linebreaks = true;
+        continue;
+      }
+    }
+
+    if (!cn->next)
+      break;
     cn = cn->next;
   }
+
   if (l->kind != '.')
     buf_push(buf, s_expr_endtok(l->kind));
 }
 
 
-err_t _s_expr_fmt(const s_expr_t* n, buf_t* buf, u32 flags) {
-  s_expr_fmt1(flags, buf, n, 0);
+err_t _s_expr_fmt(const s_expr_t* n, buf_t* buf, u32 flags, u32 maxcol) {
+  if (flags & SEXPR_FMT_PRETTY) {
+    s_expr_fmt_pretty(buf, maxcol, buf->len, n, buf->len, 0);
+  } else {
+    s_expr_fmt_compact(buf, n);
+  }
   return buf_nullterm(buf) ? 0 : ErrNoMem;
 }
 
 
-err_t s_expr_prettyprint(buf_t* dst, slice_t src) {
+err_t s_expr_prettyprint(buf_t* dst, slice_t src, u32 maxcol) {
   memalloc_t ma = memalloc_ctx();
   s_expr_list_t* list;
   err_t err = s_expr_parse(&list, src, ma, NULL, NULL);
   if (err)
     return err;
   buf_reserve(dst, src.len);
-  err = s_expr_fmt(list, dst, SEXPR_FMT_PRETTY);
+  err = s_expr_fmt(list, dst, SEXPR_FMT_PRETTY, maxcol);
   s_expr_free(list, ma);
   return err;
 }

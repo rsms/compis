@@ -41,15 +41,23 @@ void compiler_dispose(compiler_t* c) {
   map_dispose(&c->pkgindex, c->ma);
   rwmutex_dispose(&c->pkgindex_mu);
 
-  if (c->u8stype.mangledname)
-    mem_freex(c->ma, MEM(c->u8stype.mangledname, strlen(c->u8stype.mangledname) + 1));
-  if (c->strtype.mangledname)
-    mem_freex(c->ma, MEM(c->strtype.mangledname, strlen(c->strtype.mangledname) + 1));
+  // if (c->strtype.mangledname)
+  //   mem_freex(c->ma, MEM(c->strtype.mangledname, strlen(c->strtype.mangledname) + 1));
+}
+
+
+static char* create_mangledname(compiler_t* c, const node_t* n) {
+  pkg_t pkg = {};
+  c->diagbuf.len = 0;
+  safecheckx(compiler_mangle(c, &pkg, &c->diagbuf, n));
+  char* mangledname = mem_strdup(c->ma, buf_slice(c->diagbuf), 0);
+  safecheck(mangledname);
+  return mangledname;
 }
 
 
 static err_t set_secondary_pointer_types(compiler_t* c) {
-  // "&[u8]" -- slice of u8 array
+  // "&[u8]"
   memset(&c->u8stype, 0, sizeof(c->u8stype));
   c->u8stype.kind = TYPE_SLICE;
   c->u8stype.is_builtin = true;
@@ -57,24 +65,37 @@ static err_t set_secondary_pointer_types(compiler_t* c) {
   c->u8stype.size = c->target.ptrsize;
   c->u8stype.align = c->target.ptrsize;
   c->u8stype.elem = type_u8;
+  c->u8stype.mangledname = create_mangledname(c, (node_t*)&c->u8stype);
 
-  pkg_t pkg = {0};
-  c->diagbuf.len = 0;
-  safecheckx(compiler_mangle(c, &pkg, &c->diagbuf, (node_t*)&c->u8stype));
-  c->u8stype.mangledname = mem_strdup(c->ma, buf_slice(c->diagbuf), 0);
-  safecheck(c->u8stype.mangledname);
-
-  // "type str &[u8]"
+  // "str"
   memset(&c->strtype, 0, sizeof(c->strtype));
-  c->strtype.kind = TYPE_ALIAS;
+  c->strtype.kind = TYPE_STR;
   c->strtype.is_builtin = true;
   c->strtype.flags = NF_CHECKED | NF_VIS_PUB;
-  c->strtype.size = c->target.ptrsize;
+  c->strtype.size = c->target.ptrsize * 2; // { const u8* bytes; uint len; }
   c->strtype.align = c->target.ptrsize;
-  c->strtype.name = sym_str;
-  c->strtype.elem = (type_t*)&c->u8stype;
-  c->strtype.mangledname = mem_strdup(c->ma, slice_cstr(CO_MANGLEDNAME_STR), 0);
-  safecheck(c->strtype.mangledname);
+
+  // "&str"
+  memset(&c->refstrtype, 0, sizeof(c->refstrtype));
+  c->refstrtype.kind = TYPE_REF;
+  c->refstrtype.is_builtin = true;
+  c->refstrtype.flags = NF_CHECKED | NF_VIS_PUB;
+  c->refstrtype.size = c->target.ptrsize;
+  c->refstrtype.align = c->target.ptrsize;
+  c->refstrtype.elem = &c->strtype;
+  c->refstrtype.mangledname = create_mangledname(c, (node_t*)&c->refstrtype);
+
+  // "_ &str"
+  memset(&c->refstrparam, 0, sizeof(c->refstrparam));
+  c->refstrparam.kind = EXPR_PARAM;
+  c->refstrparam.is_builtin = true;
+  c->refstrparam.flags = NF_CHECKED;
+  c->refstrparam.name = sym__;
+  c->refstrparam.type = (type_t*)&c->refstrtype;
+
+  // "(&str, &str)"
+  c->params_2x_refstr[0] = (node_t*)&c->refstrparam;
+  c->params_2x_refstr[1] = (node_t*)&c->refstrparam;
 
   return 0;
 }
@@ -339,10 +360,9 @@ static void configure_builtin_functions(compiler_t* c) {
   static local_t this_param = {}; // this
   static local_t this_param_mut = {}; // mut this
   static local_t uint_param = {}; // _ uint
-  static local_t any_param = {}; // _ any
+  // static local_t any_param = {}; // _ any
   static node_t* params1[1] = {}; // (this)
   static node_t* params2[2] = {}; // (mut this, _ uint)
-  static node_t* params3[2] = {}; // (this, _ any)
 
   if (this_param.kind == 0) {
     this_param = (local_t){
@@ -369,21 +389,18 @@ static void configure_builtin_functions(compiler_t* c) {
       .name = sym__,
       .type = type_uint,
     };
-    any_param = (local_t){
-      .kind = EXPR_PARAM,
-      .is_builtin = true,
-      .flags = NF_CHECKED,
-      .name = sym__,
-      .type = type_any,
-    };
+    // any_param = (local_t){
+    //   .kind = EXPR_PARAM,
+    //   .is_builtin = true,
+    //   .flags = NF_CHECKED,
+    //   .name = sym__,
+    //   .type = type_any,
+    // };
 
     params1[0] = (node_t*)&this_param;
 
     params2[0] = (node_t*)&this_param_mut;
     params2[1] = (node_t*)&uint_param;
-
-    params3[0] = (node_t*)&this_param;
-    params3[1] = (node_t*)&any_param;
   }
 
   // [type] fun(this)uint
@@ -415,7 +432,7 @@ static void configure_builtin_functions(compiler_t* c) {
   };
   typeid_intern((type_t*)&c->funtype2);
 
-  // [type] fun(mut this, cap uint) bool
+  // [type] fun(a &str, b &str) str
   c->funtype3 = (funtype_t){
     .kind = TYPE_FUN,
     .is_builtin = true,
@@ -424,8 +441,8 @@ static void configure_builtin_functions(compiler_t* c) {
     .align = c->target.ptrsize,
     .mangledname = (char*)(CO_ABI_GLOBAL_PREFIX "builtin_fun2_t"),
     ._typeid = c->funtype3._typeid, // keep existing
-    .result = type_any,
-    .params = { .v = params3, .len = countof(params3) },
+    .result = &c->strtype,
+    .params = { .v = c->params_2x_refstr, .len = countof(c->params_2x_refstr) },
   };
   typeid_intern((type_t*)&c->funtype3);
 
@@ -466,19 +483,20 @@ static void configure_builtin_functions(compiler_t* c) {
   c->builtin_resize.name = sym_cstr("resize");
   c->builtin_resize.mangledname = (char*)(CO_ABI_GLOBAL_PREFIX "builtin_resize");
 
-  // fun [T].__add__(this, other [T]) bool
-  c->builtin_seq___add__ = (fun_t){
+  // fun __add__(this &str, other &str) str
+  c->builtin_str___add__ = (fun_t){
     .kind = EXPR_FUN, .is_builtin = true, .flags = NF_VIS_PUB | NF_CHECKED, .nuse = 1,
     .type = (type_t*)&c->funtype3,
     .params = c->funtype3.params,
     .name = sym_cstr("__add__"),
-    .mangledname = (char*)(CO_ABI_GLOBAL_PREFIX "builtin_seq___add__"),
+    .mangledname = (char*)(CO_ABI_GLOBAL_PREFIX "builtin_str___add__"),
     .abi = ABI_C,
     .recvt = type_any,
   };
 
   // Note: when adding or changing builtins, you should also update these functions:
   // - find_builtin_member in typecheck.c
+  // - find_builtin_typefun in typecheck.c
   // - gen_call_builtin in cgen.c
 }
 
@@ -622,7 +640,7 @@ err_t compiler_get_runtime_pkg(compiler_t* c, pkg_t** rt_pkg) {
   // Resolve package
   // This will fail if it's not found on disk
   if UNLIKELY(( err = import_resolve_fspath(&rt_pkgdir, &rt_rootlen) )) {
-    report_diag(c, (origin_t){0}, DIAG_ERR, "package std/runtime not found");
+    report_diag(c, (origin_t){}, DIAG_ERR, "package std/runtime not found");
     goto end;
   }
 
@@ -778,7 +796,7 @@ err_t compiler_spawn_tool(
 err_t compiler_run_tool_sync(
   const compiler_t* c, strlist_t* args, const char* nullable cwd)
 {
-  subproc_t p = {0};
+  subproc_t p = {};
   err_t err = compiler_spawn_tool_p(c, &p, args, cwd);
   if (err)
     return err;

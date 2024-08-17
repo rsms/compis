@@ -254,7 +254,7 @@ static void thr_init(Thr* t) {
 
 
 inline static Thr* thr_current() {
-  static _Thread_local Thr _thr = {0};
+  static _Thread_local Thr _thr = {};
 
   Thr* t = &_thr;
   if (UNLIKELY(!t->init))

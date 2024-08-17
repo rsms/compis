@@ -377,22 +377,6 @@ enc_str: {}
 #define NODE_BASE_ENCSIZE  strlen("XXXX FFFF FFFFFFFF FFFFFFFFFFFFFFFF\n")
 
 
-// BUILTIN_TAG_str: builtin tag for 'str' type alias.
-// TODO: move this to a better location, maybe in ast.h along with other tags
-#define BUILTIN_TAG_str '.str'
-
-
-static void encode_builtin_tag(astencoder_t* a, u8* p, const node_t* n) {
-  if ((void*)n == &a->c->strtype) {
-    u32 tag = CO_STRu32(BUILTIN_TAG_str);
-    memcpy(p, &tag, 4);
-    return;
-  }
-  assertf(0, "unexpected builtin %s : %s", nodekind_name(n->kind), fmtnode(0, n));
-  UNREACHABLE;
-}
-
-
 static void encode_node(astencoder_t* a, buf_t* outbuf, const node_t* n) {
   assertf(n->kind < NODEKIND_COUNT, "%s %u", nodekind_name(n->kind), n->kind);
   // dlog("encode %s %p : %s", nodekind_name(n->kind), n, fmtnode(0, n));
@@ -415,9 +399,6 @@ static void encode_node(astencoder_t* a, buf_t* outbuf, const node_t* n) {
 
   if (n->is_builtin) {
     // builtin universal types are encoded solely by kind
-    // complex builtin types are encoded specially: ".XXX"
-    if (fieldtab != g_fieldsof_type_t) // complex
-      encode_builtin_tag(a, p-4, n);
     buf_setlenp(outbuf, p);
   } else {
     // it's a standard node, not a universal one
@@ -717,6 +698,7 @@ static void reg_syms(astencoder_t* a, const node_t* n) {
   case EXPR_STRLIT:
   case EXPR_SUBSCRIPT:
   case EXPR_TYPECONS:
+  case TYPE_ANY:
   case TYPE_ARRAY:
   case TYPE_BOOL:
   case TYPE_F32:
@@ -735,13 +717,13 @@ static void reg_syms(astencoder_t* a, const node_t* n) {
   case TYPE_PTR:
   case TYPE_REF:
   case TYPE_SLICE:
+  case TYPE_STR:
   case TYPE_TEMPLATE:
   case TYPE_U16:
   case TYPE_U32:
   case TYPE_U64:
   case TYPE_U8:
   case TYPE_UINT:
-  case TYPE_ANY:
   case TYPE_UNKNOWN:
   case TYPE_VOID:
     break;
@@ -1599,7 +1581,7 @@ static const u8* decode_srcfiles(DEC_PARAMS, pkg_t* pkg) {
 
 
 static const u8* decode_imports(DEC_PARAMS, pkg_t* pkg, sha256_t* api_sha256v) {
-  pkg_t tmp = {0};
+  pkg_t tmp = {};
 
   for (u32 i = 0; i < d->importcount; i++) {
     tmp.dir.len = 0;
@@ -1655,7 +1637,7 @@ static const u8* decode_symtab(DEC_PARAMS) {
 }
 
 
-static const u8* decode_builtin_primtype(DEC_PARAMS, u32 node_id, nodekind_t kind) {
+static const u8* decode_builtin_type(DEC_PARAMS, u32 node_id, nodekind_t kind) {
   node_t* n = NULL;
   switch (kind) {
     case TYPE_VOID:    n = (node_t*)type_void; break;
@@ -1673,6 +1655,7 @@ static const u8* decode_builtin_primtype(DEC_PARAMS, u32 node_id, nodekind_t kin
     case TYPE_F32:     n = (node_t*)type_f32; break;
     case TYPE_F64:     n = (node_t*)type_f64; break;
     case TYPE_UNKNOWN: n = (node_t*)type_unknown; break;
+    case TYPE_STR:     n = (node_t*)&d->c->strtype; break;
     default:
       assertf(0, "unexpected node kind %s", nodekind_name(kind));
       UNREACHABLE;
@@ -1680,20 +1663,6 @@ static const u8* decode_builtin_primtype(DEC_PARAMS, u32 node_id, nodekind_t kin
 
   // dlog("nodetab[%u] = (universal node of kind %s)", node_id, nodekind_name(n->kind));
   d->nodetab[node_id] = n;
-
-  // read line feed
-  return dec_byte(DEC_ARGS, '\n');
-}
-
-
-static const u8* decode_builtin(DEC_PARAMS, u32 node_id, u32 tag) {
-  switch (tag) {
-    case CO_STRu32(BUILTIN_TAG_str):
-      d->nodetab[node_id] = (node_t*)&d->c->strtype;
-      break;
-    default:
-      return DEC_ERROR(ErrInvalid, "invalid builtin '%.4s'", (char*)&tag), pend;
-  }
 
   // read line feed
   return dec_byte(DEC_ARGS, '\n');
@@ -1709,11 +1678,8 @@ static const u8* decode_node(DEC_PARAMS, u32 node_id) {
   u32 kindid = (u32)p[0] | ((u32)p[1] << 8) | ((u32)p[2] << 16) | ((u32)p[3] << 24);
   p += 4;
   nodekind_t kind = nodekind_of_tag(kindid);
-  if (kind == NODE_BAD) {
-    if UNLIKELY(*(p-4) != '.')
-      return DEC_ERROR(ErrInvalid, "invalid node kind '%.4s'", p), pend;
-    return decode_builtin(DEC_ARGS, node_id, kindid);
-  }
+  if (kind == NODE_BAD)
+    return DEC_ERROR(ErrInvalid, "invalid node kind '%.4s'", p), pend;
 
   // get field table for kind
   const ast_field_t* fieldtab = g_ast_fieldtab[kind];
@@ -1721,7 +1687,7 @@ static const u8* decode_node(DEC_PARAMS, u32 node_id) {
   // intercept builtins and universal types, singletons compared by address,
   // by looking for nodes that are represented solely by type_t
   if (fieldtab == g_fieldsof_type_t)
-    return decode_builtin_primtype(DEC_ARGS, node_id, kind);
+    return decode_builtin_type(DEC_ARGS, node_id, kind);
 
   // decode standard node, starting by allocating memory for the node struct
   usize nodesize = g_ast_sizetab[kind];

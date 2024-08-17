@@ -136,7 +136,7 @@ static err_t dump_pkg_ast(const pkg_t* pkg, unit_t*const* unitv, u32 unitc) {
 
 
 static void build_ofiles_and_cfiles(pkgbuild_t* pb, str_t builddir) {
-  str_t s = {0};
+  str_t s = {};
 
   for (u32 i = 0; i < pb->pkgc.pkg->srcfiles.len; i++) {
     // {builddir}/{srcfile}.o  (note that builddir includes pkgname)
@@ -170,7 +170,7 @@ oom:
 
 // prepare_builddir creates output dir and builds cfiles & ofiles
 static err_t prepare_builddir(pkgbuild_t* pb) {
-  str_t builddir = {0};
+  str_t builddir = {};
   if (!pkg_builddir(pb->pkgc.pkg, pb->c, &builddir))
     return ErrNoMem;
   err_t err = fs_mkdirs(builddir.p, 0770, FS_VERBOSE);
@@ -464,7 +464,7 @@ static bool check_pkg_src_uptodate(pkg_t* pkg, unixtime_t product_mtime) {
   // Since we "own" pkg here, it's safe to modify its srcfiles array, which we'll
   // do in order to compare cached srcfiles vs actual on-disk srcfiles.
 
-  ptrarray_t cached_srcfiles = {0};
+  ptrarray_t cached_srcfiles = {};
   CO_SWAP(cached_srcfiles, pkg->srcfiles);
 
   // populate pkg->srcfiles with source files found on disk
@@ -698,7 +698,7 @@ static void load_dependency0(
   compiler_t* c, memalloc_t api_ma, const pkgcell_t* parent, pkg_t* pkg)
 {
   err_t err;
-  str_t metafile = {0};       // path to metafile
+  str_t metafile = {};       // path to metafile
   unixtime_t libmtime = 0;    // mtime of package library file
   const void* encdata = NULL; // contents of metafile
   struct stat metast;         // status of metafile
@@ -710,7 +710,7 @@ static void load_dependency0(
   enum build_reason build_reason = BUILD_REASON_DEFAULT;
 
   // get library file mtime
-  str_t libfile = {0};
+  str_t libfile = {};
   if (!pkg_libfile(pkg, c, &libfile)) {
     err = ErrNoMem;
     goto end;
@@ -937,7 +937,7 @@ err_t pkgbuild_import(pkgbuild_t* pb) {
     pkg_t* rt_pkg;
     if (( err = compiler_get_runtime_pkg(pb->c, &rt_pkg) )) {
       if (err == ErrNotFound)
-        report_diag(pb->c, (origin_t){0}, DIAG_ERR, "package std/runtime not found");
+        report_diag(pb->c, (origin_t){}, DIAG_ERR, "package std/runtime not found");
       return err;
     }
     // add to imports
@@ -1150,7 +1150,7 @@ err_t pkgbuild_setinfo(pkgbuild_t* pb) {
 
 
 static err_t pkgbuild_cgen_pub_api(pkgbuild_t* pb) {
-  str_t pubhfile = {0};
+  str_t pubhfile = {};
   if UNLIKELY(!pkg_buildfile(pb->pkgc.pkg, pb->c, &pubhfile, PKG_APIHFILE_NAME))
     return ErrNoMem;
 
@@ -1250,7 +1250,7 @@ err_t pkgbuild_metagen(pkgbuild_t* pb) {
   err_t err = 0;
   pkg_t* pkg = pb->pkgc.pkg;
 
-  str_t filename = {0};
+  str_t filename = {};
   if (!pkg_buildfile(pkg, pb->c, &filename, PKG_METAFILE_NAME))
     return ErrNoMem;
 
@@ -1361,9 +1361,9 @@ static bool deplist_add_deps_of(ptrarray_t* deplist, memalloc_t ma, const pkg_t*
 static err_t link_exe(pkgbuild_t* pb, const char* outfile) {
   compiler_t* c = pb->c;
   err_t err = 0;
-  str_t lto_cachedir = {0};
-  ptrarray_t deplist = {0}; // pkg_t*[]
-  ptrarray_t libfiles = {0}; // const char*[]
+  str_t lto_cachedir = {};
+  ptrarray_t deplist = {}; // pkg_t*[]
+  ptrarray_t libfiles = {}; // const char*[]
 
   // TODO: -Llibdir
   // char libflag[PATH_MAX];
@@ -1382,7 +1382,7 @@ static err_t link_exe(pkgbuild_t* pb, const char* outfile) {
   }
   for (u32 i = 0; i < deplist.len; i++) {
     pkg_t* dep = deplist.v[i];
-    str_t libfile = {0};
+    str_t libfile = {};
     if (!pkg_libfile(dep, pb->c, &libfile)) {
       err = ErrNoMem;
       goto end;
@@ -1468,7 +1468,7 @@ err_t pkgbuild_link(pkgbuild_t* pb, const char* outfile) {
   assert_promises_completed(pb);
 
   pkg_t* pkg = pb->pkgc.pkg;
-  str_t outfile_str = {0};
+  str_t outfile_str = {};
   err_t err = 0;
 
   // if no outfile is given, use the default one

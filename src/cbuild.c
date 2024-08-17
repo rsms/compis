@@ -169,7 +169,7 @@ static const char* cbuild_objfile(cbuild_t* b, const cobj_t* obj) {
 static err_t cbuild_mkdirs(cbuild_t* b) {
   err_t err = 0;
   char dir[PATH_MAX];
-  ptrarray_t dirs = {0};
+  ptrarray_t dirs = {};
 
   for (u32 i = 0; i < b->objs.len; i++) {
     cobj_t* obj = &b->objs.v[i];
@@ -242,7 +242,7 @@ static err_t cbuild_clean_objdir(cbuild_t* b) {
 
 static err_t cbuild_build_compile(cbuild_t* b, bgtask_t* task, strlist_t* objfiles) {
   // create subprocs attached to promise
-  promise_t promise = {0};
+  promise_t promise = {};
   subprocs_t* subprocs = subprocs_create_promise(b->c->ma, &promise);
   if (!subprocs)
     return ErrNoMem;
@@ -253,7 +253,7 @@ static err_t cbuild_build_compile(cbuild_t* b, bgtask_t* task, strlist_t* objfil
     cobj_t* obj = &b->objs.v[i];
     const char* objfile = cbuild_objfile(b, obj);
     strlist_t* args = NULL;
-    strlist_t snapshot = {0};
+    strlist_t snapshot = {};
     switch ((enum cobj_srctype)obj->srctype) {
       case COBJ_TYPE_C:        snapshot = b->cc_snapshot;  args = &b->cc; break;
       case COBJ_TYPE_CXX:      snapshot = b->cxx_snapshot; args = &b->cxx; break;

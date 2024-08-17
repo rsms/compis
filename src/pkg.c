@@ -10,7 +10,7 @@
 
 err_t pkg_init(pkg_t* pkg, memalloc_t ma) {
   // *pkg is assumed to be zeroed
-  assertf(memcmp(pkg, &(pkg_t){0}, sizeof(*pkg)) == 0, "pkg not zeroed");
+  assertf(memcmp(pkg, &(pkg_t){}, sizeof(*pkg)) == 0, "pkg not zeroed");
   err_t err;
 
   if (( err = rwmutex_init(&pkg->defs_mu) ))
@@ -218,9 +218,9 @@ static err_t pkg_set_path_from_dir(pkg_t* pkg) {
   str_free(pkg->path);
   str_free(pkg->dir);
   str_free(pkg->root);
-  pkg->dir = (str_t){0};
-  pkg->path = (str_t){0};
-  pkg->root = (str_t){0};
+  pkg->dir = (str_t){};
+  pkg->path = (str_t){};
+  pkg->root = (str_t){};
   return ErrNoMem;
 }
 
@@ -253,7 +253,7 @@ static err_t pkg_resolve_toplevel(pkg_t* pkg, const char* import_path, mode_t st
   // absolute path, e.g. "/foo/bar"
   if (path_isabs(pkg->path.p)) {
     pkg->dir = pkg->path;
-    pkg->path = (str_t){0};
+    pkg->path = (str_t){};
     return pkg_set_path_from_dir(pkg);
   }
 
@@ -282,7 +282,7 @@ static err_t pkg_resolve_toplevel(pkg_t* pkg, const char* import_path, mode_t st
       // import_path is parent-relative, e.g. "../bar".
       // Note that path_clean ensures that "./foo" => "foo",
       // so even when the user invokes compis with "./foo" we see path="foo".
-      pkg->path = (str_t){0};
+      pkg->path = (str_t){};
       return pkg_set_path_from_dir(pkg);
     }
 
@@ -319,9 +319,9 @@ error:
   str_free(pkg->path);
   str_free(pkg->dir);
   str_free(pkg->root);
-  pkg->path = (str_t){0};
-  pkg->dir = (str_t){0};
-  pkg->root = (str_t){0};
+  pkg->path = (str_t){};
+  pkg->dir = (str_t){};
+  pkg->root = (str_t){};
   return err;
 }
 
@@ -609,7 +609,7 @@ bool pkg_exefile(const pkg_t* pkg, const compiler_t* c, str_t* dst) {
   assert(slashi > -1);
   slashi++;
 
-  slice_t suffix = {0};
+  slice_t suffix = {};
   if (target_is_wasm(&c->target))
     suffix = slice_cstr(".wasm");
   // TODO: Windows target:

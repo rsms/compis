@@ -65,7 +65,7 @@ int cc_main(int user_argc, char* user_argv[], bool iscxx) {
   compiler_t c;
   compiler_init(&c, memalloc_default(), &diaghandler);
 
-  compiler_config_t config = {0};
+  compiler_config_t config = {};
   config.buildmode = BUILDMODE_OPT; // default to optimized build
   config.nolto = true; // disable LTO for implicit -O0 (enabled for -O1+)
 

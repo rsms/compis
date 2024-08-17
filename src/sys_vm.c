@@ -80,7 +80,7 @@ usize sys_pagesize() {
 static mem_t sys_vm_alloc(void* nullable at_addr, usize nbytes) {
   if (nbytes == 0) {
     dlog("mmap failed: zero size requested");
-    return (mem_t){0};
+    return (mem_t){};
   }
 
   int protection = PROT_READ | PROT_WRITE;
@@ -91,7 +91,7 @@ static mem_t sys_vm_alloc(void* nullable at_addr, usize nbytes) {
 
   if UNLIKELY(p == MAP_FAILED || p == NULL) {
     dlog("mmap failed (errno %d %s)", errno, strerror(errno));
-    return (mem_t){0};
+    return (mem_t){};
   }
 
   return (mem_t){ .p = p, .size = nbytes };

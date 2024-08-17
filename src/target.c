@@ -127,7 +127,7 @@ const target_t* target_find(const char* target_str) {
   const char* sysend = dotp ? dotp : endp;
   slice_t arch = {.p=target_str, .len=(usize)(sysp - 1 - target_str)};
   slice_t sys = {.p=sysp, .len=(usize)(sysend - sysp)};
-  slice_t sysver = {0};
+  slice_t sysver = {};
   if (dotp) {
     sysver.p = dotp + 1;
     sysver.len = (usize)(endp - (dotp + 1));
@@ -390,7 +390,7 @@ void target_llvm_version(const target_t* t, char buf[16]) {
 err_t target_from_llvm_triple(target_t* target, const char* llvm_triple, u32 flags) {
   memset(target, 0, sizeof(*target));
 
-  CoLLVMTargetInfo tinfo = {0};
+  CoLLVMTargetInfo tinfo = {};
   llvm_triple_info(llvm_triple, &tinfo);
 
   if (tinfo.arch_type == CoLLVMArch_unknown)

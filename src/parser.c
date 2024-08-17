@@ -85,8 +85,8 @@ __attribute__((constructor)) static void print_ast_stats() {
   // #endif
 
 
-  usize histogram_labels[countof(ast_types)] = {0};
-  usize histogram_counts[countof(ast_types)] = {0};
+  usize histogram_labels[countof(ast_types)] = {};
+  usize histogram_counts[countof(ast_types)] = {};
   usize histogram_len = 0;
   for (usize i = 0; i < countof(ast_types); i++) {
     bool found = false;
@@ -304,7 +304,7 @@ static void fastforward_semi(parser_t* p) {
 
 
 struct no_origin { int x; };
-#define CURR_ORIGIN ((struct no_origin){0})
+#define CURR_ORIGIN ((struct no_origin){})
 
 
 // const origin_t to_origin(typecheck_t*, T origin)
@@ -405,7 +405,7 @@ static void unexpected(parser_t* p, const char* errmsg) {
 
 
 static void expect_fail(parser_t* p, tok_t expecttok, const char* errmsg) {
-  const char* want = fmttok(p, 0, expecttok, (slice_t){0});
+  const char* want = fmttok(p, 0, expecttok, (slice_t){});
   const char* got = fmttok(p, 1, currtok(p), scanner_lit(&p->scanner));
   int msglen = (int)strlen(errmsg);
   if (msglen && *errmsg != ',' && *errmsg != ';')
@@ -609,7 +609,7 @@ static nodearray_t pnodearray_alloc(parser_t* p) {
   }
   return p->free_nodearrays.v[p->free_nodearrays.len++];
 last_resort:
-  return (nodearray_t){0};
+  return (nodearray_t){};
 }
 
 static void pnodearray_dispose(parser_t* p, nodearray_t* na) {
@@ -647,6 +647,22 @@ static void pnodearray_assign1(parser_t* p, nodearray_t* dst, void* n1) {
   dst->len = 1;
   dst->cap = 1;
 }
+
+
+// —————————————————————————————————————————————————————————————————————————————————————
+// constant interning
+
+
+#ifdef ENABLE_CONSTANT_INTERNING
+  static bool register_constant(parser_t* p, void* n) {
+    bool ok = nodearray_push(&p->unit->constants, p->scanner.ast_ma, n);
+    if UNLIKELY(!ok)
+      out_of_mem(p);
+    return ok;
+  }
+#else
+  inline static bool register_constant(parser_t* p, void* n) { return true; }
+#endif
 
 
 // —————————————————————————————————————————————————————————————————————————————————————
@@ -1312,7 +1328,7 @@ static stmt_t* stmt_typedef(parser_t* p) {
     name = sym__;
 
   // generic? parse template parameters
-  nodearray_t templateparams = {0};
+  nodearray_t templateparams = {};
   if (currtok(p) == TLT) {
     templateparams = pnodearray_alloc(p);
     parse_templateparams(p, &templateparams);
@@ -1692,6 +1708,8 @@ static expr_t* expr_strlit(parser_t* p, const parselet_t* pl, nodeflag_t fl) {
   slice_t str = scanner_strval(&p->scanner);
   n->bytes = (u8*)mem_strdup(p->scanner.ast_ma, str, 0);
   n->len = str.len;
+  n->type = (type_t*)&p->scanner.compiler->refstrtype;
+  n->flags = NF_CHECKED;
 
   // TODO: multiline string
   loc_set_width(&n->loc, n->len + 2);
@@ -1700,6 +1718,8 @@ static expr_t* expr_strlit(parser_t* p, const parselet_t* pl, nodeflag_t fl) {
     out_of_mem(p);
     n->len = 0;
   }
+
+  register_constant(p, n);
 
   next(p);
 
@@ -1736,6 +1756,8 @@ static expr_t* expr_arraylit(parser_t* p, const parselet_t* pl, nodeflag_t fl) {
   }
 
   pnodearray_assignto(p, &values, &n->values);
+
+  register_constant(p, n);
 
   // ']'
   n->endloc = currloc(p);
@@ -2179,7 +2201,7 @@ static bool funtype_params(parser_t* p, funtype_t* ft, type_t* nullable recvt) {
   // e.g. "x, y int" -- "x" does not have a type until we parsed "y" and "int", so when
   // we parse "x" we put it in typeq. Also, "x" might be just a type and not a name in
   // the case all args are just types e.g. "T1, T2, T3".
-  ptrarray_t typeq = {0}; // local_t*[]
+  ptrarray_t typeq = {}; // local_t*[]
 
   // we accumulate fields in params, which are later copied to ft->params
   nodearray_t params = pnodearray_alloc(p);
@@ -2903,7 +2925,7 @@ static void parse_directive_experiment(
     origin.column = 4;
     origin.width -= MIN(3, origin.width);
     warning_at(p, origin, "unknown experiment \"%.*s\"", (int)name.len, name.chars);
-    report_diag(p->scanner.compiler, (origin_t){0}, DIAG_HELP,
+    report_diag(p->scanner.compiler, (origin_t){}, DIAG_HELP,
                 "See '%s experiments' for a list of experiments", coprogname);
   }
   if UNLIKELY(coverbose && did_enable) {

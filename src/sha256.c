@@ -248,6 +248,6 @@ void sha256_data(sha256_t* result, const void* data, usize len) {
 
 
 bool sha256_iszero(const sha256_t* sha256) {
-  static const usize zero[32/sizeof(usize)] = {0};
+  static const usize zero[32/sizeof(usize)] = {};
   return memcmp(zero, sha256, 32) == 0;
 }

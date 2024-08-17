@@ -269,8 +269,14 @@ static void flags(RPARAMS, const node_t* n) {
   // don't include NF_UNKNOWN for TYPE_UNKNOWN (always and obviously true)
   flags &= ~(NF_UNKNOWN * (nodeflag_t)(n->kind == TYPE_UNKNOWN));
 
-  if (flags & ( NF_RVALUE | NF_NEG | NF_UNKNOWN | NF_VIS_PUB | NF_VIS_PKG
-              | NF_TEMPLATE | NF_TEMPLATEI | NF_CYCLIC))
+  if (flags & ( NF_RVALUE
+              | NF_NEG
+              | NF_UNKNOWN
+              // | NF_VIS_PUB
+              // | NF_VIS_PKG
+              | NF_TEMPLATE
+              | NF_TEMPLATEI
+              | NF_CYCLIC))
   {
     PRINT(" {");
     if (flags & NF_RVALUE)    CHAR('r');
@@ -279,8 +285,8 @@ static void flags(RPARAMS, const node_t* n) {
     if (flags & NF_TEMPLATE)  CHAR('t');
     if (flags & NF_TEMPLATEI) CHAR('i');
     if (flags & NF_CYCLIC)    CHAR('c');
-    if (flags & NF_VIS_PUB)   CHAR('P');
-    if (flags & NF_VIS_PKG)   CHAR('G');
+    // if (flags & NF_VIS_PUB)   CHAR('P');
+    // if (flags & NF_VIS_PKG)   CHAR('G');
     CHAR('}');
   }
 }
@@ -641,10 +647,8 @@ static void repr(RPARAMS, const node_t* nullable n) {
     const local_t* var = (local_t*)n;
     if (r->flags & AST_REPR_META)
       PRINTF(" {r=%u,w=%d}", var->nuse, var->written);
-    if (var->init) {
-      CHAR(' ');
-      repr(RARGSFL(fl | REPRFLAG_HEAD), (node_t*)var->init);
-    }
+    if (var->init)
+      repr(RARGSFL(fl), (node_t*)var->init);
     break;
   }
 

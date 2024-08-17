@@ -250,7 +250,7 @@ unwrap:
 
 bool check_typedep(compiler_t* c, node_t* n) {
   bool ok = false;
-  nodearray_t defs = {0};
+  nodearray_t defs = {};
   u32 visitflags = 0;
   if (ast_toposort_visit_def(&defs, c->ma, 0, n, visitflags)) {
     u32 vstk_base = defs.len;
@@ -268,7 +268,7 @@ bool check_typedep(compiler_t* c, node_t* n) {
 
 err_t check_typedeps(compiler_t* c, unit_t** unitv, u32 unitc) {
   err_t err = 0;
-  nodearray_t defs = {0};
+  nodearray_t defs = {};
   u32 visitflags = 0;
 
   // collect all unique definitions in a topologically sorted array

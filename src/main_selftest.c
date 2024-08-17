@@ -5,6 +5,7 @@
 #include "s-expr.h"
 
 #include <stdlib.h>
+#include <sys/ioctl.h>
 #include <err.h>
 
 
@@ -163,16 +164,20 @@ static void parser_test_diaghandler(const diag_t* d, void* nullable userdata) {
 
 
 static bool diff_s_expr(slice_t actual, slice_t expect, const char* filename) {
+  struct winsize w = {};
+  ioctl(STDERR_FILENO, TIOCGWINSZ, &w);
+  u32 maxcol = w.ws_col > 0 ? w.ws_col : 80;
+
   err_t e;
   buf_t buf = buf_make(memalloc_ctx());
   buf_reserve(&buf, actual.len*3);
 
-  e = s_expr_prettyprint(&buf, actual);
+  e = s_expr_prettyprint(&buf, actual, maxcol);
   assertf(e == 0, "s_expr_prettyprint: %s", err_str(e));
 
   usize actual_buf_len = buf.len;
 
-  e = s_expr_prettyprint(&buf, expect);
+  e = s_expr_prettyprint(&buf, expect, maxcol);
   assertf(e == 0, "s_expr_prettyprint: %s", err_str(e));
 
   actual = buf_slice(buf, 0, actual_buf_len);
@@ -265,7 +270,7 @@ static unit_t* nullable parse_single_file(
 
 
 static bool check_expected_ast(
-  parser_t* parser, str_t filename, unit_t* unit, slice_t expect_ast)
+  parser_t* parser, str_t filename, unit_t* unit, slice_t expect_ast, bool typed)
 {
   if (coverbose > 1) {
     log("———————— verbatim expectation ————————\n"
@@ -276,6 +281,8 @@ static bool check_expected_ast(
 
   buf_t buf = buf_make(memalloc_ctx());
   u32 flags = AST_REPR_SIMPLE_UNIT;
+  if (typed)
+    flags |= AST_REPR_TYPES;
   err_t e = ast_repr(&buf, (node_t*)unit, flags);
   assertf(e == 0, "ast_repr: %s", err_str(e));
   slice_t actual_ast = buf_slice(buf);
@@ -370,34 +377,44 @@ static bool parser_test_one(parser_t* parser, str_t filename, usize filesize) {
     parser, "expect-diag", expect_diagv, countof(expect_diagv));
 
   slice_t expect_astv[2];
+  bool is_expect_typed_ast = false;
   u32 expect_astc = find_directive_comment(
     parser, "expect-ast", expect_astv, countof(expect_astv));
+  if (expect_astc == 0) {
+    expect_astc = find_directive_comment(
+      parser, "expect-typed-ast", expect_astv, countof(expect_astv));
+    is_expect_typed_ast = (expect_astc > 0);
+  }
 
-  // expect-diag
-  if (expect_diagc > 0) {
-    // typecheck & analyze if there's no AST check and no parse errors occurred
-    if (expect_astc == 0 && compiler_errcount(compiler) == 0) {
-      memalloc_t ast_ma = parser->scanner.ast_ma;
-      pkg_t* pkg = assertnotnull(parser->scanner.srcfile->pkg);
-      err_t err = typecheck(compiler, ast_ma, pkg, &unit, 1);
-      if (err) {
-        elog("typecheck failed: %s", err_str(err));
+  // Should typecheck & analyze?
+  // Either do it when "!expect-typed-ast" is present or when there's no AST check
+  // and no parse errors occurred, so that we get complete diagnostics.
+  if (is_expect_typed_ast ||
+      (expect_diagc > 0 && expect_astc == 0 && compiler_errcount(compiler) == 0))
+  {
+    memalloc_t ast_ma = parser->scanner.ast_ma;
+    pkg_t* pkg = assertnotnull(parser->scanner.srcfile->pkg);
+    err_t err = typecheck(compiler, ast_ma, pkg, &unit, 1);
+    if (err) {
+      elog("typecheck failed: %s", err_str(err));
+      pass = false;
+      goto end;
+    }
+    if (coverbose) {
+      log("————————— AST %s (typecheck) —————————", relpath(filename.p));
+      dump_ast((node_t*)unit);
+    }
+    if (compiler_errcount(compiler) == 0) {
+      if (( err = iranalyze(compiler, ast_ma, pkg, &unit, 1) )) {
+        dlog("iranalyze failed: %s", err_str(err));
         pass = false;
         goto end;
       }
-      if (coverbose) {
-        log("————————— AST %s (typecheck) —————————", relpath(filename.p));
-        dump_ast((node_t*)unit);
-      }
-      if (compiler_errcount(compiler) == 0) {
-        if (( err = iranalyze(compiler, ast_ma, pkg, &unit, 1) )) {
-          dlog("iranalyze failed: %s", err_str(err));
-          pass = false;
-          goto end;
-        }
-      }
     }
+  }
 
+  // expect-diag
+  if (expect_diagc > 0) {
     bool expect_error = false;
     for (u32 i = 0; i < expect_diagc; i++) {
       if (!check_expected_diag(parser, filename, diags, expect_diagv[i]))
@@ -440,7 +457,9 @@ static bool parser_test_one(parser_t* parser, str_t filename, usize filesize) {
     } else if (compiler_errcount(compiler) > 0) {
       vlog("%s: syntax errors", filename.p);
       pass = false;
-    } else if (!check_expected_ast(parser, filename, unit, expect_astv[0])) {
+    } else if (
+        !check_expected_ast(parser, filename, unit, expect_astv[0], is_expect_typed_ast))
+    {
       pass = false;
     }
     if (expect_astc > 1) {

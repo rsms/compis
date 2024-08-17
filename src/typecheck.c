@@ -54,6 +54,7 @@ typedef struct {
   map_t           templateimap;   // typeid_t => usertype_t*
   buf_t           tmpbuf;
   bool            reported_error; // true if an error diagnostic has been reported
+  u32             varidgen;       // variable ID generator
   u32             pubnest;        // NF_VIS_PUB nesting level
   u32             templatenest;   // NF_TEMPLATE nesting level
   nodearray_t     visitstack;
@@ -273,6 +274,9 @@ bool type_isowner(const type_t* t) {
     // *T
     type_isptr(t) ||
 
+    // str
+    t->kind == TYPE_STR ||
+
     // [T] or [Owner N]
     ( t->kind == TYPE_ARRAY &&
       ( ((arraytype_t*)t)->len == 0 ||
@@ -412,18 +416,18 @@ static bool _type_compat(
   x = type_compat_unwrap(c, x, /*may_deref*/!assignment);
   y = type_compat_unwrap(c, y, /*may_deref*/!assignment);
 
-  #if 0 && DEBUG
-  {
-    dlog("_type_compat (assignment=%d)", assignment);
-    buf_t* buf = (buf_t*)&c->diagbuf;
-    buf_clear(buf);
-    node_fmt(buf, (node_t*)x, 0);
-    dlog("  %s = %s", assignment ? "dst" : "x", buf->chars);
-    buf_clear(buf);
-    node_fmt(buf, (node_t*)y, 0);
-    dlog("  %s = %s", assignment ? "src" : "y", buf->chars);
-  }
-  #endif
+  // #if DEBUG
+  // {
+  //   dlog("_type_compat (assignment=%d)", assignment);
+  //   buf_t* buf = (buf_t*)&c->diagbuf;
+  //   buf_clear(buf);
+  //   node_fmt(buf, (node_t*)x, 0);
+  //   dlog("  %s = %s", assignment ? "dst (x)" : "x", buf->chars);
+  //   buf_clear(buf);
+  //   node_fmt(buf, (node_t*)y, 0);
+  //   dlog("  %s = %s", assignment ? "src (y)" : "y", buf->chars);
+  // }
+  // #endif
 
   if (x == y)
     return true;
@@ -476,10 +480,17 @@ static bool _type_compat(
       // &T    x= mut&T
       // &T    <= *T
       // mut&T <= *T
+      // &str  <= str   (because 'str' is owned version of byte slice; &[u8])
+      // &[u8] <= str
       const reftype_t* l = (reftype_t*)x;
       if (y->kind == TYPE_PTR) {
         // e.g. "&T <= *T"
         return type_compat(c, l->elem, ((ptrtype_t*)y)->elem, assignment);
+      } else if (y->kind == TYPE_STR) {
+        // e.g. &str <= str
+        // e.g. &[u8] <= str
+        return l->elem->kind == TYPE_STR ||
+               ( y->kind == TYPE_SLICE && ((slicetype_t*)y)->elem == type_u8 );
       }
       const reftype_t* r = (reftype_t*)y;
       // e.g. "&T <= &T"
@@ -518,6 +529,10 @@ static bool _type_compat(
             r->kind == TYPE_ARRAY &&
             (r_ismut == l_ismut || r_ismut || !l_ismut) &&
             type_compat(c, l->elem, r->elem, assignment) );
+        }
+        case TYPE_STR: {
+          // &[u8] <= str
+          return l->elem == type_u8;
         }
       }
       return false;
@@ -603,7 +618,7 @@ inline static locmap_t* locmap(typecheck_t* a) {
 
 
 static void out_of_mem(typecheck_t* a) {
-  error(a, (origin_t){0}, "out of memory");
+  error(a, (origin_t){}, "out of memory");
   seterr(a, ErrNoMem);
 }
 
@@ -1606,15 +1621,9 @@ err: {}
 
 
 static void local_init(typecheck_t* a, local_t* n) {
-  // special case for 'var x = "abc"' where we want type to be 'str', not '&[u8 3]'
-  if (n->type == type_unknown && n->kind == EXPR_VAR && n->init->kind == EXPR_STRLIT) {
-    n->type = (type_t*)&a->compiler->strtype;
-    n->init->type = n->type;
-  } else {
-    typectx_push(a, n->type);
-    exprp(a, &n->init);
-    typectx_pop(a);
-  }
+  typectx_push(a, n->type);
+  exprp(a, &n->init);
+  typectx_pop(a);
 
   if (n->type == type_unknown || n->type->kind == TYPE_UNRESOLVED) {
     // infer type from init
@@ -1685,10 +1694,11 @@ static void local(typecheck_t* a, local_t* n) {
 
   if (n->name == sym__ && type_isowner(n->type) && a->visitstack.len > 1/*!global*/) {
     // owners require var names for ownership tracking
-    // FIXME: this is a pretty janky hack which is rooted in the fact that
-    //        IR-based ownership analysis tracks variable _names_.
-    char buf[strlen("__co_ownerFFFFFFFFFFFFFFFF")+1];
-    n->name = sym_snprintf(buf, sizeof(buf), "__co_owner%lx", (unsigned long)n);
+    // TODO FIXME: this is a pretty janky hack which is rooted in the fact
+    // that IR-based ownership analysis tracks variable _names_.
+    char buf[strlen(CO_ABI_GLOBAL_PREFIX "owner4294967295")+1];
+    n->name = sym_snprintf(buf, sizeof(buf),
+                           CO_ABI_GLOBAL_PREFIX "owner%u", a->varidgen++);
   }
 }
 
@@ -2140,7 +2150,7 @@ static didyoumean_t* didyoumean_add(
   if UNLIKELY(!dym) {
     if (a->didyoumean.len > 0)
       return &a->didyoumean.v[0];
-    static didyoumean_t last_resort = {0};
+    static didyoumean_t last_resort = {};
     return &last_resort;
   }
   dym->name = name;
@@ -2454,7 +2464,7 @@ static void binop_and_or(typecheck_t* a, binop_t** np) {
   // e.g. "x && y", "x || y" (outside of "if")
   assert((*np)->op == OP_LAND || (*np)->op == OP_LOR);
   enter_scope(a);
-  narrowedarray_t narrowed = {0};
+  narrowedarray_t narrowed = {};
   val_condition(a, &narrowed, (expr_t**)np);
   leave_scope(a);
   narrowedarray_dispose(&narrowed, a->ma);
@@ -2737,7 +2747,7 @@ static void ifexpr(typecheck_t* a, ifexpr_t* n) {
   enter_scope(a); // enter "then" branch's scope
 
   // process condition, recording narrowed types
-  narrowedarray_t narrowed = {0};
+  narrowedarray_t narrowed = {};
   u32 narrowflags = if_condition(a, &narrowed, &n->cond);
 
   // visit "then" branch
@@ -2983,73 +2993,78 @@ static fun_t* nullable find_binop_custom_fun(
   typecheck_t* a, type_t* lt, type_t* rt, op_t op, type_t** restypep);
 
 
-static bool type_is_str_subtype(const type_t* t) {
-  // true if t is "&[u8 N]"
-  ptrtype_t* pt = (ptrtype_t*)t;
-  return t->kind == TYPE_REF &&
-         pt->elem->kind == TYPE_ARRAY
-         && ((arraytype_t*)pt->elem)->elem == type_u8;
-}
+// static type_t* builtin_typefun_seq_restype(
+//   typecheck_t* a, type_t* ltype, type_t* rtype)
+// {
+//   // Calculate result type/
+//   //   fun example(a &[int 3], b &[int 5])
+//   //     let c = a + b
+//   // Here, type of c should be "[int 8]" rather than "[int]"
+//   type_t* l_bt = unwrap_ptr_and_alias(ltype);
+//   type_t* r_bt = unwrap_ptr_and_alias(rtype);
+
+//   if (l_bt->kind == TYPE_ARRAY) {
+//     assert(r_bt->kind == TYPE_ARRAY);
+//     arraytype_t* lt = (arraytype_t*)l_bt;
+//     arraytype_t* rt = (arraytype_t*)r_bt;
+
+//     // [T N] + [T] = [T]
+//     if (lt->len == 0)
+//       return ltype;
+//     if (rt->len == 0)
+//       return rtype;
+
+//     // [T x] + [T y] = [T x+y]
+//     return (type_t*)mkarraytype(a, type_u8, lt->len + rt->len);
+//   }
+
+//   return ltype;
+// }
 
 
-static type_t* builtin_typefun_seq_restype(
-  typecheck_t* a, type_t* ltype, type_t* rtype)
+/*static fun_t* nullable find_builtin_seq___add__(
+  typecheck_t* a, type_t* lt, type_t* nullable rt, type_t** restypep)
 {
-  // Calculate result type/
-  //   fun example(a &[int 3], b &[int 5])
-  //     let c = a + b
-  // Here, type of c should be "[int 8]" rather than "[int]"
-  type_t* l_bt = unwrap_ptr_and_alias(ltype);
-  type_t* r_bt = unwrap_ptr_and_alias(rtype);
+  type_t* elemt = ((ptrtype_t*)lt)->elem;
 
-  if (l_bt->kind == TYPE_ARRAY) {
-    assert(r_bt->kind == TYPE_ARRAY);
-    arraytype_t* lt = (arraytype_t*)l_bt;
-    arraytype_t* rt = (arraytype_t*)r_bt;
-
-    // [T N] + [T] = [T]
-    if (lt->len == 0)
-      return ltype;
-    if (rt->len == 0)
-      return rtype;
-
-    // [T x] + [T y] = [T x+y]
-    return (type_t*)mkarraytype(a, type_u8, lt->len + rt->len);
+  // '+' is only defined for slice and array types with element type that
+  // is copyable or have '+' operator.
+  if (!type_iscopyable(elemt) &&
+      !type_has_binop(a->compiler, elemt, OP_ADD))
+  {
+    // check if elemt has custom __add__ impl
+    if (find_binop_custom_fun(a, elemt, elemt, OP_ADD, &restype_ign) != NULL)
+      log("TODO: Seq+Seq with elemtype with __add__ impl");
+    return NULL;
   }
 
-  return ltype;
-}
+  type_t* restype_ign;
+  // *restypep = builtin_typefun_seq_restype(a, lt, rt);
+  arraytype_t* at;
+  if (((arraytype_t*)lt)->len == 0) {
+    at = (arraytype_t*)lt;
+  } else {
+    at = mkarraytype(a, ((arraytype_t*)lt)->elem, 0);
+  }
+  *restypep = (type_t*)mkopttype(a, (type_t*)at);
+
+  return &a->compiler->builtin_seq___add__;
+}*/
 
 
 static fun_t* nullable find_builtin_typefun(
   typecheck_t* a, type_t* lt, type_t* nullable rt, sym_t name, type_t** restypep)
 {
-  // __add__(a Seq<T>, b Seq<T>) ?[T]
+  // __add__(a A, b B) C
   if (name == sym___add__) {
-    // '+' is defined for slice and array types which element type is copyable
+    // '+' is defined for str, slice and array types which element type is copyable
     // or have '+' operator.
-    if (type_isslice(lt) || lt->kind == TYPE_ARRAY) {
-      type_t* elemt = ((ptrtype_t*)lt)->elem;
-      type_t* restype_ign;
-      if (type_iscopyable(elemt) ||
-          type_has_binop(a->compiler, elemt, OP_ADD))
-      {
-        assertnotnull(rt);
-
-        // *restypep = builtin_typefun_seq_restype(a, lt, rt);
-        arraytype_t* at;
-        if (((arraytype_t*)lt)->len == 0) {
-          at = (arraytype_t*)lt;
-        } else {
-          at = mkarraytype(a, ((arraytype_t*)lt)->elem, 0);
-        }
-        *restypep = (type_t*)mkopttype(a, (type_t*)at);
-
-        return &a->compiler->builtin_seq___add__;
-      } else if (find_binop_custom_fun(a, elemt, elemt, OP_ADD, &restype_ign) != NULL) {
-        log("TODO: Seq+Seq with elemtype with __add__ impl");
-      }
+    if (lt->kind == TYPE_STR) {
+      *restypep = lt;
+      return &a->compiler->builtin_str___add__;
     }
+    // if (type_isslice(lt) || lt->kind == TYPE_ARRAY)
+    //   return find_builtin_seq___add__(a, lt, rt, restypep);
   }
   return NULL;
 }
@@ -3060,41 +3075,24 @@ static fun_t* nullable find_typefun(
 {
   type_t* bt = type_unwrap_ptr(recvt); // e.g. &MyMyT => MyMyT
   type_t* bt2 = recvt2 ? type_unwrap_ptr(recvt2) : NULL;
-  fun_t* fn;
+  fun_t* fn = typefuntab_lookup(&a->pkg->tfundefs, bt, name);
 
-  for (;;) {
-    fn = typefuntab_lookup(&a->pkg->tfundefs, bt, name);
-
-    if (fn) {
-      if (CHECK_ONCE(fn)) {
-        fun(a, fn);
-        if (bt != recvt) log("TODO check if fun is compatible with recvt");
-        // TODO: check if fun is compatible with recvt, which could be for example a ref.
-        // e.g. this should fail:
-        //   fun Foo.bar(mut this)
-        //   fun example(x &Foo)
-        //     x.bar() // error: Foo.bar requires mutable receiver
-      }
-      *restypep = ((funtype_t*)assertnotnull(fn->type))->result;
-      return fn;
+  if (fn) {
+    if (CHECK_ONCE(fn)) {
+      fun(a, fn);
+      if (bt != recvt) log("TODO check if fun is compatible with recvt");
+      // TODO: check if fun is compatible with recvt, which could be for example a ref.
+      // e.g. this should fail:
+      //   fun Foo.bar(mut this)
+      //   fun example(x &Foo)
+      //     x.bar() // error: Foo.bar requires mutable receiver
     }
-
-    if (!fn) {
-      if (( fn = find_builtin_typefun(a, bt, bt2, name, restypep) ))
-        return fn;
-    }
-
-    if (!type_is_str_subtype(recvt))
-      return NULL;
-
-    if (bt == (type_t*)&a->compiler->strtype)
-      return NULL;
-
-    // &[u8 N] -> str
-    bt = (type_t*)&a->compiler->strtype;
-    if (bt2 && type_is_str_subtype(bt2))
-      bt2 = bt;
+    *restypep = ((funtype_t*)assertnotnull(fn->type))->result;
+    return fn;
   }
+
+  fn = find_builtin_typefun(a, bt, bt2, name, restypep);
+  return fn;
 }
 
 
@@ -3288,34 +3286,10 @@ static fun_t* nullable find_binop_custom_fun(
     default: return NULL;
   }
 
-  bool seen_str = false;
+  trace("look for operator impl %s for type %s %s",
+        name, nodekind_name(lt->kind), fmtnode(0, lt));
 
-  for (;;) {
-    trace("look for operator impl %s for type %s %s",
-          name, nodekind_name(lt->kind), fmtnode(0, lt));
-
-    fun_t* fn = find_typefun(a, lt, rt, name, restypep);
-    if (fn)
-      return fn;
-
-    if (lt->kind == TYPE_ALIAS) {
-      seen_str = seen_str || (lt == (type_t*)&a->compiler->strtype);
-      lt = ((aliastype_t*)lt)->elem;
-      if (rt->kind == TYPE_ALIAS)
-        rt = ((aliastype_t*)rt)->elem;
-    } else if (lt->kind == TYPE_ARRAY &&
-               ((arraytype_t*)lt)->elem == type_u8 &&
-               !seen_str)
-    {
-      // special case for string literals, e.g. '"abc"' has type '[u8 3]', not 'str'
-      lt = (type_t*)&a->compiler->strtype;
-      if (rt->kind == TYPE_ARRAY && ((arraytype_t*)rt)->elem == type_u8)
-        rt = lt;
-      seen_str = true;
-    } else {
-      return NULL;
-    }
-  }
+  return find_typefun(a, lt, rt, name, restypep);
 }
 
 
@@ -3659,51 +3633,45 @@ again:
 }
 
 
-static void strlit(typecheck_t* a, strlit_t* n) {
-  // note: there's specialized code in local_init to deal with type for 'var _ = "..."'
-
-  if (a->typectx == (type_t*)&a->compiler->strtype) {
-    n->type = a->typectx;
-    return;
-  }
-
-  // &[u8 len]
-  arraytype_t* at = mkarraytype(a, type_u8, n->len);
-
-  reftype_t* t = mknode(a, reftype_t, TYPE_REF);
-  t->elem = (type_t*)at;
-
-  n->type = (type_t*)t;
+static bool is_toplevel(const typecheck_t* a) {
+  return a->fun == NULL;
 }
 
 
 static void arraylit(typecheck_t* a, arraylit_t* n) {
   u32 i = 0;
-  arraytype_t* at = (arraytype_t*)assertnotnull(a->typectx);
+  type_t* ctxtype = assertnotnull(a->typectx);
+  n->type = ctxtype;
 
-  if (at->kind == TYPE_ARRAY) {
-    #if 0
-      // eg. "var _ [int] = [1,2,3]" => "[int 3]"
-      if (at->len == 0) {
-        // outer array type does not have size; create sized type
-        type_t* elem = at->elem;
-        at = mknode(a, arraytype_t, TYPE_ARRAY);
-        at->flags = NF_CHECKED;
-        at->elem = elem;
-        at->len = (u64)n->values.len;
-        arraytype_calc_size(a, at);
-      }
-    #else
-      if UNLIKELY(at->len > 0 && at->len < n->values.len) {
-        expr_t* origin = (expr_t*)n->values.v[at->len];
-        if (loc_line(origin->loc) == 0)
-          origin = (expr_t*)n;
-        error(a, origin, "excess value in array literal");
-      }
-    #endif
+  if (ctxtype->kind == TYPE_SLICE) {
+    // "&[T]"
+    ctxtype = ((slicetype_t*)ctxtype)->elem;
+  } else if ( ctxtype->kind == TYPE_ARRAY ||
+              ( ctxtype->kind == TYPE_REF &&
+                ((reftype_t*)ctxtype)->elem->kind == TYPE_ARRAY &&
+                ((arraytype_t*)((reftype_t*)ctxtype)->elem)->len > 0 ) )
+  {
+    // "[T]" or "[T N]" or "&[T N]"
+    const arraytype_t* at = ctxtype->kind == TYPE_REF ?
+      (arraytype_t*)((reftype_t*)ctxtype)->elem :
+      (arraytype_t*)ctxtype ;
+    if UNLIKELY(at->len > 0 && at->len < n->values.len) {
+      expr_t* origin = (expr_t*)n->values.v[at->len];
+      if (loc_line(origin->loc) == 0)
+        origin = (expr_t*)n;
+      error(a, origin, "excess value in array literal");
+    } else if UNLIKELY(at->len == 0 && is_toplevel(a)) {
+      error(a, n, "cannot create heap-allocated array at package level");
+      help(a, n,
+           "change type to fixed-size array ([%s %u]) or immutable slice (&%s)"
+           ", or move initialization into a function",
+           fmtnode(0, at->elem), n->values.len, fmtnode(1, at));
+    }
+    ctxtype = at->elem;
   } else {
+    // "[T N]"
     // infer the array element type based on the first value
-    at = mknode(a, arraytype_t, TYPE_ARRAY);
+    arraytype_t* at = mknode(a, arraytype_t, TYPE_ARRAY);
     at->flags = NF_CHECKED;
     if UNLIKELY(n->values.len == 0) {
       at->elem = type_unknown;
@@ -3717,16 +3685,16 @@ static void arraylit(typecheck_t* a, arraylit_t* n) {
     at->len = (u64)n->values.len;
     arraytype_calc_size(a, at);
     i++; // don't visit the first value again
+    n->type = (type_t*)at;
+    ctxtype = at->elem;
   }
 
-  n->type = (type_t*)at;
-
-  typectx_push(a, at->elem);
+  typectx_push(a, ctxtype);
 
   for (; i < n->values.len; i++) {
     exprp(a, (expr_t**)&n->values.v[i]);
     expr_t* v = (expr_t*)n->values.v[i];
-    if UNLIKELY(!type_isassignable(a->compiler, at->elem, v->type)) {
+    if UNLIKELY(!type_isassignable(a->compiler, ctxtype, v->type)) {
       error_unassignable_type(a, n, v);
       break;
     }
@@ -3808,22 +3776,39 @@ static expr_t* nullable find_member(
 }
 
 
-static expr_t* nullable find_builtin_member(
+static expr_t* nullable find_builtin_member_len_or_cap(
   typecheck_t* a, member_t* n, type_t* recvbt)
 {
-  if (n->name == sym_len || n->name == sym_cap) {
-    // len(this)uint and cap(this)uint is defined for all sequence types
-    switch (recvbt->kind) {
+  // len(this)uint and cap(this)uint is defined for all sequence types
+  switch (recvbt->kind) {
+    case TYPE_SLICE:
+    case TYPE_MUTSLICE:
+    case TYPE_STR:
+      break;
     case TYPE_ARRAY:
       if (((arraytype_t*)recvbt)->len > 0) {
         // constant expression means we won't read the receiver,
         // but we still logically use it so mark it as "used at compile time."
         nuse_count_1_as_compile_time(n->recv);
       }
-      if (n->name == sym_len)
-        return (expr_t*)&a->compiler->builtin_len;
-      return (expr_t*)&a->compiler->builtin_cap;
-    }
+      break;
+    default:
+      return NULL;
+  }
+
+  if (n->name == sym_len) {
+    return (expr_t*)&a->compiler->builtin_len;
+  } else {
+    return (expr_t*)&a->compiler->builtin_cap;
+  }
+}
+
+
+static expr_t* nullable find_builtin_member(
+  typecheck_t* a, member_t* n, type_t* recvbt)
+{
+  if (n->name == sym_len || n->name == sym_cap) {
+    return find_builtin_member_len_or_cap(a, n, recvbt);
   } else if (n->name == sym_reserve) {
     // reserve(mut this, uint)bool is defined for dynamic arrays
     if (recvbt->kind == TYPE_ARRAY && ((arraytype_t*)recvbt)->len == 0)
@@ -4374,11 +4359,12 @@ static void call_type(typecheck_t* a, call_t** np, type_t* t) {
       break;
     FALLTHROUGH;
   case TYPE_FUN:
+  case TYPE_STR:
   case TYPE_PTR:
   case TYPE_REF:
   case TYPE_OPTIONAL:
     trace("TODO IMPLEMENT %s", nodekind_name(t->kind));
-    error(a, call->recv, "NOT IMPLEMENTED: %s", nodekind_name(t->kind));
+    error(a, call->recv, "NOT IMPLEMENTED: type-call %s", nodekind_name(t->kind));
     break;
 
   case TYPE_UNRESOLVED:
@@ -4739,7 +4725,7 @@ static void instantiate_templatetype(typecheck_t* a, templatetype_t** tp) {
   // check if transformation failed (if it did, it's going to be OOM)
   if UNLIKELY(err) {
     dlog("ast_transform() failed: %s", err_str(err));
-    error(a, (origin_t){0}, "%s", err_str(err));
+    error(a, (origin_t){}, "%s", err_str(err));
     seterr(a, err);
     #ifdef DEBUG
       a->traceindent--;
@@ -5057,6 +5043,7 @@ static void _type(typecheck_t* a, type_t** tp) {
     case TYPE_F32:
     case TYPE_F64:
     case TYPE_NS:
+    case TYPE_STR:
     case TYPE_ANY:
     case TYPE_UNKNOWN:
       assertf(0, "%s should always be NF_CHECKED", nodekind_name((*tp)->kind));
@@ -5196,7 +5183,6 @@ static void exprp(typecheck_t* a, expr_t** np) {
   case EXPR_DEREF:     deref(a, (unaryop_t*)n); goto end;
   case EXPR_INTLIT:    intlit(a, (intlit_t*)n); goto end;
   case EXPR_FLOATLIT:  floatlit(a, (floatlit_t*)n); goto end;
-  case EXPR_STRLIT:    strlit(a, (strlit_t*)n); goto end;
   case EXPR_ARRAYLIT:  arraylit(a, (arraylit_t*)n); goto end;
 
   case EXPR_PREFIXOP:
@@ -5225,6 +5211,7 @@ static void exprp(typecheck_t* a, expr_t** np) {
   case STMT_TYPEDEF:
   case STMT_IMPORT:
   case EXPR_BOOLLIT:
+  case EXPR_STRLIT:
   case EXPR_FUN:
   case TYPE_VOID:
   case TYPE_BOOL:
@@ -5240,6 +5227,7 @@ static void exprp(typecheck_t* a, expr_t** np) {
   case TYPE_UINT:
   case TYPE_F32:
   case TYPE_F64:
+  case TYPE_STR:
   case TYPE_ARRAY:
   case TYPE_SLICE:
   case TYPE_MUTSLICE:

@@ -16,6 +16,11 @@ __co_PKG struct _coOAh __co_builtin_seq___add__(
   __co_uint elemsize
 );
 
+__co_PKG struct _coSh __co_builtin_str___add__(
+  const void* aptr, __co_uint alen,
+  const void* bptr, __co_uint blen
+);
+
 inline static void __co_checkbounds(__co_uint len, __co_uint index) {
   if (__builtin_expect(len <= index, false))
     __co_panic_out_of_bounds();
